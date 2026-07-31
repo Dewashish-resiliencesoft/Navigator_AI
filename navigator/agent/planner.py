@@ -7,6 +7,7 @@ from collections.abc import Callable, Sequence
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
+from navigator.meeting.intake import ProspectIntake
 from navigator.memory.retrieval import Correction
 from navigator.schemas import Persona
 
@@ -64,6 +65,7 @@ def build_prompt(
     knowledge: Sequence[str],
     persona: Persona,
     retry_hint: str | None = None,
+    intake: ProspectIntake | None = None,
 ) -> str:
     corr_lines = [c.rule for c in corrections] or ["(none)"]
     know_lines = list(knowledge) or ["(none)"]
@@ -82,6 +84,15 @@ def build_prompt(
         "Product knowledge:",
         *know_lines,
     ]
+    if intake is not None:
+        lines.extend(
+            [
+                "Prospect intake:",
+                f"name={intake.name!r} company={intake.company!r} "
+                f"business_type={intake.business_type!r} looking_for={intake.looking_for!r}",
+                "Prefer an allowed flow_id that best matches looking_for when several fit.",
+            ]
+        )
     if retry_hint:
         lines.append(retry_hint)
     return "\n".join(lines)
@@ -113,6 +124,7 @@ def choose_flow(
     knowledge: Sequence[str],
     persona: Persona,
     complete: Callable[[str], str] | None = None,
+    intake: ProspectIntake | None = None,
 ) -> FlowChoice:
     if not flow_ids:
         raise RuntimeError(f"page {page_id!r} has no flows to choose from")
@@ -126,6 +138,7 @@ def choose_flow(
         corrections=corrections,
         knowledge=knowledge,
         persona=persona,
+        intake=intake,
     )
     raw = completer(prompt)
     try:
@@ -138,6 +151,7 @@ def choose_flow(
             corrections=corrections,
             knowledge=knowledge,
             persona=persona,
+            intake=intake,
             retry_hint=(
                 f"Previous answer was invalid. flow_id MUST be null (handoff) or "
                 f"one of: {', '.join(sorted(allowed))}"

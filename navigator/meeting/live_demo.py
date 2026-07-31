@@ -26,12 +26,15 @@ from playwright.sync_api import sync_playwright
 from navigator.agent.graph import build_graph
 from navigator.agent.state import CallDeps, initial_state
 from navigator.browser.cursor import install_cursor
+from navigator.browser.login_gate import LoginGateResult, run_login_gate
+from navigator.browser.product_login import login_product
 from navigator.config.site_graph import load_site_graph
 from navigator.logs.store import ActionLog
 from navigator.meeting.attendee import AttendeeClient
 from navigator.meeting.intake import run_intake
 from navigator.meeting.meet_speaker import MeetSpeaker
 from navigator.meeting.relay import push_frame, start_relay
+from navigator.meeting.screenshare import arm_screenshare
 from navigator.meeting.tunnel import start_tunnel
 from navigator.settings import settings
 from navigator.voice.tts import PiperSpeaker, PrintSpeaker
@@ -237,7 +240,7 @@ def run_live_meet_demo(
         print(f"[live] intake done: {intake.model_dump()}", flush=True)
 
         print("[live] enabling screen share now…", flush=True)
-        client.enable_screenshare(bot.id, public_view)
+        arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
 
         conversational = bool(settings.groq_api_key)
         meet_speaker: MeetSpeaker | PrintSpeaker | PiperSpeaker = MeetSpeaker(
@@ -261,7 +264,32 @@ def run_live_meet_demo(
             context = browser.new_context(viewport={"width": 1280, "height": 720})
             page = context.new_page()
             install_cursor(page)
-            page.goto(graph_cfg.url_for(page_id), wait_until="domcontentloaded")
+
+            def _do_login(*, url: str, email: str, password: str, **_kw) -> None:
+                login_product(page, url=url, email=email, password=password)
+
+            if settings.product_login_email and settings.product_login_password:
+                login_url = settings.product_url or graph_cfg.url_for(page_id)
+                gate = run_login_gate(
+                    login_fn=_do_login,
+                    url=login_url,
+                    email=settings.product_login_email,
+                    password=settings.product_login_password,
+                    speaker=meet_speaker,
+                    attendee=client,
+                    bot_id=bot.id,
+                )
+                if gate is LoginGateResult.failed:
+                    print(
+                        "[live] login gate failed — aborting before Planning",
+                        flush=True,
+                    )
+                    context.close()
+                    browser.close()
+                    return bot_id or ""
+            else:
+                page.goto(graph_cfg.url_for(page_id), wait_until="domcontentloaded")
+
             push_frame(relay, page)
 
             def _push() -> None:
@@ -286,6 +314,7 @@ def run_live_meet_demo(
                 push_frame=_push,
                 interactive_listen=interactive_listen,
                 audio_frames=audio_frames,
+                intake=intake,
             )
 
             mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"
@@ -325,5 +354,38 @@ def run_live_meet_smoke(**kwargs) -> str:
     return run_live_meet_demo(**kwargs)
 
 
+def run_login_only(*, headful: bool = False) -> int:
+    """Headless (default) login smoke. Exit 0 pass / 1 fail. No Meet."""
+    email = settings.product_login_email
+    password = settings.product_login_password
+    url = settings.product_url
+    if not (email and password and url):
+        print(
+            "[login-only] need NAVIGATOR_PRODUCT_URL + LOGIN_EMAIL + LOGIN_PASSWORD",
+            flush=True,
+        )
+        return 1
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=not headful)
+        page = browser.new_page()
+        try:
+            login_product(page, url=url, email=email, password=password)
+            print("[live] login=pass", flush=True)
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live] login=fail err={exc!r}", flush=True)
+            return 1
+        finally:
+            browser.close()
+
+
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Navigator live Meet demo")
+    parser.add_argument("--login-only", action="store_true")
+    parser.add_argument("--headful", action="store_true")
+    args = parser.parse_args()
+    if args.login_only:
+        raise SystemExit(run_login_only(headful=args.headful))
     print(run_live_meet_demo())

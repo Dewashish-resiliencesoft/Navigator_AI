@@ -59,6 +59,7 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         corrections=corrections,
         knowledge=knowledge,
         persona=persona,
+        intake=deps.intake,
     )
 
     if deps.choose_flow is not None:

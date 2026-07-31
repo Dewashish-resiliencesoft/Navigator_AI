@@ -218,3 +218,58 @@ def test_planning_passes_retrieved_corrections_into_chooser(
     assert any("composer" in c.rule for c in seen.get("corrections", [])), seen.get(
         "corrections"
     )
+
+
+def test_build_prompt_includes_intake_looking_for():
+    from navigator.agent.planner import build_prompt
+    from navigator.meeting.intake import ProspectIntake
+
+    persona = Persona(
+        agent_name="Nav",
+        product_name="CRM",
+        tone="warm",
+        one_liner="inbox that works",
+    )
+    intake = ProspectIntake(
+        name="Ada",
+        company="Acme",
+        business_type="retail",
+        looking_for="broadcast campaigns",
+    )
+    prompt = build_prompt(
+        page_id="inbox",
+        flow_ids=["send_test_message"],
+        transcript=["user: hi"],
+        corrections=[],
+        knowledge=[],
+        persona=persona,
+        intake=intake,
+    )
+    assert "Acme" in prompt
+    assert "broadcast campaigns" in prompt
+    assert "Prospect intake" in prompt
+
+
+def test_planning_passes_intake_into_chooser(
+    site_graph, page, log, tmp_path, state
+):
+    from navigator.meeting.intake import ProspectIntake
+
+    seen: dict = {}
+
+    def fake(**kwargs) -> FlowChoice:
+        seen.update(kwargs)
+        return FlowChoice(
+            flow_id="send_test_message",
+            spoken_response="Sending a message.",
+        )
+
+    intake = ProspectIntake(
+        name="Ada",
+        company="Acme",
+        looking_for="broadcast campaigns",
+    )
+    deps = _llm_deps(site_graph, page, log, tmp_path, fake)
+    deps.intake = intake
+    planning(state, deps)
+    assert seen.get("intake") is intake

@@ -22,6 +22,7 @@ from navigator.voice.tts import Speaker
 
 if TYPE_CHECKING:
     from navigator.meeting.attendee import AttendeeClient
+    from navigator.meeting.intake import ProspectIntake
 
 
 State = Literal[
@@ -83,6 +84,8 @@ class CallDeps:
     reflect_provider: object | None = None
     #: SQLite path for pending corrections. None → settings.db_path.
     pending_db_path: Path | None = None
+    #: Pre-demo prospect intake (company / looking_for). None → planner ignores.
+    intake: ProspectIntake | None = None
 
 
 def append_only(existing: list, new: list) -> list:

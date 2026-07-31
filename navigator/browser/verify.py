@@ -112,6 +112,42 @@ def check_with_vision(
     Deliberately not wired into `check`. It costs an API call and must stay the
     exception, not the default.
     """
-    # TODO(phase 4): screenshot the element, ask the configured LLMProvider
-    # (navigator.agent.providers) whether `expects` holds, return its verdict.
-    raise NotImplementedError("vision verify fallback lands in Phase 4")
+    from navigator.agent.providers import get_provider
+
+    css = None
+    if expects.selector is not None:
+        try:
+            css = graph.selector(page_id, expects.selector)
+        except SiteGraphError as exc:
+            return VerifyResult(passed=False, actual=f"site graph error: {exc}")
+
+    try:
+        if css:
+            loc = page.locator(css).first
+            png = loc.screenshot(type="png")
+        else:
+            png = page.screenshot(type="png", full_page=False)
+    except PlaywrightError as exc:
+        return VerifyResult(
+            passed=False, actual=f"screenshot failed: {exc}", ambiguous=True
+        )
+
+    system = (
+        "You verify a UI postcondition from a screenshot. "
+        "Reply with exactly PASSED or FAILED on the first line, then one short reason."
+    )
+    user = (
+        f"check={expects.check}\n"
+        f"selector_alias={expects.selector}\n"
+        f"expected={expects.expected}\n"
+        "Does the screenshot show the expected state?"
+    )
+    try:
+        raw = get_provider().complete_with_image(system, user, png)
+    except Exception as exc:  # noqa: BLE001
+        return VerifyResult(
+            passed=False, actual=f"vision provider error: {exc}", ambiguous=True
+        )
+    first = (raw.strip().splitlines() or [""])[0].upper()
+    passed = first.startswith("PASSED") or first.startswith("YES")
+    return VerifyResult(passed=passed, actual=raw.strip()[:500], ambiguous=False)

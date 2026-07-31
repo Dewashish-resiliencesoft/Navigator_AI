@@ -12,8 +12,14 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def test_bot_joins_meet_and_teams_notified():
-    from navigator.meeting.live_demo import run_live_meet_smoke
+def test_bot_joins_meet_and_runs_demo_graph():
+    from navigator.meeting.live_demo import run_live_meet_demo
 
-    bot_id = run_live_meet_smoke(hold_s=20.0, headful=True)
+    bot_id = run_live_meet_demo(
+        headful=True,
+        mute=True,
+        interactive_listen=False,
+        open_meet_in_browser=False,
+        wait_for_human=False,
+    )
     assert bot_id

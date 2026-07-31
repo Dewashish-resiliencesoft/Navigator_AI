@@ -50,21 +50,36 @@ class PiperSpeaker:
 
         with tempfile.TemporaryDirectory() as tmp:
             wav = Path(tmp) / "out.wav"
-            synth = subprocess.run(
-                [
-                    self.python, "-m", "piper",
-                    "-m", self.voice,
-                    "--data-dir", str(self.data_dir),
-                    "-f", str(wav),
-                    "--", text,
-                ],
-                capture_output=True,
-                text=True,
-            )
-            if synth.returncode != 0:
-                print(f"[speak] piper failed: {synth.stderr.strip().splitlines()[-1:]}")
+            if not self.synthesize_to(wav, text):
                 return
             self._play(wav)
+
+    def synthesize_to(self, wav_path: Path, text: str) -> bool:
+        """Write Piper WAV to wav_path. Returns False on failure."""
+        synth = subprocess.run(
+            [
+                self.python, "-m", "piper",
+                "-m", self.voice,
+                "--data-dir", str(self.data_dir),
+                "-f", str(wav_path),
+                "--", text,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if synth.returncode != 0:
+            print(f"[speak] piper failed: {synth.stderr.strip().splitlines()[-1:]}")
+            return False
+        return True
+
+    def synthesize_wav(self, text: str) -> bytes | None:
+        if not text.strip() or not self.available():
+            return None
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "out.wav"
+            if not self.synthesize_to(wav, text):
+                return None
+            return wav.read_bytes()
 
     def _play(self, wav: Path) -> None:
         if self._player is None:

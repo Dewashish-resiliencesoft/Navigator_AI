@@ -11,6 +11,7 @@ in the PLANNING node where latency is the constraint.
 
 from __future__ import annotations
 
+import base64
 from typing import Protocol
 
 from navigator.settings import settings
@@ -27,11 +28,7 @@ class LLMProvider(Protocol):
 
 
 class GeminiProvider:
-    """Free tier: ~10 RPM / 250 RPD on 2.5 Flash, image input included.
-
-    Reflection is batched post-call and vision verify is rare, so those limits are
-    generous for this workload.
-    """
+    """Free tier: ~10 RPM / 250 RPD on 2.5 Flash, image input included."""
 
     text_model = "gemini-2.5-flash"
     vision_model = "gemini-2.5-flash"
@@ -40,17 +37,41 @@ class GeminiProvider:
         self.api_key = api_key
 
     def complete(self, system: str, user: str) -> str:
-        # TODO(phase 4): google.genai Client.models.generate_content with
-        # config=GenerateContentConfig(system_instruction=system).
-        raise NotImplementedError("Gemini reflection lands in Phase 4")
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=self.api_key)
+        resp = client.models.generate_content(
+            model=self.text_model,
+            contents=user,
+            config=types.GenerateContentConfig(system_instruction=system),
+        )
+        text = (resp.text or "").strip()
+        if not text:
+            raise RuntimeError("Gemini returned empty reflection")
+        return text
 
     def complete_with_image(self, system: str, user: str, png: bytes) -> str:
-        # TODO(phase 4): same call with types.Part.from_bytes(png, "image/png").
-        raise NotImplementedError("Gemini vision verify lands in Phase 4")
+        from google import genai
+        from google.genai import types
+
+        client = genai.Client(api_key=self.api_key)
+        resp = client.models.generate_content(
+            model=self.vision_model,
+            contents=[
+                types.Part.from_bytes(data=png, mime_type="image/png"),
+                user,
+            ],
+            config=types.GenerateContentConfig(system_instruction=system),
+        )
+        text = (resp.text or "").strip()
+        if not text:
+            raise RuntimeError("Gemini vision returned empty")
+        return text
 
 
 class OpenAIProvider:
-    """Paid. Aliases, not dated snapshots -- gpt-4o-2024-05-13 retires 2026-10-23."""
+    """Paid. Aliases, not dated snapshots."""
 
     text_model = "gpt-4o-mini"
     vision_model = "gpt-4o"
@@ -59,12 +80,48 @@ class OpenAIProvider:
         self.api_key = api_key
 
     def complete(self, system: str, user: str) -> str:
-        # TODO(phase 4): openai.OpenAI().chat.completions.create, system + user roles.
-        raise NotImplementedError("OpenAI reflection lands in Phase 4")
+        from openai import OpenAI
+
+        client = OpenAI(api_key=self.api_key)
+        resp = client.chat.completions.create(
+            model=self.text_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            temperature=0,
+        )
+        content = resp.choices[0].message.content
+        if not content:
+            raise RuntimeError("OpenAI returned empty reflection")
+        return content.strip()
 
     def complete_with_image(self, system: str, user: str, png: bytes) -> str:
-        # TODO(phase 4): image_url content part with a base64 data URI.
-        raise NotImplementedError("OpenAI vision verify lands in Phase 4")
+        from openai import OpenAI
+
+        client = OpenAI(api_key=self.api_key)
+        b64 = base64.b64encode(png).decode()
+        resp = client.chat.completions.create(
+            model=self.vision_model,
+            messages=[
+                {"role": "system", "content": system},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/png;base64,{b64}"},
+                        },
+                    ],
+                },
+            ],
+            temperature=0,
+        )
+        content = resp.choices[0].message.content
+        if not content:
+            raise RuntimeError("OpenAI vision returned empty")
+        return content.strip()
 
 
 def get_provider() -> LLMProvider:

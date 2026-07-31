@@ -1,7 +1,9 @@
-"""Local HTTP page that mirrors a Playwright viewport for Attendee.
+"""Local HTTP pages that mirror a Playwright viewport for Attendee.
 
-ponytail: JPEG poll at ~5fps via /frame.jpg. Ceiling: laggy under load.
-Upgrade: CDP screencast WebSocket for smoother Meet video.
+`/agent`  — minimal mic page for voice_agent_settings.url (bot camera tile).
+`/view`   — demo frames for voice_agent_settings.screenshare_url (Meet screen share).
+
+ponytail: JPEG poll ~10fps. Ceiling: soft under motion. Upgrade: CDP screencast WS.
 """
 
 from __future__ import annotations
@@ -12,18 +14,28 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from playwright.sync_api import Page
 
-_VIEW_HTML = """<!doctype html>
-<html><head><meta charset=utf-8><title>Navigator relay</title>
+_AGENT_HTML = """<!doctype html>
+<html><head><meta charset=utf-8><title>Navigator agent</title>
 <style>
-html,body{margin:0;background:#111;width:1280px;height:720px;overflow:hidden}
-img{width:1280px;height:720px;object-fit:contain;display:block}
+html,body{margin:0;width:1280px;height:720px;background:#0b1220;color:#9fb3c8;
+font:600 28px system-ui,sans-serif;display:flex;align-items:center;justify-content:center}
 </style></head>
-<body><img id=f alt=frame>
+<body><div>Navigator AI</div>
+<script>navigator.mediaDevices.getUserMedia({audio:true}).catch(()=>{});</script>
+</body></html>
+"""
+
+_VIEW_HTML = """<!doctype html>
+<html><head><meta charset=utf-8><title>Navigator screen</title>
+<style>
+html,body{margin:0;background:#000;width:1280px;height:720px;overflow:hidden}
+img{width:1280px;height:720px;object-fit:fill;display:block;image-rendering:auto}
+</style></head>
+<body><img id=f alt=frame width=1280 height=720>
 <script>
-navigator.mediaDevices.getUserMedia({audio:true}).catch(()=>{});
 async function tick(){
   try {
-    const r = await fetch('/frame.jpg?ts='+Date.now());
+    const r = await fetch('/frame.jpg?ts='+Date.now(), {cache:'no-store'});
     if (r.ok) {
       const b = await r.blob();
       const url = URL.createObjectURL(b);
@@ -33,7 +45,7 @@ async function tick(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tick, 200);
+  setTimeout(tick, 100);
 }
 tick();
 </script></body></html>
@@ -53,6 +65,10 @@ class RelayHandle:
     def view_url(self) -> str:
         return f"http://{self.host}:{self.port}/view"
 
+    @property
+    def agent_url(self) -> str:
+        return f"http://{self.host}:{self.port}/agent"
+
     def stop(self) -> None:
         self._httpd.shutdown()
         self._thread.join(timeout=5)
@@ -68,6 +84,14 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
 
         def do_GET(self) -> None:  # noqa: N802
             handle = holder["h"]
+            if self.path.startswith("/agent"):
+                body = _AGENT_HTML.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if self.path.startswith("/view"):
                 body = _VIEW_HTML.encode()
                 self.send_response(200)
@@ -95,7 +119,9 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
 
     httpd = ThreadingHTTPServer((host, port), Handler)
     real_port = int(httpd.server_address[1])
-    thread = threading.Thread(target=httpd.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
+    )
     handle = RelayHandle(host=host, port=real_port, _httpd=httpd, _thread=thread)
     holder["h"] = handle
     thread.start()
@@ -104,6 +130,13 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
 
 def push_frame(handle: RelayHandle, page: Page) -> None:
     """Screenshot on the Playwright thread only (sync API is not thread-safe)."""
-    data = page.screenshot(type="jpeg", quality=55)
+    try:
+        data = page.screenshot(
+            type="jpeg",
+            quality=92,
+            clip={"x": 0, "y": 0, "width": 1280, "height": 720},
+        )
+    except Exception:
+        data = page.screenshot(type="jpeg", quality=92)
     with handle._lock:
         handle._frame = data

@@ -7,7 +7,7 @@ failed. Nothing important lives implicitly inside an LLM's context.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, TypedDict
@@ -69,6 +69,20 @@ class CallDeps:
     attendee: AttendeeClient | None = None
     #: Public HTTPS URL of the frame relay /view page for Attendee voice agent.
     voice_agent_url: str | None = None
+    #: Optional: push a Meet screen-share frame (Playwright thread only).
+    push_frame: Callable[[], None] | None = None
+    #: When True, LISTENING prompts on stdin for what the prospect said.
+    interactive_listen: bool = False
+    #: Live Meet bot id (handoff chat + speak into call).
+    bot_id: str | None = None
+    #: PCM frame iterator for STT (16-bit mono @ 16kHz, ~200ms frames). None → scripted/stdin.
+    audio_frames: Iterator[bytes] | None = None
+    #: Injected STT for tests. Signature (pcm_utterance: bytes) -> str.
+    transcribe_audio: Callable[[bytes], str] | None = None
+    #: Reflection LLM (Gemini/OpenAI). None → get_provider() when reflecting.
+    reflect_provider: object | None = None
+    #: SQLite path for pending corrections. None → settings.db_path.
+    pending_db_path: Path | None = None
 
 
 def append_only(existing: list, new: list) -> list:

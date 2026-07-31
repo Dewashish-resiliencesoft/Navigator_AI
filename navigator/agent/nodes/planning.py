@@ -3,12 +3,12 @@
 Scripted path (CallDeps.scripted_flow set): replay a named flow — deterministic,
 used by demo/CI. LLM path: retrieve memory, pick a flow_id via Groq or an
 injectable chooser, expand tool_calls from the site graph. The model never
-invents selectors or postconditions.
+invents selectors or postconditions. flow_id null → confidential handoff, no tools.
 """
 
 from __future__ import annotations
 
-from navigator.agent.planner import FlowChoice, choose_flow
+from navigator.agent.planner import HANDOFF_SPOKEN, FlowChoice, choose_flow
 from navigator.agent.state import CallDeps, CallState
 from navigator.memory.retrieval import retrieve_corrections, retrieve_product_knowledge
 from navigator.schemas import Plan
@@ -76,11 +76,30 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
     if not isinstance(choice, FlowChoice):
         choice = FlowChoice.model_validate(choice)
 
+    if choice.flow_id is None:
+        return _plan_handoff(deps, query=query, spoken=HANDOFF_SPOKEN)
+
     if choice.flow_id not in page.flows:
         raise ValueError(f"flow_id {choice.flow_id!r} not in allowed {flow_ids}")
 
     return _plan_from_flow(
         deps, page_id, choice.flow_id, spoken=choice.spoken_response
+    )
+
+
+def _plan_handoff(deps: CallDeps, *, query: str, spoken: str) -> CallState:
+    print(f"[handoff] out_of_scope: {query!r}", flush=True)
+    if deps.attendee is not None and deps.bot_id:
+        try:
+            deps.attendee.send_chat(deps.bot_id, spoken)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[handoff] Meet chat failed: {exc}", flush=True)
+    plan = Plan(spoken_response=spoken, tool_calls=[])
+    return CallState(
+        plan=plan,
+        pending_calls=[],
+        narration=[plan.spoken_response],
+        transcript=[f"agent: {plan.spoken_response}"],
     )
 
 

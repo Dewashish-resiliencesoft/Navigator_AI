@@ -271,11 +271,13 @@ def product_failures(
 def pending_corrections(product: AuthedProduct) -> list[dict]:
     """Reflection output awaiting human approval.
 
-    Returns empty until Phase 4. Never auto-promoted: an agent that can silently
-    rewrite its own rules is not debuggable.
+    Never auto-promoted: an agent that can silently rewrite its own rules is
+    not debuggable.
     """
-    # TODO(phase 4): read the pending review table filtered by product_id.
-    return []
+    from navigator.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        return [row.as_dict() for row in store.list_pending(product.product_id)]
 
 
 @app.get("/healthz")

@@ -49,6 +49,22 @@ def test_parse_flow_choice_rejects_unknown_flow():
         )
 
 
+def test_parse_flow_choice_accepts_null_handoff():
+    choice = parse_flow_choice(
+        '{"flow_id": null, "spoken_response": "cannot show that"}',
+        allowed={"send_test_message"},
+    )
+    assert choice.flow_id is None
+
+
+def test_parse_flow_choice_accepts_handoff_token():
+    choice = parse_flow_choice(
+        '{"flow_id": "__handoff__", "spoken_response": "x"}',
+        allowed={"send_test_message"},
+    )
+    assert choice.flow_id is None
+
+
 def test_choose_flow_retries_once_then_raises():
     calls: list[str] = []
 
@@ -122,6 +138,23 @@ def test_planning_rejects_unknown_flow_from_chooser(
     deps = _llm_deps(site_graph, page, log, tmp_path, fake)
     with pytest.raises(ValueError, match="does_not_exist"):
         planning(state, deps)
+
+
+def test_planning_handoff_emits_empty_tools_and_fixed_spoken(
+    site_graph, page, log, tmp_path, state
+):
+    from navigator.agent.planner import HANDOFF_SPOKEN
+
+    def fake(**kwargs) -> FlowChoice:
+        return FlowChoice(flow_id=None, spoken_response="ignored")
+
+    state["transcript"] = ["user: show me the billing admin panel"]
+    deps = _llm_deps(site_graph, page, log, tmp_path, fake)
+    out = planning(state, deps)
+    assert out["plan"].tool_calls == []
+    assert out["pending_calls"] == []
+    assert out["plan"].spoken_response == HANDOFF_SPOKEN
+    assert "confidential" in out["narration"][0].lower()
 
 
 def test_planning_requires_key_without_scripted_or_chooser(

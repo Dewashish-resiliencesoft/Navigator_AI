@@ -19,6 +19,8 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
     call, rest = pending[0], pending[1:]
     ran_on = state["page_id"]
     result, next_page_id = run_tool(deps.page, deps.graph, ran_on, call)
+    if deps.push_frame is not None:
+        deps.push_frame()
 
     return CallState(
         pending_calls=rest,

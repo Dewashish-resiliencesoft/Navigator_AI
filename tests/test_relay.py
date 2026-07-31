@@ -13,8 +13,11 @@ def test_view_returns_html():
         with urlopen(relay.view_url, timeout=5) as resp:
             body = resp.read().decode()
             assert resp.status == 200
-        assert "nav-cursor" not in body  # relay page, not product
-        assert "getUserMedia" in body
+        assert "getUserMedia" not in body  # screenshare page — no mic requirement
         assert "/frame.jpg" in body
+        with urlopen(relay.agent_url, timeout=5) as resp:
+            agent = resp.read().decode()
+            assert resp.status == 200
+        assert "getUserMedia" in agent
     finally:
         relay.stop()

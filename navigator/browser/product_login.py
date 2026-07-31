@@ -13,22 +13,24 @@ def login_product(
     url: str,
     email: str,
     password: str,
-    email_selector: str = (
-        'input[type="email"], input[name="email"], input[name="username"], #email'
-    ),
-    password_selector: str = (
-        'input[type="password"], input[name="password"], #password'
-    ),
-    submit_selector: str = (
-        'button[type="submit"], button:has-text("Log in"), '
-        'button:has-text("Login"), button:has-text("Sign in")'
-    ),
+    email_selector: str = "#email",
+    password_selector: str = "#password",
+    submit_selector: str = 'button:has-text("Sign in")',
     ready_selector: str | None = None,
 ) -> None:
     """Navigate, fill credentials with cursor motion, wait for post-login UI."""
     install_cursor(page)
     page.goto(url, wait_until="domcontentloaded", timeout=60_000)
     page.wait_for_timeout(800)
+
+    # ResilioHub /dashboard often shows a splash then routes to /login/
+    if page.locator(email_selector).count() == 0:
+        page.wait_for_timeout(2000)
+    if page.locator(email_selector).count() == 0 and "/login" not in page.url:
+        from urllib.parse import urljoin
+
+        page.goto(urljoin(url, "/login/"), wait_until="domcontentloaded", timeout=60_000)
+        page.wait_for_timeout(800)
 
     if ready_selector and page.locator(ready_selector).count() > 0:
         return
@@ -42,4 +44,8 @@ def login_product(
     if ready_selector:
         page.wait_for_selector(ready_selector, timeout=60_000)
     else:
-        page.wait_for_load_state("networkidle", timeout=60_000)
+        # Logged-in apps usually leave /login/
+        page.wait_for_function(
+            "() => !location.pathname.includes('/login')",
+            timeout=60_000,
+        )

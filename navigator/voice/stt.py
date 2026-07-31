@@ -1,40 +1,123 @@
 """Speech in: VAD to find utterance boundaries, then transcription.
 
-STUB. Phase 2 fills this in.
+Silero VAD over inbound meeting audio decides when someone stopped talking;
+the resulting segment goes to Groq whisper-large-v3-turbo.
 
-Silero VAD (MIT, `pip install silero-vad`) over the inbound meeting audio decides
-when someone stopped talking; the resulting segment goes to Groq
-whisper-large-v3-turbo. Note Silero wants 150-250ms windows, not the 30ms frames
-webrtcvad uses -- feeding it 30ms chunks degrades it badly.
+Silero wants 150-250ms windows, not 30ms webrtcvad frames.
 
-Free-tier budget: 7200 audio-seconds per clock hour, so roughly 2h of speech per
-hour. One concurrent call is comfortable; several are not.
+Free-tier budget: 7200 audio-seconds per clock hour.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+import io
+import wave
+from collections.abc import Callable, Iterator
 
 SAMPLE_RATE = 16_000
 FRAME_MS = 200
 """Silero prefers 150-250ms. Do not drop this to 30ms."""
 
+BYTES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000 * 2  # 16-bit mono
+
 
 class VoiceSegmenter:
     """Turns a PCM frame stream into complete utterances."""
 
-    def __init__(self, threshold: float = 0.5, min_silence_ms: int = 700) -> None:
+    def __init__(
+        self,
+        threshold: float = 0.5,
+        min_silence_ms: int = 700,
+        *,
+        score_frame: Callable[[bytes], float] | None = None,
+    ) -> None:
         self.threshold = threshold
         self.min_silence_ms = min_silence_ms
+        self._score = score_frame
 
     def segments(self, frames: Iterator[bytes]) -> Iterator[bytes]:
-        # TODO(phase 2): silero_vad.load_silero_vad(), score each frame, emit the
-        # buffered audio once silence exceeds min_silence_ms.
-        raise NotImplementedError("VAD lands in Phase 2")
+        score = self._score or _silero_scorer()
+        silence_needed = max(1, self.min_silence_ms // FRAME_MS)
+        buf = bytearray()
+        in_speech = False
+        silent_frames = 0
+
+        for frame in frames:
+            if len(frame) == 0:
+                continue
+            prob = score(frame)
+            speaking = prob >= self.threshold
+            if speaking:
+                in_speech = True
+                silent_frames = 0
+                buf.extend(frame)
+                continue
+            if in_speech:
+                buf.extend(frame)
+                silent_frames += 1
+                if silent_frames >= silence_needed:
+                    yield bytes(buf)
+                    buf.clear()
+                    in_speech = False
+                    silent_frames = 0
+        if in_speech and buf:
+            yield bytes(buf)
 
 
-def transcribe(audio: bytes, api_key: str) -> str:
-    # TODO(phase 2): Groq audio.transcriptions.create,
-    # model="whisper-large-v3-turbo". Requests under 10s still bill at 10s, so
-    # batch short utterances if the hourly audio budget gets tight.
-    raise NotImplementedError("STT lands in Phase 2")
+def _silero_scorer() -> Callable[[bytes], float]:
+    """Lazy-load Silero once. Raises if voice extra missing."""
+    try:
+        from silero_vad import load_silero_vad  # type: ignore[import-untyped]
+        import torch
+    except ImportError as e:
+        raise RuntimeError(
+            "silero-vad (and torch) required for live STT; pip install '.[voice]'"
+        ) from e
+
+    model = load_silero_vad()
+
+    def score(frame: bytes) -> float:
+        if len(frame) < 2:
+            return 0.0
+        # int16 little-endian → float tensor in [-1, 1]
+        import array
+
+        samples = array.array("h")
+        samples.frombytes(frame[: len(frame) - (len(frame) % 2)])
+        if not samples:
+            return 0.0
+        tensor = torch.tensor(samples, dtype=torch.float32) / 32768.0
+        with torch.no_grad():
+            return float(model(tensor, SAMPLE_RATE).item())
+
+    return score
+
+
+def pcm16_to_wav_bytes(pcm: bytes, *, sample_rate: int = SAMPLE_RATE) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm)
+    return buf.getvalue()
+
+
+def transcribe(audio: bytes, api_key: str, *, model: str = "whisper-large-v3-turbo") -> str:
+    """Transcribe 16-bit mono PCM (or WAV bytes) via Groq Whisper."""
+    if not api_key:
+        raise RuntimeError("Groq API key missing for STT")
+    payload = audio
+    # Raw PCM → wrap as WAV for the multipart upload.
+    if not audio[:4] == b"RIFF":
+        payload = pcm16_to_wav_bytes(audio)
+
+    from groq import Groq
+
+    client = Groq(api_key=api_key)
+    transcript = client.audio.transcriptions.create(
+        file=("utterance.wav", payload, "audio/wav"),
+        model=model,
+    )
+    text = getattr(transcript, "text", None) or str(transcript)
+    return text.strip()

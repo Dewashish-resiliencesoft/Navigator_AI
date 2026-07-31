@@ -437,9 +437,9 @@ paths:
       description: 'Reflection output awaiting human approval.
 
 
-        Returns empty until Phase 4. Never auto-promoted: an agent that can silently
+        Never auto-promoted: an agent that can silently rewrite its own rules is
 
-        rewrite its own rules is not debuggable.'
+        not debuggable.'
       operationId: pending_corrections_v1_products_corrections_pending_get
       parameters:
       - name: authorization

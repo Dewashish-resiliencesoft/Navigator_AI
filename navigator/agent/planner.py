@@ -1,23 +1,42 @@
-"""Groq flow picker: chooses a named flow; never invents tool calls."""
+"""Groq flow picker: chooses a named flow or handoff; never invents tool calls."""
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Sequence
 
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from navigator.memory.retrieval import Correction
 from navigator.schemas import Persona
 
 MODEL = "llama-3.3-70b-versatile"
 
+#: Spoken when prospect asks for something outside the site-graph allow-list.
+HANDOFF_SPOKEN = (
+    "In this demo we can't show you that — it's confidential / outside what I'm "
+    "allowed to demo. If you want that configured or more info, we can arrange it. "
+    "I'll bring in a human agent who can handle things outside my scope."
+)
+
+HANDOFF_TOKENS = frozenset({"", "__handoff__", "null", "none"})
+
 
 class FlowChoice(BaseModel):
     model_config = ConfigDict(frozen=True)
 
-    flow_id: str
+    #: Named flow on the current page, or None → out-of-scope human handoff.
+    flow_id: str | None
     spoken_response: str
+
+    @field_validator("flow_id", mode="before")
+    @classmethod
+    def _normalize_handoff(cls, v: object) -> str | None:
+        if v is None:
+            return None
+        if isinstance(v, str) and v.strip().lower() in HANDOFF_TOKENS:
+            return None
+        return str(v) if v is not None else None
 
 
 def parse_flow_choice(raw: str, *, allowed: set[str]) -> FlowChoice:
@@ -29,7 +48,7 @@ def parse_flow_choice(raw: str, *, allowed: set[str]) -> FlowChoice:
         choice = FlowChoice.model_validate(data)
     except ValidationError as e:
         raise ValueError(f"planner returned invalid FlowChoice: {raw!r}") from e
-    if choice.flow_id not in allowed:
+    if choice.flow_id is not None and choice.flow_id not in allowed:
         raise ValueError(
             f"flow_id {choice.flow_id!r} not in allowed {sorted(allowed)}"
         )
@@ -53,8 +72,9 @@ def build_prompt(
         f"Tone: {persona.tone}",
         f"Current page_id: {page_id}",
         f"Allowed flow_ids (pick exactly one): {', '.join(flow_ids)}",
-        'Return ONLY JSON: {"flow_id": "...", "spoken_response": "..."}',
-        "Do not invent steps, selectors, or flows outside the allowed list.",
+        "If the user asks for something NOT in the allowed list, set flow_id to null "
+        "(out-of-scope handoff). Never invent flows or selectors.",
+        'Return ONLY JSON: {"flow_id": "<id>"|null, "spoken_response": "..."}',
         "Transcript:",
         *transcript,
         "Corrections:",
@@ -119,8 +139,8 @@ def choose_flow(
             knowledge=knowledge,
             persona=persona,
             retry_hint=(
-                f"Previous answer was invalid. flow_id MUST be one of: "
-                f"{', '.join(sorted(allowed))}"
+                f"Previous answer was invalid. flow_id MUST be null (handoff) or "
+                f"one of: {', '.join(sorted(allowed))}"
             ),
         )
         raw2 = completer(retry)

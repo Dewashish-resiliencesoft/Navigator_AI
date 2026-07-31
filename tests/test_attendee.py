@@ -17,17 +17,14 @@ def _resp(body: bytes, status: int = 200) -> MagicMock:
     return fake
 
 
-def test_join_posts_bot_and_voice_agent_url():
+def test_join_reserves_resources_without_screenshare():
     client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
     captured: dict = {}
-
     real_request = __import__("urllib.request", fromlist=["Request"]).Request
 
     def capture_request(*args, **kwargs):
         req = real_request(*args, **kwargs)
-        captured["url"] = req.full_url
         captured["data"] = req.data
-        captured["auth"] = req.get_header("Authorization")
         return req
 
     with patch("navigator.meeting.attendee.Request", side_effect=capture_request):
@@ -37,15 +34,38 @@ def test_join_posts_bot_and_voice_agent_url():
         ):
             bot = client.join(
                 "https://meet.google.com/x",
-                bot_name="Navigator AI",
-                voice_agent_url="https://tunnel.example/view",
+                reserve_voice_agent=True,
+                join_chat_message="Waiting for you",
             )
     assert bot.id == "bot_1"
-    assert bot.state == "joining"
     body = json.loads(captured["data"])
-    assert body["meeting_url"] == "https://meet.google.com/x"
-    assert body["voice_agent_settings"]["url"] == "https://tunnel.example/view"
-    assert captured["auth"] == "Token tok"
+    assert body["voice_agent_settings"] == {"reserve_resources": True}
+    assert body["bot_chat_message"]["message"] == "Waiting for you"
+
+
+def test_enable_screenshare_patches():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    captured: dict = {}
+    real_request = __import__("urllib.request", fromlist=["Request"]).Request
+
+    def capture_request(*args, **kwargs):
+        req = real_request(*args, **kwargs)
+        captured["url"] = req.full_url
+        captured["method"] = req.get_method()
+        captured["data"] = req.data
+        return req
+
+    with patch("navigator.meeting.attendee.Request", side_effect=capture_request):
+        with patch(
+            "navigator.meeting.attendee.urlopen",
+            return_value=_resp(b"{}"),
+        ):
+            client.enable_screenshare("bot_1", "https://tunnel.example/view")
+    assert captured["method"] == "PATCH"
+    assert captured["url"].endswith("/bots/bot_1/voice_agent_settings")
+    assert json.loads(captured["data"]) == {
+        "screenshare_url": "https://tunnel.example/view"
+    }
 
 
 def test_get_maps_joined_recording():

@@ -12,5 +12,9 @@ from navigator.agent.state import CLEAR, CallDeps, CallState
 
 def speaking(state: CallState, deps: CallDeps) -> CallState:
     for line in state.get("narration") or []:
+        if deps.push_frame is not None:
+            deps.push_frame()
         deps.speaker.say(line)
+        if deps.push_frame is not None:
+            deps.push_frame()
     return CallState(narration=CLEAR)

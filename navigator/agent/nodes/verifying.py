@@ -8,7 +8,7 @@ successes are in there too.
 from __future__ import annotations
 
 from navigator.agent.state import CallDeps, CallState
-from navigator.browser.verify import check
+from navigator.browser.verify import check, check_with_vision
 from navigator.logs.store import utcnow
 from navigator.schemas import ActionLogEntry, FillField, VerifyResult
 
@@ -23,6 +23,13 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
 
     if result.ok:
         verdict = check(deps.page, deps.graph, verified_on, call.expects)
+        if verdict.ambiguous:
+            try:
+                verdict = check_with_vision(
+                    deps.page, deps.graph, verified_on, call.expects
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[verify] vision fallback failed: {exc}", flush=True)
     else:
         # The action itself failed, so the postcondition was never reachable.
         verdict = VerifyResult(passed=False, actual=f"action failed: {result.detail}")

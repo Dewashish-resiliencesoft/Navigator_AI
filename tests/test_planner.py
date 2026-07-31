@@ -157,6 +157,18 @@ def test_planning_handoff_emits_empty_tools_and_fixed_spoken(
     assert "confidential" in out["narration"][0].lower()
 
 
+def test_planning_user_correction_logs_pending_no_tools(
+    site_graph, page, log, tmp_path, state
+):
+    state["transcript"] = ["user: no, you should wait for the toast first"]
+    state["user_correction"] = True
+    deps = _llm_deps(site_graph, page, log, tmp_path, lambda **k: None)
+    deps.pending_db_path = tmp_path / "pending.db"
+    out = planning(state, deps)
+    assert out["pending_calls"] == []
+    assert "noted that correction" in out["plan"].spoken_response.lower()
+
+
 def test_planning_requires_key_without_scripted_or_chooser(
     site_graph, page, log, tmp_path, state, monkeypatch
 ):

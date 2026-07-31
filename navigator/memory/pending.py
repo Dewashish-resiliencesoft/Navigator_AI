@@ -122,6 +122,32 @@ class PendingCorrectionStore:
         )
         return [self._row(r) for r in cur.fetchall()]
 
+    def get(self, correction_id: str, product_id: str) -> PendingCorrection | None:
+        cur = self._conn.execute(
+            """
+            SELECT * FROM pending_corrections
+            WHERE id = ? AND product_id = ?
+            """,
+            (correction_id, product_id),
+        )
+        row = cur.fetchone()
+        return None if row is None else self._row(row)
+
+    def set_status(
+        self, correction_id: str, product_id: str, status: str
+    ) -> PendingCorrection | None:
+        row = self.get(correction_id, product_id)
+        if row is None:
+            return None
+        self._conn.execute(
+            """
+            UPDATE pending_corrections SET status = ?
+            WHERE id = ? AND product_id = ?
+            """,
+            (status, correction_id, product_id),
+        )
+        return self.get(correction_id, product_id)
+
     @staticmethod
     def _row(r: sqlite3.Row) -> PendingCorrection:
         return PendingCorrection(

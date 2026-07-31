@@ -349,9 +349,78 @@ def test_demo_list_is_scoped_per_product(client):
     assert client.get("/v1/demos", headers=globex["headers"]).json() == []
 
 
-def test_pending_corrections_is_empty_until_phase_4(client):
+def test_pending_corrections_empty_by_default(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(app_module.settings, "db_path", tmp_path / "nav.db")
     p = register(client, "Acme Inbox", ACME)
     assert client.get("/v1/products/corrections/pending", headers=p["headers"]).json() == []
+
+
+def test_approve_and_reject_corrections(client, tmp_path, monkeypatch):
+    from navigator.memory.pending import PendingCorrectionStore
+    from navigator.memory.retrieval import retrieve_corrections
+
+    db = tmp_path / "nav.db"
+    chroma = tmp_path / "chroma"
+    monkeypatch.setattr(app_module.settings, "db_path", db)
+    monkeypatch.setattr(app_module.settings, "chroma_path", chroma)
+    p = register(client, "Acme Inbox", ACME)
+
+    with PendingCorrectionStore(db) as store:
+        row = store.add(
+            product_id=p["id"],
+            session_id="s1",
+            page="inbox",
+            tool_call_type="click_element",
+            rule="Always wait for toast",
+            source_call_id="c1",
+        )
+
+    listed = client.get("/v1/products/corrections/pending", headers=p["headers"]).json()
+    assert len(listed) == 1
+    assert listed[0]["id"] == row.id
+
+    ok = client.post(
+        f"/v1/products/corrections/{row.id}/approve",
+        headers=p["headers"],
+        json={},
+    )
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["status"] == "approved"
+    assert client.get("/v1/products/corrections/pending", headers=p["headers"]).json() == []
+    hits = retrieve_corrections(p["id"], "toast", page="inbox", path=chroma)
+    assert any("toast" in h.rule.lower() for h in hits)
+
+    with PendingCorrectionStore(db) as store:
+        row2 = store.add(
+            product_id=p["id"],
+            session_id="s2",
+            page="inbox",
+            tool_call_type="fill_field",
+            rule="bad idea",
+            source_call_id="c2",
+        )
+    rej = client.post(
+        f"/v1/products/corrections/{row2.id}/reject",
+        headers=p["headers"],
+    )
+    assert rej.status_code == 200
+    assert rej.json()["status"] == "rejected"
+
+
+def test_ingest_knowledge(client, tmp_path, monkeypatch):
+    from navigator.memory.retrieval import retrieve_product_knowledge
+
+    chroma = tmp_path / "chroma"
+    monkeypatch.setattr(app_module.settings, "chroma_path", chroma)
+    p = register(client, "Acme Inbox", ACME)
+    r = client.post(
+        "/v1/products/knowledge",
+        headers=p["headers"],
+        json={"text": "WhatsApp CRM is a shared inbox for sales teams."},
+    )
+    assert r.status_code == 201, r.text
+    hits = retrieve_product_knowledge(p["id"], "shared inbox", path=chroma)
+    assert hits
 
 
 def test_healthz(client):

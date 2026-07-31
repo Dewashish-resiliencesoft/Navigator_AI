@@ -127,6 +127,8 @@ class CallState(TypedDict, total=False):
     """Completed listen->speak cycles, so the graph can bound a scripted run."""
     max_turns: int
     finished: bool
+    #: LISTENING detected a user correction of the last action.
+    user_correction: bool
 
 
 def initial_state(session_id: UUID, page_id: str, max_turns: int = 1) -> CallState:
@@ -145,4 +147,5 @@ def initial_state(session_id: UUID, page_id: str, max_turns: int = 1) -> CallSta
         turns=0,
         max_turns=max_turns,
         finished=False,
+        user_correction=False,
     )

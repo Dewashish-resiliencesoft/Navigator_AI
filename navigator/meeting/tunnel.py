@@ -45,7 +45,12 @@ def _drain_stdout(proc: subprocess.Popen[str]) -> None:
         return
 
 
-def start_tunnel(local_port: int, binary: str = "cloudflared") -> TunnelHandle:
+def start_tunnel(
+    local_port: int,
+    binary: str = "cloudflared",
+    *,
+    ready_path: str | None = "/view",
+) -> TunnelHandle:
     path = Path(binary)
     if binary != "cloudflared" and not path.is_file():
         raise RuntimeError(f"tunnel binary not found: {binary}")
@@ -82,7 +87,9 @@ def start_tunnel(local_port: int, binary: str = "cloudflared") -> TunnelHandle:
     drain.start()
 
     handle = TunnelHandle(public_url=public, _proc=proc, _drain=drain)
-    wait_until_public(f"{public}/view", timeout_s=30)
+    # Relay serves /view; raw WS audio hubs have no HTTP page — skip probe.
+    if ready_path:
+        wait_until_public(f"{public}{ready_path}", timeout_s=30)
     return handle
 
 

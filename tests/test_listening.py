@@ -19,6 +19,7 @@ def _frame(amplitude: int) -> bytes:
 def test_listening_scripted_default(deps, state):
     out = listening(state, deps)
     assert out["transcript"] == [f"user: {SCRIPTED_UTTERANCE}"]
+    assert out.get("user_correction") is False
 
 
 def test_listening_uses_audio_frames_and_injected_transcribe(

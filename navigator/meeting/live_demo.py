@@ -56,7 +56,7 @@ def _require_live_settings() -> None:
 
 
 def wait_until_joined(
-    client: AttendeeClient, bot_id: str, *, timeout_s: float = 120.0
+    client: AttendeeClient, bot_id: str, *, timeout_s: float = 180.0
 ) -> None:
     deadline = time.time() + timeout_s
     last = ""
@@ -173,7 +173,9 @@ def run_live_meet_demo(
             from navigator.meeting.audio_bridge import AudioBridge
 
             audio_bridge = AudioBridge().start()
-            audio_tunnel = start_tunnel(audio_bridge.port, binary=settings.tunnel_bin)
+            audio_tunnel = start_tunnel(
+                audio_bridge.port, binary=settings.tunnel_bin, ready_path=None
+            )
             audio_ws_url = audio_tunnel.public_url.replace("https://", "wss://").replace(
                 "http://", "ws://"
             )

@@ -467,6 +467,118 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/products/corrections/{correction_id}/approve:
+    post:
+      summary: Approve Correction
+      description: "Human approves a pending rule \u2192 live Chroma corrections collection."
+      operationId: approve_correction_v1_products_corrections__correction_id__approve_post
+      parameters:
+      - name: correction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Correction Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ApproveCorrectionBody'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Approve Correction V1 Products Corrections  Correction Id  Approve Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/products/corrections/{correction_id}/reject:
+    post:
+      summary: Reject Correction
+      operationId: reject_correction_v1_products_corrections__correction_id__reject_post
+      parameters:
+      - name: correction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Correction Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Reject Correction V1 Products Corrections  Correction Id  Reject Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/products/knowledge:
+    post:
+      summary: Ingest Knowledge
+      description: Add a product_knowledge doc for planning retrieval.
+      operationId: ingest_knowledge_v1_products_knowledge_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnowledgeIngestBody'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Ingest Knowledge V1 Products Knowledge Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /healthz:
     get:
       summary: Healthz
@@ -550,6 +662,16 @@ components:
         `tool_call.expects` so the log can be queried on it without deserializing the
 
         whole call.'
+    ApproveCorrectionBody:
+      properties:
+        rule:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rule
+      type: object
+      title: ApproveCorrectionBody
+      description: Optional override when promoting a pending rule into Chroma.
     Body_activate_revision_v1_products_site_graph_activate_post:
       properties:
         revision:
@@ -662,6 +784,16 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    KnowledgeIngestBody:
+      properties:
+        text:
+          type: string
+          minLength: 1
+          title: Text
+      type: object
+      required:
+      - text
+      title: KnowledgeIngestBody
     Navigate:
       properties:
         expects:

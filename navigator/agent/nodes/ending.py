@@ -25,6 +25,13 @@ def ending(state: CallState, deps: CallDeps) -> CallState:
         json.dumps([json.loads(e.model_dump_json()) for e in entries], indent=2)
     )
 
+    if deps.attendee is not None and deps.bot_id and deps.meeting_url:
+        try:
+            deps.attendee.leave(deps.bot_id)
+            print(f"[end] left Meet bot {deps.bot_id}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[end] leave failed: {exc}", flush=True)
+
     failures = [e for e in entries if e.failed]
     summary = (
         f"Archived {len(entries)} action(s), {len(failures)} failure(s), "

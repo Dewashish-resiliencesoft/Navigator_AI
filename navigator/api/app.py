@@ -280,6 +280,83 @@ def pending_corrections(product: AuthedProduct) -> list[dict]:
         return [row.as_dict() for row in store.list_pending(product.product_id)]
 
 
+class ApproveCorrectionBody(BaseModel):
+    """Optional override when promoting a pending rule into Chroma."""
+
+    rule: str | None = None
+
+
+@app.post("/v1/products/corrections/{correction_id}/approve")
+def approve_correction(
+    correction_id: str,
+    product: AuthedProduct,
+    body: ApproveCorrectionBody | None = None,
+) -> dict:
+    """Human approves a pending rule → live Chroma corrections collection."""
+    from navigator.memory.pending import PendingCorrectionStore
+    from navigator.memory.seed import seed_correction
+
+    body = body or ApproveCorrectionBody()
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product.product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        rule = (body.rule or row.rule).strip()
+        doc_id = seed_correction(
+            settings.chroma_path,
+            product_id=product.product_id,
+            rule=rule,
+            page=row.page,
+            tool_call_type=row.tool_call_type,
+            source_call_id=row.source_call_id,
+            doc_id=row.id,
+        )
+        updated = store.set_status(correction_id, product.product_id, "approved")
+    return {
+        "id": correction_id,
+        "status": "approved",
+        "chroma_id": doc_id,
+        "rule": rule,
+        "product_id": product.product_id,
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
+@app.post("/v1/products/corrections/{correction_id}/reject")
+def reject_correction(correction_id: str, product: AuthedProduct) -> dict:
+    from navigator.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product.product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        updated = store.set_status(correction_id, product.product_id, "rejected")
+    return {
+        "id": correction_id,
+        "status": "rejected",
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
+class KnowledgeIngestBody(BaseModel):
+    text: str = Field(min_length=1)
+
+
+@app.post("/v1/products/knowledge", status_code=201)
+def ingest_knowledge(body: KnowledgeIngestBody, product: AuthedProduct) -> dict:
+    """Add a product_knowledge doc for planning retrieval."""
+    from navigator.memory.seed import seed_knowledge
+
+    doc_id = seed_knowledge(
+        settings.chroma_path, product_id=product.product_id, text=body.text
+    )
+    return {"id": doc_id, "product_id": product.product_id}
+
+
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}

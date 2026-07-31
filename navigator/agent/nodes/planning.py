@@ -25,6 +25,9 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
             spoken=_describe(deps.graph.page(page_id).name, flow_id),
         )
 
+    if state.get("user_correction"):
+        return _plan_user_correction(state, deps)
+
     page_id = state.get("page_id") or ""
     page = deps.graph.page(page_id)
     flow_ids = sorted(page.flows)
@@ -84,6 +87,46 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
 
     return _plan_from_flow(
         deps, page_id, choice.flow_id, spoken=choice.spoken_response
+    )
+
+
+def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
+    """Log prospect correction as pending rule; no Playwright."""
+    from navigator.memory.pending import PendingCorrectionStore
+
+    query = _query_from_transcript(list(state.get("transcript") or []))
+    spoken = (
+        "Thanks — I've noted that correction. A human will review it before it "
+        "changes how I demo."
+    )
+    entries = list(state.get("entries") or [])
+    last = entries[-1] if entries else None
+    store_path = deps.pending_db_path or settings.db_path
+    store = PendingCorrectionStore(store_path)
+    try:
+        store.add(
+            product_id=deps.product_id,
+            session_id=state["session_id"],
+            page=(last.page if last else state.get("page_id") or ""),
+            tool_call_type=(last.tool_call.tool if last else "unknown"),
+            rule=query or "user correction",
+            source_call_id=(last.call_id if last else state["session_id"]),
+        )
+    finally:
+        store.close()
+    print(f"[correction] pending from user: {query!r}", flush=True)
+    if deps.attendee is not None and deps.bot_id:
+        try:
+            deps.attendee.send_chat(deps.bot_id, spoken)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[correction] Meet chat failed: {exc}", flush=True)
+    plan = Plan(spoken_response=spoken, tool_calls=[])
+    return CallState(
+        plan=plan,
+        pending_calls=[],
+        narration=[spoken],
+        transcript=[f"agent: {spoken}"],
+        user_correction=False,
     )
 
 

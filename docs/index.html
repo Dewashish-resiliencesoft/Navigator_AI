@@ -77,8 +77,11 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
 <h2>API</h2>
 <a href="#post-v1-products"><span class="method POST">POST</span> <code>/v1/products</code></a>
 <a href="#get-v1-products-corrections-pending"><span class="method GET">GET</span> <code>/v1/products/corrections/pending</code></a>
+<a href="#post-v1-products-corrections-correction_id-approve"><span class="method POST">POST</span> <code>/v1/products/corrections/{correction_id}/approve</code></a>
+<a href="#post-v1-products-corrections-correction_id-reject"><span class="method POST">POST</span> <code>/v1/products/corrections/{correction_id}/reject</code></a>
 <a href="#get-v1-products-failures"><span class="method GET">GET</span> <code>/v1/products/failures</code></a>
 <a href="#get-v1-products-flows"><span class="method GET">GET</span> <code>/v1/products/flows</code></a>
+<a href="#post-v1-products-knowledge"><span class="method POST">POST</span> <code>/v1/products/knowledge</code></a>
 <a href="#get-v1-products-me"><span class="method GET">GET</span> <code>/v1/products/me</code></a>
 <a href="#get-v1-products-site-graph"><span class="method GET">GET</span> <code>/v1/products/site-graph</code></a>
 <a href="#put-v1-products-site-graph"><span class="method PUT">PUT</span> <code>/v1/products/site-graph</code></a>
@@ -377,6 +380,22 @@ demo also runs in its own browser context, so sessions and cookies are never sha
 <h3><span class="method GET">GET</span><code>/v1/products/corrections/pending</code></h3>
 <p>Reflection output awaiting human approval.</p>
 </div>
+<div class="ep" id="post-v1-products-corrections-correction_id-approve">
+<h3><span class="method POST">POST</span><code>/v1/products/corrections/{correction_id}/approve</code></h3>
+<p>Human approves a pending rule → live Chroma corrections collection.</p>
+<table><tr><th>Parameter</th><th>In</th><th>Type</th><th></th></tr>
+<tr><td><code>correction_id</code></td><td>path</td><td><code>string</code></td><td class="sub">required</td></tr>
+</table>
+<p class="sub">Request body:</p><pre><code>{
+  "rule": "&lt;rule&gt;"
+}</code></pre>
+</div>
+<div class="ep" id="post-v1-products-corrections-correction_id-reject">
+<h3><span class="method POST">POST</span><code>/v1/products/corrections/{correction_id}/reject</code></h3>
+<table><tr><th>Parameter</th><th>In</th><th>Type</th><th></th></tr>
+<tr><td><code>correction_id</code></td><td>path</td><td><code>string</code></td><td class="sub">required</td></tr>
+</table>
+</div>
 <div class="ep" id="get-v1-products-failures">
 <h3><span class="method GET">GET</span><code>/v1/products/failures</code></h3>
 <p>Recent failures across all demos of this product -- which flows are rotting.</p>
@@ -387,6 +406,13 @@ demo also runs in its own browser context, so sessions and cookies are never sha
 <div class="ep" id="get-v1-products-flows">
 <h3><span class="method GET">GET</span><code>/v1/products/flows</code></h3>
 <p>Which flows this product's active site graph offers, per page.</p>
+</div>
+<div class="ep" id="post-v1-products-knowledge">
+<h3><span class="method POST">POST</span><code>/v1/products/knowledge</code></h3>
+<p>Add a product_knowledge doc for planning retrieval.</p>
+<p class="sub">Request body:</p><pre><code>{
+  "text": "&lt;text&gt;"
+}</code></pre>
 </div>
 <div class="ep" id="get-v1-products-me">
 <h3><span class="method GET">GET</span><code>/v1/products/me</code></h3>

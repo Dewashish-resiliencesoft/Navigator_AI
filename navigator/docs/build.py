@@ -32,15 +32,15 @@ GENERATORS_OUT = Path("fern/generators.yml")
 DOCS_YML_OUT = Path("fern/docs.yml")
 MDX_OUT = Path("fern/pages/integration.mdx")
 
-#: Must match your Fern org slug exactly, or `fern generate --docs` fails. This is
-#: the only place it is written; the instance URL below is derived from it.
-ORGANIZATION = "navigator"
+#: Must match the Fern org slug exactly, or `fern generate --docs` 403s.
+ORGANIZATION = "resiliencesoft"
 
-#: Where the hosted docs live. Fern gives every org a free subdomain under
-#: docs.buildwithfern.com; point this at your own domain once you have one.
-#: ponytail: not an env var -- it has to be identical for everyone, or `check`
+#: Where this docs site is served. Deliberately NOT derived from ORGANIZATION:
+#: one Fern org can host several docs sites, and they cannot share a subdomain.
+#: Must be globally unique across Fern, not just within the org.
+#: ponytail: not an env var -- it has to be the same value everywhere, or `check`
 #: would pass locally and fail in CI depending on the environment.
-DOCS_INSTANCE = f"{ORGANIZATION}.docs.buildwithfern.com"
+DOCS_INSTANCE = "navigator.docs.buildwithfern.com"
 
 
 def artifacts(model: DocsModel | None = None) -> dict[Path, str]:

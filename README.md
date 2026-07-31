@@ -163,11 +163,20 @@ One-time setup:
 1. `npx fern-api login`, then `npx fern-api token` to mint a non-expiring org key.
 2. Add it as the repo secret **`FERN_TOKEN`** (Settings → Secrets and variables →
    Actions → New repository secret).
-3. Set `organization` in `fern/fern.config.json` to your real Fern org slug — it
-   is currently `navigator`, and publishing fails if it doesn't match. It's
-   generated, so change `ORGANIZATION` in `navigator/docs/build.py` and rebuild,
-   not the file.
-4. Point `instances[0].url` in the generated `docs.yml` at the subdomain you own.
+3. Point Fern at this repo, with `fern/` as the project directory.
+
+Two constants live at the top of `navigator/docs/build.py`; everything in `fern/`
+is generated from them, so edit them there and rebuild rather than editing the
+generated files (`docs check` reverts hand-edits):
+
+| Constant | Is | Must be |
+|---|---|---|
+| `ORGANIZATION` | `resiliencesoft` | Your Fern org slug, exactly — a mismatch 403s at publish |
+| `DOCS_INSTANCE` | `navigator.docs.buildwithfern.com` | Globally unique across Fern, not just within the org |
+
+`DOCS_INSTANCE` is a separate constant rather than `f"{ORGANIZATION}.docs..."` on
+purpose: one Fern org can host several docs sites, so deriving the subdomain from
+the org slug would make a second site collide with the first.
 
 After that, `.github/workflows/` does the rest:
 

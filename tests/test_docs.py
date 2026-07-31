@@ -200,15 +200,21 @@ def test_fern_config_is_valid_json(generated):
     assert config["organization"] == build_mod.ORGANIZATION
 
 
-def test_org_slug_is_written_in_exactly_one_place(generated):
-    """A rename that updates fern.config.json but not the instance URL publishes
-    to a subdomain the org doesn't own, and the failure is a 403 from Fern rather
-    than anything local. So derive one from the other."""
+def test_org_and_instance_come_from_the_constants(generated):
+    """Both are written once, in build.py, and flow into the generated files.
+
+    They are separate constants on purpose: one Fern org can host several docs
+    sites, so the subdomain cannot be derived from the org slug -- deriving it
+    would collide with the org's other sites.
+    """
     config = json.loads(generated[build_mod.FERN_CONFIG_OUT])
     docs = yaml.safe_load(generated[build_mod.DOCS_YML_OUT])
 
-    assert build_mod.DOCS_INSTANCE.startswith(f"{config['organization']}.")
+    assert config["organization"] == build_mod.ORGANIZATION
     assert docs["instances"] == [{"url": build_mod.DOCS_INSTANCE}]
+    # A bare slug is not a hostname; Fern rejects it at publish, not at check.
+    assert "." in build_mod.DOCS_INSTANCE
+    assert "://" not in build_mod.DOCS_INSTANCE
 
 
 def test_generators_points_at_the_generated_spec(generated):

@@ -1,0 +1,97 @@
+<!doctype html>
+<!--
+  Stand-in for the real WhatsApp CRM dashboard.
+
+  Exists so Phase 1 has a deterministic, offline DOM to drive: every selector the
+  seed site graph declares is present here, and sending a message really does
+  append a bubble. Swapping to the live product is a site-graph edit, not a code
+  change.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Inbox &middot; WhatsApp CRM</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 0; display: flex; height: 100vh; }
+    #sidebar { width: 260px; border-right: 1px solid #ddd; padding: 12px; }
+    #main { flex: 1; display: flex; flex-direction: column; padding: 12px; }
+    #contact-search { width: 100%; padding: 8px; box-sizing: border-box; }
+    .contact { padding: 8px; border-bottom: 1px solid #eee; cursor: pointer; }
+    .contact.active { background: #e7f7ee; }
+    #thread { flex: 1; overflow-y: auto; padding: 12px 0; }
+    .message { max-width: 60%; padding: 8px 12px; border-radius: 12px; margin: 6px 0; }
+    .message.received { background: #f1f1f1; }
+    .message.sent { background: #d9fdd3; margin-left: auto; }
+    #composer { display: flex; gap: 8px; }
+    #message-input { flex: 1; padding: 8px; }
+    #send-btn { padding: 8px 20px; }
+    #empty-thread[hidden] { display: none; }
+    #toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+             background: #333; color: #fff; padding: 8px 16px; border-radius: 4px; }
+    #toast[hidden] { display: none; }
+  </style>
+</head>
+<body>
+  <aside id="sidebar">
+    <input id="contact-search" type="search" placeholder="Search contacts">
+    <div id="contact-list">
+      <div class="contact active" data-testid="contact-row" data-name="Priya Sharma">Priya Sharma</div>
+      <div class="contact" data-testid="contact-row" data-name="Rahul Mehta">Rahul Mehta</div>
+      <div class="contact" data-testid="contact-row" data-name="Aisha Khan">Aisha Khan</div>
+    </div>
+  </aside>
+
+  <main id="main">
+    <h2 id="thread-title">Priya Sharma</h2>
+    <div id="thread">
+      <div class="message received">Hi, is this the CRM demo?</div>
+      <p id="empty-thread">No messages sent yet.</p>
+    </div>
+    <div id="composer">
+      <input id="message-input" type="text" placeholder="Type a message">
+      <button id="send-btn" type="button">Send</button>
+    </div>
+  </main>
+
+  <div id="toast" hidden></div>
+
+<script>
+  const $ = (sel) => document.querySelector(sel);
+
+  $('#send-btn').addEventListener('click', () => {
+    const input = $('#message-input');
+    const text = input.value.trim();
+    if (!text) return;
+
+    $('#empty-thread').hidden = true;
+
+    const bubble = document.createElement('div');
+    bubble.className = 'message sent';
+    bubble.textContent = text;
+    $('#thread').appendChild(bubble);
+
+    input.value = '';
+
+    const toast = $('#toast');
+    toast.textContent = 'Message sent';
+    toast.hidden = false;
+    setTimeout(() => { toast.hidden = true; }, 2000);
+  });
+
+  $('#contact-search').addEventListener('input', (e) => {
+    const q = e.target.value.toLowerCase();
+    for (const row of document.querySelectorAll('[data-testid="contact-row"]')) {
+      row.hidden = !row.dataset.name.toLowerCase().includes(q);
+    }
+  });
+
+  for (const row of document.querySelectorAll('[data-testid="contact-row"]')) {
+    row.addEventListener('click', () => {
+      document.querySelector('.contact.active')?.classList.remove('active');
+      row.classList.add('active');
+      $('#thread-title').textContent = row.dataset.name;
+    });
+  }
+</script>
+</body>
+</html>

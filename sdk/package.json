@@ -1,0 +1,28 @@
+{
+  "name": "@navigator/sdk",
+  "version": "0.1.0",
+  "description": "Author Navigator AI demo flows in your own codebase, and fail CI when they break.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "navigator": "./dist/cli.js"
+  },
+  "files": ["dist", "README.md"],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test test/",
+    "prepublishOnly": "npm run build && npm test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "UNLICENSED"
+}

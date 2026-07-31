@@ -7,6 +7,7 @@ failed. Nothing important lives implicitly inside an LLM's context.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal, TypedDict
@@ -44,7 +45,7 @@ class CallDeps:
     page: Page
     log: ActionLog
     speaker: Speaker
-    #: Phase 1: which flow PLANNING replays. Phase 2 replaces this with the LLM.
+    #: Phase 1: which flow PLANNING replays. When set, wins over the LLM picker.
     scripted_flow: tuple[str, str] | None = None
     #: Which product is being demoed. Single-tenant in Phase 1; the wrapper API
     #: sets this per demo so one deployment can serve many products.
@@ -52,6 +53,13 @@ class CallDeps:
     #: Where ENDING writes transcripts and action dumps. Namespaced by product_id
     #: underneath, so tenants never share a directory.
     archive_dir: Path = Path("archives")
+    #: Groq key for the LLM flow picker. None → settings.groq_api_key.
+    groq_api_key: str | None = None
+    #: Chroma persistence root. None → settings.chroma_path.
+    chroma_path: Path | None = None
+    #: Injected flow picker for tests. When set, no Groq key is required.
+    #: ponytail: one CallDeps field. Ceiling: ad-hoc callable. Upgrade: LLMProvider (Phase 4).
+    choose_flow: Callable[..., object] | None = None
 
 
 def append_only(existing: list, new: list) -> list:

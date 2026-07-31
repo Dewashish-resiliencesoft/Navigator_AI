@@ -1,7 +1,5 @@
 """Retrieval at planning time.
 
-STUB. Phase 2 fills this in.
-
 Two things matter more than the similarity search:
 
   product_id -- every function takes it, and it is not optional. A correction
@@ -15,7 +13,12 @@ Two things matter more than the similarity search:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import BaseModel, ConfigDict
+
+from navigator.memory.collections import get_collection
+from navigator.settings import settings
 
 
 class Correction(BaseModel):
@@ -40,15 +43,68 @@ def retrieve_corrections(
     page: str,
     tool_call_type: str | None = None,
     k: int = 5,
+    path: str | Path | None = None,
 ) -> list[Correction]:
-    # TODO(phase 2): query collection_name(product_id, "corrections") with
-    # where={"page": page, "tool_call_type": tool_call_type} (drop the second key
-    # when None), n_results=k. Assert every result's product_id matches before
-    # returning -- belt and braces on the tenant boundary.
-    raise NotImplementedError("correction retrieval lands in Phase 2")
+    chroma_path = path if path is not None else settings.chroma_path
+    coll = get_collection(chroma_path, product_id, "corrections")
+    if coll.count() == 0:
+        return []
+
+    if tool_call_type is None:
+        where: dict = {"page": page}
+    else:
+        where = {
+            "$and": [
+                {"page": page},
+                {"tool_call_type": tool_call_type},
+            ]
+        }
+
+    result = coll.query(
+        query_texts=[query], n_results=min(k, coll.count()), where=where
+    )
+    docs = (result.get("documents") or [[]])[0]
+    metas = (result.get("metadatas") or [[]])[0]
+    out: list[Correction] = []
+    for doc, meta in zip(docs, metas, strict=True):
+        meta = meta or {}
+        pid = meta.get("product_id", "")
+        if pid != product_id:
+            raise AssertionError(
+                f"tenant leak: expected product_id={product_id!r}, got {pid!r}"
+            )
+        out.append(
+            Correction(
+                rule=doc,
+                product_id=pid,
+                page=meta["page"],
+                tool_call_type=meta["tool_call_type"],
+                source_call_id=meta["source_call_id"],
+            )
+        )
+    return out
 
 
-def retrieve_product_knowledge(product_id: str, query: str, k: int = 5) -> list[str]:
-    # TODO(phase 2): query collection_name(product_id, "product_knowledge"),
-    # no metadata filter.
-    raise NotImplementedError("product knowledge retrieval lands in Phase 2")
+def retrieve_product_knowledge(
+    product_id: str,
+    query: str,
+    k: int = 5,
+    path: str | Path | None = None,
+) -> list[str]:
+    chroma_path = path if path is not None else settings.chroma_path
+    coll = get_collection(chroma_path, product_id, "product_knowledge")
+    if coll.count() == 0:
+        return []
+    result = coll.query(query_texts=[query], n_results=min(k, coll.count()))
+    docs = (result.get("documents") or [[]])[0]
+    metas = (result.get("metadatas") or [[]])[0]
+    out: list[str] = []
+    for doc, meta in zip(docs, metas, strict=True):
+        meta = meta or {}
+        if meta.get("product_id") != product_id:
+            raise AssertionError(
+                f"tenant leak: expected product_id={product_id!r}, "
+                f"got {meta.get('product_id')!r}"
+            )
+        out.append(doc)
+    return out

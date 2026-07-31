@@ -16,9 +16,6 @@ correctness bug and a data-protection one at the same time.
 Reflection output does not land in `corrections`. It goes to a pending review
 table and a human promotes it; an agent that can silently rewrite its own rules is
 not debuggable.
-
-STUB. Phase 2 fills in the Chroma calls; the naming below is live and tested
-because the API layer depends on it now.
 """
 
 from __future__ import annotations
@@ -59,12 +56,13 @@ def collection_name(product_id: str, kind: Kind) -> str:
 
 
 def get_client(path: str | Path):
-    # TODO(phase 2): chromadb.PersistentClient(path=str(path))
-    raise NotImplementedError("Chroma wiring lands in Phase 2")
+    import chromadb
+
+    return chromadb.PersistentClient(path=str(path))
 
 
 def get_collection(path: str | Path, product_id: str, kind: Kind):
     """One product's collection, created if absent."""
-    # TODO(phase 2): get_client(path).get_or_create_collection(
-    #     collection_name(product_id, kind))
-    raise NotImplementedError("Chroma wiring lands in Phase 2")
+    return get_client(path).get_or_create_collection(
+        name=collection_name(product_id, kind)
+    )

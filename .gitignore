@@ -20,3 +20,21 @@ sdk/src/generated/
 # keep it current and committing it would just rot.
 fern/openapi/ai_examples_override.yml
 .tools/
+
+
+
+# graphify local knowledge graph (never commit)
+graphify-out/
+graphify/
+
+# Architecture / handoff / plans — local only. Do not publish to GitHub.
+*.md
+docs/**/*.html
+
+# Fern BuildWithFern public docs (generated + committed)
+!fern/**/*.md
+!fern/**/*.mdx
+
+# Test fixtures may use HTML/MD
+!tests/**/*.html
+!tests/**/*.md

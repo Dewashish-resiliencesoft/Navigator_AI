@@ -1,11 +1,10 @@
 """Generate every documentation artifact from one source: the running code.
 
-    python -m navigator.docs build     # write docs/index.html + fern/
-    python -m navigator.docs check     # exit 1 if any committed output is stale
+    python -m navigator.docs build     # write docs/index.html (local) + fern/
+    python -m navigator.docs check     # exit 1 if committed Fern outputs are stale
 
-`check` is what makes "the docs update with every change" true. Add an endpoint,
-rename a field, add a postcondition kind, and the test that calls this fails with
-the command to fix it. Not discipline, not a hook -- a red test.
+`check` only diffs Fern/BuildWithFern artifacts (openapi, docs.yml, integration.mdx,
+…). docs/index.html is still generated for local use but gitignored — never published.
 """
 
 from __future__ import annotations
@@ -31,6 +30,12 @@ FERN_CONFIG_OUT = Path("fern/fern.config.json")
 GENERATORS_OUT = Path("fern/generators.yml")
 DOCS_YML_OUT = Path("fern/docs.yml")
 MDX_OUT = Path("fern/pages/integration.mdx")
+
+#: Artifacts that stay in git (Fern / BuildWithFern). HTML is local-only —
+#: gitignored so architecture docs never land on GitHub.
+COMMITTED = frozenset(
+    {OPENAPI_OUT, FERN_CONFIG_OUT, GENERATORS_OUT, DOCS_YML_OUT, MDX_OUT}
+)
 
 #: Must match the Fern org slug exactly, or `fern generate --docs` 403s.
 ORGANIZATION = "resiliencesoft"
@@ -155,6 +160,11 @@ navbar-links:
 """
 
 
+def committed_artifacts(model: DocsModel | None = None) -> dict[Path, str]:
+    """Subset of artifacts that CI / GitHub must keep in sync (Fern only)."""
+    return {rel: content for rel, content in artifacts(model).items() if rel in COMMITTED}
+
+
 def write(root: Path = REPO_ROOT) -> list[Path]:
     written = []
     for rel, content in artifacts().items():
@@ -166,9 +176,12 @@ def write(root: Path = REPO_ROOT) -> list[Path]:
 
 
 def stale(root: Path = REPO_ROOT) -> list[Path]:
-    """Which committed artifacts differ from what the code would produce now."""
+    """Which *committed* Fern artifacts differ from what the code would produce.
+
+    docs/index.html is still built locally but gitignored — not part of this check.
+    """
     out = []
-    for rel, content in artifacts().items():
+    for rel, content in committed_artifacts().items():
         path = root / rel
         if not path.exists() or path.read_text() != content:
             out.append(rel)

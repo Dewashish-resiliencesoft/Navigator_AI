@@ -55,15 +55,16 @@ def test_build_is_deterministic():
 
 
 def test_stale_detects_a_hand_edit(tmp_path):
-    for rel, content in build_mod.artifacts().items():
+    for rel, content in build_mod.committed_artifacts().items():
         path = tmp_path / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
 
     assert build_mod.stale(tmp_path) == []
 
-    (tmp_path / build_mod.HTML_OUT).write_text("edited by hand\n")
-    assert build_mod.stale(tmp_path) == [build_mod.HTML_OUT]
+    # HTML is local-only; stale checks Fern committed outputs.
+    (tmp_path / build_mod.MDX_OUT).write_text("edited by hand\n")
+    assert build_mod.stale(tmp_path) == [build_mod.MDX_OUT]
 
 
 def test_write_creates_every_artifact(tmp_path):

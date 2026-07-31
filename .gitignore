@@ -8,3 +8,9 @@ archives/
 voices/
 chroma/
 registry.db
+
+# SDK build output. sdk/src/generated/ is Fern's output -- regenerate it with
+# `npx fern-api generate`, never commit it.
+sdk/node_modules/
+sdk/dist/
+sdk/src/generated/

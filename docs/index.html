@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Navigator AI — integration guide</title>
+<style>
+:root {
+  --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #e5e5e5;
+  --code-bg: #f6f8fa; --accent: #0a5c31; --warn: #8a5300;
+  --get: #1a7f37; --post: #0969da; --put: #9a6700; --delete: #cf222e;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #30363d;
+    --code-bg: #161b22; --accent: #3fb950; --warn: #d29922;
+    --get: #3fb950; --post: #58a6ff; --put: #d29922; --delete: #f85149;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+}
+.wrap { display: flex; max-width: 1200px; margin: 0 auto; gap: 40px; }
+nav {
+  position: sticky; top: 0; align-self: flex-start; width: 240px;
+  max-height: 100vh; overflow-y: auto; padding: 32px 0 32px 16px; font-size: 14px;
+}
+nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+         color: var(--muted); margin: 24px 0 8px; }
+nav a { display: block; padding: 3px 0; color: var(--fg); text-decoration: none; }
+nav a:hover { color: var(--accent); }
+nav code { font-size: 12px; }
+main { flex: 1; min-width: 0; padding: 32px 16px 120px; }
+h1 { font-size: 30px; margin: 0 0 4px; }
+h2 { font-size: 23px; margin: 48px 0 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+h3 { font-size: 17px; margin: 28px 0 8px; }
+p, li { max-width: 68ch; }
+code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+pre { background: var(--code-bg); padding: 14px 16px; border-radius: 8px;
+      overflow-x: auto; border: 1px solid var(--line); }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line);
+         vertical-align: top; }
+th { font-weight: 600; color: var(--muted); font-size: 12px;
+     text-transform: uppercase; letter-spacing: .04em; }
+.sub { color: var(--muted); }
+.method { display: inline-block; min-width: 52px; padding: 1px 7px; border-radius: 4px;
+          font-size: 12px; font-weight: 700; color: #fff; text-align: center; }
+.GET { background: var(--get); } .POST { background: var(--post); }
+.PUT { background: var(--put); } .DELETE { background: var(--delete); }
+.ep { border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; margin: 16px 0; }
+.ep h3 { margin: 0 0 6px; display: flex; align-items: center; gap: 10px; }
+.ep h3 code { font-size: 14px; background: none; padding: 0; }
+.note { border-left: 3px solid var(--accent); padding: 2px 0 2px 14px; margin: 16px 0;
+        color: var(--muted); }
+.warn { border-left-color: var(--warn); }
+.pill { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 10px;
+        border: 1px solid var(--line); color: var(--muted); }
+footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
+         color: var(--muted); font-size: 13px; }
+@media (max-width: 900px) { nav { display: none; } .wrap { display: block; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav><h2>Start</h2>
+<a href="#how-it-works">How it works</a>
+<a href="#quickstart">Quickstart</a>
+<a href="#site-graph">Site graph</a>
+<a href="#tools">Tools &amp; postconditions</a>
+<a href="#sdk">SDK</a>
+<a href="#ci">CI gate</a>
+<h2>API</h2>
+<a href="#post-v1-products"><span class="method POST">POST</span> <code>/v1/products</code></a>
+<a href="#get-v1-products-corrections-pending"><span class="method GET">GET</span> <code>/v1/products/corrections/pending</code></a>
+<a href="#get-v1-products-failures"><span class="method GET">GET</span> <code>/v1/products/failures</code></a>
+<a href="#get-v1-products-flows"><span class="method GET">GET</span> <code>/v1/products/flows</code></a>
+<a href="#get-v1-products-me"><span class="method GET">GET</span> <code>/v1/products/me</code></a>
+<a href="#get-v1-products-site-graph"><span class="method GET">GET</span> <code>/v1/products/site-graph</code></a>
+<a href="#put-v1-products-site-graph"><span class="method PUT">PUT</span> <code>/v1/products/site-graph</code></a>
+<a href="#post-v1-products-site-graph-activate"><span class="method POST">POST</span> <code>/v1/products/site-graph/activate</code></a>
+<a href="#get-v1-products-site-graph-revisions"><span class="method GET">GET</span> <code>/v1/products/site-graph/revisions</code></a>
+<a href="#get-v1-demos"><span class="method GET">GET</span> <code>/v1/demos</code></a>
+<a href="#post-v1-demos"><span class="method POST">POST</span> <code>/v1/demos</code></a>
+<a href="#get-v1-demos-demo_id"><span class="method GET">GET</span> <code>/v1/demos/{demo_id}</code></a>
+<a href="#get-v1-demos-demo_id-actions"><span class="method GET">GET</span> <code>/v1/demos/{demo_id}/actions</code></a>
+<a href="#post-v1-demos-demo_id-end"><span class="method POST">POST</span> <code>/v1/demos/{demo_id}/end</code></a>
+<a href="#get-healthz"><span class="method GET">GET</span> <code>/healthz</code></a>
+<h2>Reference</h2>
+<a href="#model-sitegraph">SiteGraph</a>
+<a href="#model-pagespec">PageSpec</a>
+<a href="#model-persona">Persona</a>
+<a href="#model-postcondition">Postcondition</a>
+</nav>
+<main>
+
+<h1>Navigator AI — integration guide</h1>
+<p class="sub">Version 0.1.0 · generated from the running API, not written by hand</p>
+
+<h2 id="how-it-works">How it works</h2>
+<p>Navigator joins a video call, drives <em>your</em> web product in a real browser,
+narrates what it does out loud, and types data your prospect gives it live into your
+app. It works on any web product because it knows nothing about any of them: the one
+thing you supply is a <strong>site graph</strong>.</p>
+
+<p>A site graph maps your pages to selector aliases and named flows. Every step in a
+flow declares a <strong>postcondition</strong> — what must be true afterwards. After
+each action the agent checks that postcondition against the real DOM and writes both
+the expectation and the actual result to an action log.</p>
+
+<div class="note">Postconditions are the reason this is safe to put in front of a
+prospect. An agent that only acts can fail silently; an agent that declares what it
+expects can tell you the moment reality diverged — and so can you, from the log.</div>
+
+<h3>Three ways to supply a site graph</h3>
+<table>
+<tr><th>Path</th><th>What it costs you</th><th>When to pick it</th></tr>
+<tr><td>Hand-written YAML</td><td>Author it once, upload it</td>
+    <td>You can't or won't change your app's code</td></tr>
+<tr><td><code>data-nav</code> attributes + SDK</td><td>One attribute per element</td>
+    <td>Recommended. Selectors then survive redesigns</td></tr>
+<tr><td>SDK + CI gate</td><td>A config file and a CI job</td>
+    <td>You want a broken demo to fail the build, not the call</td></tr>
+</table>
+
+<h2 id="quickstart">Quickstart</h2>
+<p>Register, upload a site graph, run a demo. Three calls.</p>
+<pre><code># 1. Register. The api_key comes back once — store it as a secret.
+curl -X POST https://your-navigator/v1/products \
+     -H 'Content-Type: application/json' \
+     -d '{"name": "Acme Inbox"}'
+
+export NAVIGATOR_API_KEY=nav_...
+
+# 2. Upload a site graph for your product.
+curl -X PUT https://your-navigator/v1/products/site-graph \
+     -H "Authorization: Token $NAVIGATOR_API_KEY" \
+     -H 'Content-Type: application/json' \
+     -d "{\"yaml\": $(jq -Rs . &lt; navigator.yaml)}"
+
+# 3. Run a demo, then poll it.
+curl -X POST https://your-navigator/v1/demos \
+     -H "Authorization: Token $NAVIGATOR_API_KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"page_id": "inbox", "flow_id": "send_message"}'
+
+curl https://your-navigator/v1/demos/$DEMO_ID \
+     -H "Authorization: Token $NAVIGATOR_API_KEY"
+</code></pre>
+<div class="note">The API key is returned <strong>once</strong>, at registration.
+Store it as a secret; it is stored hashed on our side and cannot be recovered.</div>
+
+<h2 id="site-graph">The site graph</h2>
+<p>One YAML document. This is the only product-specific artifact in the system.</p>
+<pre><code>version: 1
+site: acme-inbox
+base_url: https://app.acme.com/
+
+# How the agent introduces your product. No narration lives in our code.
+persona:
+  product_name: Acme Inbox
+  one_liner: a shared inbox for support teams
+  agent_name: Navigator
+
+pages:
+  inbox:
+    name: Inbox              # spoken aloud, so write it how you'd say it
+    url: /inbox              # resolved against base_url
+    selectors:               # alias -&gt; selector. Flows only ever use aliases.
+      composer: "[data-nav='composer']"
+      message_input: "#message-input"
+      send_button: "#send-btn"
+      sent_bubble: ".message.sent"
+
+    flows:
+      send_message:
+        - tool: navigate
+          page_id: inbox
+          expects: {check: visible, selector: composer}
+
+        - tool: fill_field
+          selector: message_input
+          value: "Hi from Navigator"
+          source: agent        # use "user" for data a prospect gave you live
+          expects:
+            check: value_equals
+            selector: message_input
+            expected: "Hi from Navigator"
+
+        - tool: click_element
+          selector: send_button
+          expects:
+            check: text_contains
+            selector: sent_bubble
+            expected: "Hi from Navigator"
+</code></pre>
+
+<p>Rules worth knowing before you author one:</p>
+<ul>
+<li><strong>Aliases, not CSS.</strong> Flows reference <code>send_button</code>; the
+    <code>selectors</code> block maps that to a real selector. Change your DOM and you
+    edit one line of YAML, not a flow.</li>
+<li><strong>Validation is all-or-nothing and happens at upload.</strong> An unknown
+    alias, a <code>navigate</code> to a page that doesn't exist, or a postcondition
+    missing its <code>expected</code> is rejected with a message naming the page, flow,
+    and step. A rejected upload does not become the active revision, so a bad push
+    cannot break a demo already scheduled.</li>
+<li><strong>Uploads are versioned, never overwritten.</strong> Roll back with
+    <code>POST /v1/products/site-graph/activate</code>.</li>
+<li><strong><code>base_url</code> must be absolute</strong> (<code>https://…</code>)
+    when uploaded through the API.</li>
+<li><strong>Aliases are spoken aloud.</strong> Narration reads them as English —
+    <code>send_button</code> becomes "the send button" — so name them the way you'd
+    say them on a call.</li>
+</ul>
+
+<h2 id="tools">What the agent can do</h2>
+<p>Four tools. There is no free-form DOM access, by design.</p>
+<h3>ClickElement</h3>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>expects</code></td><td><code>Postcondition</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>tool</code></td><td><code>Literal[click_element]</code></td><td class="sub">'click_element'</td><td class="sub"></td></tr>
+<tr><td><code>selector</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+</table>
+<h3>FillField</h3>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>expects</code></td><td><code>Postcondition</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>tool</code></td><td><code>Literal[fill_field]</code></td><td class="sub">'fill_field'</td><td class="sub"></td></tr>
+<tr><td><code>selector</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>value</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>source</code></td><td><code>Literal[agent, user]</code></td><td class="sub">'agent'</td><td class="sub"></td></tr>
+</table>
+<h3>Navigate</h3>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>expects</code></td><td><code>Postcondition</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>tool</code></td><td><code>Literal[navigate]</code></td><td class="sub">'navigate'</td><td class="sub"></td></tr>
+<tr><td><code>page_id</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+</table>
+<h3>WaitFor</h3>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>expects</code></td><td><code>Postcondition</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>tool</code></td><td><code>Literal[wait_for]</code></td><td class="sub">'wait_for'</td><td class="sub"></td></tr>
+<tr><td><code>selector</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>timeout_ms</code></td><td><code>int</code></td><td class="sub">5000</td><td class="sub"></td></tr>
+</table>
+
+<h3>Postcondition checks</h3>
+<table><tr><th>check</th><th>Asserts</th></tr><tr><td><code>visible</code></td><td>Element is present and visible.</td></tr>
+<tr><td><code>hidden</code></td><td>Element is absent, or present but not visible.</td></tr>
+<tr><td><code>text_contains</code></td><td>Element's text contains <code>expected</code>.</td></tr>
+<tr><td><code>value_equals</code></td><td>Input's value equals <code>expected</code> exactly.</td></tr>
+<tr><td><code>url_matches</code></td><td>Page URL contains <code>expected</code>. The only check that needs no selector.</td></tr>
+<tr><td><code>element_count</code></td><td>Exactly <code>expected</code> visible elements match the selector.</td></tr></table>
+<div class="note">Every check is a plain DOM comparison — no model call, so it runs
+after every single action. If an element is present but its state is unreadable, the
+result is flagged ambiguous and only that case escalates to a vision check.</div>
+
+<h2 id="sdk">The SDK</h2>
+<p>Author flows in your own repo, in the same pull request as the feature they demo.</p>
+<pre><code>npm install --save-dev @navigator/sdk
+
+export NAVIGATOR_API_KEY=nav_...
+export NAVIGATOR_BASE_URL=https://your-navigator
+
+npx navigator compile   # print the generated site graph YAML
+npx navigator push      # upload it as a new revision
+npx navigator verify    # run every flow; exit 1 if any postcondition fails
+</code></pre>
+
+<h3>1. Annotate your components</h3>
+<p>Add <code>data-nav</code> to the elements the agent touches. Any alias you use in a
+flow but never declare resolves to <code>[data-nav="&lt;alias&gt;"]</code> automatically,
+so you write no CSS at all — and your selectors stop breaking when you restyle.</p>
+<pre><code>// Your component. One attribute per element the agent touches.
+&lt;div data-nav="composer"&gt;
+  &lt;input data-nav="message_input" placeholder="Type a message" /&gt;
+  &lt;button data-nav="send_button" onClick={send}&gt;Send&lt;/button&gt;
+&lt;/div&gt;
+
+// The alias `send_button` now resolves to [data-nav="send_button"].
+// Restyle, rename your CSS modules, swap component libraries — the demo
+// keeps working, because the attribute travels with the element.
+</code></pre>
+
+<h3>2. Declare your flows</h3>
+<pre><code>// navigator.config.ts
+import {
+  defineConfig, flow, navigate, fillAndCheck, click, waitFor,
+  expectVisible, expectText,
+} from "@navigator/sdk";
+
+export default defineConfig({
+  product: "acme-inbox",
+  baseUrl: "https://app.acme.com",
+  persona: {
+    product_name: "Acme Inbox",
+    one_liner: "a shared inbox for support teams",
+  },
+  pages: {
+    inbox: {
+      name: "Inbox",
+      url: "/inbox",
+      // No `selectors` block: every alias below resolves to its data-nav
+      // attribute. Add one only to override a specific element.
+      flows: {
+        send_message: flow(
+          navigate("inbox", expectVisible("composer")),
+          waitFor("message_input", expectVisible("message_input"), 3000),
+          fillAndCheck("message_input", "Hi from Navigator"),
+          click("send_button", expectText("sent_bubble", "Hi from Navigator")),
+        ),
+      },
+    },
+  },
+});
+</code></pre>
+<p>Then <code>npx navigator push</code>. The SDK compiles this to site graph YAML and
+uploads it; our server validates it with the same validator a hand-written file goes
+through, so there is exactly one definition of "valid" and no local/remote drift.</p>
+
+<h2 id="ci">3. Gate CI on it</h2>
+<p><code>navigator verify</code> pushes your config, runs every flow against your app,
+and exits non-zero if any postcondition fails.</p>
+<pre><code># .github/workflows/demo.yml
+name: demo flows
+on: [pull_request]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+      - run: npm run start &amp;        # your app, on a URL Navigator can reach
+      - run: npx navigator verify
+        env:
+          NAVIGATOR_API_KEY: ${{ secrets.NAVIGATOR_API_KEY }}
+          NAVIGATOR_BASE_URL: https://your-navigator
+</code></pre>
+<p>Output on a break tells you which step and what the DOM actually said:</p>
+<pre><code>$ npx navigator verify
+PASS  inbox/send_message  4 action(s), 0 failure(s)
+FAIL  inbox/onboard_user  2 action(s), 1 failure(s)
+      click_element: expected visible on invite_button, got: [data-nav="invite_button"] not found
+
+1/2 flow(s) passed
+$ echo $?
+1
+</code></pre>
+<div class="note warn">This is the point of the whole SDK. Your demo is a test suite
+that happens to double as a sales script — so it breaks in CI, on your schedule,
+instead of in front of a prospect.</div>
+
+<h2 id="api">API reference</h2>
+<p>Base URL is your deployment. Authenticate every request except registration and
+<code>/healthz</code>:</p>
+<pre><code>Authorization: Token &lt;your api key&gt;</code></pre>
+<div class="note">Your <code>product_id</code> is derived from the API key, never from
+the path. One customer cannot read another's site graph, demos, or action log; each
+demo also runs in its own browser context, so sessions and cookies are never shared.</div>
+<div class="ep" id="post-v1-products">
+<h3><span class="method POST">POST</span><code>/v1/products</code></h3>
+<p>Register a product. The API key in the response is shown exactly once.</p>
+<p><span class="pill">no auth required</span></p>
+<p class="sub">Request body:</p><pre><code>{
+  "name": "&lt;name&gt;",
+  "product_id": "&lt;product_id&gt;"
+}</code></pre>
+</div>
+<div class="ep" id="get-v1-products-corrections-pending">
+<h3><span class="method GET">GET</span><code>/v1/products/corrections/pending</code></h3>
+<p>Reflection output awaiting human approval.</p>
+</div>
+<div class="ep" id="get-v1-products-failures">
+<h3><span class="method GET">GET</span><code>/v1/products/failures</code></h3>
+<p>Recent failures across all demos of this product -- which flows are rotting.</p>
+<table><tr><th>Parameter</th><th>In</th><th>Type</th><th></th></tr>
+<tr><td><code>limit</code></td><td>query</td><td><code>integer</code></td><td class="sub">optional</td></tr>
+</table>
+</div>
+<div class="ep" id="get-v1-products-flows">
+<h3><span class="method GET">GET</span><code>/v1/products/flows</code></h3>
+<p>Which flows this product's active site graph offers, per page.</p>
+</div>
+<div class="ep" id="get-v1-products-me">
+<h3><span class="method GET">GET</span><code>/v1/products/me</code></h3>
+</div>
+<div class="ep" id="get-v1-products-site-graph">
+<h3><span class="method GET">GET</span><code>/v1/products/site-graph</code></h3>
+<table><tr><th>Parameter</th><th>In</th><th>Type</th><th></th></tr>
+<tr><td><code>revision</code></td><td>query</td><td><code>integer</code></td><td class="sub">optional</td></tr>
+</table>
+</div>
+<div class="ep" id="put-v1-products-site-graph">
+<h3><span class="method PUT">PUT</span><code>/v1/products/site-graph</code></h3>
+<p>Validate and store a new site graph revision, and make it active.</p>
+<p class="sub">Request body:</p><pre><code>{
+  "yaml": "&lt;yaml&gt;",
+  "source": "yaml"
+}</code></pre>
+</div>
+<div class="ep" id="post-v1-products-site-graph-activate">
+<h3><span class="method POST">POST</span><code>/v1/products/site-graph/activate</code></h3>
+<p>Roll back to an earlier revision.</p>
+<p class="sub">Request body:</p><pre><code>{
+  "revision": 1
+}</code></pre>
+</div>
+<div class="ep" id="get-v1-products-site-graph-revisions">
+<h3><span class="method GET">GET</span><code>/v1/products/site-graph/revisions</code></h3>
+</div>
+<div class="ep" id="get-v1-demos">
+<h3><span class="method GET">GET</span><code>/v1/demos</code></h3>
+</div>
+<div class="ep" id="post-v1-demos">
+<h3><span class="method POST">POST</span><code>/v1/demos</code></h3>
+<p>Start a demo. Returns immediately; poll GET /v1/demos/{id} for progress.</p>
+<p class="sub">Request body:</p><pre><code>{
+  "page_id": "&lt;page_id&gt;",
+  "flow_id": "&lt;flow_id&gt;",
+  "meeting_url": "&lt;meeting_url&gt;"
+}</code></pre>
+</div>
+<div class="ep" id="get-v1-demos-demo_id">
+<h3><span class="method GET">GET</span><code>/v1/demos/{demo_id}</code></h3>
+<table><tr><th>Parameter</th><th>In</th><th>Type</th><th></th></tr>
+<tr><td><code>demo_id</code></td><td>path</td><td><code>string</code></td><td class="sub">required</td></tr>
+</table>
+</div>
+<div class="ep" id="get-v1-demos-demo_id-actions">
+<h3><span class="method GET">GET</span><code>/v1/demos/{demo_id}/actions</code></h3>
+<p>The ActionLog for one demo: every call, its expectation, and what happened.</p>
+<table><tr><th>Parameter</th><th>In</th><th>Type</th><th></th></tr>
+<tr><td><code>demo_id</code></td><td>path</td><td><code>string</code></td><td class="sub">required</td></tr>
+</table>
+</div>
+<div class="ep" id="post-v1-demos-demo_id-end">
+<h3><span class="method POST">POST</span><code>/v1/demos/{demo_id}/end</code></h3>
+<table><tr><th>Parameter</th><th>In</th><th>Type</th><th></th></tr>
+<tr><td><code>demo_id</code></td><td>path</td><td><code>string</code></td><td class="sub">required</td></tr>
+</table>
+</div>
+<div class="ep" id="get-healthz">
+<h3><span class="method GET">GET</span><code>/healthz</code></h3>
+<p><span class="pill">no auth required</span></p>
+</div>
+
+<h2 id="reference">Schema reference</h2>
+<div id="model-sitegraph"><h3>SiteGraph</h3>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>version</code></td><td><code>int</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>site</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>base_url</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>pages</code></td><td><code>dict[str, PageSpec]</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>persona</code></td><td><code>UnionType[Persona, null]</code></td><td class="sub">—</td><td class="sub"></td></tr>
+</table></div>
+<div id="model-pagespec"><h3>PageSpec</h3>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>name</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>url</code></td><td><code>str</code></td><td class="sub">''</td><td class="sub"></td></tr>
+<tr><td><code>selectors</code></td><td><code>dict[str, str]</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>flows</code></td><td><code>dict[str, tuple]</code></td><td class="sub">{}</td><td class="sub"></td></tr>
+</table></div>
+<div id="model-persona"><h3>Persona</h3>
+<p>How the agent presents a given product.</p>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>product_name</code></td><td><code>str</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>one_liner</code></td><td><code>str</code></td><td class="sub">''</td><td class="sub"></td></tr>
+<tr><td><code>agent_name</code></td><td><code>str</code></td><td class="sub">'Navigator'</td><td class="sub"></td></tr>
+<tr><td><code>tone</code></td><td><code>str</code></td><td class="sub">'friendly, concise, technical when asked'</td><td class="sub"></td></tr>
+</table></div>
+<div id="model-postcondition"><h3>Postcondition</h3>
+<p>What must hold after a tool call.</p>
+<table><tr><th>Field</th><th>Type</th><th>Default</th><th></th></tr>
+<tr><td><code>check</code></td><td><code>Literal[visible, hidden, text_contains, value_equals, url_matches, element_count]</code></td><td class="sub">required</td><td class="sub"></td></tr>
+<tr><td><code>selector</code></td><td><code>UnionType[str, null]</code></td><td class="sub">—</td><td class="sub"></td></tr>
+<tr><td><code>expected</code></td><td><code>UnionType[str, null]</code></td><td class="sub">—</td><td class="sub"></td></tr>
+<tr><td><code>timeout_ms</code></td><td><code>int</code></td><td class="sub">5000</td><td class="sub"></td></tr>
+</table></div>
+
+<footer>
+Generated by <code>python -m navigator.docs build</code> from the live OpenAPI schema
+and Pydantic models. Do not edit this file by hand — a test fails when it drifts.
+</footer>
+
+</main>
+</div>
+</body>
+</html>

@@ -47,9 +47,11 @@
       <div class="message received">Hi, is this the CRM demo?</div>
       <p id="empty-thread">No messages sent yet.</p>
     </div>
-    <div id="composer">
-      <input id="message-input" type="text" placeholder="Type a message">
-      <button id="send-btn" type="button">Send</button>
+    <!-- data-nav marks what the agent may touch. The @navigator/sdk resolves a
+         flow's aliases to these attributes, so the selectors survive redesigns. -->
+    <div id="composer" data-nav="composer">
+      <input id="message-input" data-nav="message_input" type="text" placeholder="Type a message">
+      <button id="send-btn" data-nav="send_button" type="button">Send</button>
     </div>
   </main>
 
@@ -67,6 +69,7 @@
 
     const bubble = document.createElement('div');
     bubble.className = 'message sent';
+    bubble.setAttribute('data-nav', 'sent_bubble');
     bubble.textContent = text;
     $('#thread').appendChild(bubble);
 

@@ -8,9 +8,11 @@ corrective rules from its own verification failures.
 The WhatsApp CRM dashboard is the first product it demos, not the only one — the
 only product-specific artifact in the codebase is a site graph YAML.
 
-**Status: Phases 1 and 5 done.** A scripted (no-LLM) demo loop runs end to end, and
-the wrapper API serves many products from one deployment. LLM planning, STT,
-meeting integration, and reflection are stubs with `TODO(phase N)` markers.
+**Status: Phases 1, 5, 7, and 8 done.** A scripted (no-LLM) demo loop runs end to
+end, the wrapper API serves many products from one deployment, the SDK lets a
+customer author flows in their own repo and gate CI on them, and the docs are
+generated from the code. LLM planning, STT, meeting integration, and reflection
+are stubs with `TODO(phase N)` markers.
 
 ## Setup
 
@@ -89,6 +91,71 @@ demoing one product is wrong and possibly confidential for another.
 (`send_button` → "send button"). No product name appears anywhere in the code.
 Authoring readable aliases is what makes a new product sound right.
 
+## The SDK — author the demo in your own repo
+
+A hand-written site graph describes someone else's DOM from the outside, so it rots
+when they redesign. The SDK inverts that: the customer declares the demo surface in
+their own source, in the same pull request as the feature it demos.
+
+```bash
+cd sdk && npm install && npm run build && npm test
+```
+
+Three levels, each useful alone:
+
+1. **Annotate.** `<button data-nav="send_button">` — an alias used in a flow but
+   never declared compiles to `[data-nav="send_button"]`, so the customer writes no
+   CSS and the selector survives restyles and CSS-module hashes.
+2. **Declare.** `navigator.config.ts` exports flows built from a typed DSL
+   (`flow`, `navigate`, `fillAndCheck`, `click`, `waitFor`, `expectVisible`,
+   `expectText`). `npx navigator push` compiles it to site graph YAML and PUTs it.
+3. **Gate CI.** `npx navigator verify` pushes, runs every flow against the
+   customer's own dev server, and exits non-zero on any failed postcondition.
+
+```bash
+export NAVIGATOR_API_KEY=nav_...  NAVIGATOR_BASE_URL=http://localhost:8000
+npx navigator compile   # print the YAML, change nothing
+npx navigator push      # upload as a new revision
+npx navigator verify    # run every flow; exit 1 on any failed postcondition
+```
+
+That third command is why the SDK is worth shipping: **the demo breaks in CI, on
+your schedule, instead of in front of a prospect.** A site graph is a test suite
+that happens to double as a sales script.
+
+The SDK does not validate. `compile.ts` emits YAML and stops; every rule is
+enforced by `parse_site_graph` on the server. Two validators would drift, and the
+drift would show up as "works locally, rejected on push".
+
+## Documentation
+
+```bash
+.venv/bin/python -m navigator.docs build   # regenerate every artifact
+.venv/bin/python -m navigator.docs check   # exit 1 if anything committed is stale
+npx fern-api check                         # validate the Fern project (no auth)
+npx fern-api generate                      # needs FERN_TOKEN, or --local + Docker
+```
+
+One generator, four outputs, all from live code — FastAPI's own `app.openapi()`,
+the `ToolCall` union, the `CheckKind` literals, the Pydantic models:
+
+| Output | What it's for |
+|---|---|
+| `docs/index.html` | One self-contained file. No CDN, no build step; opens over `file://` |
+| `fern/pages/integration.mdx` | The narrative half of the hosted Fern docs |
+| `fern/openapi/openapi.yml` | The server's exact schema, so Fern's SDK can't describe a route we don't serve |
+| `fern/docs.yml`, `fern.config.json`, `generators.yml` | Fern project config |
+
+`tests/test_docs.py` regenerates and diffs against what's committed. Add an
+endpoint, rename a field, add a postcondition kind — the test goes red and names
+the command that fixes it. No git hook, no CI config, not bypassable with
+`--no-verify`. That test is the entire mechanism behind "the docs can't drift".
+
+Fern reads the spec from the committed `fern/openapi/openapi.yml` (via `api.specs`
+in `generators.yml`), deliberately not from a live URL: a URL only resolves once
+something is deployed, and it would make every docs build depend on that
+deployment being up.
+
 ## How it works
 
 A LangGraph state machine, explicit rather than an agent loop:
@@ -132,13 +199,17 @@ To demo a different product, write a site graph for it. No Python changes.
 | `navigator/voice/` | Piper TTS; STT is a Phase 2 stub |
 | `navigator/memory/` | Chroma collections; Phase 2 stubs |
 | `navigator/meeting/` | Attendee API client; Phase 3 stub |
+| `navigator/docs/` | Docs generator: HTML + Fern, from live code |
+| `sdk/` | `@navigator/sdk`: authoring DSL, compiler, `navigator` CLI |
+| `fern/` | Generated Fern project — do not hand-edit |
+| `docs/index.html` | Generated integration guide — do not hand-edit |
 
 `browser/` never imports `agent/`. Nothing outside `browser/` and `config/` ever
 sees a CSS selector — that rule is what makes the system product-agnostic.
 
 There is exactly one site graph validator (`config.site_graph.parse_site_graph`).
-The file loader, API uploads, and the future SDK push all go through it, so a
-customer gets the same error message however the graph reached us.
+The file loader, API uploads, and SDK pushes all go through it, so a customer gets
+the same error message however the graph reached us.
 
 ## Costs
 

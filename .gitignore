@@ -19,3 +19,4 @@ sdk/src/generated/
 # Written by `fern generate`, not by navigator.docs -- so `docs check` cannot
 # keep it current and committing it would just rot.
 fern/openapi/ai_examples_override.yml
+.tools/

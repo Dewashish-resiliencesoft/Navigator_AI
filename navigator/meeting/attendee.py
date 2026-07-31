@@ -1,35 +1,35 @@
-"""Attendee API client -- the meeting bot that joins Zoom and Google Meet.
-
-Attendee is an external service (Django + Postgres + Redis, self-hosted via
-Docker). This module only talks to its REST API; we build none of it.
-
-STUB. Phase 3 fills this in.
-
-Setup notes for whoever does:
-  - Zoom needs a Zoom OAuth app (General App, Meeting SDK enabled) plus a
-    Deepgram key for transcription; 400h free on Deepgram.
-  - Google Meet needs no Google credentials -- Attendee drives a real Chrome.
-  - Media send exists: bots can speak arbitrary audio and display an image via a
-    virtual webcam. Confirm the current endpoint shapes against docs.attendee.dev
-    before writing the calls; the public README documents only /bots,
-    /bots/<id>, and /bots/<id>/transcript.
-  - Attendee's roadmap includes streaming an arbitrary website into a meeting.
-    If that ships, it likely replaces the v4l2loopback + ffmpeg pipeline
-    entirely -- check before building that subsystem.
-"""
+"""Attendee API client -- meeting bot for Zoom / Google Meet."""
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 BotState = Literal["joining", "joined", "leaving", "ended", "fatal_error"]
+
+# Attendee returns fine-grained states; we collapse to what JOINING cares about.
+_STATE_MAP: dict[str, BotState] = {
+    "ready": "joining",
+    "joining": "joining",
+    "waiting_room": "joining",
+    "joined_not_recording": "joined",
+    "joined_recording": "joined",
+    "joined": "joined",
+    "leaving": "leaving",
+    "post_processing": "ended",
+    "ended": "ended",
+    "fatal_error": "fatal_error",
+}
 
 
 @dataclass
 class Bot:
     id: str
     state: BotState
+    raw_state: str = ""
 
 
 class AttendeeClient:
@@ -37,31 +37,66 @@ class AttendeeClient:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
 
-    def join(self, meeting_url: str, bot_name: str = "Navigator AI") -> Bot:
-        # TODO(phase 3): POST /bots {meeting_url, bot_name} -> Bot
-        raise NotImplementedError("Attendee integration lands in Phase 3")
+    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+        url = f"{self.base_url}{path}"
+        data = None if body is None else json.dumps(body).encode()
+        req = Request(
+            url,
+            data=data,
+            method=method,
+            headers={
+                "Authorization": f"Token {self.api_key}",
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urlopen(req, timeout=60) as resp:
+                raw = resp.read() or b"{}"
+        except HTTPError as e:
+            detail = e.read().decode(errors="replace")
+            raise RuntimeError(f"Attendee {method} {path} -> {e.code}: {detail}") from e
+        except URLError as e:
+            raise RuntimeError(f"Attendee unreachable at {self.base_url}: {e}") from e
+        return json.loads(raw) if raw else {}
+
+    def join(
+        self,
+        meeting_url: str,
+        bot_name: str = "Navigator AI",
+        voice_agent_url: str | None = None,
+    ) -> Bot:
+        payload: dict = {"meeting_url": meeting_url, "bot_name": bot_name}
+        if voice_agent_url:
+            payload["voice_agent_settings"] = {"url": voice_agent_url}
+        return self._bot(self._request("POST", "/bots", payload))
 
     def get(self, bot_id: str) -> Bot:
-        # TODO(phase 3): GET /bots/<id>
-        raise NotImplementedError("Attendee integration lands in Phase 3")
+        return self._bot(self._request("GET", f"/bots/{bot_id}"))
 
     def leave(self, bot_id: str) -> None:
-        # TODO(phase 3): POST /bots/<id>/leave
-        raise NotImplementedError("Attendee integration lands in Phase 3")
+        self._request("POST", f"/bots/{bot_id}/leave", {})
 
     def speak(self, bot_id: str, wav: bytes) -> None:
-        """Play audio into the meeting -- the output half of SPEAKING."""
-        # TODO(phase 3): send Piper's wav via the bot output-audio endpoint.
-        raise NotImplementedError("Attendee integration lands in Phase 3")
+        raise NotImplementedError("speak lands with Piper→Meet wiring")
 
     def audio_stream(self, bot_id: str):
-        """Inbound participant audio, for LISTENING's VAD."""
-        # TODO(phase 3): websocket audio in; yield PCM frames.
-        raise NotImplementedError("Attendee integration lands in Phase 3")
+        raise NotImplementedError("audio_stream lands with STT")
 
     def send_video(self, bot_id: str, device: str) -> None:
-        """Point the bot's camera at the rendered browser."""
-        # TODO(phase 3): v4l2loopback device fed by ffmpeg capturing the
-        # Playwright viewport -- unless Attendee's website-streaming feature
-        # makes this unnecessary.
-        raise NotImplementedError("Attendee integration lands in Phase 3")
+        raise NotImplementedError(
+            "send_video unused; relay uses voice_agent_settings.url"
+        )
+
+    @staticmethod
+    def _bot(data: dict) -> Bot:
+        raw = str(data.get("state", "joining"))
+        mapped = _STATE_MAP.get(raw)
+        if mapped is None:
+            if "joined" in raw:
+                mapped = "joined"
+            elif raw == "fatal_error":
+                mapped = "fatal_error"
+            else:
+                mapped = "joining"
+        return Bot(id=str(data["id"]), state=mapped, raw_state=raw)

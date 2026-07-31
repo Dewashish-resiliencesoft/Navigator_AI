@@ -31,5 +31,14 @@ class Settings(BaseSettings):
     attendee_base_url: str = "http://localhost:8000/api/v1"
     attendee_api_key: str = ""
 
+    # Phase 3: Meet + Teams + product login
+    meeting_url: str = ""
+    product_url: str = ""
+    product_login_email: str = ""
+    product_login_password: str = ""
+    teams_webhook_url: str = ""
+    tunnel_bin: str = "cloudflared"
+    meet_live: bool = False
+
 
 settings = Settings()

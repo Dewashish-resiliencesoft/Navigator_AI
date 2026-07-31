@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, TypedDict
+from typing import TYPE_CHECKING, Annotated, Literal, TypedDict
 from uuid import UUID
 
 from playwright.sync_api import Page
@@ -19,6 +19,10 @@ from navigator.config.site_graph import SiteGraph
 from navigator.logs.store import ActionLog
 from navigator.schemas import ActionLogEntry, Plan, ToolCall, ToolResult
 from navigator.voice.tts import Speaker
+
+if TYPE_CHECKING:
+    from navigator.meeting.attendee import AttendeeClient
+
 
 State = Literal[
     "joining",
@@ -60,6 +64,11 @@ class CallDeps:
     #: Injected flow picker for tests. When set, no Groq key is required.
     #: ponytail: one CallDeps field. Ceiling: ad-hoc callable. Upgrade: LLMProvider (Phase 4).
     choose_flow: Callable[..., object] | None = None
+    #: Phase 3: Google Meet / Zoom URL. Empty → joining stays standalone.
+    meeting_url: str | None = None
+    attendee: AttendeeClient | None = None
+    #: Public HTTPS URL of the frame relay /view page for Attendee voice agent.
+    voice_agent_url: str | None = None
 
 
 def append_only(existing: list, new: list) -> list:

@@ -1,0 +1,66 @@
+name: preview-docs
+
+# Posts a preview URL on every PR that touches the docs, so a docs change is
+# reviewable as rendered output rather than as generated MDX in a diff.
+#
+# `pull_request` (not `pull_request_target`) means FERN_TOKEN is unavailable to
+# PRs from forks and this job is skipped there -- the correct trade: a fork PR
+# cannot exfiltrate the token.
+
+on:
+  pull_request:
+    paths:
+      - "fern/**"
+      - "navigator/docs/**"
+      - "navigator/api/**"
+      - "navigator/schemas.py"
+      - "navigator/config/site_graph.py"
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - uses: fern-api/setup-fern-cli@v1
+
+      - name: Generate preview
+        id: preview
+        env:
+          FERN_TOKEN: ${{ secrets.FERN_TOKEN }}
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          OUTPUT=$(fern generate --docs --preview --id "$HEAD_REF" 2>&1) || true
+          echo "$OUTPUT"
+          URL=$(echo "$OUTPUT" | grep -oP 'Published docs to \K.*(?= \()')
+          echo "preview_url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Comment
+        if: steps.preview.outputs.preview_url != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          URL: ${{ steps.preview.outputs.preview_url }}
+        run: |
+          MARKER="<!-- fern-preview-docs -->"
+          printf ':herb: **Preview the docs:** <%s>\n\n%s\n' "$URL" "$MARKER" > comment.md
+
+          # Upsert, so a PR with 20 pushes doesn't accumulate 20 comments.
+          EXISTING=$(gh api --paginate "repos/$REPO/issues/$PR/comments" \
+            --jq "[.[] | select(.body | contains(\"$MARKER\"))][0].id // empty")
+
+          jq -Rn --rawfile body comment.md '{body: $body}' > payload.json
+          if [ -n "$EXISTING" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$EXISTING" --input payload.json
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" --input payload.json
+          fi

@@ -156,6 +156,35 @@ in `generators.yml`), deliberately not from a live URL: a URL only resolves once
 something is deployed, and it would make every docs build depend on that
 deployment being up.
 
+### Publishing the hosted docs from GitHub
+
+One-time setup:
+
+1. `npx fern-api login`, then `npx fern-api token` to mint a non-expiring org key.
+2. Add it as the repo secret **`FERN_TOKEN`** (Settings → Secrets and variables →
+   Actions → New repository secret).
+3. Set `organization` in `fern/fern.config.json` to your real Fern org slug — it
+   is currently `navigator`, and publishing fails if it doesn't match. It's
+   generated, so change `ORGANIZATION` in `navigator/docs/build.py` and rebuild,
+   not the file.
+4. Point `instances[0].url` in the generated `docs.yml` at the subdomain you own.
+
+After that, `.github/workflows/` does the rest:
+
+| Workflow | Trigger | Does |
+|---|---|---|
+| `ci.yml` | PR + push to main | `docs check`, pytest, SDK build/test, `fern check` |
+| `preview-docs.yml` | PR touching docs/API/schemas | Posts a preview URL as a PR comment |
+| `publish-docs.yml` | Push to main | `docs check`, then `fern generate --docs` |
+
+Both `publish-docs.yml` and `ci.yml` run `python -m navigator.docs check` **before**
+touching Fern. That ordering is the point: without it, a PR that changes a route
+without rebuilding would publish a spec describing an API that no longer exists —
+which is exactly the drift the whole pipeline is built to prevent.
+
+`preview-docs.yml` uses `pull_request`, not `pull_request_target`, so it skips PRs
+from forks rather than exposing `FERN_TOKEN` to them.
+
 ## How it works
 
 A LangGraph state machine, explicit rather than an agent loop:

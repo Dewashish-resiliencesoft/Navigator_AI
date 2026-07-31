@@ -1,0 +1,45 @@
+name: publish-docs
+
+# Publishes to the instance URL in fern/docs.yml on every push to main.
+#
+# Fern reads the OpenAPI spec from the committed fern/openapi/openapi.yml (via
+# api.specs in generators.yml), NOT from a live URL. That is deliberate: a URL
+# only resolves once the API is deployed, and it would make every docs publish
+# depend on that deployment being up. The committed spec is regenerated from
+# app.openapi() by `python -m navigator.docs build`, and ci.yml fails if it is
+# stale, so "committed" and "current" mean the same thing here.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Cheap gate, no browsers: refuse to publish docs that don't match the code.
+      # ci.yml already checks this, but publish runs independently of it.
+      - name: Install (no browsers -- the docs check doesn't need Playwright)
+        run: pip install -e ".[dev]"
+
+      - name: Docs are not stale
+        run: python -m navigator.docs check
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+
+      - uses: fern-api/setup-fern-cli@v1
+
+      - name: Publish
+        env:
+          FERN_TOKEN: ${{ secrets.FERN_TOKEN }}
+        run: fern generate --docs --log-level debug

@@ -6,6 +6,83 @@ info:
   description: Live interactive demo agent for any web product.
   version: 0.1.0
 paths:
+  /v1/auth/login:
+    post:
+      summary: Login
+      operationId: login_v1_auth_login_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/auth/refresh:
+    post:
+      summary: Refresh
+      operationId: refresh_v1_auth_refresh_post
+      parameters:
+      - name: refresh_token
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Refresh Token
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/auth/logout:
+    post:
+      summary: Logout
+      operationId: logout_v1_auth_logout_post
+      parameters:
+      - name: refresh_token
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Refresh Token
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Logout V1 Auth Logout Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/products:
     post:
       summary: Register Product
@@ -284,28 +361,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/session-tokens:
+    post:
+      summary: Create Session Token
+      operationId: create_session_token_v1_session_tokens_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionTokenRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionTokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/demos/start:
     post:
       summary: Start Live Demo
-      description: 'Create a meeting for *this* session and put Navigator in it, now.
-
-
-        The meeting is instant, not scheduled: it exists and is joinable the moment
-
-        this returns, which is the only useful semantics for a "Show Demo" button.
-
-        The link is minted per call, so two prospects can be demoed at once and no
-
-        human has to set NAVIGATOR_MEETING_URL first. The response carries the join
-
-        URL, which is what the button redirects to.
-
-
-        Ordering is deliberate: the graph is loaded and the flow validated *before*
-
-        any meeting is created, so a bad request never leaves an orphaned meeting
-
-        behind.'
       operationId: start_live_demo_v1_demos_start_post
       parameters:
       - name: authorization
@@ -679,12 +769,21 @@ paths:
     post:
       summary: Client Start Live Demo
       operationId: client_start_live_demo_client_api_demos_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/StartLiveDemo'
-        required: true
       responses:
         '202':
           description: Successful Response
@@ -702,16 +801,31 @@ paths:
     get:
       summary: Client List Demos
       operationId: client_list_demos_client_api_demos_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
+                type: array
                 items:
                   $ref: '#/components/schemas/DemoView'
-                type: array
                 title: Response Client List Demos Client Api Demos Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/demos/{demo_id}:
     get:
       summary: Client Get Demo
@@ -724,6 +838,14 @@ paths:
           type: string
           format: uuid
           title: Demo Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -749,6 +871,14 @@ paths:
           type: string
           format: uuid
           title: Demo Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -765,7 +895,6 @@ paths:
   /client/api/bootstrap:
     post:
       summary: Client Bootstrap
-      description: Ensure a client product + API key exist; persist key across reloads.
       operationId: client_bootstrap_client_api_bootstrap_post
       responses:
         '200':
@@ -776,36 +905,121 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Client Bootstrap Client Api Bootstrap Post
+  /client/api/product-domain:
+    get:
+      summary: Client Get Product Domain
+      operationId: client_get_product_domain_client_api_product_domain_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Get Product Domain Client Api Product Domain Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Client Put Product Domain
+      operationId: client_put_product_domain_client_api_product_domain_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductDomainBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Put Product Domain Client Api Product Domain Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/site-graph:
     get:
       summary: Client Get Site Graph
       operationId: client_get_site_graph_client_api_site_graph_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Get Site Graph Client Api Site Graph Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Site Graph
       operationId: client_put_site_graph_client_api_site_graph_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/SiteGraphBody'
-        required: true
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Put Site Graph Client Api Site Graph Put
         '422':
           description: Validation Error
@@ -817,32 +1031,56 @@ paths:
     get:
       summary: Client Get Bio
       operationId: client_get_bio_client_api_bio_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Get Bio Client Api Bio Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Bio
       operationId: client_put_bio_client_api_bio_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/BioBody'
-        required: true
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Put Bio Client Api Bio Put
         '422':
           description: Validation Error
@@ -854,32 +1092,56 @@ paths:
     get:
       summary: Client Get Knowledge
       operationId: client_get_knowledge_client_api_knowledge_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Get Knowledge Client Api Knowledge Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Knowledge
       operationId: client_put_knowledge_client_api_knowledge_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/KnowledgeBody'
-        required: true
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Put Knowledge Client Api Knowledge Put
         '422':
           description: Validation Error
@@ -891,32 +1153,56 @@ paths:
     get:
       summary: Client Get Flows
       operationId: client_get_flows_client_api_flows_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Get Flows Client Api Flows Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Flows
       operationId: client_put_flows_client_api_flows_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/FlowsBody'
-        required: true
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Put Flows Client Api Flows Put
         '422':
           description: Validation Error
@@ -1006,6 +1292,14 @@ paths:
           minimum: 1
           default: 14
           title: Days
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -1015,6 +1309,115 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Client Metrics Client Api Metrics Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/runs:
+    get:
+      summary: Client List Runs
+      description: Last N days of demo runs for this product (default 7).
+      operationId: client_list_runs_client_api_runs_get
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 7
+          minimum: 1
+          default: 7
+          title: Days
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DemoRunView'
+                title: Response Client List Runs Client Api Runs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/runs/{session_id}:
+    get:
+      summary: Client Get Run
+      operationId: client_get_run_client_api_runs__session_id__get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoRunView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/runs/{session_id}/events:
+    get:
+      summary: Client Run Events
+      description: "Full ActionLog for one run \u2014 client dashboard only, never spoken."
+      operationId: client_run_events_client_api_runs__session_id__events_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ActionLogEntry'
+                title: Response Client Run Events Client Api Runs  Session Id  Events Get
         '422':
           description: Validation Error
           content:
@@ -1183,6 +1586,73 @@ components:
       - expects
       - selector
       title: ClickElement
+    DemoRunView:
+      properties:
+        session_id:
+          type: string
+          format: uuid
+          title: Session Id
+        demo_id:
+          type: string
+          format: uuid
+          title: Demo Id
+        product_id:
+          type: string
+          title: Product Id
+        platform:
+          type: string
+          title: Platform
+        status:
+          type: string
+          title: Status
+        host_os:
+          type: string
+          title: Host Os
+          default: ''
+        host_release:
+          type: string
+          title: Host Release
+          default: ''
+        host_machine:
+          type: string
+          title: Host Machine
+          default: ''
+        host_name:
+          type: string
+          title: Host Name
+          default: ''
+        browser:
+          type: string
+          title: Browser
+          default: ''
+        meeting_label:
+          type: string
+          title: Meeting Label
+          default: ''
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        ended_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Ended At
+        fail_count:
+          type: integer
+          title: Fail Count
+          default: 0
+      type: object
+      required:
+      - session_id
+      - demo_id
+      - product_id
+      - platform
+      - status
+      - started_at
+      title: DemoRunView
+      description: Persisted demo run meta for the client Logs panel (7-day window).
     DemoView:
       properties:
         demo_id:
@@ -1405,6 +1875,19 @@ components:
       - failures
       - meeting
       title: LiveDemoView
+    LoginRequest:
+      properties:
+        email:
+          type: string
+          title: Email
+        password:
+          type: string
+          title: Password
+      type: object
+      required:
+      - email
+      - password
+      title: LoginRequest
     MeetingOut:
       properties:
         url:
@@ -1513,7 +1996,7 @@ components:
           type: integer
           exclusiveMinimum: 0.0
           title: Timeout Ms
-          default: 5000
+          default: 15000
       type: object
       required:
       - check
@@ -1549,6 +2032,16 @@ components:
       - name
       - created_at
       title: Product
+    ProductDomainBody:
+      properties:
+        base_url:
+          type: string
+          minLength: 1
+          title: Base Url
+      type: object
+      required:
+      - base_url
+      title: ProductDomainBody
     RecordStartBody:
       properties:
         start_url:
@@ -1586,6 +2079,37 @@ components:
       - api_key
       title: RegisteredProduct
       description: Registration response. The API key is shown exactly once.
+    SessionTokenRequest:
+      properties:
+        intake:
+          anyOf:
+          - $ref: '#/components/schemas/IntakePrefill'
+          - type: 'null'
+        expires_in_seconds:
+          type: integer
+          maximum: 86400.0
+          minimum: 60.0
+          title: Expires In Seconds
+          default: 3600
+      type: object
+      title: SessionTokenRequest
+    SessionTokenResponse:
+      properties:
+        token:
+          type: string
+          title: Token
+        expires_at:
+          type: string
+          title: Expires At
+        product_id:
+          type: string
+          title: Product Id
+      type: object
+      required:
+      - token
+      - expires_at
+      - product_id
+      title: SessionTokenResponse
     SiteGraphBody:
       properties:
         yaml:
@@ -1663,6 +2187,11 @@ components:
             - static
           - type: 'null'
           title: Platform
+        topic:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Topic
         page_id:
           anyOf:
           - type: string
@@ -1679,6 +2208,27 @@ components:
           - type: 'null'
       type: object
       title: StartLiveDemo
+    TokenResponse:
+      properties:
+        access_token:
+          type: string
+          title: Access Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_in:
+          type: integer
+          title: Expires In
+        product_id:
+          type: string
+          title: Product Id
+      type: object
+      required:
+      - access_token
+      - expires_in
+      - product_id
+      title: TokenResponse
     ToolResult:
       properties:
         ok:
@@ -1772,7 +2322,7 @@ components:
           type: integer
           exclusiveMinimum: 0.0
           title: Timeout Ms
-          default: 5000
+          default: 15000
       type: object
       required:
       - expects

@@ -18,6 +18,7 @@ import secrets
 from pathlib import Path
 from typing import Annotated, Callable
 from uuid import UUID
+from datetime import datetime, timezone
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -52,6 +53,13 @@ from navigator.app.registry import (
     SiteGraphSource,
 )
 from navigator.app.runner import DemoRunner
+
+import jwt
+import bcrypt
+from fastapi import Response, Cookie
+from navigator.app.auth_store import AuthStore, AuthError, InvalidCredentials
+
+from navigator.app.session_tokens import SessionTokenStore, SessionTokenError
 from navigator.knowledge.site_graph import SiteGraphError, parse_site_graph
 from navigator.meeting.providers import (
     MeetingProvider,
@@ -97,6 +105,17 @@ def get_provider_factory() -> Callable[[MeetingPlatform | None], MeetingProvider
 
 _registry = Registry(os.environ.get("NAVIGATOR_REGISTRY_DB", "registry.db"))
 _log = ActionLog(settings.db_path)
+
+_token_store = SessionTokenStore(settings.db_path)
+
+def get_token_store() -> SessionTokenStore:
+    return _token_store
+
+_auth_store = AuthStore(settings.db_path)
+
+def get_auth_store() -> AuthStore:
+    return _auth_store
+
 _runner = DemoRunner(str(settings.db_path), headful=settings.headful)
 
 
@@ -118,6 +137,65 @@ def authed(
 
 
 AuthedProduct = Annotated[Product, Depends(authed)]
+
+def dashboard_authed(
+    registry: Annotated[Registry, Depends(get_registry)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> Product:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(401, "expected: Authorization: Bearer <jwt>")
+    
+    token = authorization.split(None, 1)[1].strip()
+    try:
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
+        product_id = payload.get("product_id")
+        if not product_id:
+            raise HTTPException(401, "invalid JWT payload")
+        return registry.get(product_id)
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(401, "token expired") from None
+    except jwt.InvalidTokenError:
+        raise HTTPException(401, "invalid token") from None
+    except ProductNotFound:
+        raise HTTPException(401, "product not found") from None
+
+DashboardAuthedProduct = Annotated[Product, Depends(dashboard_authed)]
+
+class IntakePrefill(BaseModel):
+    """What the landing page already knows, so the bot needn't ask again."""
+    name: str = ""
+    company: str = ""
+    business_type: str = ""
+    looking_for: str = ""
+
+def authed_or_session(
+    registry: Annotated[Registry, Depends(get_registry)],
+    store: Annotated[SessionTokenStore, Depends(get_token_store)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> tuple[Product, IntakePrefill | None]:
+    if not authorization or not authorization.lower().startswith("token "):
+        raise HTTPException(401, "expected: Authorization: Token <key_or_token>")
+    
+    token = authorization.split(None, 1)[1].strip()
+    if token.startswith("nav_"):
+        try:
+            return registry.authenticate(token), None
+        except ProductNotFound:
+            raise HTTPException(401, "invalid API key") from None
+    elif token.startswith("sess_"):
+        try:
+            result = store.consume_token(token)
+            product = registry.get(result["product_id"])
+            intake = IntakePrefill(**result["intake"]) if result["intake"] else None
+            return product, intake
+        except SessionTokenError as exc:
+            raise HTTPException(401, str(exc)) from None
+        except ProductNotFound:
+            raise HTTPException(401, "product not found") from None
+    else:
+        raise HTTPException(401, "invalid token format")
+
+AuthedOrSession = Annotated[tuple[Product, IntakePrefill | None], Depends(authed_or_session)]
 Reg = Annotated[Registry, Depends(get_registry)]
 Runner = Annotated[DemoRunner, Depends(get_runner)]
 Log = Annotated[ActionLog, Depends(get_log)]
@@ -158,6 +236,129 @@ class DemoView(BaseModel):
     platform: str | None = None
     bot_in_meeting: bool = False
 
+
+class DemoRunView(BaseModel):
+    """Persisted demo run meta for the client Logs panel (7-day window)."""
+
+    session_id: UUID
+    demo_id: UUID
+    product_id: str
+    platform: str
+    status: str
+    host_os: str = ""
+    host_release: str = ""
+    host_machine: str = ""
+    host_name: str = ""
+    browser: str = ""
+    meeting_label: str = ""
+    started_at: datetime
+    ended_at: datetime | None = None
+    fail_count: int = 0
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    product_id: str
+
+def _mint_jwt(user_id: str, product_id: str) -> str:
+    now = datetime.now(timezone.utc)
+    expires_in = 900
+    payload = {
+        "sub": user_id,
+        "product_id": product_id,
+        "role": "admin",
+        "exp": int(now.timestamp() + expires_in)
+    }
+    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+@app.post("/v1/auth/login", response_model=TokenResponse)
+def login(
+    req: LoginRequest,
+    response: Response,
+    store: Annotated[AuthStore, Depends(get_auth_store)]
+) -> dict:
+    user = store.get_user_by_email(req.email)
+    if not user or not bcrypt.checkpw(req.password.encode(), user["password_hash"].encode()):
+        raise HTTPException(401, "invalid credentials")
+    
+    access_token = _mint_jwt(user["user_id"], user["product_id"])
+    refresh_token = store.create_refresh_token(user["user_id"])
+    
+    response.set_cookie(
+        key="refresh_token",
+        value=refresh_token,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        max_age=7 * 24 * 3600
+    )
+    
+    return {
+        "access_token": access_token,
+        "expires_in": 900,
+        "product_id": user["product_id"]
+    }
+
+@app.post("/v1/auth/refresh", response_model=TokenResponse)
+def refresh(
+    response: Response,
+    store: Annotated[AuthStore, Depends(get_auth_store)],
+    refresh_token: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    if not refresh_token:
+        raise HTTPException(401, "no refresh token")
+    
+    try:
+        user_id = store.consume_refresh_token(refresh_token)
+        user = store.get_user(user_id)
+        if not user:
+            raise HTTPException(401, "invalid user")
+            
+        access_token = _mint_jwt(user["user_id"], user["product_id"])
+        new_refresh_token = store.create_refresh_token(user["user_id"])
+        
+        response.set_cookie(
+            key="refresh_token",
+            value=new_refresh_token,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            max_age=7 * 24 * 3600
+        )
+        
+        return {
+            "access_token": access_token,
+            "expires_in": 900,
+            "product_id": user["product_id"]
+        }
+    except AuthError as exc:
+        raise HTTPException(401, str(exc)) from None
+
+@app.post("/v1/auth/logout")
+def logout(
+    response: Response,
+    store: Annotated[AuthStore, Depends(get_auth_store)],
+    refresh_token: Annotated[str | None, Cookie()] = None,
+) -> dict:
+    if refresh_token:
+        store.revoke_refresh_token(refresh_token)
+    response.delete_cookie("refresh_token")
+    return {"ok": True}
+
+class SessionTokenRequest(BaseModel):
+    intake: IntakePrefill | None = None
+    expires_in_seconds: int = Field(default=3600, ge=60, le=86400)
+
+class SessionTokenResponse(BaseModel):
+    token: str
+    expires_at: str
+    product_id: str
 
 class IntakePrefill(BaseModel):
     """What the landing page already knows, so the bot needn't ask again."""
@@ -295,14 +496,38 @@ def start_demo(
     return DemoView(**handle.public())
 
 
+
+@app.post("/v1/session-tokens", response_model=SessionTokenResponse, status_code=201)
+def create_session_token(
+    req: SessionTokenRequest,
+    product: AuthedProduct,
+    store: Annotated[SessionTokenStore, Depends(get_token_store)]
+) -> dict:
+    try:
+        intake_dict = req.intake.model_dump() if req.intake else None
+        token, expires_at = store.create_token(
+            product.product_id, 
+            intake_dict, 
+            req.expires_in_seconds
+        )
+        return {
+            "token": token,
+            "expires_at": expires_at.isoformat(),
+            "product_id": product.product_id
+        }
+    except SessionTokenError as exc:
+        raise HTTPException(429, str(exc)) from None
+
 @app.post("/v1/demos/start", response_model=LiveDemoView, status_code=202)
 def start_live_demo(
     spec: StartLiveDemo,
-    product: AuthedProduct,
+    auth_ctx: AuthedOrSession,
     registry: Reg,
     runner: Runner,
     providers: Providers,
 ) -> LiveDemoView:
+    product, token_intake = auth_ctx
+
     """Create a meeting for *this* session and put Navigator in it, now.
 
     The meeting is instant, not scheduled: it exists and is joinable the moment
@@ -358,7 +583,7 @@ def start_live_demo(
         (page_id, flow_id),
         meeting_url=meeting.url,
         platform=meeting.platform,
-        intake_prefill=None if spec.intake is None else spec.intake.model_dump(),
+        intake_prefill=(token_intake or spec.intake).model_dump() if (token_intake or spec.intake) else None,
     )
     return LiveDemoView(**handle.public(), meeting=MeetingOut(**meeting.public()))
 
@@ -564,36 +789,28 @@ def legacy_ops_redirect() -> RedirectResponse:
 
 @app.post("/client/api/demos/start", response_model=LiveDemoView, status_code=202)
 def client_start_live_demo(
-    request: Request,
+    product: DashboardAuthedProduct,
     spec: StartLiveDemo,
     registry: Reg,
     runner: Runner,
     providers: Providers,
 ) -> LiveDemoView:
-    require_local_ops(request)
-    return start_live_demo(spec, _client_product(registry), registry, runner, providers)
+    return start_live_demo(spec, (product, None), registry, runner, providers)
 
 
 @app.get("/client/api/demos", response_model=list[DemoView])
-def client_list_demos(request: Request, registry: Reg, runner: Runner) -> list[DemoView]:
-    require_local_ops(request)
-    return list_demos(_client_product(registry), runner)
+def client_list_demos(product: DashboardAuthedProduct, runner: Runner) -> list[DemoView]:
+    return list_demos(product, runner)
 
 
 @app.get("/client/api/demos/{demo_id}", response_model=DemoView)
-def client_get_demo(
-    request: Request, demo_id: UUID, registry: Reg, runner: Runner
-) -> DemoView:
-    require_local_ops(request)
-    return get_demo(demo_id, _client_product(registry), runner)
+def client_get_demo(demo_id: UUID, product: DashboardAuthedProduct, runner: Runner) -> DemoView:
+    return get_demo(demo_id, product, runner)
 
 
 @app.post("/client/api/demos/{demo_id}/end", response_model=DemoView)
-def client_end_demo(
-    request: Request, demo_id: UUID, registry: Reg, runner: Runner
-) -> DemoView:
-    require_local_ops(request)
-    return end_demo(demo_id, _client_product(registry), runner)
+def client_end_demo(demo_id: UUID, product: DashboardAuthedProduct, runner: Runner) -> DemoView:
+    return end_demo(demo_id, product, runner)
 
 
 _BLANK_CLIENT_GRAPH = """\
@@ -622,8 +839,9 @@ pages:
 
 @app.post("/client/api/bootstrap")
 def client_bootstrap(request: Request, registry: Reg) -> dict:
-    """Ensure a client product + API key exist; persist key across reloads."""
     require_local_ops(request)
+
+    """Ensure a client product + API key exist; persist key across reloads."""
     existing = resolve_client_api_key(settings.client_api_key)
     if existing:
         try:
@@ -684,6 +902,56 @@ def _client_brief_id(registry: Registry, product: Product) -> str:
     return product.product_id
 
 
+def apply_base_url_to_yaml(yaml_text: str, base_url: str) -> str:
+    import yaml
+    from copy import deepcopy
+    data = yaml.safe_load(yaml_text)
+    if not isinstance(data, dict):
+        raise ValueError("invalid site graph yaml")
+    data["base_url"] = base_url
+    return yaml.dump(data, sort_keys=False, default_flow_style=False)
+
+class ProductDomainBody(BaseModel):
+    base_url: str = Field(min_length=1)
+
+@app.get("/client/api/product-domain")
+def client_get_product_domain(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    try:
+        graph = registry.load_graph(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    return {
+        "base_url": graph.base_url,
+        "placeholder": "example.com" in (graph.base_url or "").lower(),
+    }
+
+@app.put("/client/api/product-domain")
+def client_put_product_domain(
+    product: DashboardAuthedProduct, request: Request, body: ProductDomainBody, registry: Reg
+) -> dict:
+    if "example.com" in body.base_url.lower():
+        raise HTTPException(422, "Please enter your actual product domain")
+    from urllib.parse import urlparse
+    parsed = urlparse(body.base_url)
+    if not parsed.scheme:
+        body.base_url = "https://" + body.base_url
+        parsed = urlparse(body.base_url)
+    normalized = f"{parsed.scheme}://{parsed.netloc}/"
+    try:
+        rev = registry.get_revision(product.product_id)
+        yaml_text = apply_base_url_to_yaml(rev.yaml, normalized)
+        rev = registry.put_site_graph(product.product_id, yaml_text, "yaml")
+        graph = registry.load_graph(product.product_id)
+        settings.product_url = normalized
+    except Exception as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {
+        "ok": True,
+        "base_url": graph.base_url,
+        "revision": rev.revision,
+        "placeholder": "example.com" in (graph.base_url or "").lower(),
+    }
+
 class BioBody(BaseModel):
     fields: list[dict[str, str]]
 
@@ -704,9 +972,7 @@ class RecordStartBody(BaseModel):
 
 
 @app.get("/client/api/site-graph")
-def client_get_site_graph(request: Request, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_get_site_graph(product: DashboardAuthedProduct, registry: Reg) -> dict:
     try:
         rev = registry.get_revision(product.product_id)
     except ProductNotFound as exc:
@@ -719,9 +985,7 @@ class SiteGraphBody(BaseModel):
 
 
 @app.put("/client/api/site-graph")
-def client_put_site_graph(request: Request, body: SiteGraphBody, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_put_site_graph(product: DashboardAuthedProduct, body: SiteGraphBody, registry: Reg) -> dict:
     try:
         rev = registry.put_site_graph(product.product_id, body.yaml, "yaml")
     except SiteGraphError as exc:
@@ -730,9 +994,7 @@ def client_put_site_graph(request: Request, body: SiteGraphBody, registry: Reg) 
 
 
 @app.get("/client/api/bio")
-def client_get_bio(request: Request, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_get_bio(product: DashboardAuthedProduct, registry: Reg) -> dict:
     data = load_bio(product.product_id)
     if not any(str(f.get("value") or "").strip() for f in data.get("fields", [])):
         try:
@@ -746,9 +1008,7 @@ def client_get_bio(request: Request, registry: Reg) -> dict:
 
 
 @app.put("/client/api/bio")
-def client_put_bio(request: Request, body: BioBody, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_put_bio(product: DashboardAuthedProduct, body: BioBody, registry: Reg) -> dict:
     try:
         return save_bio(product.product_id, body.model_dump())
     except ValueError as exc:
@@ -756,9 +1016,7 @@ def client_put_bio(request: Request, body: BioBody, registry: Reg) -> dict:
 
 
 @app.get("/client/api/knowledge")
-def client_get_knowledge(request: Request, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_get_knowledge(product: DashboardAuthedProduct, registry: Reg) -> dict:
     text = load_product_brief(product.product_id)
     if not text.strip():
         try:
@@ -770,9 +1028,7 @@ def client_get_knowledge(request: Request, registry: Reg) -> dict:
 
 
 @app.put("/client/api/knowledge")
-def client_put_knowledge(request: Request, body: KnowledgeBody, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_put_knowledge(product: DashboardAuthedProduct, body: KnowledgeBody, registry: Reg) -> dict:
     saved = save_product_brief(product.product_id, body.markdown)
     chroma_id = None
     if saved.strip():
@@ -788,9 +1044,7 @@ def client_put_knowledge(request: Request, body: KnowledgeBody, registry: Reg) -
 
 
 @app.get("/client/api/flows")
-def client_get_flows(request: Request, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_get_flows(product: DashboardAuthedProduct, registry: Reg) -> dict:
     try:
         graph = registry.load_graph(product.product_id)
     except ProductNotFound as exc:
@@ -799,9 +1053,7 @@ def client_get_flows(request: Request, registry: Reg) -> dict:
 
 
 @app.put("/client/api/flows")
-def client_put_flows(request: Request, body: FlowsBody, registry: Reg) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
+def client_put_flows(product: DashboardAuthedProduct, body: FlowsBody, registry: Reg) -> dict:
     try:
         rev = registry.get_revision(product.product_id)
     except ProductNotFound as exc:
@@ -817,7 +1069,6 @@ def client_put_flows(request: Request, body: FlowsBody, registry: Reg) -> dict:
 
 @app.get("/client/api/record")
 def client_record_status(request: Request, registry: Reg) -> dict:
-    require_local_ops(request)
     _client_product(registry)
     return recorder_status()
 
@@ -826,7 +1077,6 @@ def client_record_status(request: Request, registry: Reg) -> dict:
 def client_record_start(
     request: Request, body: RecordStartBody, registry: Reg
 ) -> dict:
-    require_local_ops(request)
     _client_product(registry)
     try:
         job = start_recorder(
@@ -851,8 +1101,6 @@ def client_record_stop(
     registry: Reg,
     page_id: Annotated[str, Query()] = "dashboard",
 ) -> dict:
-    require_local_ops(request)
-    product = _client_product(registry)
     try:
         job = stop_recorder()
     except RuntimeError as exc:
@@ -885,16 +1133,13 @@ def client_record_stop(
 
 @app.get("/client/api/metrics")
 def client_metrics(
-    request: Request,
-    registry: Reg,
+    product: DashboardAuthedProduct,
     runner: Runner,
     log: Log,
     days: Annotated[int, Query(ge=1, le=90)] = 14,
 ) -> dict:
     """KPIs for the console. Durable counters from the action log, live state
     from the in-process runner (which is empty after a restart)."""
-    require_local_ops(request)
-    product = _client_product(registry)
     metrics = log.product_metrics(product.product_id, days=days)
     demos = runner.list(product.product_id)
     metrics["live"] = {
@@ -903,6 +1148,38 @@ def client_metrics(
         "failed": sum(1 for d in demos if d.status == "failed"),
     }
     return metrics
+
+
+@app.get("/client/api/runs", response_model=list[DemoRunView])
+def client_list_runs(
+    product: DashboardAuthedProduct,
+    log: Log,
+    days: Annotated[int, Query(ge=1, le=7)] = 7,
+) -> list[DemoRunView]:
+    """Last N days of demo runs for this product (default 7)."""
+    return [DemoRunView(**row) for row in log.list_runs(product.product_id, days=days)]
+
+
+@app.get("/client/api/runs/{session_id}", response_model=DemoRunView)
+def client_get_run(
+    session_id: UUID, product: DashboardAuthedProduct, log: Log
+) -> DemoRunView:
+    row = log.get_run(session_id, product.product_id)
+    if row is None:
+        raise HTTPException(404, "no such run")
+    return DemoRunView(**row)
+
+
+@app.get("/client/api/runs/{session_id}/events", response_model=list[ActionLogEntry])
+def client_run_events(
+    session_id: UUID, product: DashboardAuthedProduct, log: Log
+) -> list[ActionLogEntry]:
+    """Full ActionLog for one run — client dashboard only, never spoken."""
+    row = log.get_run(session_id, product.product_id)
+    entries = log.entries(session_id, product_id=product.product_id)
+    if row is None and not entries:
+        raise HTTPException(404, "no such run")
+    return entries
 
 
 @app.post("/v1/zoom/zak")

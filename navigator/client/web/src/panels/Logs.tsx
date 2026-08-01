@@ -134,8 +134,10 @@ export function Logs() {
           {runs.map((r) => {
             const expanded = open === r.session_id;
             const isLive =
-              r.status === "starting" ||
-              r.status === "running" ||
+              r.status === "starting" || r.status === "running";
+            // After reconcile, only runner-backed rows stay starting/running.
+            const canEnd =
+              isLive ||
               (activeDemo?.demo_id === r.demo_id && demoIsLive(activeDemo));
             return (
               <li
@@ -173,7 +175,7 @@ export function Logs() {
                       </p>
                     </div>
                   </button>
-                  {isLive && (
+                  {canEnd && (
                     <Button
                       variant="danger"
                       className="shrink-0"

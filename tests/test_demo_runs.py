@@ -75,9 +75,28 @@ def test_prune_drops_runs_older_than_days(tmp_path):
         assert [r["session_id"] for r in rows] == [str(new_sid)]
 
 
-def test_get_run_wrong_product_returns_none(tmp_path):
+def test_get_run_by_demo_id(tmp_path):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    from navigator.logs.store import ActionLog
+
+    ts = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
     with ActionLog(tmp_path / "t.db") as log:
-        sid = uuid4()
-        _run(log, session_id=sid, product_id="acme", started_at=TS)
-        assert log.get_run(sid, "globex") is None
-        assert log.get_run(sid, "acme")["session_id"] == str(sid)
+        sid, did = uuid4(), uuid4()
+        log.upsert_run(
+            session_id=sid,
+            demo_id=did,
+            product_id="acme",
+            platform="static",
+            status="running",
+            host_os="Linux",
+            host_release="1",
+            host_machine="x86_64",
+            host_name="h",
+            browser="",
+            meeting_label="meet",
+            started_at=ts,
+        )
+        assert log.get_run_by_demo_id(did, "acme")["session_id"] == str(sid)
+        assert log.get_run_by_demo_id(did, "other") is None

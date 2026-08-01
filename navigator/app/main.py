@@ -643,11 +643,37 @@ def list_demos(product: AuthedProduct, runner: Runner) -> list[DemoView]:
 
 
 @app.post("/v1/demos/{demo_id}/end", response_model=DemoView)
-def end_demo(demo_id: UUID, product: AuthedProduct, runner: Runner) -> DemoView:
+def end_demo(
+    demo_id: UUID, product: AuthedProduct, runner: Runner, log: Log
+) -> DemoView:
     handle = runner.stop(demo_id, product.product_id)
-    if handle is None:
+    if handle is not None:
+        return DemoView(**handle.public())
+
+    # Stale UI / post-restart: demo_runs still says running but worker is gone.
+    row = log.get_run_by_demo_id(demo_id, product.product_id)
+    if row is None:
         raise HTTPException(404, "no such demo")
-    return DemoView(**handle.public())
+    from navigator.logs.store import utcnow
+
+    log.update_run_status(
+        UUID(row["session_id"]), "finished", ended_at=utcnow()
+    )
+    return DemoView(
+        demo_id=demo_id,
+        product_id=product.product_id,
+        revision=0,
+        session_id=UUID(row["session_id"]),
+        status="finished",
+        page_id="",
+        actions=0,
+        failures=int(row.get("fail_count") or 0),
+        error=None,
+        said=[],
+        meeting_url=None,
+        platform=row.get("platform"),
+        bot_in_meeting=False,
+    )
 
 
 @app.get("/v1/demos/{demo_id}/actions", response_model=list[ActionLogEntry])
@@ -850,8 +876,10 @@ def client_get_demo(demo_id: UUID, product: DashboardAuthedProduct, runner: Runn
 
 
 @app.post("/client/api/demos/{demo_id}/end", response_model=DemoView)
-def client_end_demo(demo_id: UUID, product: DashboardAuthedProduct, runner: Runner) -> DemoView:
-    return end_demo(demo_id, product, runner)
+def client_end_demo(
+    demo_id: UUID, product: DashboardAuthedProduct, runner: Runner, log: Log
+) -> DemoView:
+    return end_demo(demo_id, product, runner, log)
 
 
 _BLANK_CLIENT_GRAPH = """\
@@ -1200,10 +1228,31 @@ def client_metrics(
 def client_list_runs(
     product: DashboardAuthedProduct,
     log: Log,
+    runner: Runner,
     days: Annotated[int, Query(ge=1, le=7)] = 7,
 ) -> list[DemoRunView]:
-    """Last N days of demo runs for this product (default 7)."""
-    return [DemoRunView(**row) for row in log.list_runs(product.product_id, days=days)]
+    """Last N days of demo runs; reconcile stale running rows with the live runner."""
+    from navigator.logs.store import utcnow
+
+    live = {
+        str(h.demo_id): h.status
+        for h in runner.list(product.product_id)
+        if h.status in ("starting", "running")
+    }
+    out: list[DemoRunView] = []
+    for row in log.list_runs(product.product_id, days=days):
+        did = str(row["demo_id"])
+        status = row["status"]
+        if did in live:
+            status = live[did]
+        elif status in ("starting", "running"):
+            # Ghost row after restart / crash — close it in SQLite.
+            log.update_run_status(
+                UUID(row["session_id"]), "finished", ended_at=utcnow()
+            )
+            status = "finished"
+        out.append(DemoRunView(**{**row, "status": status}))
+    return out
 
 
 @app.get("/client/api/runs/{session_id}", response_model=DemoRunView)

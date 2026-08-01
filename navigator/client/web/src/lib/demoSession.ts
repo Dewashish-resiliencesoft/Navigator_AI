@@ -110,6 +110,16 @@ export const useDemoSession = create<DemoSession>((set, get) => ({
       set({ demo: d, ending: false });
       return d;
     } catch (e) {
+      const msg = errText(e).toLowerCase();
+      // Already gone from runner — treat as ended so Logs/UI unstick.
+      if (msg.includes("no such demo") || msg.includes("404")) {
+        const cur = get().demo;
+        const finished = cur
+          ? { ...cur, status: "finished" as const, demo_id: id }
+          : null;
+        set({ demo: finished, ending: false });
+        return finished;
+      }
       set({ ending: false });
       throw e;
     }

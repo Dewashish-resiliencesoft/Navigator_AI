@@ -292,6 +292,13 @@ class ActionLog:
         ).fetchone()
         return None if row is None else _row_to_run(row, self._fail_count(row))
 
+    def get_run_by_demo_id(self, demo_id: UUID, product_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM demo_runs WHERE demo_id = ? AND product_id = ?",
+            (str(demo_id), product_id),
+        ).fetchone()
+        return None if row is None else _row_to_run(row, self._fail_count(row))
+
     def list_runs(
         self,
         product_id: str,

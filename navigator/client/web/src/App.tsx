@@ -4,6 +4,7 @@ import { AlertCircle, CheckCircle2, Moon, Sun, X } from "lucide-react";
 import { MobileTabs, Sidebar, TABS } from "./components/Sidebar";
 import { Overview } from "./panels/Overview";
 import { LiveDemo } from "./panels/LiveDemo";
+import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
 import { spring } from "./lib/motion";
@@ -12,6 +13,7 @@ import { useUi } from "./store";
 const PANELS: Record<string, () => React.ReactElement> = {
   overview: Overview,
   demo: LiveDemo,
+  logs: Logs,
   flows: Flows,
   graph: SiteGraph,
   knowledge: Knowledge,
@@ -84,7 +86,58 @@ function useTheme() {
   return { dark, toggle: () => setDark((d) => !d) };
 }
 
+
+import { api } from "./lib/api";
+
+function Login({ onLogin }: { onLogin: () => void }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await api.login(email, password);
+      onLogin();
+    } catch (err: any) {
+      setError(err.message || "Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-screen items-center justify-center p-4">
+      <div className="w-full max-w-sm rounded-xl border p-6 shadow-xl" style={{ borderColor: "var(--line)", background: "var(--panel)" }}>
+        <h2 className="mb-6 text-2xl font-bold">Log In to Navigator</h2>
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <div>
+            <label className="mb-1 block text-sm text-[var(--muted)]">Email</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required className="w-full rounded-md border p-2" style={{ borderColor: "var(--line)", background: "var(--bg)", color: "var(--text)" }} />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm text-[var(--muted)]">Password</label>
+            <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full rounded-md border p-2" style={{ borderColor: "var(--line)", background: "var(--bg)", color: "var(--text)" }} />
+          </div>
+          {error && <div className="text-sm text-red-500">{error}</div>}
+          <button type="submit" disabled={loading} className="mt-2 rounded-md bg-blue-600 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50">
+            {loading ? "Logging in..." : "Log In"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
 export default function App() {
+  const [authed, setAuthed] = useState<boolean | null>(null);
+  useEffect(() => { api.checkAuth().then(ok => setAuthed(ok)); }, []);
+  if (authed === null) return null;
+  if (authed === false) return <Login onLogin={() => setAuthed(true)} />;
   const tab = useUi((s) => s.tab);
   const { dark, toggle } = useTheme();
   const Panel = PANELS[tab] ?? Overview;

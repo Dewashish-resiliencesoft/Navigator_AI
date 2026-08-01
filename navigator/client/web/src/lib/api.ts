@@ -46,6 +46,33 @@ export type Metrics = {
   live: { total: number; running: number; failed: number };
 };
 
+export type DemoRun = {
+  session_id: string;
+  demo_id: string;
+  product_id: string;
+  platform: string;
+  status: string;
+  host_os: string;
+  host_release: string;
+  host_machine: string;
+  host_name: string;
+  browser: string;
+  meeting_label: string;
+  started_at: string;
+  ended_at: string | null;
+  fail_count: number;
+};
+
+export type RunEvent = {
+  call_id: string;
+  session_id: string;
+  page: string;
+  timestamp: string;
+  tool_call: { tool: string; selector?: string; [k: string]: unknown };
+  actual_result: { ok: boolean; detail: string; tool: string };
+  verify: { passed: boolean; actual: string } | null;
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -55,54 +82,86 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
-  });
-  const text = await res.text();
-  let body: unknown = null;
-  try {
-    body = text ? JSON.parse(text) : null;
-  } catch {
-    body = { detail: text };
-  }
+let _accessToken: string | null = null;
+let _refreshPromise: Promise<void> | null = null;
+
+export function setAccessToken(token: string | null) {
+  _accessToken = token;
+}
+
+export function getAccessToken() {
+  return _accessToken;
+}
+
+async function doRefresh() {
+  const res = await fetch("/v1/auth/refresh", { method: "POST" });
   if (!res.ok) {
-    const detail =
-      (body as { detail?: unknown; message?: unknown })?.detail ??
-      (body as { message?: unknown })?.message ??
-      text ??
-      res.statusText;
-    throw new ApiError(
-      typeof detail === "string" ? detail : JSON.stringify(detail),
-      res.status,
-    );
+    _accessToken = null;
+    throw new ApiError("Session expired", 401);
   }
-  return body as T;
+  const data = await res.json();
+  _accessToken = data.access_token;
 }
 
-/** The server can lose its client key across a --reload; bootstrap re-mints it. */
-function needsBootstrap(err: unknown): boolean {
-  if (!(err instanceof ApiError)) return false;
-  if (err.status === 503) return true;
-  return /CLIENT_API_KEY|bootstrap|ops/i.test(err.message);
-}
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (!_accessToken && path !== "/v1/auth/login" && path !== "/v1/auth/refresh") {
+    if (!_refreshPromise) _refreshPromise = doRefresh().finally(() => { _refreshPromise = null; });
+    await _refreshPromise;
+  }
 
-async function withBootstrap<T>(call: () => Promise<T>): Promise<T> {
+  const doRequest = async () => {
+    const headers: Record<string, string> = { "Content-Type": "application/json", ...((init?.headers as Record<string, string>) ?? {}) };
+    if (_accessToken) {
+      headers["Authorization"] = `Bearer ${_accessToken}`;
+    }
+    const res = await fetch(path, { ...init, headers });
+    
+    if (res.status === 401 && path !== "/v1/auth/login" && path !== "/v1/auth/refresh") {
+      throw new ApiError("unauthorized", 401);
+    }
+    
+    const text = await res.text();
+    let body: any = null;
+    try { body = text ? JSON.parse(text) : null; } catch { body = { detail: text }; }
+    
+    if (!res.ok) {
+      const detail = body?.detail ?? body?.message ?? text ?? res.statusText;
+      throw new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), res.status);
+    }
+    return body as T;
+  };
+
   try {
-    return await call();
+    return await doRequest();
   } catch (err) {
-    if (!needsBootstrap(err)) throw err;
-    await request("/client/api/bootstrap", { method: "POST", body: "{}" });
-    return call();
+    if (err instanceof ApiError && err.status === 401) {
+      if (!_refreshPromise) _refreshPromise = doRefresh().finally(() => { _refreshPromise = null; });
+      await _refreshPromise;
+      return await doRequest();
+    }
+    throw err;
   }
 }
 
-const get = <T>(path: string) => withBootstrap(() => request<T>(path));
+export async function login(email: string, password: string) {
+  const data = await request<{ access_token: string }>("/v1/auth/login", {
+    method: "POST",
+    body: JSON.stringify({ email, password })
+  });
+  _accessToken = data.access_token;
+}
+
+export async function logout() {
+  try {
+    await request("/v1/auth/logout", { method: "POST" });
+  } catch (e) {}
+  _accessToken = null;
+}
+
+const get = <T>(path: string) => request<T>(path);
 const send = <T>(path: string, method: string, body?: unknown) =>
-  withBootstrap(() =>
-    request<T>(path, { method, body: JSON.stringify(body ?? {}) }),
-  );
+  request<T>(path, { method, body: JSON.stringify(body ?? {}) });
+
 
 export type StartDemoBody = {
   platform: string;
@@ -116,6 +175,9 @@ export type StartDemoBody = {
 };
 
 export const api = {
+  login,
+  logout,
+  checkAuth: async () => { if (!_accessToken) await request("/client/api/bio").catch(() => {}); return !!_accessToken; },
   bootstrap: () =>
     request<{ ok: boolean; product_id: string; api_key: string | null; message: string }>(
       "/client/api/bootstrap",
@@ -130,12 +192,20 @@ export const api = {
 
   metrics: (days = 14) => get<Metrics>(`/client/api/metrics?days=${days}`),
 
+  listRuns: (days = 7) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
+  getRun: (sessionId: string) => get<DemoRun>(`/client/api/runs/${sessionId}`),
+  runEvents: (sessionId: string) =>
+    get<RunEvent[]>(`/client/api/runs/${sessionId}/events`),
+
   getBio: () => get<{ fields: BioField[] }>("/client/api/bio"),
   putBio: (fields: BioField[]) => send<unknown>("/client/api/bio", "PUT", { fields }),
 
   getKnowledge: () => get<{ markdown: string }>("/client/api/knowledge"),
   putKnowledge: (markdown: string) =>
     send<unknown>("/client/api/knowledge", "PUT", { markdown }),
+
+  getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
+  putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),
 
   getSiteGraph: () =>
     get<{ yaml: string; revision: number; site: string }>("/client/api/site-graph"),

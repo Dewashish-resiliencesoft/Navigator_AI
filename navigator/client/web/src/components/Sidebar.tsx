@@ -6,6 +6,7 @@ import {
   ListOrdered,
   Network,
   PlayCircle,
+  ScrollText,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { spring } from "../lib/motion";
@@ -14,6 +15,7 @@ import { useUi } from "../store";
 export const TABS = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "demo", label: "Live demo", icon: PlayCircle },
+  { id: "logs", label: "Logs", icon: ScrollText },
   { id: "flows", label: "Flows", icon: ListOrdered },
   { id: "graph", label: "Site graph", icon: Network },
   { id: "knowledge", label: "Knowledge", icon: BookOpen },

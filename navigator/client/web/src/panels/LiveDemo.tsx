@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Copy, PhoneOff, Play } from "lucide-react";
-import { api, type Demo } from "../lib/api";
+import { api, ApiError, type Demo, type RunEvent } from "../lib/api";
 import { rise, spring, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -20,22 +20,44 @@ import { errText, useUi } from "../store";
 const LINK_PENDING = "Navigator joining meeting… link unlocks when the bot is in.";
 
 export function LiveDemo() {
-  const { ok, err } = useUi();
+  const { ok, err, setTab, setLogsSessionId } = useUi();
   const [platform, setPlatform] = useState("zoom");
   const [topic, setTopic] = useState("");
   const [name, setName] = useState("");
   const [company, setCompany] = useState("");
   const [business, setBusiness] = useState("");
   const [looking, setLooking] = useState("");
+  const [domain, setDomain] = useState("");
+  const [domainPlaceholder, setDomainPlaceholder] = useState(false);
+  const [savingDomain, setSavingDomain] = useState(false);
 
   const [demo, setDemo] = useState<Demo | null>(null);
   const [starting, setStarting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [events, setEvents] = useState<RunEvent[]>([]);
   const demoId = demo?.demo_id ?? null;
+  const sessionId = demo?.session_id ?? null;
   const listRef = useRef<HTMLUListElement>(null);
 
   const done = demo?.status === "finished" || demo?.status === "failed";
   const joinUrl = demo?.bot_in_meeting ? demo.meeting_url : null;
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const d = await api.getProductDomain();
+        if (!alive) return;
+        setDomain(d.base_url || "");
+        setDomainPlaceholder(!!d.placeholder);
+      } catch (e) {
+        if (alive) err(errText(e));
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [err]);
 
   useEffect(() => {
     if (!demoId || done) return;
@@ -62,7 +84,51 @@ export function LiveDemo() {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [demo?.said.length]);
 
+  useEffect(() => {
+    if (!sessionId || done) {
+      if (done) return;
+      setEvents([]);
+      return;
+    }
+    let alive = true;
+    const tick = async () => {
+      try {
+        const rows = await api.runEvents(sessionId);
+        if (!alive) return;
+        setEvents(rows.slice(-20));
+      } catch (e) {
+        if (!alive) return;
+        if (e instanceof ApiError && e.status === 404) return;
+        // soft: avoid toast spam while run row catches up
+      }
+    };
+    const t = setInterval(tick, 1500);
+    tick();
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [sessionId, done]);
+
+  const saveDomain = async () => {
+    setSavingDomain(true);
+    try {
+      const d = await api.putProductDomain(domain.trim());
+      setDomain(d.base_url);
+      setDomainPlaceholder(false);
+      ok("Product domain saved.");
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setSavingDomain(false);
+    }
+  };
+
   const start = async () => {
+    if (domainPlaceholder || !domain.trim() || /example\.com/i.test(domain)) {
+      err("Set your product domain first (https://your-product.com).");
+      return;
+    }
     setStarting(true);
     try {
       const d = await api.startDemo({
@@ -115,6 +181,27 @@ export function LiveDemo() {
       animate="show"
       className="grid grid-cols-1 gap-4 lg:grid-cols-2"
     >
+      <Card span="lg:col-span-2">
+        <CardTitle hint="Origin the agent opens and screenshares during the live demo.">
+          Product domain
+        </CardTitle>
+        <Field label="Website URL">
+          <Input
+            value={domain}
+            onChange={setDomain}
+            placeholder="https://your-product.com"
+          />
+        </Field>
+        {domainPlaceholder && (
+          <p className="mb-3 text-[0.76rem] text-amber-600 dark:text-amber-400">
+            Still on example.com — set your real product URL or screenshare stays blank.
+          </p>
+        )}
+        <Button onClick={saveDomain} disabled={savingDomain || !domain.trim()}>
+          {savingDomain ? "Saving…" : "Save domain"}
+        </Button>
+      </Card>
+
       <Card>
         <CardTitle hint="Prefill what the landing page already knows so the bot needn't ask.">
           New demo
@@ -126,7 +213,8 @@ export function LiveDemo() {
               onChange={setPlatform}
               options={[
                 { value: "zoom", label: "Zoom" },
-                { value: "google_meet", label: "Google Meet" },
+                { value: "google_meet", label: "Google Meet (new space)" },
+                { value: "static", label: "Static Meet link (.env)" },
               ]}
             />
           </Field>
@@ -200,6 +288,17 @@ export function LiveDemo() {
             <PhoneOff size={14} />
             End
           </Button>
+          {sessionId && (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setLogsSessionId(sessionId);
+                setTab("logs");
+              }}
+            >
+              Open in Logs
+            </Button>
+          )}
         </div>
 
         {demo?.error && (
@@ -223,6 +322,30 @@ export function LiveDemo() {
             ))}
           </div>
         )}
+      </Card>
+
+      <Card span="lg:col-span-2">
+        <CardTitle hint="Last ~20 ActionLog events for this run (technical — client only).">
+          Live log
+        </CardTitle>
+        {!events.length && <Empty>{live ? "Waiting for actions…" : "Nothing yet."}</Empty>}
+        <ul className="max-h-48 space-y-1 overflow-y-auto font-mono text-[0.72rem] text-[var(--muted)]">
+          {events.map((ev) => {
+            const fail = !ev.actual_result?.ok || (ev.verify && !ev.verify.passed);
+            const sel =
+              typeof ev.tool_call?.selector === "string" ? ev.tool_call.selector : "";
+            return (
+              <li
+                key={ev.call_id}
+                className={fail ? "text-red-700 dark:text-red-400" : undefined}
+              >
+                {ev.tool_call?.tool ?? "?"} · {ev.page} · {fail ? "FAIL" : "OK"}
+                {sel ? ` · ${sel}` : ""}
+                {ev.actual_result?.detail ? ` · ${ev.actual_result.detail}` : ""}
+              </li>
+            );
+          })}
+        </ul>
       </Card>
 
       <Card span="lg:col-span-2">

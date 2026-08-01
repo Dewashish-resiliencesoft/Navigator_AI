@@ -46,6 +46,7 @@ export function Overview() {
   const err = useUi((s) => s.err);
   const [m, setM] = useState<Metrics | null>(null);
   const [demos, setDemos] = useState<Demo[] | null>(null);
+  const [loadErr, setLoadErr] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -55,8 +56,23 @@ export function Overview() {
         if (!alive) return;
         setM(metrics);
         setDemos(list);
+        setLoadErr(null);
       } catch (e) {
-        if (alive) err(errText(e));
+        if (!alive) return;
+        const msg = errText(e);
+        setLoadErr(msg);
+        err(msg);
+        setM({
+          actions: 0,
+          sessions: 0,
+          failures: 0,
+          verified: 0,
+          passed: 0,
+          last_seen: null,
+          series: [],
+          live: { total: 0, running: 0, failed: 0 },
+        });
+        setDemos([]);
       }
     };
     load();
@@ -84,6 +100,13 @@ export function Overview() {
       animate="show"
       className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4"
     >
+      {loadErr && (
+        <Card span="sm:col-span-2 xl:col-span-4" interactive={false}>
+          <p className="text-[0.8rem] text-amber-700 dark:text-amber-400">
+            Could not refresh metrics ({loadErr}). Showing zeros — try Log out / Log in.
+          </p>
+        </Card>
+      )}
       <Kpi
         icon={Radio}
         label="Sessions"

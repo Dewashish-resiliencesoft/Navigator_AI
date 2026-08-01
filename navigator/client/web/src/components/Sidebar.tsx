@@ -4,6 +4,7 @@ import {
   BookOpen,
   Building2,
   ListOrdered,
+  LogOut,
   Network,
   PlayCircle,
   ScrollText,
@@ -22,7 +23,7 @@ export const TABS = [
   { id: "bio", label: "Company bio", icon: Building2 },
 ] as const;
 
-export function Sidebar() {
+export function Sidebar({ onLogout }: { onLogout?: () => void }) {
   const { tab, setTab } = useUi();
 
   return (
@@ -46,6 +47,7 @@ export function Sidebar() {
           return (
             <button
               key={id}
+              type="button"
               onClick={() => setTab(id)}
               className={cn(
                 "relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left",
@@ -68,9 +70,21 @@ export function Sidebar() {
         })}
       </nav>
 
-      <p className="mt-auto px-1 text-[0.68rem] leading-relaxed text-[var(--muted)]">
-        Loopback only. Bound to localhost.
-      </p>
+      <div className="mt-auto space-y-3 px-1">
+        {onLogout && (
+          <button
+            type="button"
+            onClick={onLogout}
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[0.8rem] font-medium text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--text)] dark:hover:bg-white/[0.06]"
+          >
+            <LogOut size={14} strokeWidth={1.9} />
+            Log out
+          </button>
+        )}
+        <p className="text-[0.68rem] leading-relaxed text-[var(--muted)]">
+          Loopback only. Bound to localhost.
+        </p>
+      </div>
     </aside>
   );
 }
@@ -85,6 +99,7 @@ export function MobileTabs() {
       {TABS.map(({ id, label }) => (
         <button
           key={id}
+          type="button"
           onClick={() => setTab(id)}
           className={cn(
             "relative shrink-0 rounded-lg px-3 py-1.5 text-[0.78rem] font-medium",

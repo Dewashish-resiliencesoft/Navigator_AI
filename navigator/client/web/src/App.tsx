@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { AlertCircle, CheckCircle2, Moon, Sun, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, LogOut, Moon, Sun, X } from "lucide-react";
 import { MobileTabs, Sidebar, TABS } from "./components/Sidebar";
 import { Overview } from "./panels/Overview";
 import { LiveDemo } from "./panels/LiveDemo";
@@ -89,13 +89,30 @@ function useTheme() {
   return { dark, toggle: () => setDark((d) => !d) };
 }
 
-
 export default function App() {
+  // Hooks must stay above any early return — signup flipped authed and crashed
+  // when useUi was only called on the authenticated branch.
   const [authed, setAuthed] = useState<boolean | null>(null);
   const { dark, toggle } = useTheme();
+  const tab = useUi((s) => s.tab);
+  const ok = useUi((s) => s.ok);
+
   useEffect(() => {
-    api.checkAuth().then((ok) => setAuthed(ok));
+    let alive = true;
+    api.checkAuth().then((pass) => {
+      if (alive) setAuthed(pass);
+    });
+    return () => {
+      alive = false;
+    };
   }, []);
+
+  const signOut = async () => {
+    await api.logout();
+    setAuthed(false);
+    ok("Signed out.");
+  };
+
   if (authed === null) {
     return (
       <div className="flex min-h-screen items-center justify-center text-[0.8rem] text-[var(--muted)]">
@@ -103,6 +120,7 @@ export default function App() {
       </div>
     );
   }
+
   if (authed === false) {
     return (
       <AuthScreen
@@ -112,18 +130,13 @@ export default function App() {
       />
     );
   }
-  const tab = useUi((s) => s.tab);
+
   const Panel = PANELS[tab] ?? Overview;
   const title = TABS.find((t) => t.id === tab)?.label ?? "Overview";
 
-  const signOut = async () => {
-    await api.logout();
-    setAuthed(false);
-  };
-
   return (
     <div className="flex min-h-screen">
-      <Sidebar />
+      <Sidebar onLogout={signOut} />
       <div className="min-w-0 flex-1">
         <header
           className="sticky top-0 z-30 border-b backdrop-blur-md"
@@ -143,9 +156,11 @@ export default function App() {
             </div>
             <div className="flex shrink-0 items-center gap-2">
               <Button variant="ghost" onClick={signOut}>
+                <LogOut size={14} strokeWidth={1.9} />
                 Log out
               </Button>
               <button
+                type="button"
                 onClick={toggle}
                 aria-label="Toggle theme"
                 className="rounded-lg border p-2 text-[var(--muted)] hover:text-[var(--text)]"

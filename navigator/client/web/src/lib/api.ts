@@ -82,11 +82,22 @@ export class ApiError extends Error {
   }
 }
 
-let _accessToken: string | null = null;
+const TOKEN_KEY = "nav_access_token";
+
+let _accessToken: string | null =
+  typeof sessionStorage !== "undefined"
+    ? sessionStorage.getItem(TOKEN_KEY)
+    : null;
 let _refreshPromise: Promise<void> | null = null;
 
 export function setAccessToken(token: string | null) {
   _accessToken = token;
+  try {
+    if (token) sessionStorage.setItem(TOKEN_KEY, token);
+    else sessionStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* private mode */
+  }
 }
 
 export function getAccessToken() {
@@ -99,11 +110,11 @@ async function doRefresh() {
     credentials: "include",
   });
   if (!res.ok) {
-    _accessToken = null;
+    setAccessToken(null);
     throw new ApiError("Session expired", 401);
   }
   const data = await res.json();
-  _accessToken = data.access_token;
+  setAccessToken(data.access_token);
 }
 
 const AUTH_PUBLIC = new Set([
@@ -180,7 +191,7 @@ export async function login(email: string, password: string) {
     method: "POST",
     body: JSON.stringify({ email, password }),
   });
-  _accessToken = data.access_token;
+  setAccessToken(data.access_token);
 }
 
 export async function signup(
@@ -192,7 +203,7 @@ export async function signup(
     method: "POST",
     body: JSON.stringify({ company_name, email, password }),
   });
-  _accessToken = data.access_token;
+  setAccessToken(data.access_token);
 }
 
 export async function logout() {
@@ -201,7 +212,7 @@ export async function logout() {
   } catch {
     /* ignore */
   }
-  _accessToken = null;
+  setAccessToken(null);
 }
 
 const get = <T>(path: string) => request<T>(path);
@@ -225,14 +236,13 @@ export const api = {
   signup,
   logout,
   checkAuth: async () => {
-    if (!_accessToken) {
-      try {
-        await doRefresh();
-      } catch {
-        return false;
-      }
+    if (_accessToken) return true;
+    try {
+      await doRefresh();
+      return !!_accessToken;
+    } catch {
+      return false;
     }
-    return !!_accessToken;
   },
   bootstrap: () =>
     request<{ ok: boolean; product_id: string; api_key: string | null; message: string }>(

@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { Check, Copy, PhoneOff, Play } from "lucide-react";
 import { api, ApiError, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
-import { rise, spring, stagger } from "../lib/motion";
+import { rise, soft, stagger } from "../lib/motion";
 import {
   BarLoader,
   Button,
@@ -239,13 +239,13 @@ export function LiveDemo() {
           className="min-h-[46px] break-all rounded-lg border bg-black/[0.02] px-3 py-2.5 font-mono text-[0.76rem] dark:bg-black/20"
           style={{ borderColor: "var(--line)" }}
         >
-          <AnimatePresence mode="wait">
+          <AnimatePresence mode="popLayout" initial={false}>
             <motion.span
               key={joinUrl ?? (live ? "pending" : "idle")}
-              initial={{ opacity: 0, filter: "blur(4px)" }}
-              animate={{ opacity: 1, filter: "blur(0px)" }}
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              transition={spring}
+              transition={soft}
               className={joinUrl ? "" : "text-[var(--muted)]"}
             >
               {joinUrl ?? (live ? LINK_PENDING : "—")}
@@ -336,11 +336,9 @@ export function LiveDemo() {
             {(demo?.said ?? []).map((line, i) => (
               <motion.li
                 key={`${i}-${line.slice(0, 24)}`}
-                layout
                 variants={rise}
                 initial="hidden"
                 animate="show"
-                transition={spring}
                 className="rounded-lg border px-3 py-2 text-[0.81rem] leading-relaxed"
                 style={{ borderColor: "var(--line)" }}
               >

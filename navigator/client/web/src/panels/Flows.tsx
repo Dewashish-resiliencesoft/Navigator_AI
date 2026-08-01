@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowDown, ArrowUp, Circle, Plus, Save, Square, Trash2 } from "lucide-react";
 import { api, type Flow, type RecorderStatus } from "../lib/api";
-import { spring, stagger } from "../lib/motion";
+import { soft, stagger } from "../lib/motion";
 import {
   BarLoader,
   Button,
@@ -142,7 +142,7 @@ export function Flows() {
                 key={`${f.flow_id || "row"}-${i}`}
                 layout
                 layoutId={`flow-${f.flow_id || i}`}
-                transition={spring}
+                transition={soft}
                 exit={{ opacity: 0, x: -10 }}
                 className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-center gap-2 rounded-lg border px-2 py-1.5"
                 style={{ borderColor: "var(--line)" }}

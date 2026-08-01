@@ -1,7 +1,7 @@
 import { motion, useMotionTemplate, useMotionValue } from "motion/react";
 import type { ReactNode } from "react";
 import { cn } from "../lib/cn";
-import { cardHover, heavySpring, rise } from "../lib/motion";
+import { cardHover, rise, soft } from "../lib/motion";
 
 /** Bento card. Mouse-tracked mesh light expands under the border on hover. */
 export function Card({
@@ -111,8 +111,8 @@ export function Button({
       onClick={onClick}
       disabled={disabled}
       whileHover={disabled ? undefined : { y: -1 }}
-      whileTap={disabled ? undefined : { scale: 0.97 }}
-      transition={heavySpring}
+      whileTap={disabled ? undefined : { scale: 0.98 }}
+      transition={soft}
       className={cn(
         "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2",
         "text-[0.82rem] font-medium tracking-tight",

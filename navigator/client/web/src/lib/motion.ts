@@ -1,32 +1,37 @@
 import type { Transition, Variants } from "motion/react";
 
-/** Tactile base spring. Heavier elements scale mass up, not duration. */
+/** Smooth, lightly damped — avoids jumpy overshoot. */
 export const spring: Transition = {
   type: "spring",
-  mass: 0.5,
-  stiffness: 120,
-  damping: 14,
+  stiffness: 280,
+  damping: 28,
+  mass: 0.8,
 };
 
-/** Large containers carry more visual mass than micro-elements. */
+export const soft: Transition = {
+  type: "tween",
+  duration: 0.22,
+  ease: [0.22, 1, 0.36, 1],
+};
+
 export const heavySpring: Transition = {
   type: "spring",
-  mass: 0.9,
-  stiffness: 90,
-  damping: 16,
+  stiffness: 220,
+  damping: 26,
+  mass: 1,
 };
 
 export const rise: Variants = {
-  hidden: { opacity: 0, y: 12, filter: "blur(6px)" },
-  show: { opacity: 1, y: 0, filter: "blur(0px)", transition: spring },
+  hidden: { opacity: 0, y: 8 },
+  show: { opacity: 1, y: 0, transition: soft },
 };
 
-export const stagger = (gap = 0.04): Variants => ({
+export const stagger = (gap = 0.03): Variants => ({
   hidden: {},
-  show: { transition: { staggerChildren: gap, delayChildren: 0.02 } },
+  show: { transition: { staggerChildren: gap, delayChildren: 0.01 } },
 });
 
 export const cardHover = {
-  whileHover: { y: -3, scale: 1.01, transition: spring },
-  whileTap: { scale: 0.995, transition: spring },
+  whileHover: { y: -2, transition: soft },
+  whileTap: { scale: 0.99, transition: soft },
 };

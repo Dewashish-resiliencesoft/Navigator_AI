@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Plus, Save, Trash2 } from "lucide-react";
 import { api, slugKey, type BioField } from "../lib/api";
-import { spring, stagger } from "../lib/motion";
+import { soft, stagger } from "../lib/motion";
 import {
   BarLoader,
   Button,
@@ -193,7 +193,7 @@ export function Bio() {
               <motion.div
                 key={i}
                 layout
-                transition={spring}
+                transition={soft}
                 exit={{ opacity: 0, x: -10 }}
                 className="grid grid-cols-[1fr_1.6fr_auto] items-center gap-2"
               >

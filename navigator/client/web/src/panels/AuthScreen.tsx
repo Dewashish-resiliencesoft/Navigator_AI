@@ -2,7 +2,7 @@ import { useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Moon, Network, Sun } from "lucide-react";
 import { api } from "../lib/api";
-import { spring } from "../lib/motion";
+import { soft } from "../lib/motion";
 import { Button, Field, Input } from "../components/ui";
 import { errText } from "../store";
 
@@ -61,9 +61,9 @@ export function AuthScreen({
       </button>
 
       <motion.div
-        initial={{ opacity: 0, y: 14, filter: "blur(8px)" }}
-        animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-        transition={spring}
+        initial={{ opacity: 0, y: 8 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={soft}
         className="w-full max-w-[400px] rounded-2xl border p-7 backdrop-blur-md"
         style={{
           borderColor: "var(--line)",
@@ -99,7 +99,7 @@ export function AuthScreen({
                   layoutId="auth-mode"
                   className="absolute inset-0 rounded-md border bg-black/[0.04] dark:bg-white/[0.08]"
                   style={{ borderColor: "var(--line)" }}
-                  transition={spring}
+                  transition={soft}
                 />
               )}
               <span className="relative text-[var(--text)]">
@@ -109,13 +109,13 @@ export function AuthScreen({
           ))}
         </div>
 
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="popLayout" initial={false}>
           <motion.form
             key={mode}
-            initial={{ opacity: 0, y: 6 }}
+            initial={{ opacity: 0, y: 3 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -4 }}
-            transition={spring}
+            exit={{ opacity: 0 }}
+            transition={soft}
             onSubmit={submit}
           >
             {mode === "signup" && (

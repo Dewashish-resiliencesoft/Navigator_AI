@@ -7,7 +7,7 @@ import { LiveDemo } from "./panels/LiveDemo";
 import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
-import { spring } from "./lib/motion";
+import { soft } from "./lib/motion";
 import { errText, useUi } from "./store";
 import { api } from "./lib/api";
 import { demoIsLive, useDemoSession } from "./lib/demoSession";
@@ -24,29 +24,11 @@ const PANELS: Record<string, () => React.ReactElement> = {
   bio: Bio,
 };
 
-/** Per-word blur reveal for the greeting. */
-function BlurText({ text }: { text: string }) {
-  return (
-    <span className="inline-flex flex-wrap gap-x-[0.28em]">
-      {text.split(" ").map((word, i) => (
-        <motion.span
-          key={`${word}-${i}`}
-          initial={{ opacity: 0, y: 10, filter: "blur(8px)" }}
-          animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-          transition={{ ...spring, delay: i * 0.05 }}
-        >
-          {word}
-        </motion.span>
-      ))}
-    </span>
-  );
-}
-
 function Toast() {
   const { toast, clear } = useUi();
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(clear, 6000);
+    const t = setTimeout(clear, 4000);
     return () => clearTimeout(t);
   }, [toast, clear]);
 
@@ -54,10 +36,11 @@ function Toast() {
     <AnimatePresence>
       {toast && (
         <motion.div
-          initial={{ opacity: 0, y: 16, filter: "blur(6px)" }}
-          animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
-          exit={{ opacity: 0, y: 10, filter: "blur(4px)" }}
-          transition={spring}
+          key={toast.text + toast.kind}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: 6 }}
+          transition={soft}
           className="fixed bottom-5 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2.5 rounded-xl border px-4 py-2.5 backdrop-blur-xl"
           style={{
             borderColor: "var(--line)",
@@ -70,7 +53,11 @@ function Toast() {
             <AlertCircle size={15} className="shrink-0 text-red-500" />
           )}
           <span className="text-[0.81rem] leading-snug">{toast.text}</span>
-          <button onClick={clear} className="ml-1 text-[var(--muted)] hover:text-[var(--text)]">
+          <button
+            type="button"
+            onClick={clear}
+            className="ml-1 text-[var(--muted)] hover:text-[var(--text)]"
+          >
             <X size={14} />
           </button>
         </motion.div>
@@ -91,14 +78,13 @@ function useTheme() {
 }
 
 export default function App() {
-  // Hooks must stay above any early return — signup flipped authed and crashed
-  // when useUi was only called on the authenticated branch.
   const [authed, setAuthed] = useState<boolean | null>(null);
   const { dark, toggle } = useTheme();
   const tab = useUi((s) => s.tab);
   const setTab = useUi((s) => s.setTab);
   const ok = useUi((s) => s.ok);
   const err = useUi((s) => s.err);
+  const clearToast = useUi((s) => s.clear);
 
   const demo = useDemoSession((s) => s.demo);
   const ending = useDemoSession((s) => s.ending);
@@ -117,7 +103,6 @@ export default function App() {
     };
   }, []);
 
-  // Global demo session: hydrate + poll while authenticated (any tab).
   useEffect(() => {
     if (!authed) return;
     let alive = true;
@@ -134,6 +119,13 @@ export default function App() {
     };
   }, [authed, hydrate, refreshActive]);
 
+  const enterAuthed = () => {
+    // Overwrite any leftover "Signed out." from a prior logout (zustand persists across trees).
+    clearToast();
+    setAuthed(true);
+    ok("Signed in.");
+  };
+
   const signOut = async () => {
     if (live) {
       try {
@@ -143,6 +135,7 @@ export default function App() {
       }
     }
     await api.logout();
+    clearToast();
     setAuthed(false);
     ok("Signed out.");
   };
@@ -164,13 +157,13 @@ export default function App() {
     );
   }
 
-  if (authed === false) {
+  // Toast stays mounted across auth switches so messages don't stick to the wrong screen.
+  if (!authed) {
     return (
-      <AuthScreen
-        onAuthed={() => setAuthed(true)}
-        dark={dark}
-        toggleTheme={toggle}
-      />
+      <>
+        <AuthScreen onAuthed={enterAuthed} dark={dark} toggleTheme={toggle} />
+        <Toast />
+      </>
     );
   }
 
@@ -178,83 +171,85 @@ export default function App() {
   const title = TABS.find((t) => t.id === tab)?.label ?? "Overview";
 
   return (
-    <div className="flex min-h-screen">
-      <Sidebar onLogout={signOut} />
-      <div className="min-w-0 flex-1">
-        <header
-          className="sticky top-0 z-30 border-b backdrop-blur-md"
-          style={{
-            borderColor: "var(--line)",
-            background: "color-mix(in oklch, var(--bg) 72%, transparent)",
-          }}
-        >
-          <div className="flex items-center justify-between gap-4 px-5 py-4 md:px-8 md:py-5">
-            <div className="min-w-0">
-              <h1 className="truncate text-[1.35rem] font-semibold tracking-tighter md:text-[1.6rem]">
-                <BlurText text={title} />
-              </h1>
-              <p className="mt-1 text-[0.79rem] text-[var(--muted)]">
-                Configure demos, flows, and knowledge for your product.
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button variant="ghost" onClick={signOut}>
-                <LogOut size={14} strokeWidth={1.9} />
-                Log out
-              </Button>
-              <button
-                type="button"
-                onClick={toggle}
-                aria-label="Toggle theme"
-                className="rounded-lg border p-2 text-[var(--muted)] hover:text-[var(--text)]"
-                style={{ borderColor: "var(--line)" }}
-              >
-                {dark ? <Sun size={15} /> : <Moon size={15} />}
-              </button>
-            </div>
-          </div>
-          <MobileTabs />
-          {live && demo && (
-            <div
-              className="flex flex-wrap items-center gap-3 border-t px-5 py-2.5 md:px-8"
-              style={{
-                borderColor: "var(--line)",
-                background: "color-mix(in oklch, var(--accent) 8%, transparent)",
-              }}
-            >
-              <PlayCircle size={14} className="text-[var(--muted)]" />
-              <StatusPill status={demo.status} />
-              <span className="text-[0.78rem] text-[var(--muted)]">
-                Live demo · {demo.platform || "meeting"} · {demo.page_id || "…"}
-              </span>
-              <div className="ml-auto flex gap-2">
-                <Button variant="secondary" onClick={() => setTab("demo")}>
-                  Open Live demo
+    <>
+      <div className="flex min-h-screen">
+        <Sidebar onLogout={signOut} />
+        <div className="min-w-0 flex-1">
+          <header
+            className="sticky top-0 z-30 border-b backdrop-blur-md"
+            style={{
+              borderColor: "var(--line)",
+              background: "color-mix(in oklch, var(--bg) 72%, transparent)",
+            }}
+          >
+            <div className="flex items-center justify-between gap-4 px-5 py-4 md:px-8 md:py-5">
+              <div className="min-w-0">
+                <h1 className="truncate text-[1.35rem] font-semibold tracking-tighter md:text-[1.6rem]">
+                  {title}
+                </h1>
+                <p className="mt-1 text-[0.79rem] text-[var(--muted)]">
+                  Configure demos, flows, and knowledge for your product.
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button variant="ghost" onClick={signOut}>
+                  <LogOut size={14} strokeWidth={1.9} />
+                  Log out
                 </Button>
-                <Button variant="danger" disabled={ending} onClick={endLive}>
-                  <PhoneOff size={14} />
-                  {ending ? "Ending…" : "End demo"}
-                </Button>
+                <button
+                  type="button"
+                  onClick={toggle}
+                  aria-label="Toggle theme"
+                  className="rounded-lg border p-2 text-[var(--muted)] hover:text-[var(--text)]"
+                  style={{ borderColor: "var(--line)" }}
+                >
+                  {dark ? <Sun size={15} /> : <Moon size={15} />}
+                </button>
               </div>
             </div>
-          )}
-        </header>
+            <MobileTabs />
+            {live && demo && (
+              <div
+                className="flex flex-wrap items-center gap-3 border-t px-5 py-2.5 md:px-8"
+                style={{
+                  borderColor: "var(--line)",
+                  background: "color-mix(in oklch, var(--accent) 8%, transparent)",
+                }}
+              >
+                <PlayCircle size={14} className="text-[var(--muted)]" />
+                <StatusPill status={demo.status} />
+                <span className="text-[0.78rem] text-[var(--muted)]">
+                  Live demo · {demo.platform || "meeting"} · {demo.page_id || "…"}
+                </span>
+                <div className="ml-auto flex gap-2">
+                  <Button variant="secondary" onClick={() => setTab("demo")}>
+                    Open Live demo
+                  </Button>
+                  <Button variant="danger" disabled={ending} onClick={endLive}>
+                    <PhoneOff size={14} />
+                    {ending ? "Ending…" : "End demo"}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </header>
 
-        <main className="px-5 py-6 md:px-8 md:py-8">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={tab}
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -6 }}
-              transition={spring}
-            >
-              <Panel />
-            </motion.div>
-          </AnimatePresence>
-        </main>
+          <main className="px-5 py-6 md:px-8 md:py-8">
+            <AnimatePresence mode="popLayout" initial={false}>
+              <motion.div
+                key={tab}
+                initial={{ opacity: 0, y: 4 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={soft}
+              >
+                <Panel />
+              </motion.div>
+            </AnimatePresence>
+          </main>
+        </div>
       </div>
       <Toast />
-    </div>
+    </>
   );
 }

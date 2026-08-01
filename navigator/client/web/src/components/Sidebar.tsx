@@ -10,7 +10,7 @@ import {
   ScrollText,
 } from "lucide-react";
 import { cn } from "../lib/cn";
-import { spring } from "../lib/motion";
+import { soft } from "../lib/motion";
 import { useUi } from "../store";
 
 export const TABS = [
@@ -58,7 +58,7 @@ export function Sidebar({ onLogout }: { onLogout?: () => void }) {
               {active && (
                 <motion.span
                   layoutId="nav-capsule"
-                  transition={spring}
+                  transition={soft}
                   className="absolute inset-0 rounded-lg border bg-black/[0.045] dark:bg-white/[0.07]"
                   style={{ borderColor: "var(--line)" }}
                 />
@@ -109,7 +109,7 @@ export function MobileTabs() {
           {tab === id && (
             <motion.span
               layoutId="nav-capsule-mobile"
-              transition={spring}
+              transition={soft}
               className="absolute inset-0 rounded-lg bg-black/[0.05] dark:bg-white/[0.08]"
             />
           )}

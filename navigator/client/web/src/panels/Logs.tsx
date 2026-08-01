@@ -3,7 +3,7 @@ import { motion } from "motion/react";
 import { ChevronDown, ChevronRight, PhoneOff } from "lucide-react";
 import { api, ApiError, type DemoRun, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
-import { spring, stagger } from "../lib/motion";
+import { soft, stagger } from "../lib/motion";
 import { BarLoader, Button, Card, CardTitle, Empty, StatusPill } from "../components/ui";
 import { errText, useUi } from "../store";
 
@@ -193,8 +193,8 @@ export function Logs() {
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}
                     animate={{ opacity: 1, height: "auto" }}
-                    transition={spring}
-                    className="border-t px-3 py-2"
+                    transition={soft}
+                    className="overflow-hidden border-t px-3 py-2"
                     style={{ borderColor: "var(--line)" }}
                   >
                     {loadingEvents && !events.length ? (

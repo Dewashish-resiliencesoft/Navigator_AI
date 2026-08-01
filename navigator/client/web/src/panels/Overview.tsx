@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
 import { api, type Demo, type Metrics } from "../lib/api";
-import { rise, spring, stagger } from "../lib/motion";
+import { rise, soft, stagger } from "../lib/motion";
 import { AreaChart, Sparkbars } from "../components/Chart";
 import { BarLoader, Card, CardTitle, Empty } from "../components/ui";
 import { errText, useUi } from "../store";
@@ -28,7 +28,7 @@ const Kpi = ({
           key={value}
           initial={{ opacity: 0, y: 6 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={spring}
+          transition={soft}
           className="mt-2 text-[1.9rem] font-semibold leading-none tracking-tighter"
         >
           {value}
@@ -167,7 +167,7 @@ export function Overview() {
                   layout
                   variants={rise}
                   exit={{ opacity: 0, x: -8 }}
-                  transition={spring}
+                  transition={soft}
                   className="flex items-center justify-between rounded-lg border px-3 py-2 text-[0.79rem]"
                   style={{ borderColor: "var(--line)" }}
                 >

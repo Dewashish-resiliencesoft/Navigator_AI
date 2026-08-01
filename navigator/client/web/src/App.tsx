@@ -9,6 +9,9 @@ import { Flows } from "./panels/Flows";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
 import { spring } from "./lib/motion";
 import { useUi } from "./store";
+import { api } from "./lib/api";
+import { AuthScreen } from "./panels/AuthScreen";
+import { Button } from "./components/ui";
 
 const PANELS: Record<string, () => React.ReactElement> = {
   overview: Overview,
@@ -87,61 +90,36 @@ function useTheme() {
 }
 
 
-import { api } from "./lib/api";
-
-function Login({ onLogin }: { onLogin: () => void }) {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      await api.login(email, password);
-      onLogin();
-    } catch (err: any) {
-      setError(err.message || "Login failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="flex min-h-screen items-center justify-center p-4">
-      <div className="w-full max-w-sm rounded-xl border p-6 shadow-xl" style={{ borderColor: "var(--line)", background: "var(--panel)" }}>
-        <h2 className="mb-6 text-2xl font-bold">Log In to Navigator</h2>
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <div>
-            <label className="mb-1 block text-sm text-[var(--muted)]">Email</label>
-            <input type="email" value={email} onChange={e => setEmail(e.target.value)} required className="w-full rounded-md border p-2" style={{ borderColor: "var(--line)", background: "var(--bg)", color: "var(--text)" }} />
-          </div>
-          <div>
-            <label className="mb-1 block text-sm text-[var(--muted)]">Password</label>
-            <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="w-full rounded-md border p-2" style={{ borderColor: "var(--line)", background: "var(--bg)", color: "var(--text)" }} />
-          </div>
-          {error && <div className="text-sm text-red-500">{error}</div>}
-          <button type="submit" disabled={loading} className="mt-2 rounded-md bg-blue-600 py-2 font-medium text-white hover:bg-blue-700 disabled:opacity-50">
-            {loading ? "Logging in..." : "Log In"}
-          </button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
-  useEffect(() => { api.checkAuth().then(ok => setAuthed(ok)); }, []);
-  if (authed === null) return null;
-  if (authed === false) return <Login onLogin={() => setAuthed(true)} />;
-  const tab = useUi((s) => s.tab);
   const { dark, toggle } = useTheme();
+  useEffect(() => {
+    api.checkAuth().then((ok) => setAuthed(ok));
+  }, []);
+  if (authed === null) {
+    return (
+      <div className="flex min-h-screen items-center justify-center text-[0.8rem] text-[var(--muted)]">
+        Checking session…
+      </div>
+    );
+  }
+  if (authed === false) {
+    return (
+      <AuthScreen
+        onAuthed={() => setAuthed(true)}
+        dark={dark}
+        toggleTheme={toggle}
+      />
+    );
+  }
+  const tab = useUi((s) => s.tab);
   const Panel = PANELS[tab] ?? Overview;
   const title = TABS.find((t) => t.id === tab)?.label ?? "Overview";
+
+  const signOut = async () => {
+    await api.logout();
+    setAuthed(false);
+  };
 
   return (
     <div className="flex min-h-screen">
@@ -163,14 +141,19 @@ export default function App() {
                 Configure demos, flows, and knowledge for your product.
               </p>
             </div>
-            <button
-              onClick={toggle}
-              aria-label="Toggle theme"
-              className="shrink-0 rounded-lg border p-2 text-[var(--muted)] hover:text-[var(--text)]"
-              style={{ borderColor: "var(--line)" }}
-            >
-              {dark ? <Sun size={15} /> : <Moon size={15} />}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <Button variant="ghost" onClick={signOut}>
+                Log out
+              </Button>
+              <button
+                onClick={toggle}
+                aria-label="Toggle theme"
+                className="rounded-lg border p-2 text-[var(--muted)] hover:text-[var(--text)]"
+                style={{ borderColor: "var(--line)" }}
+              >
+                {dark ? <Sun size={15} /> : <Moon size={15} />}
+              </button>
+            </div>
           </div>
           <MobileTabs />
         </header>

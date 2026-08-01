@@ -94,7 +94,10 @@ export function getAccessToken() {
 }
 
 async function doRefresh() {
-  const res = await fetch("/v1/auth/refresh", { method: "POST" });
+  const res = await fetch("/v1/auth/refresh", {
+    method: "POST",
+    credentials: "include",
+  });
   if (!res.ok) {
     _accessToken = null;
     throw new ApiError("Session expired", 401);
@@ -103,30 +106,51 @@ async function doRefresh() {
   _accessToken = data.access_token;
 }
 
+const AUTH_PUBLIC = new Set([
+  "/v1/auth/login",
+  "/v1/auth/signup",
+  "/v1/auth/refresh",
+  "/v1/auth/logout",
+]);
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!_accessToken && path !== "/v1/auth/login" && path !== "/v1/auth/refresh") {
-    if (!_refreshPromise) _refreshPromise = doRefresh().finally(() => { _refreshPromise = null; });
+  if (!_accessToken && !AUTH_PUBLIC.has(path)) {
+    if (!_refreshPromise) {
+      _refreshPromise = doRefresh().finally(() => {
+        _refreshPromise = null;
+      });
+    }
     await _refreshPromise;
   }
 
   const doRequest = async () => {
-    const headers: Record<string, string> = { "Content-Type": "application/json", ...((init?.headers as Record<string, string>) ?? {}) };
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      ...((init?.headers as Record<string, string>) ?? {}),
+    };
     if (_accessToken) {
       headers["Authorization"] = `Bearer ${_accessToken}`;
     }
-    const res = await fetch(path, { ...init, headers });
-    
-    if (res.status === 401 && path !== "/v1/auth/login" && path !== "/v1/auth/refresh") {
+    const res = await fetch(path, { ...init, headers, credentials: "include" });
+
+    if (res.status === 401 && !AUTH_PUBLIC.has(path)) {
       throw new ApiError("unauthorized", 401);
     }
-    
+
     const text = await res.text();
     let body: any = null;
-    try { body = text ? JSON.parse(text) : null; } catch { body = { detail: text }; }
-    
+    try {
+      body = text ? JSON.parse(text) : null;
+    } catch {
+      body = { detail: text };
+    }
+
     if (!res.ok) {
       const detail = body?.detail ?? body?.message ?? text ?? res.statusText;
-      throw new ApiError(typeof detail === "string" ? detail : JSON.stringify(detail), res.status);
+      throw new ApiError(
+        typeof detail === "string" ? detail : JSON.stringify(detail),
+        res.status,
+      );
     }
     return body as T;
   };
@@ -134,8 +158,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     return await doRequest();
   } catch (err) {
-    if (err instanceof ApiError && err.status === 401) {
-      if (!_refreshPromise) _refreshPromise = doRefresh().finally(() => { _refreshPromise = null; });
+    if (
+      err instanceof ApiError &&
+      err.status === 401 &&
+      !AUTH_PUBLIC.has(path)
+    ) {
+      if (!_refreshPromise) {
+        _refreshPromise = doRefresh().finally(() => {
+          _refreshPromise = null;
+        });
+      }
       await _refreshPromise;
       return await doRequest();
     }
@@ -146,7 +178,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function login(email: string, password: string) {
   const data = await request<{ access_token: string }>("/v1/auth/login", {
     method: "POST",
-    body: JSON.stringify({ email, password })
+    body: JSON.stringify({ email, password }),
+  });
+  _accessToken = data.access_token;
+}
+
+export async function signup(
+  company_name: string,
+  email: string,
+  password: string,
+) {
+  const data = await request<{ access_token: string }>("/v1/auth/signup", {
+    method: "POST",
+    body: JSON.stringify({ company_name, email, password }),
   });
   _accessToken = data.access_token;
 }
@@ -154,7 +198,9 @@ export async function login(email: string, password: string) {
 export async function logout() {
   try {
     await request("/v1/auth/logout", { method: "POST" });
-  } catch (e) {}
+  } catch {
+    /* ignore */
+  }
   _accessToken = null;
 }
 
@@ -176,8 +222,18 @@ export type StartDemoBody = {
 
 export const api = {
   login,
+  signup,
   logout,
-  checkAuth: async () => { if (!_accessToken) await request("/client/api/bio").catch(() => {}); return !!_accessToken; },
+  checkAuth: async () => {
+    if (!_accessToken) {
+      try {
+        await doRefresh();
+      } catch {
+        return false;
+      }
+    }
+    return !!_accessToken;
+  },
   bootstrap: () =>
     request<{ ok: boolean; product_id: string; api_key: string | null; message: string }>(
       "/client/api/bootstrap",

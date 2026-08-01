@@ -154,16 +154,28 @@ export function Input({
   onChange,
   placeholder,
   className,
+  type = "text",
+  required,
+  autoComplete,
+  name,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   className?: string;
+  type?: string;
+  required?: boolean;
+  autoComplete?: string;
+  name?: string;
 }) {
   return (
     <input
+      type={type}
+      name={name}
       value={value}
       placeholder={placeholder}
+      required={required}
+      autoComplete={autoComplete}
       onChange={(e) => onChange(e.target.value)}
       className={cn(fieldBase, className)}
       style={{ borderColor: "var(--line)" }}

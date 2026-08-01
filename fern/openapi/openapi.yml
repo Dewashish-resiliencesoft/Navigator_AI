@@ -6,6 +6,30 @@ info:
   description: Live interactive demo agent for any web product.
   version: 0.1.0
 paths:
+  /v1/auth/signup:
+    post:
+      summary: Signup
+      description: Create a new client company (product) + first admin user, return JWT.
+      operationId: signup_v1_auth_signup_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SignupRequest'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/auth/login:
     post:
       summary: Login
@@ -1879,9 +1903,13 @@ components:
       properties:
         email:
           type: string
+          maxLength: 320
+          minLength: 3
           title: Email
         password:
           type: string
+          maxLength: 200
+          minLength: 1
           title: Password
       type: object
       required:
@@ -2110,6 +2138,29 @@ components:
       - expires_at
       - product_id
       title: SessionTokenResponse
+    SignupRequest:
+      properties:
+        company_name:
+          type: string
+          maxLength: 200
+          minLength: 1
+          title: Company Name
+        email:
+          type: string
+          maxLength: 320
+          minLength: 3
+          title: Email
+        password:
+          type: string
+          maxLength: 200
+          minLength: 8
+          title: Password
+      type: object
+      required:
+      - company_name
+      - email
+      - password
+      title: SignupRequest
     SiteGraphBody:
       properties:
         yaml:

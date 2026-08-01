@@ -257,14 +257,22 @@ class DemoRunView(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    email: str
-    password: str
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class SignupRequest(BaseModel):
+    company_name: str = Field(min_length=1, max_length=200)
+    email: str = Field(min_length=3, max_length=320)
+    password: str = Field(min_length=8, max_length=200)
+
 
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     expires_in: int
     product_id: str
+
 
 def _mint_jwt(user_id: str, product_id: str) -> str:
     now = datetime.now(timezone.utc)
@@ -273,37 +281,87 @@ def _mint_jwt(user_id: str, product_id: str) -> str:
         "sub": user_id,
         "product_id": product_id,
         "role": "admin",
-        "exp": int(now.timestamp() + expires_in)
+        "exp": int(now.timestamp() + expires_in),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
+
+
+def _set_refresh_cookie(response: Response, token: str) -> None:
+    # Client console is loopback HTTP — Secure cookies would never stick.
+    response.set_cookie(
+        key="refresh_token",
+        value=token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=7 * 24 * 3600,
+        path="/",
+    )
+
+
+def _issue_tokens(
+    response: Response, store: AuthStore, *, user_id: str, product_id: str
+) -> dict:
+    access_token = _mint_jwt(user_id, product_id)
+    refresh_token = store.create_refresh_token(user_id)
+    _set_refresh_cookie(response, refresh_token)
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": 900,
+        "product_id": product_id,
+    }
+
+
+@app.post("/v1/auth/signup", response_model=TokenResponse, status_code=201)
+def signup(
+    req: SignupRequest,
+    response: Response,
+    registry: Reg,
+    store: Annotated[AuthStore, Depends(get_auth_store)],
+) -> dict:
+    """Create a new client company (product) + first admin user, return JWT."""
+    email = req.email.strip().lower()
+    if store.get_user_by_email(email):
+        raise HTTPException(409, "email already registered")
+
+    spec = NewProduct(name=req.company_name.strip())
+    try:
+        registered = registry.register(spec)
+    except RegistryError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+    product_id = registered.product.product_id
+    try:
+        registry.put_site_graph(product_id, _BLANK_CLIENT_GRAPH, "yaml")
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        user_id = store.create_user(product_id, email, req.password)
+    except AuthError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+    return _issue_tokens(response, store, user_id=user_id, product_id=product_id)
+
 
 @app.post("/v1/auth/login", response_model=TokenResponse)
 def login(
     req: LoginRequest,
     response: Response,
-    store: Annotated[AuthStore, Depends(get_auth_store)]
+    store: Annotated[AuthStore, Depends(get_auth_store)],
 ) -> dict:
-    user = store.get_user_by_email(req.email)
-    if not user or not bcrypt.checkpw(req.password.encode(), user["password_hash"].encode()):
+    email = req.email.strip().lower()
+    user = store.get_user_by_email(email)
+    if not user or not bcrypt.checkpw(
+        req.password.encode(), user["password_hash"].encode()
+    ):
         raise HTTPException(401, "invalid credentials")
-    
-    access_token = _mint_jwt(user["user_id"], user["product_id"])
-    refresh_token = store.create_refresh_token(user["user_id"])
-    
-    response.set_cookie(
-        key="refresh_token",
-        value=refresh_token,
-        httponly=True,
-        secure=True,
-        samesite="lax",
-        max_age=7 * 24 * 3600
+
+    return _issue_tokens(
+        response, store, user_id=user["user_id"], product_id=user["product_id"]
     )
-    
-    return {
-        "access_token": access_token,
-        "expires_in": 900,
-        "product_id": user["product_id"]
-    }
+
 
 @app.post("/v1/auth/refresh", response_model=TokenResponse)
 def refresh(
@@ -313,32 +371,22 @@ def refresh(
 ) -> dict:
     if not refresh_token:
         raise HTTPException(401, "no refresh token")
-    
+
     try:
         user_id = store.consume_refresh_token(refresh_token)
         user = store.get_user(user_id)
         if not user:
             raise HTTPException(401, "invalid user")
-            
-        access_token = _mint_jwt(user["user_id"], user["product_id"])
-        new_refresh_token = store.create_refresh_token(user["user_id"])
-        
-        response.set_cookie(
-            key="refresh_token",
-            value=new_refresh_token,
-            httponly=True,
-            secure=True,
-            samesite="lax",
-            max_age=7 * 24 * 3600
+
+        return _issue_tokens(
+            response,
+            store,
+            user_id=user["user_id"],
+            product_id=user["product_id"],
         )
-        
-        return {
-            "access_token": access_token,
-            "expires_in": 900,
-            "product_id": user["product_id"]
-        }
     except AuthError as exc:
         raise HTTPException(401, str(exc)) from None
+
 
 @app.post("/v1/auth/logout")
 def logout(
@@ -348,8 +396,9 @@ def logout(
 ) -> dict:
     if refresh_token:
         store.revoke_refresh_token(refresh_token)
-    response.delete_cookie("refresh_token")
+    response.delete_cookie("refresh_token", path="/")
     return {"ok": True}
+
 
 class SessionTokenRequest(BaseModel):
     intake: IntakePrefill | None = None
@@ -359,14 +408,6 @@ class SessionTokenResponse(BaseModel):
     token: str
     expires_at: str
     product_id: str
-
-class IntakePrefill(BaseModel):
-    """What the landing page already knows, so the bot needn't ask again."""
-
-    name: str = ""
-    company: str = ""
-    business_type: str = ""
-    looking_for: str = ""
 
 
 class StartLiveDemo(BaseModel):

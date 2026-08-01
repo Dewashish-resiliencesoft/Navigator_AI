@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from navigator.agent.end_policy import ANYTHING_ELSE, WRAP_UP, is_goodbye, next_silence_action
 from navigator.agent.planner import HANDOFF_SPOKEN, FlowChoice, choose_flow
+from navigator.agent.speech_safety import REFUSE_SPOKEN, is_exfil_request
 from navigator.agent.state import CallDeps, CallState
 from navigator.knowledge.site_graph import SiteGraphError
 from navigator.meeting.intake import format_with_intake
@@ -68,6 +69,16 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
             pending_calls=[],
             narration=[WRAP_UP],
             transcript=[f"agent: {WRAP_UP}"],
+        )
+
+    if utterance and is_exfil_request(utterance):
+        return CallState(
+            plan=Plan(spoken_response=REFUSE_SPOKEN, tool_calls=[]),
+            pending_calls=[],
+            narration=[REFUSE_SPOKEN],
+            transcript=[f"agent: {REFUSE_SPOKEN}"],
+            phase=phase,
+            walkthrough_step=state.get("walkthrough_step"),
         )
 
     if phase == "ending":

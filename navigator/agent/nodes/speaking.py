@@ -7,6 +7,7 @@ append their own transcript entries; this node only turns text into audio, so
 
 from __future__ import annotations
 
+from navigator.agent.speech_safety import prospect_safe_line
 from navigator.agent.state import CLEAR, CallDeps, CallState
 
 
@@ -25,7 +26,10 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
             return CallState(narration=CLEAR, finished=True, phase="ending")
         if deps.push_frame is not None:
             deps.push_frame()
-        deps.speaker.say(line)
+        safe = prospect_safe_line(line)
+        if safe != line:
+            print(f"[speak] scrubbed technical narration: {line!r}", flush=True)
+        deps.speaker.say(safe)
         if getattr(deps.speaker, "interrupted", False):
             interrupted = True
         if deps.push_frame is not None:

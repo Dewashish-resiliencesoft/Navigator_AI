@@ -97,6 +97,16 @@ def start_tunnel(
     return handle
 
 
+def _socket_resolve(host: str) -> list[str]:
+    """Fallback: resolve via Python socket when dig is unavailable."""
+    import socket as _socket
+    try:
+        results = _socket.getaddrinfo(host, 443, _socket.AF_INET)
+        return list({r[4][0] for r in results})
+    except _socket.gaierror:
+        return []
+
+
 def _dig_ips(host: str) -> list[str]:
     """Resolve host via 1.1.1.1 when systemd-resolved fails on trycloudflare CNAMEs."""
     try:
@@ -105,7 +115,11 @@ def _dig_ips(host: str) -> list[str]:
             text=True,
             timeout=5,
         )
-    except (FileNotFoundError, subprocess.SubprocessError):
+    except FileNotFoundError:
+        # dig not installed — try Python socket.
+        print("[tunnel] dig not found; using socket fallback", flush=True)
+        return _socket_resolve(host)
+    except subprocess.SubprocessError:
         return []
     ips: list[str] = []
     for line in out.splitlines():

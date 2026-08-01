@@ -26,6 +26,8 @@ SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"
 def listening(state: CallState, deps: CallDeps) -> CallState:
     if deps.set_status is not None:
         deps.set_status("listening", "Listening…")
+    if deps.set_avatar_state is not None:
+        deps.set_avatar_state("listening")
     # Prefer utterance captured during barge-in over a fresh listen wait.
     pending = deps.pending_barge_in
     if pending:

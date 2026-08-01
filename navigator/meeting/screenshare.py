@@ -29,13 +29,37 @@ def arm_screenshare(
     public_view: str,
     wait_until_public: Callable[..., None] | None = None,
     timeout_s: float = 45.0,
+    max_retries: int = 2,
 ) -> None:
     wait = wait_until_public or _default_wait
     print(f"[live] tunnel_ready=probing url={public_view}", flush=True)
-    wait(public_view, timeout_s=timeout_s)
-    print(f"[live] tunnel_ready=ok url={public_view}", flush=True)
-    client.enable_screenshare(bot_id, public_view)
-    print(f"[live] screenshare_patch=ok bot={bot_id}", flush=True)
+    last_err: Exception | None = None
+    for attempt in range(max_retries + 1):
+        try:
+            wait(public_view, timeout_s=timeout_s)
+            print(f"[live] tunnel_ready=ok url={public_view}", flush=True)
+            break
+        except Exception as exc:
+            last_err = exc
+            if attempt < max_retries:
+                print(
+                    f"[live] tunnel probe attempt {attempt + 1} failed: {exc}; retrying…",
+                    flush=True,
+                )
+                time.sleep(2)
+            else:
+                raise RuntimeError(
+                    f"screenshare tunnel not reachable after {max_retries + 1} attempts: "
+                    f"{exc}\nCheck: cloudflared running? DNS resolves *.trycloudflare.com?"
+                ) from last_err
+    try:
+        client.enable_screenshare(bot_id, public_view)
+        print(f"[live] screenshare_patch=ok bot={bot_id}", flush=True)
+    except Exception as exc:
+        raise RuntimeError(
+            f"enable_screenshare PATCH failed for bot {bot_id}: {exc}\n"
+            "Ensure reserve_voice_agent=True was passed at join time."
+        ) from exc
 
 
 def wait_until_screenshare_live(

@@ -36,6 +36,8 @@ def _guide_page_id(state: CallState) -> str:
 def planning(state: CallState, deps: CallDeps) -> CallState:
     if deps.set_status is not None:
         deps.set_status("tailoring", "Tailoring…")
+    if deps.set_avatar_state is not None:
+        deps.set_avatar_state("thinking")
     if getattr(deps.speaker, "bot_ended", False):
         return CallState(
             plan=Plan(spoken_response="", tool_calls=[]),
@@ -329,20 +331,53 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
             silence_rounds=0,
         )
     nxt = calls[step]
-    spoken = (getattr(nxt, "spoken", None) or "").strip()
-    if not spoken:
-        spoken = (
+    # YAML spoken as hint — vision generates the real narration.
+    yaml_hint = (getattr(nxt, "spoken", None) or "").strip()
+    if not yaml_hint:
+        yaml_hint = (
             _describe(deps.graph.page(page_id).name, flow_id)
             if step == 0
-            else "Next."
+            else "Next step."
         )
-    spoken = format_with_intake(spoken, deps.intake)
-    # First walkthrough step: brief personal bridge if we know them.
+    yaml_hint = format_with_intake(yaml_hint, deps.intake)
     if step == 0 and deps.intake and deps.intake.name:
         need = deps.intake.looking_for or "what you asked about"
-        spoken = (
-            f"Alright {deps.intake.name}, focusing on {need}. {spoken}"
-        )
+        yaml_hint = f"Alright {deps.intake.name}, focusing on {need}. {yaml_hint}"
+
+    # Vision-first: agent looks at screen and generates narration.
+    spoken = yaml_hint  # default if vision unavailable
+    if _use_turn_brain(deps) and deps.page is not None:
+        try:
+            from navigator.agent.turn_brain import capture_screenshot_png
+            from navigator.agent.vision_narrator import generate_narration
+
+            png = capture_screenshot_png(deps.page)
+            screen = ""
+            if deps.screen_context is not None:
+                screen = deps.screen_context() or ""
+            intake_summary = ""
+            if deps.intake:
+                intake_summary = (
+                    f"{deps.intake.name} at {deps.intake.company}, "
+                    f"{deps.intake.business_type}, need={deps.intake.looking_for}"
+                )
+            # Describe what action is about to happen.
+            step_action = ""
+            tool = getattr(nxt, "tool", "") or type(nxt).__name__
+            alias = getattr(nxt, "alias", "") or getattr(nxt, "page_id", "")
+            step_action = f"{tool} {alias}".strip()
+
+            spoken = generate_narration(
+                screenshot_png=png,
+                screen_text=screen,
+                narration_hint=yaml_hint,
+                intake_summary=intake_summary,
+                product_brief=deps.product_brief or "",
+                step_action=step_action,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[plan] vision narration skipped: {exc}", flush=True)
+
     return CallState(
         phase="walkthrough",
         walkthrough_step=step + 1,

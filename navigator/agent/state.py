@@ -90,6 +90,8 @@ class CallDeps:
     is_bot_echo: Callable[[str], bool] | None = None
     #: Share-overlay status: set_status("listening", "Listening…").
     set_status: Callable[..., None] | None = None
+    #: Avatar state for Meet camera tile (speaking, listening, thinking, idle)
+    set_avatar_state: Callable[[str], None] | None = None
     #: Live Playwright screen snapshot for planner (url/title/visible text).
     screen_context: Callable[[], str] | None = None
     #: Product expert brief (markdown). Empty → persona-only.

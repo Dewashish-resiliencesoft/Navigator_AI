@@ -15,6 +15,8 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
         return CallState(narration=CLEAR, finished=True, phase="ending")
     if deps.set_status is not None:
         deps.set_status("speaking", "Speaking…")
+    if deps.set_avatar_state is not None:
+        deps.set_avatar_state("speaking")
     interrupted = False
     for line in state.get("narration") or []:
         if interrupted:
@@ -30,4 +32,6 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
             deps.push_frame()
     if getattr(deps.speaker, "bot_ended", False):
         return CallState(narration=CLEAR, finished=True, phase="ending")
+    if deps.set_avatar_state is not None:
+        deps.set_avatar_state("idle")
     return CallState(narration=CLEAR)

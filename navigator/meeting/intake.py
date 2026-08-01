@@ -193,7 +193,7 @@ def run_intake(
                 heard = (listen(question) or "").strip()
             except Exception as exc:  # noqa: BLE001
                 print(f"[intake] listen failed ({exc}) — using default", flush=True)
-            cleaned = _clean_field(key, heard) if heard else ""
+            cleaned = extract_intake_entity(key, question, heard) if heard else ""
             answers[key] = cleaned or default
             print(
                 f"[intake] {key}={answers[key]!r}"
@@ -236,6 +236,33 @@ def _clean_field(key: str, value: str) -> str:
     if key == "looking_for":
         return summarize_need(value, max_len=120) or clean_phrase(value)
     return clean_phrase(value)
+
+
+def extract_intake_entity(key: str, question: str, heard: str) -> str:
+    from navigator.agent.providers import get_provider
+    try:
+        provider = get_provider()
+    except RuntimeError as e:
+        print(f"[intake] LLM fallback due to: {e}")
+        return _clean_field(key, heard)
+
+    sys_prompt = f"""You are an extraction assistant for a sales call.
+The agent asked: "{question}"
+The user replied: "{heard}"
+
+Your task is to extract ONLY the specific piece of information requested (e.g., just the company name, just the person's name, or just the business type).
+If the user says they don't have one, or gives a negative response, output: "NONE"
+If the user's answer is ambiguous or doesn't contain the requested information, output: "NONE"
+Do not output full sentences. Only output the extracted entity. Do not use quotes."""
+
+    try:
+        result = provider.complete(system=sys_prompt, user="Extract the entity.")
+        if not result or result.strip().upper() == "NONE":
+            return ""
+        return result.strip()
+    except Exception as exc:
+        print(f"[intake] LLM extraction failed: {exc}", flush=True)
+        return _clean_field(key, heard)
 
 
 def _say(speaker: Speaker, text: str) -> None:

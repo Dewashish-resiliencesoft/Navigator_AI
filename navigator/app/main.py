@@ -171,6 +171,7 @@ class IntakePrefill(BaseModel):
 class StartLiveDemo(BaseModel):
     platform: MeetingPlatform | None = None
     """None -> NAVIGATOR_MEETING_PLATFORM."""
+    topic: str | None = None
     page_id: str | None = None
     flow_id: str | None = None
     """None -> NAVIGATOR_LIVE_WALKTHROUGH_FLOW."""
@@ -335,8 +336,9 @@ def start_live_demo(
         raise HTTPException(422, str(exc)) from None
 
     try:
+        topic = spec.topic or f"Navigator demo — {product.name}"
         meeting = providers(spec.platform).create_meeting(
-            product.product_id, topic=f"Navigator demo — {product.name}"
+            product.product_id, topic=topic
         )
     except MeetingProviderError as exc:
         # 502: the request was fine, the upstream conferencing provider was not.

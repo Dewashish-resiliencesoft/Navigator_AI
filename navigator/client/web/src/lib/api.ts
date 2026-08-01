@@ -106,6 +106,7 @@ const send = <T>(path: string, method: string, body?: unknown) =>
 
 export type StartDemoBody = {
   platform: string;
+  topic?: string;
   intake: {
     name: string;
     company: string;

@@ -22,6 +22,7 @@ const LINK_PENDING = "Navigator joining meeting… link unlocks when the bot is 
 export function LiveDemo() {
   const { ok, err } = useUi();
   const [platform, setPlatform] = useState("zoom");
+  const [topic, setTopic] = useState("");
   const [name, setName] = useState("");
   const [company, setCompany] = useState("");
   const [business, setBusiness] = useState("");
@@ -66,6 +67,7 @@ export function LiveDemo() {
     try {
       const d = await api.startDemo({
         platform,
+        topic: topic.trim() || undefined,
         intake: {
           name: name.trim(),
           company: company.trim(),
@@ -117,16 +119,21 @@ export function LiveDemo() {
         <CardTitle hint="Prefill what the landing page already knows so the bot needn't ask.">
           New demo
         </CardTitle>
-        <Field label="Platform">
-          <Select
-            value={platform}
-            onChange={setPlatform}
-            options={[
-              { value: "zoom", label: "Zoom" },
-              { value: "google_meet", label: "Google Meet" },
-            ]}
-          />
-        </Field>
+        <div className="grid gap-x-3 sm:grid-cols-2">
+          <Field label="Platform">
+            <Select
+              value={platform}
+              onChange={setPlatform}
+              options={[
+                { value: "zoom", label: "Zoom" },
+                { value: "google_meet", label: "Google Meet" },
+              ]}
+            />
+          </Field>
+          <Field label="Demo Title">
+            <Input value={topic} onChange={setTopic} placeholder="Navigator demo — ..." />
+          </Field>
+        </div>
         <div className="grid gap-x-3 sm:grid-cols-2">
           <Field label="Name">
             <Input value={name} onChange={setName} placeholder="optional" />

@@ -14,7 +14,7 @@ from navigator.meeting.tunnel import wait_until_public as _default_wait
 
 
 class _Attendee(Protocol):
-    def enable_screenshare(self, bot_id: str, screenshare_url: str) -> None: ...
+    def enable_screenshare(self, bot_id: str, screenshare_url: str, voice_agent_url: str | None = None) -> None: ...
 
 
 class _Relay(Protocol):
@@ -27,10 +27,13 @@ def arm_screenshare(
     client: _Attendee,
     bot_id: str,
     public_view: str,
+    public_agent: str | None = None,
     wait_until_public: Callable[..., None] | None = None,
     timeout_s: float = 45.0,
     max_retries: int = 2,
 ) -> None:
+    # public_agent ignored — Attendee forbids url+screenshare_url together.
+    _ = public_agent
     wait = wait_until_public or _default_wait
     print(f"[live] tunnel_ready=probing url={public_view}", flush=True)
     last_err: Exception | None = None

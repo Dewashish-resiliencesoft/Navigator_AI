@@ -431,10 +431,19 @@ def run_live_meet_demo(
             print("[live] starting screenshare tunnel…", flush=True)
             tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
             public_view = f"{tunnel.public_url}/view"
+            public_agent = f"{tunnel.public_url}/agent"
             print(f"[live] screenshare URL ready: {public_view}", flush=True)
             if tunnel._proc.poll() is not None:
                 raise RuntimeError("cloudflared died before screenshare")
+            # Avatar on camera tile first (Attendee: url XOR screenshare_url).
+            try:
+                client.set_voice_agent_url(bot.id, public_agent)
+                print(f"[live] avatar tile armed: {public_agent}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] avatar tile skipped: {exc}", flush=True)
         else:
+            public_view = ""
+            public_agent = None
             print(
                 "[live] Zoom: skipping screenshare tunnel (native SDK)",
                 flush=True,
@@ -573,16 +582,26 @@ def run_live_meet_demo(
             def _do_login(*, url: str, email: str, password: str, **_kw) -> None:
                 login_product(page, url=url, email=email, password=password)
 
+            def _real_origin() -> str:
+                """Prefer site-graph base_url; fall back to NAVIGATOR_PRODUCT_URL."""
+                for candidate in (graph_cfg.base_url, settings.product_url):
+                    c = (candidate or "").strip()
+                    if not c.startswith(("http://", "https://")):
+                        continue
+                    low = c.lower()
+                    if "example.com" in low or "fixtures" in low or c.endswith(".html"):
+                        continue
+                    return c if c.endswith("/") else c + "/"
+                raise RuntimeError(
+                    "set product domain in the client dashboard "
+                    "(Live Demo → Product domain), or NAVIGATOR_PRODUCT_URL"
+                )
+
+            origin = _real_origin()
             if settings.product_login_email and settings.product_login_password:
-                login_url = settings.product_url
-                if not login_url:
-                    raise RuntimeError(
-                        "live demo needs NAVIGATOR_PRODUCT_URL (not fixture)"
-                    )
+                login_url = settings.product_url.strip() or origin
                 if "fixtures" in login_url or login_url.endswith(".html"):
-                    raise RuntimeError(
-                        "live demo needs NAVIGATOR_PRODUCT_URL (not fixture)"
-                    )
+                    login_url = origin
                 gate = run_login_gate(
                     login_fn=_do_login,
                     url=login_url,
@@ -601,20 +620,11 @@ def run_live_meet_demo(
                     browser.close()
                     return bot_id or ""
             else:
-                start = settings.product_url
-                if not start:
-                    raise RuntimeError(
-                        "live demo needs NAVIGATOR_PRODUCT_URL (not fixture)"
-                    )
-                if "fixtures" in start or start.endswith(".html"):
-                    raise RuntimeError(
-                        "live demo needs NAVIGATOR_PRODUCT_URL (not fixture)"
-                    )
-                page.goto(start, wait_until="domcontentloaded")
+                page.goto(origin, wait_until="domcontentloaded")
 
             # Hold on the walkthrough start page (do not advance the flow yet).
             start_spec = graph_cfg.page(page_id)
-            hold_url = urljoin(graph_cfg.base_url, start_spec.url.lstrip("/"))
+            hold_url = urljoin(origin, start_spec.url.lstrip("/"))
             is_fixture = "fixtures" in hold_url or hold_url.endswith(".html")
             is_real_site = "fixtures" not in page.url and not page.url.endswith(".html")
             if is_fixture and is_real_site:
@@ -689,7 +699,7 @@ def run_live_meet_demo(
                 meeting_url=None,
                 attendee=client,
                 bot_id=bot.id,
-                voice_agent_url=None,
+                voice_agent_url=public_agent if not zoom_native else None,
                 push_frame=_push,
                 interactive_listen=interactive_listen,
                 audio_frames=audio_frames,

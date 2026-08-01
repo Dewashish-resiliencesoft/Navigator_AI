@@ -50,6 +50,8 @@ color:#60a5fa;font:500 14px system-ui;letter-spacing:.04em;text-transform:upperc
 import * as THREE from 'three';
 import {GLTFLoader} from 'three/addons/loaders/GLTFLoader.js';
 
+navigator.mediaDevices.getUserMedia({audio:true}).catch(()=>{});
+
 const canvas = document.getElementById('c');
 const fallback = document.getElementById('fallback');
 const slabel = document.getElementById('slabel');

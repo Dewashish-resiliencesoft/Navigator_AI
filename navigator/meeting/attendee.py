@@ -144,12 +144,26 @@ class AttendeeClient:
     def leave(self, bot_id: str) -> None:
         self._request("POST", f"/bots/{bot_id}/leave", {})
 
-    def enable_screenshare(self, bot_id: str, screenshare_url: str) -> None:
-        """Start Meet screen share mid-call (requires reserve_resources at join)."""
+    def enable_screenshare(self, bot_id: str, screenshare_url: str, voice_agent_url: str | None = None) -> None:
+        """Start Meet screen share mid-call (requires reserve_resources at join).
+
+        Attendee rejects ``url`` + ``screenshare_url`` in one PATCH — only send
+        screenshare here. Use ``set_voice_agent_url`` for the avatar tile.
+        """
+        # voice_agent_url kept for call-compat; never sent (API mutual exclusion).
+        _ = voice_agent_url
         self._request(
             "PATCH",
             f"/bots/{bot_id}/voice_agent_settings",
             {"screenshare_url": screenshare_url},
+        )
+
+    def set_voice_agent_url(self, bot_id: str, url: str) -> None:
+        """Point bot camera tile at avatar page (mutually exclusive with screenshare)."""
+        self._request(
+            "PATCH",
+            f"/bots/{bot_id}/voice_agent_settings",
+            {"url": url},
         )
 
     def send_chat(self, bot_id: str, message: str, *, to: str = "everyone") -> None:

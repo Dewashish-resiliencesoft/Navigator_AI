@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     google_meet_use_login: bool = False
     #: Product API key for local client dashboard (server-side; never sent to browser).
     client_api_key: str = ""
+    #: Redis URL for multi-worker demo state coordination (e.g. redis://localhost:6379/0).
+    redis_url: str = ""
+    #: JWT secret for client dashboard auth
+    jwt_secret: str = "unsafe-default-secret-change-in-prod"
 
 
 settings = Settings()

@@ -239,3 +239,21 @@ def stop_recorder() -> RecorderJob:
 def recording_base_url(start_url: str) -> str:
     parsed = urlparse(start_url)
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def apply_base_url_to_yaml(yaml_text: str, base_url: str) -> str:
+    """Set site graph ``base_url`` (the product origin demos navigate to)."""
+    cleaned = (base_url or "").strip()
+    if not cleaned.startswith(("http://", "https://")):
+        raise SiteGraphError("base_url must be an absolute http(s) URL")
+    parsed = urlparse(cleaned)
+    if not parsed.netloc or parsed.netloc.lower() in {"example.com", "www.example.com"}:
+        raise SiteGraphError("set your real product domain — not example.com")
+    # Origin only: path/query belong on page urls, not base_url.
+    origin = f"{parsed.scheme}://{parsed.netloc}/"
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        raise SiteGraphError("site graph must be a mapping")
+    raw["base_url"] = origin
+    parse_site_graph(yaml.safe_dump(raw), origin="<ops-base-url>")
+    return yaml.safe_dump(raw, sort_keys=False)

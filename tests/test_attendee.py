@@ -112,12 +112,36 @@ def test_enable_screenshare_patches():
             "navigator.meeting.attendee.urlopen",
             return_value=_resp(b"{}"),
         ):
-            client.enable_screenshare("bot_1", "https://tunnel.example/view")
+            # Even if caller passes voice_agent_url, Attendee only gets screenshare_url.
+            client.enable_screenshare(
+                "bot_1",
+                "https://tunnel.example/view",
+                voice_agent_url="https://tunnel.example/agent",
+            )
     assert captured["method"] == "PATCH"
     assert captured["url"].endswith("/bots/bot_1/voice_agent_settings")
     assert json.loads(captured["data"]) == {
         "screenshare_url": "https://tunnel.example/view"
     }
+
+
+def test_set_voice_agent_url_patches_url_only():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    captured: dict = {}
+    real_request = __import__("urllib.request", fromlist=["Request"]).Request
+
+    def capture_request(*args, **kwargs):
+        req = real_request(*args, **kwargs)
+        captured["data"] = req.data
+        return req
+
+    with patch("navigator.meeting.attendee.Request", side_effect=capture_request):
+        with patch(
+            "navigator.meeting.attendee.urlopen",
+            return_value=_resp(b"{}"),
+        ):
+            client.set_voice_agent_url("bot_1", "https://tunnel.example/agent")
+    assert json.loads(captured["data"]) == {"url": "https://tunnel.example/agent"}
 
 
 def test_get_maps_joined_recording():

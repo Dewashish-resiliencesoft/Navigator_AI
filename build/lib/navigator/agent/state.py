@@ -1,0 +1,167 @@
+"""Call state.
+
+Explicit and inspectable by design: at any point in a call you can dump this and
+see exactly what the agent believes, what it is about to do, and what has already
+failed. Nothing important lives implicitly inside an LLM's context.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Annotated, Literal, TypedDict
+from uuid import UUID
+
+from playwright.sync_api import Page
+
+from navigator.config.site_graph import SiteGraph
+from navigator.logs.store import ActionLog
+from navigator.schemas import ActionLogEntry, Plan, ToolCall, ToolResult
+from navigator.voice.tts import Speaker
+
+if TYPE_CHECKING:
+    from navigator.meeting.attendee import AttendeeClient
+    from navigator.meeting.intake import ProspectIntake
+
+
+State = Literal[
+    "joining",
+    "introducing",
+    "listening",
+    "planning",
+    "executing",
+    "verifying",
+    "speaking",
+    "reflecting",
+    "ending",
+]
+
+
+@dataclass
+class CallDeps:
+    """Everything a node needs from the outside world.
+
+    Passed once at graph construction rather than smuggled through state, so state
+    stays serialisable and nodes stay unit-testable with a fake.
+    """
+
+    graph: SiteGraph
+    page: Page
+    log: ActionLog
+    speaker: Speaker
+    #: Phase 1: which flow PLANNING replays. When set, wins over the LLM picker.
+    scripted_flow: tuple[str, str] | None = None
+    #: Which product is being demoed. Single-tenant in Phase 1; the wrapper API
+    #: sets this per demo so one deployment can serve many products.
+    product_id: str = "default"
+    #: Where ENDING writes transcripts and action dumps. Namespaced by product_id
+    #: underneath, so tenants never share a directory.
+    archive_dir: Path = Path("archives")
+    #: Groq key for the LLM flow picker. None → settings.groq_api_key.
+    groq_api_key: str | None = None
+    #: Chroma persistence root. None → settings.chroma_path.
+    chroma_path: Path | None = None
+    #: Injected flow picker for tests. When set, no Groq key is required.
+    #: ponytail: one CallDeps field. Ceiling: ad-hoc callable. Upgrade: LLMProvider (Phase 4).
+    choose_flow: Callable[..., object] | None = None
+    #: Phase 3: Google Meet / Zoom URL. Empty → joining stays standalone.
+    meeting_url: str | None = None
+    attendee: AttendeeClient | None = None
+    #: Public HTTPS URL of the frame relay /view page for Attendee voice agent.
+    voice_agent_url: str | None = None
+    #: Optional: push a Meet screen-share frame (Playwright thread only).
+    push_frame: Callable[[], None] | None = None
+    #: When True, LISTENING prompts on stdin for what the prospect said.
+    interactive_listen: bool = False
+    #: Live Meet bot id (handoff chat + speak into call).
+    bot_id: str | None = None
+    #: PCM frame iterator for STT (16-bit mono @ 16kHz, ~200ms frames). None → scripted/stdin.
+    audio_frames: Iterator[bytes] | None = None
+    #: Injected STT for tests. Signature (pcm_utterance: bytes) -> str.
+    transcribe_audio: Callable[[bytes], str] | None = None
+    #: Reflection LLM (Gemini/OpenAI). None → get_provider() when reflecting.
+    reflect_provider: object | None = None
+    #: SQLite path for pending corrections. None → settings.db_path.
+    pending_db_path: Path | None = None
+    #: Pre-demo prospect intake (company / looking_for). None → planner ignores.
+    intake: ProspectIntake | None = None
+
+
+def append_only(existing: list, new: list) -> list:
+    """LangGraph reducer: nodes contribute to these lists, never replace them."""
+    return [*existing, *new]
+
+
+#: Sentinel a node returns to empty a queue that otherwise only accumulates.
+CLEAR: list = []
+
+
+def queue(existing: list, new: list) -> list:
+    """Reducer for a work queue: append, or clear on the CLEAR sentinel.
+
+    Needed because more than one node upstream of SPEAKING queues narration --
+    without this, whichever ran last would silently drop the others' lines.
+    """
+    return [] if new is CLEAR else [*existing, *new]
+
+
+class CallState(TypedDict, total=False):
+    session_id: UUID
+    page_id: str
+    """Where in the site graph the agent currently is."""
+    plan: Plan | None
+    pending_calls: list[ToolCall]
+    """Plan steps not yet executed. EXECUTING pops one from the front per pass."""
+    last_call: ToolCall | None
+    """The call EXECUTING just ran, so VERIFYING knows what to check."""
+    last_result: ToolResult | None
+    last_page_id: str
+    """page_id the call ran *on*, which differs from page_id after a navigate."""
+    transcript: Annotated[list[str], append_only]
+    """Everything said, by anyone, in order. Archived by ENDING."""
+    narration: Annotated[list[str], queue]
+    """What SPEAKING should say next. Accumulates across nodes, cleared once spoken."""
+    entries: Annotated[list[ActionLogEntry], append_only]
+    """This call's action log, in memory as well as in SQLite."""
+    failures: Annotated[list[ActionLogEntry], append_only]
+    """Subset of entries that failed. The REFLECTING input."""
+    turns: int
+    """Completed listen->speak cycles, so the graph can bound a scripted run."""
+    max_turns: int
+    finished: bool
+    #: LISTENING detected a user correction of the last action.
+    user_correction: bool
+    phase: str
+    walkthrough_flow_id: str
+    walkthrough_step: int
+    silence_rounds: int
+
+
+def initial_state(
+    session_id: UUID,
+    page_id: str,
+    max_turns: int = 1,
+    walkthrough_flow_id: str = "",
+) -> CallState:
+    return CallState(
+        session_id=session_id,
+        page_id=page_id,
+        plan=None,
+        pending_calls=[],
+        last_call=None,
+        last_result=None,
+        last_page_id=page_id,
+        transcript=[],
+        narration=[],
+        entries=[],
+        failures=[],
+        turns=0,
+        max_turns=max_turns,
+        finished=False,
+        user_correction=False,
+        phase="walkthrough",
+        walkthrough_flow_id=walkthrough_flow_id,
+        walkthrough_step=0,
+        silence_rounds=0,
+    )

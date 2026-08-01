@@ -121,6 +121,8 @@ def test_planning_uses_choose_flow_and_expands_graph_flow(
             spoken_response="I'll search for a contact.",
         )
 
+    state["phase"] = "anything_else"
+    state["transcript"] = ["user: show me how to search for a contact"]
     deps = _llm_deps(site_graph, page, log, tmp_path, fake)
     out = planning(state, deps)
     assert out["plan"].spoken_response == "I'll search for a contact."
@@ -135,6 +137,8 @@ def test_planning_rejects_unknown_flow_from_chooser(
     def fake(**kwargs) -> FlowChoice:
         return FlowChoice(flow_id="does_not_exist", spoken_response="x")
 
+    state["phase"] = "anything_else"
+    state["transcript"] = ["user: show me something weird"]
     deps = _llm_deps(site_graph, page, log, tmp_path, fake)
     with pytest.raises(ValueError, match="does_not_exist"):
         planning(state, deps)
@@ -269,6 +273,8 @@ def test_planning_passes_intake_into_chooser(
         company="Acme",
         looking_for="broadcast campaigns",
     )
+    state["phase"] = "anything_else"
+    state["transcript"] = ["user: show broadcast campaigns"]
     deps = _llm_deps(site_graph, page, log, tmp_path, fake)
     deps.intake = intake
     planning(state, deps)

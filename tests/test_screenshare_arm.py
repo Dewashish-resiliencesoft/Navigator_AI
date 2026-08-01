@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from navigator.meeting.screenshare import arm_screenshare
+from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
 
 
 class FakeTunnelWait:
@@ -17,6 +17,12 @@ class FakeAttendee:
 
     def enable_screenshare(self, bot_id: str, screenshare_url: str) -> None:
         self.calls.append((bot_id, screenshare_url))
+
+
+class FakeRelay:
+    def __init__(self) -> None:
+        self.frame_hits = 0
+        self.view_hits = 0
 
 
 def test_arm_screenshare_reprobes_then_patches():
@@ -48,3 +54,38 @@ def test_arm_screenshare_does_not_patch_if_probe_fails():
     except RuntimeError:
         pass
     assert client.calls == []
+
+
+def test_wait_until_screenshare_live_sees_frame_hits():
+    relay = FakeRelay()
+    pushes = {"n": 0}
+
+    def push() -> None:
+        pushes["n"] += 1
+        # Simulate Attendee polling after a few paints.
+        if pushes["n"] >= 3:
+            relay.frame_hits += 5
+
+    ok = wait_until_screenshare_live(
+        relay,
+        push_frame=push,
+        baseline_frame_hits=0,
+        min_frame_hits=10,
+        timeout_s=2.0,
+        settle_s=0.05,
+    )
+    assert ok is True
+    assert pushes["n"] >= 3
+
+
+def test_wait_until_screenshare_live_timeout():
+    relay = FakeRelay()
+    ok = wait_until_screenshare_live(
+        relay,
+        push_frame=lambda: None,
+        baseline_frame_hits=0,
+        min_frame_hits=50,
+        timeout_s=0.3,
+        settle_s=0.0,
+    )
+    assert ok is False

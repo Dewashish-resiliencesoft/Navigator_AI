@@ -24,6 +24,22 @@ def test_prefer_selector_id_fallback():
     assert alias == "composer"
 
 
+def test_listeners_capture_click_on_page(page):
+    """Regression: init_script-only path used to record 0 steps on live sites."""
+    from navigator.record import _install_listeners, inject_dom_listeners
+
+    steps: list = []
+    _install_listeners(page, steps)
+    page.set_content('<button id="go">Go</button>')
+    # set_content replaces the document; reinject listeners.
+    inject_dom_listeners(page)
+    page.click("#go")
+    page.wait_for_timeout(200)
+    assert len(steps) >= 1
+    assert steps[0].tool == "click_element"
+    assert steps[0].selector == "#go"
+
+
 def test_draft_site_graph_builds_flow():
     steps = [
         RecordedStep(

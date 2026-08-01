@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from navigator.agent.providers import LLMProvider, get_provider
@@ -17,6 +18,12 @@ REFLECT_SYSTEM = (
 )
 
 CLASSIFY_MODEL = "llama-3.1-8b-instant"
+
+_NOT_CORRECTION = re.compile(
+    r"\b(take me to|show me|go to|open the|navigate|404|not found|"
+    r"wrong page|end the meeting|goodbye|what is this)\b",
+    re.I,
+)
 
 
 def reflecting(state: CallState, deps: CallDeps) -> CallState:
@@ -79,8 +86,14 @@ def classify_correction(
     """Cheap yes/no: is this utterance correcting the agent's last action?"""
     if not utterance.strip():
         return False
+    # Nav / UI complaints / end — never corrections (even if LLM says yes).
+    if _NOT_CORRECTION.search(utterance):
+        return False
     prompt = (
-        "Answer ONLY yes or no. Is the user correcting the agent's last action?\n"
+        "Answer ONLY yes or no. Is the user correcting HOW the agent demoed "
+        "(wrong click, wrong field, wrong step)? "
+        "Navigation requests ('take me to X', 'show me Y') and UI bugs "
+        "(404, wrong page) are NOT corrections — answer no.\n"
         f"Utterance: {utterance}\n"
         f"Last action: {None if last_action is None else last_action.tool_call.tool}"
     )

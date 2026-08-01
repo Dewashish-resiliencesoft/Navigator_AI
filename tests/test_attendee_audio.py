@@ -58,3 +58,20 @@ def test_join_includes_websocket_audio_settings():
             reserve_voice_agent=True,
         )
     assert captured["body"]["websocket_settings"]["audio"]["url"] == "wss://example.com/ws"
+
+
+def test_join_google_meet_use_login():
+    client = AttendeeClient("https://example.test/api/v1", "key")
+    captured: dict = {}
+
+    def fake_request(method, path, body=None):
+        captured["body"] = body
+        return {"id": "bot_x", "state": "joining"}
+
+    with patch.object(client, "_request", side_effect=fake_request):
+        client.join(
+            "https://meet.google.com/abc",
+            reserve_voice_agent=True,
+            google_meet_use_login=True,
+        )
+    assert captured["body"]["google_meet_settings"]["use_login"] is True

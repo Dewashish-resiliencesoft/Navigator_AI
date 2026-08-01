@@ -12,6 +12,30 @@ from navigator.browser.tools import execute as run_tool
 
 
 def executing(state: CallState, deps: CallDeps) -> CallState:
+    label = state.get("nav_click_label")
+    if label:
+        from navigator.browser.nav_click import click_nav_label
+        from navigator.schemas import ToolResult
+
+        try:
+            click_nav_label(deps.page, label)
+            detail = f"clicked nav {label!r}"
+            ok = True
+        except Exception as exc:  # noqa: BLE001
+            detail = str(exc).splitlines()[0] if str(exc) else "nav click failed"
+            ok = False
+        if deps.push_frame is not None:
+            deps.push_frame()
+        return CallState(
+            nav_click_label=None,
+            pending_calls=list(state.get("pending_calls") or []),
+            last_call=None,
+            last_result=ToolResult(
+                ok=ok, tool="click_element", detail=detail, duration_ms=0
+            ),
+            last_page_id=state.get("page_id") or "",
+        )
+
     pending = list(state["pending_calls"])
     if not pending:
         return CallState(last_call=None, last_result=None)

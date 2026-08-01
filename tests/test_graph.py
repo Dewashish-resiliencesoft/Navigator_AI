@@ -28,13 +28,17 @@ def test_intro_names_the_product_from_its_persona(state, deps):
     assert "shared inbox for sales teams" in line
 
 
-def test_intro_renders_for_a_different_product_with_no_code_change():
+def test_intro_renders_personalized_with_intake():
+    from navigator.meeting.intake import ProspectIntake
     from navigator.schemas import Persona
 
-    line = render_intro(Persona(product_name="Acme Inbox", agent_name="Ada"))
-    assert "I'm Ada" in line
-    assert "Acme Inbox" in line
-    assert "WhatsApp" not in line
+    line = render_intro(
+        Persona(product_name="ResilioHub", one_liner="WhatsApp CRM", agent_name="Navigator"),
+        ProspectIntake(name="Dewa", company="Acme", looking_for="shared inbox"),
+    )
+    assert "Dewa" in line
+    assert "shared inbox" in line
+    assert "Acme" in line
 
 
 def test_planning_replays_the_scripted_flow(state, deps):
@@ -131,6 +135,11 @@ def test_routes_to_reflecting_only_on_failure():
 def test_turn_routing_respects_max_turns():
     assert after_turn({"turns": 1, "max_turns": 2}) == "listening"
     assert after_turn({"turns": 1, "max_turns": 1}) == "ending"
+
+
+def test_turn_routing_ends_when_phase_ending():
+    assert after_turn({"turns": 0, "max_turns": 50, "phase": "ending"}) == "ending"
+    assert after_turn({"turns": 0, "max_turns": 50, "finished": True}) == "ending"
 
 
 # --- the whole loop ----------------------------------------------------------

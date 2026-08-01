@@ -1,0 +1,44 @@
+# Minimal live ResilioHub graph for join/login/share testing.
+# Replace with a full recorder draft (default_walkthrough) when ready.
+version: 1
+site: resiliohub
+base_url: https://resiliohub.com/
+
+persona:
+  product_name: ResilioHub
+  one_liner: WhatsApp CRM and automation for sales teams
+  agent_name: Navigator
+  tone: friendly, concise, technical when asked
+
+pages:
+  dashboard:
+    name: Dashboard
+    url: /dashboard/
+    selectors:
+      body: "body"
+      app_root: "body"
+    flows:
+      default_walkthrough:
+        - tool: wait_for
+          selector: body
+          timeout_ms: 8000
+          expects:
+            check: visible
+            selector: body
+            timeout_ms: 8000
+        - tool: wait_for
+          selector: app_root
+          timeout_ms: 3000
+          expects:
+            check: visible
+            selector: app_root
+            timeout_ms: 3000
+      # Interrupt target if prospect asks something generic
+      show_dashboard:
+        - tool: wait_for
+          selector: body
+          timeout_ms: 5000
+          expects:
+            check: visible
+            selector: body
+            timeout_ms: 5000

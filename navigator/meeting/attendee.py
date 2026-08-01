@@ -83,6 +83,7 @@ class AttendeeClient:
         join_chat_message: str | None = None,
         audio_websocket_url: str | None = None,
         audio_sample_rate: int = 16000,
+        google_meet_use_login: bool = False,
     ) -> Bot:
         """Join a meeting.
 
@@ -100,11 +101,18 @@ class AttendeeClient:
             payload["voice_agent_settings"] = {"reserve_resources": True}
 
         if audio_websocket_url:
+            # Mixed meeting audio (includes others speaking). Bot TTS echo filtered later.
             payload["websocket_settings"] = {
                 "audio": {
                     "url": audio_websocket_url,
                     "sample_rate": audio_sample_rate,
                 }
+            }
+
+        if google_meet_use_login:
+            payload["google_meet_settings"] = {
+                "use_login": True,
+                "login_mode": "always",
             }
 
         if join_chat_message:

@@ -75,6 +75,8 @@ class _ToolCallBase(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     expects: Postcondition
+    #: Optional line SPEAKING says when this step runs (live walkthrough guide).
+    spoken: str | None = None
 
 
 class ClickElement(_ToolCallBase):

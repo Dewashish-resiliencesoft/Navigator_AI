@@ -3,9 +3,7 @@
 Silero VAD over inbound meeting audio decides when someone stopped talking;
 the resulting segment goes to Groq whisper-large-v3-turbo.
 
-Silero wants 150-250ms windows, not 30ms webrtcvad frames.
-
-Free-tier budget: 7200 audio-seconds per clock hour.
+Silero VAD v5 wants fixed 512-sample windows @ 16 kHz (32 ms).
 """
 
 from __future__ import annotations
@@ -15,10 +13,10 @@ import wave
 from collections.abc import Callable, Iterator
 
 SAMPLE_RATE = 16_000
-FRAME_MS = 200
-"""Silero prefers 150-250ms. Do not drop this to 30ms."""
-
-BYTES_PER_FRAME = SAMPLE_RATE * FRAME_MS // 1000 * 2  # 16-bit mono
+# Silero VAD v5 requires exactly 512 samples @ 16 kHz (32 ms). Not 200 ms.
+FRAME_MS = 32
+SAMPLES_PER_FRAME = 512
+BYTES_PER_FRAME = SAMPLES_PER_FRAME * 2  # 16-bit mono
 
 
 class VoiceSegmenter:
@@ -42,7 +40,7 @@ class VoiceSegmenter:
         in_speech = False
         silent_frames = 0
 
-        for frame in frames:
+        for frame in _fixed_frames(frames, BYTES_PER_FRAME):
             if len(frame) == 0:
                 continue
             prob = score(frame)
@@ -62,6 +60,18 @@ class VoiceSegmenter:
                     silent_frames = 0
         if in_speech and buf:
             yield bytes(buf)
+
+
+def _fixed_frames(frames: Iterator[bytes], size: int) -> Iterator[bytes]:
+    """Rebuffer arbitrary PCM chunks into fixed-size VAD windows."""
+    buf = bytearray()
+    for chunk in frames:
+        if not chunk:
+            continue
+        buf.extend(chunk)
+        while len(buf) >= size:
+            yield bytes(buf[:size])
+            del buf[:size]
 
 
 def _silero_scorer() -> Callable[[bytes], float]:
@@ -86,6 +96,12 @@ def _silero_scorer() -> Callable[[bytes], float]:
         samples.frombytes(frame[: len(frame) - (len(frame) % 2)])
         if not samples:
             return 0.0
+        # Silero wants exactly 512 samples @ 16kHz — pad/trim one window.
+        need = SAMPLES_PER_FRAME
+        if len(samples) < need:
+            samples.extend([0] * (need - len(samples)))
+        elif len(samples) > need:
+            samples = array.array("h", samples[:need])
         tensor = torch.tensor(samples, dtype=torch.float32) / 32768.0
         with torch.no_grad():
             return float(model(tensor, SAMPLE_RATE).item())

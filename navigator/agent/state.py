@@ -86,6 +86,22 @@ class CallDeps:
     pending_db_path: Path | None = None
     #: Pre-demo prospect intake (company / looking_for). None → planner ignores.
     intake: ProspectIntake | None = None
+    #: Return True if STT text is the bot hearing itself (skip / keep listening).
+    is_bot_echo: Callable[[str], bool] | None = None
+    #: Share-overlay status: set_status("listening", "Listening…").
+    set_status: Callable[..., None] | None = None
+    #: Live Playwright screen snapshot for planner (url/title/visible text).
+    screen_context: Callable[[], str] | None = None
+    #: Product expert brief (markdown). Empty → persona-only.
+    product_brief: str = ""
+    #: During TTS wait: return True to cut remaining playback wait (barge-in).
+    check_barge_in: Callable[[], bool] | None = None
+    #: Filled when barge-in heard speech; LISTENING consumes it.
+    pending_barge_in: list[str] | None = None
+    #: Injected Gemini turn brain for tests. When None, use decide_turn if Gemini key set.
+    decide_turn: Callable[..., object] | None = None
+    #: Prefer Gemini Vision interrupt path when True (default if key present).
+    use_turn_brain: bool | None = None
 
 
 def append_only(existing: list, new: list) -> list:
@@ -132,9 +148,22 @@ class CallState(TypedDict, total=False):
     finished: bool
     #: LISTENING detected a user correction of the last action.
     user_correction: bool
+    phase: str
+    walkthrough_flow_id: str
+    #: Page that owns the walkthrough / interrupt flow catalog (stable across navigates).
+    walkthrough_page_id: str
+    walkthrough_step: int
+    silence_rounds: int
+    #: Sidebar label for cursor click (hybrid nav); EXECUTING consumes.
+    nav_click_label: str | None
 
 
-def initial_state(session_id: UUID, page_id: str, max_turns: int = 1) -> CallState:
+def initial_state(
+    session_id: UUID,
+    page_id: str,
+    max_turns: int = 1,
+    walkthrough_flow_id: str = "",
+) -> CallState:
     return CallState(
         session_id=session_id,
         page_id=page_id,
@@ -151,4 +180,9 @@ def initial_state(session_id: UUID, page_id: str, max_turns: int = 1) -> CallSta
         max_turns=max_turns,
         finished=False,
         user_correction=False,
+        phase="walkthrough",
+        walkthrough_flow_id=walkthrough_flow_id,
+        walkthrough_page_id=page_id,
+        walkthrough_step=0,
+        silence_rounds=0,
     )

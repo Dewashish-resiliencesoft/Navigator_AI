@@ -20,17 +20,36 @@ def _frame(amplitude: int) -> bytes:
 
 
 def test_voice_segmenter_emits_on_silence_with_injected_scorer():
-    # speech x2 + silence x4; emit after 3 silent frames (700ms // 200ms)
-    scores = [0.9, 0.9, 0.1, 0.1, 0.1, 0.1]
+    # speech x2 + silence enough for ~700ms @ 32ms frames
+    silence_frames = max(1, 700 // FRAME_MS)
+    scores = [0.9, 0.9] + [0.1] * (silence_frames + 1)
     it = iter(scores)
 
     def score(_frame: bytes) -> float:
         return next(it)
 
-    frames = [_frame(1000), _frame(1000), _frame(0), _frame(0), _frame(0), _frame(0)]
+    frames = [_frame(1000), _frame(1000)] + [_frame(0)] * (silence_frames + 1)
     segs = list(VoiceSegmenter(score_frame=score).segments(iter(frames)))
     assert len(segs) == 1
-    assert len(segs[0]) == BYTES_PER_FRAME * 5  # emit on 3rd silence frame
+    # emit on Nth silence frame → speech(2) + silence(silence_frames)
+    assert len(segs[0]) == BYTES_PER_FRAME * (2 + silence_frames)
+
+
+def test_voice_segmenter_rebuffers_small_chunks():
+    silence_frames = max(1, 700 // FRAME_MS)
+    scores = [0.9, 0.9] + [0.1] * (silence_frames + 1)
+    it = iter(scores)
+
+    def score(_frame: bytes) -> float:
+        return next(it)
+
+    big = [_frame(1000), _frame(1000)] + [_frame(0)] * (silence_frames + 1)
+    tiny: list[bytes] = []
+    for fr in big:
+        step = max(2, len(fr) // 4)
+        tiny.extend(fr[i : i + step] for i in range(0, len(fr), step))
+    segs = list(VoiceSegmenter(score_frame=score).segments(iter(tiny)))
+    assert len(segs) == 1
 
 
 def test_pcm16_to_wav_bytes_has_riff_header():

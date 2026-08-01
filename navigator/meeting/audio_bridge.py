@@ -1,11 +1,11 @@
 """Local websocket hub: Attendee pushes Meet PCM here; we can push bot output.
 
-ponytail: one threaded asyncio loop. Ceiling: single connection. Upgrade: per-bot hubs.
+ponytail: one threaded sync websockets server. Ceiling: single connection handler
+loop. Upgrade: per-bot hubs.
 """
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import threading
@@ -23,9 +23,11 @@ class AudioBridge:
         self.inbound: Queue[bytes] = Queue()
         self._outbound: Queue[tuple[bytes, int]] = Queue()
         self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
+        self._server: Any = None
         self._stop = threading.Event()
         self._ready = threading.Event()
+        self.clients_connected = 0
+        self.chunks_received = 0
 
     @property
     def local_url(self) -> str:
@@ -42,12 +44,16 @@ class AudioBridge:
 
     def stop(self) -> None:
         self._stop.set()
-        loop = self._loop
-        if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(loop.stop)
+        server = self._server
+        if server is not None:
+            try:
+                server.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
         if self._thread is not None:
             self._thread.join(timeout=5)
         self._thread = None
+        self._server = None
 
     def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
         self._outbound.put((pcm, sample_rate))
@@ -63,103 +69,60 @@ class AudioBridge:
     def _run(self) -> None:
         try:
             from websockets.sync.server import serve as sync_serve
-        except ImportError:
-            try:
-                self._run_async()
-                return
-            except Exception as exc:  # noqa: BLE001
-                print(f"[audio] bridge start failed: {exc}", flush=True)
-                self._ready.set()
-                return
-
-        # Sync server is simpler from a worker thread.
-        def handler(ws: Any) -> None:
-            def reader() -> None:
-                try:
-                    for raw in ws:
-                        self._handle_message(raw)
-                except Exception:  # noqa: BLE001
-                    return
-
-            t = threading.Thread(target=reader, daemon=True)
-            t.start()
-            while not self._stop.is_set():
-                try:
-                    pcm, rate = self._outbound.get(timeout=0.2)
-                except Empty:
-                    continue
-                try:
-                    ws.send(
-                        json.dumps(
-                            {
-                                "trigger": "realtime_audio.bot_output",
-                                "data": {
-                                    "chunk": base64.b64encode(pcm).decode(),
-                                    "sample_rate": rate,
-                                },
-                            }
-                        )
-                    )
-                except Exception:  # noqa: BLE001
-                    break
-            t.join(timeout=1)
-
-        with sync_serve(handler, self.host, self.port) as server:
-            self.port = int(server.socket.getsockname()[1])
+        except ImportError as exc:
+            print(f"[audio] websockets missing: {exc}", flush=True)
             self._ready.set()
-            while not self._stop.is_set():
-                self._stop.wait(0.2)
+            return
 
-    def _run_async(self) -> None:
-        from websockets.asyncio.server import serve
-
-        async def handler(ws: Any) -> None:
-            async def consume() -> None:
-                async for raw in ws:
+        def handler(ws: Any) -> None:
+            self.clients_connected += 1
+            print(
+                f"[audio] Attendee websocket connected (clients={self.clients_connected})",
+                flush=True,
+            )
+            try:
+                for raw in ws:
+                    if self._stop.is_set():
+                        break
                     self._handle_message(raw)
+                    # Flush any pending bot_output (rarely used; speak uses HTTP).
+                    while True:
+                        try:
+                            pcm, rate = self._outbound.get_nowait()
+                        except Empty:
+                            break
+                        try:
+                            ws.send(
+                                json.dumps(
+                                    {
+                                        "trigger": "realtime_audio.bot_output",
+                                        "data": {
+                                            "chunk": base64.b64encode(pcm).decode(),
+                                            "sample_rate": rate,
+                                        },
+                                    }
+                                )
+                            )
+                        except Exception:  # noqa: BLE001
+                            return
+            except Exception:  # noqa: BLE001
+                return
 
-            async def produce() -> None:
-                while not self._stop.is_set():
-                    try:
-                        pcm, rate = await asyncio.to_thread(
-                            self._outbound.get, True, 0.2
-                        )
-                    except Empty:
-                        continue
-                    await ws.send(
-                        json.dumps(
-                            {
-                                "trigger": "realtime_audio.bot_output",
-                                "data": {
-                                    "chunk": base64.b64encode(pcm).decode(),
-                                    "sample_rate": rate,
-                                },
-                            }
-                        )
-                    )
-
-            await asyncio.gather(consume(), produce())
-
-        async def main() -> None:
-            async with serve(handler, self.host, self.port) as server:
-                socks = server.sockets or []
-                if socks:
-                    self.port = int(socks[0].getsockname()[1])
-                self._ready.set()
-                while not self._stop.is_set():
-                    await asyncio.sleep(0.2)
-
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
         try:
-            self._loop.run_until_complete(main())
-        finally:
-            self._loop.close()
-            self._loop = None
+            with sync_serve(handler, self.host, self.port) as server:
+                self._server = server
+                self.port = int(server.socket.getsockname()[1])
+                self._ready.set()
+                # Critical: without serve_forever(), TCP listens but never accepts.
+                server.serve_forever()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[audio] bridge failed: {exc}", flush=True)
+            self._ready.set()
 
     def _handle_message(self, raw: Any) -> None:
         if isinstance(raw, bytes):
             self.inbound.put(raw)
+            self.chunks_received += 1
             return
         try:
             msg = json.loads(raw)
@@ -171,5 +134,12 @@ class AudioBridge:
             return
         try:
             self.inbound.put(base64.b64decode(chunk_b64))
+            self.chunks_received += 1
+            if self.chunks_received in (1, 50, 200):
+                print(
+                    f"[audio] pcm chunks received={self.chunks_received} "
+                    f"trigger={msg.get('trigger')!r}",
+                    flush=True,
+                )
         except Exception:  # noqa: BLE001
             return

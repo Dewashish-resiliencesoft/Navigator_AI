@@ -21,6 +21,13 @@ class Settings(BaseSettings):
     db_path: Path = Path("navigator.db")
     piper_voice: str = "en_US-lessac-medium"
     piper_data_dir: Path = Path("voices")
+    #: Fish Audio — main Meet TTS when set (free S2.1 Pro + Sarah).
+    fish_api_key: str = ""
+    fish_model: str = "s2.1-pro-free"
+    #: Default: warm conversational Sarah (fish.audio/m/3a7a3d3df82948c6bd756761d6b139b5)
+    fish_reference_id: str = "3a7a3d3df82948c6bd756761d6b139b5"
+    #: "fish" | "piper" | "auto" (Fish if key set, else Piper)
+    tts_provider: Literal["auto", "fish", "piper"] = "auto"
 
     # Phase 2+
     groq_api_key: str = ""
@@ -48,6 +55,12 @@ class Settings(BaseSettings):
     open_meet_in_browser: bool = False
     tunnel_bin: str = "cloudflared"
     meet_live: bool = False
+    live_walkthrough_flow: str = "default_walkthrough"
+    live_max_turns: int = 50
+    #: Bot joins Meet first; link shared only after Navigator is inside.
+    live_bot_first: bool = True
+    #: Attendee signed-in Google Meet bot (needs Bot Logins in Attendee dashboard).
+    google_meet_use_login: bool = False
 
 
 settings = Settings()

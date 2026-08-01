@@ -16,9 +16,24 @@ def _frame(amplitude: int) -> bytes:
     return struct.pack(f"<{n}h", *([amplitude] * n))
 
 
-def test_listening_scripted_default(deps, state):
+def test_listening_walkthrough_non_interactive_continues(deps, state):
+    """No STT → empty utterance so planning advances walkthrough (not a fake ask)."""
+    state["phase"] = "walkthrough"
+    out = listening(state, deps)
+    assert out["transcript"] == ["user: "]
+    assert out.get("user_correction") is False
+
+
+def test_listening_legacy_scripted_when_no_walkthrough_phase(deps, state):
+    state["phase"] = ""
     out = listening(state, deps)
     assert out["transcript"] == [f"user: {SCRIPTED_UTTERANCE}"]
+
+
+def test_listening_anything_else_non_interactive_returns_empty(deps, state):
+    state["phase"] = "anything_else"
+    out = listening(state, deps)
+    assert out["transcript"] == ["user: "]
     assert out.get("user_correction") is False
 
 

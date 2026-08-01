@@ -1,15 +1,16 @@
 """Pre-demo intake: greet, qualify the prospect, then pitch the wrapped product.
 
-Answers come from Meet chat later (STT); for now interactive stdin or defaults
-so CI stays non-interactive. Chat messages are sent into the meeting so the
-prospect sees the questions even before screen share starts.
+Answers: Meet STT listen callback, else stdin when interactive, else defaults
+for CI. Questions spoken via TTS only — no Meet chat.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from pydantic import BaseModel, ConfigDict
 
-from navigator.meeting.attendee import AttendeeClient
+from navigator.meeting.intake_clean import clean_name, clean_phrase
 from navigator.schemas import Persona
 from navigator.voice.tts import Speaker
 
@@ -48,46 +49,136 @@ def greet_line(persona: Persona, prospect_name: str = "") -> str:
     )
 
 
+def name_ack_line(name: str) -> str:
+    who = (name or "").strip() or "there"
+    return f"Nice to meet you, {who}."
+
+
+def solution_blurb(persona: Persona, looking_for: str) -> str:
+    """Map prospect need → product angle (short, spoken)."""
+    need = (looking_for or "").lower()
+    product = persona.product_name
+    if any(k in need for k in ("inbox", "chat", "message", "reply", "conversation")):
+        return (
+            f"{product} gives your team a shared WhatsApp inbox so nothing slips "
+            f"between phones — exactly for that conversation problem."
+        )
+    if any(k in need for k in ("contact", "lead", "crm", "customer", "pipeline")):
+        return (
+            f"{product} keeps every WhatsApp lead and customer in one contacts "
+            f"view so the team shares one source of truth."
+        )
+    if any(
+        k in need
+        for k in ("automat", "flow", "bot", "qualify", "24", "scale", "chatbot")
+    ):
+        return (
+            f"{product} runs chat flows that greet, qualify, and route people "
+            f"on WhatsApp without someone typing every reply."
+        )
+    if any(k in need for k in ("analytic", "report", "metric", "convert", "funnel")):
+        return (
+            f"{product} surfaces conversation analytics — volume, response time, "
+            f"what converts — so you can see the funnel clearly."
+        )
+    positioning = persona.one_liner or "WhatsApp CRM and automation for sales teams"
+    return f"{product} is {positioning} — we'll focus the walkthrough on what you asked for."
+
+
 def pitch_line(persona: Persona, intake: ProspectIntake) -> str:
     name = intake.name or "there"
     company = intake.company or "your team"
     biz = intake.business_type or "your business"
     need = intake.looking_for or "what matters most to you"
-    positioning = persona.one_liner or persona.product_name
+    solve = solution_blurb(persona, intake.looking_for)
     return (
-        f"Great, {name}. So you're at {company} in {biz}, and you're looking at "
-        f"{need}. {persona.product_name} is {positioning}. "
-        f"I'll share my screen now and walk you through it live — feel free to "
-        f"jump in with your own data anytime."
+        f"Got it, {name}. You're at {company} in {biz}, looking at {need}. "
+        f"{solve} "
+        f"I'll share my screen and show you that live — jump in anytime."
+    )
+
+
+def preferred_flow_id(looking_for: str) -> str | None:
+    """Suggest an interrupt/demo flow from intake need."""
+    need = (looking_for or "").lower()
+    if any(
+        k in need
+        for k in ("automat", "flow", "bot", "qualify", "chatbot", "scale")
+    ):
+        return "show_automations"
+    if any(k in need for k in ("inbox", "chat", "message", "reply", "conversation")):
+        return "show_inbox"
+    if any(k in need for k in ("analytic", "report", "metric", "convert", "funnel")):
+        return "show_analytics"
+    if any(k in need for k in ("contact", "lead", "crm", "customer", "pipeline")):
+        return "show_contacts"
+    return None
+
+
+def format_with_intake(template: str, intake: ProspectIntake | None) -> str:
+    """Fill {name}/{company}/{business}/{looking_for}/{need} in spoken lines."""
+    if not template:
+        return template
+    if intake is None:
+        return (
+            template.replace("{name}", "there")
+            .replace("{company}", "your team")
+            .replace("{business}", "your business")
+            .replace("{looking_for}", "what you care about")
+            .replace("{need}", "what you care about")
+        )
+    return (
+        template.replace("{name}", intake.name or "there")
+        .replace("{company}", intake.company or "your team")
+        .replace("{business}", intake.business_type or "your business")
+        .replace("{looking_for}", intake.looking_for or "what you care about")
+        .replace("{need}", intake.looking_for or "what you care about")
     )
 
 
 def run_intake(
     *,
-    client: AttendeeClient,
-    bot_id: str,
     persona: Persona,
     speaker: Speaker,
     interactive: bool,
+    listen: Callable[[str], str] | None = None,
 ) -> ProspectIntake:
-    """Ask intake questions in Meet chat (+ local TTS); collect answers."""
+    """Ask intake questions via TTS; collect answers (STT / stdin / defaults)."""
     answers: dict[str, str] = {}
 
     # Initial greet (name still unknown).
     hello = greet_line(persona)
-    _say_and_chat(client, bot_id, speaker, hello)
+    _say(speaker, hello)
 
     for key, question, default in _QUESTIONS:
-        _say_and_chat(client, bot_id, speaker, question)
-        if interactive:
+        _say(speaker, question)
+        if listen is not None:
+            print(f"[intake] listening for {key}…", flush=True)
+            heard = ""
+            try:
+                heard = (listen(question) or "").strip()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[intake] listen failed ({exc}) — using default", flush=True)
+            answers[key] = heard or default
+            answers[key] = _clean_field(key, answers[key])
+            print(
+                f"[intake] {key}={answers[key]!r}"
+                + ("" if heard else " (default)"),
+                flush=True,
+            )
+        elif interactive:
             try:
                 typed = input(f"[intake {key}] > ").strip()
             except EOFError:
                 typed = ""
-            answers[key] = typed or default
+            answers[key] = _clean_field(key, typed or default)
         else:
-            answers[key] = default
-            print(f"[intake] (non-interactive) {key}={default!r}", flush=True)
+            answers[key] = _clean_field(key, default)
+            print(f"[intake] (non-interactive) {key}={answers[key]!r}", flush=True)
+
+        # Short human ack right after name — hybrid C backchannel.
+        if key == "name":
+            _say(speaker, name_ack_line(answers["name"]))
 
     intake = ProspectIntake(
         name=answers["name"],
@@ -96,19 +187,19 @@ def run_intake(
         looking_for=answers["looking_for"],
     )
     pitch = pitch_line(persona, intake)
-    _say_and_chat(client, bot_id, speaker, pitch)
+    _say(speaker, pitch)
     return intake
 
 
-def _say_and_chat(
-    client: AttendeeClient, bot_id: str, speaker: Speaker, text: str
-) -> None:
+def _clean_field(key: str, value: str) -> str:
+    if key == "name":
+        return clean_name(value) or value
+    return clean_phrase(value) or value
+
+
+def _say(speaker: Speaker, text: str) -> None:
     print(f"[agent] {text}", flush=True)
     try:
         speaker.say(text)
     except Exception as exc:  # noqa: BLE001
         print(f"[agent] TTS skipped: {exc}", flush=True)
-    try:
-        client.send_chat(bot_id, text)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[agent] Meet chat skipped: {exc}", flush=True)

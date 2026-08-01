@@ -86,6 +86,12 @@ def navigate(
 ) -> tuple[str, str]:
     url = graph.url_for(call.page_id)
     page.goto(url, timeout=call.expects.timeout_ms)
+    try:
+        from navigator.browser.cursor import install_cursor
+
+        install_cursor(page)
+    except Exception:  # noqa: BLE001
+        pass
     return f"navigated to {call.page_id} ({url})", call.page_id
 
 

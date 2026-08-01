@@ -20,7 +20,7 @@ from navigator.config.site_graph import load_site_graph
 from navigator.logs.store import ActionLog
 from navigator.browser.session import browser_page
 from navigator.settings import settings
-from navigator.voice.tts import PiperSpeaker, PrintSpeaker
+from navigator.voice.tts import make_speaker
 
 
 def main() -> int:
@@ -66,13 +66,20 @@ def main() -> int:
 
 
 def _speaker():
-    speaker = PiperSpeaker(settings.piper_voice, settings.piper_data_dir)
-    if not speaker.available():
+    from navigator.voice.tts import PrintSpeaker
+
+    speaker = make_speaker(
+        fish_api_key=settings.fish_api_key,
+        fish_model=settings.fish_model,
+        fish_reference_id=settings.fish_reference_id,
+        tts_provider=settings.tts_provider,
+        piper_voice=settings.piper_voice,
+        piper_data_dir=settings.piper_data_dir,
+    )
+    if isinstance(speaker, PrintSpeaker):
         print(
-            f"[demo] piper voice {settings.piper_voice!r} not found in "
-            f"{settings.piper_data_dir}/ -- narration will print only.\n"
-            f"[demo] get it with: python -m piper.download_voices "
-            f"{settings.piper_voice} --data-dir {settings.piper_data_dir}"
+            "[demo] no Fish key and no Piper voice — narration prints only.\n"
+            "[demo] set NAVIGATOR_FISH_API_KEY (Sarah / free S2.1) or install Piper."
         )
     return speaker
 

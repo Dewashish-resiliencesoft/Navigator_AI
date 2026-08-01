@@ -1,0 +1,12 @@
+product:
+  name: Recorded Product
+  base_url: https://resiliohub.com
+  persona:
+    product_name: Recorded Product
+    one_liner: "Recorded draft \u2014 review aliases and postconditions."
+    agent_name: Navigator
+pages: {}
+_meta:
+  draft: true
+  note: 'Human must review: rename flows, fix postconditions, prefer data-testid.
+    Do not auto-trust guessed expects.'

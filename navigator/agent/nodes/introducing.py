@@ -1,18 +1,30 @@
-"""INTRODUCING: the opener. Rendered from the product's persona, no LLM call.
+"""INTRODUCING: the opener. Rendered from the product's persona (+ intake).
 
-The intro never needs to vary within a call, so spending a model call on it buys
-nothing. It does need to vary *per product*, which is why the text comes from the
-persona stored with the site graph rather than living here as a literal.
+The intro never needs an LLM call. It varies per product (persona) and per
+prospect (intake name / need) so the walkthrough feels personal from the start.
 """
 
 from __future__ import annotations
 
 from navigator.agent.state import CallDeps, CallState
+from navigator.meeting.intake import ProspectIntake
 from navigator.schemas import Persona
 
 
-def render_intro(persona: Persona) -> str:
+def render_intro(
+    persona: Persona, intake: ProspectIntake | None = None
+) -> str:
     positioning = f", {persona.one_liner}," if persona.one_liner else ""
+    if intake and (intake.name or intake.looking_for):
+        name = intake.name.strip() or "there"
+        need = intake.looking_for.strip() or "what you care about"
+        company = intake.company.strip() or "your team"
+        return (
+            f"{name}, I'm {persona.agent_name} — walking you through "
+            f"{persona.product_name}{positioning} with {company} in mind. "
+            f"You mentioned {need}, so I'll drive the real product live around that. "
+            f"Jump in with your own data anytime and I'll type it in."
+        )
     return (
         f"Hi everyone, I'm {persona.agent_name}, and I'll be walking you through "
         f"{persona.product_name}{positioning} today. I'm driving the real product "
@@ -22,5 +34,5 @@ def render_intro(persona: Persona) -> str:
 
 
 def introducing(state: CallState, deps: CallDeps) -> CallState:
-    line = render_intro(deps.graph.effective_persona())
+    line = render_intro(deps.graph.effective_persona(), deps.intake)
     return CallState(narration=[line], transcript=[f"agent: {line}"])

@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -40,6 +40,24 @@ CREATE TABLE IF NOT EXISTS action_log (
 CREATE INDEX IF NOT EXISTS action_log_session ON action_log (session_id, timestamp);
 CREATE INDEX IF NOT EXISTS action_log_failures ON action_log (session_id, failed);
 CREATE INDEX IF NOT EXISTS action_log_product ON action_log (product_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS demo_runs (
+    session_id     TEXT PRIMARY KEY,
+    demo_id        TEXT NOT NULL,
+    product_id     TEXT NOT NULL,
+    platform       TEXT NOT NULL,
+    status         TEXT NOT NULL,
+    host_os        TEXT NOT NULL DEFAULT '',
+    host_release   TEXT NOT NULL DEFAULT '',
+    host_machine   TEXT NOT NULL DEFAULT '',
+    host_name      TEXT NOT NULL DEFAULT '',
+    browser        TEXT NOT NULL DEFAULT '',
+    meeting_label  TEXT NOT NULL DEFAULT '',
+    started_at     TEXT NOT NULL,
+    ended_at       TEXT
+);
+CREATE INDEX IF NOT EXISTS demo_runs_product_started
+    ON demo_runs (product_id, started_at);
 """
 
 
@@ -195,6 +213,121 @@ class ActionLog:
         ).fetchall()
         return [UUID(r["session_id"]) for r in rows]
 
+    # -- demo runs -----------------------------------------------------------
+
+    def upsert_run(
+        self,
+        *,
+        session_id: UUID,
+        demo_id: UUID,
+        product_id: str,
+        platform: str,
+        status: str,
+        host_os: str = "",
+        host_release: str = "",
+        host_machine: str = "",
+        host_name: str = "",
+        browser: str = "",
+        meeting_label: str = "",
+        started_at: datetime | None = None,
+        ended_at: datetime | None = None,
+    ) -> None:
+        started = (started_at or utcnow()).isoformat()
+        ended = None if ended_at is None else ended_at.isoformat()
+        self._conn.execute(
+            """
+            INSERT INTO demo_runs (
+                session_id, demo_id, product_id, platform, status,
+                host_os, host_release, host_machine, host_name, browser,
+                meeting_label, started_at, ended_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(session_id) DO UPDATE SET
+                demo_id=excluded.demo_id,
+                product_id=excluded.product_id,
+                platform=excluded.platform,
+                status=excluded.status,
+                host_os=excluded.host_os,
+                host_release=excluded.host_release,
+                host_machine=excluded.host_machine,
+                host_name=excluded.host_name,
+                browser=excluded.browser,
+                meeting_label=excluded.meeting_label,
+                started_at=excluded.started_at,
+                ended_at=excluded.ended_at
+            """,
+            (
+                str(session_id),
+                str(demo_id),
+                product_id,
+                platform,
+                status,
+                host_os,
+                host_release,
+                host_machine,
+                host_name,
+                browser,
+                meeting_label,
+                started,
+                ended,
+            ),
+        )
+
+    def update_run_status(
+        self,
+        session_id: UUID,
+        status: str,
+        ended_at: datetime | None = None,
+    ) -> None:
+        ended = None if ended_at is None else ended_at.isoformat()
+        self._conn.execute(
+            "UPDATE demo_runs SET status = ?, ended_at = COALESCE(?, ended_at) "
+            "WHERE session_id = ?",
+            (status, ended, str(session_id)),
+        )
+
+    def get_run(self, session_id: UUID, product_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM demo_runs WHERE session_id = ? AND product_id = ?",
+            (str(session_id), product_id),
+        ).fetchone()
+        return None if row is None else _row_to_run(row, self._fail_count(row))
+
+    def list_runs(
+        self,
+        product_id: str,
+        days: int = 7,
+        now: datetime | None = None,
+    ) -> list[dict]:
+        self.prune_runs(days=days, now=now)
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        rows = self._conn.execute(
+            "SELECT * FROM demo_runs WHERE product_id = ? AND started_at >= ? "
+            "ORDER BY started_at DESC, session_id DESC",
+            (product_id, cutoff),
+        ).fetchall()
+        return [_row_to_run(r, self._fail_count(r)) for r in rows]
+
+    def prune_runs(self, days: int = 7, now: datetime | None = None) -> None:
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        old = self._conn.execute(
+            "SELECT session_id FROM demo_runs WHERE started_at < ?",
+            (cutoff,),
+        ).fetchall()
+        sids = [r["session_id"] for r in old]
+        self._conn.execute("DELETE FROM demo_runs WHERE started_at < ?", (cutoff,))
+        for sid in sids:
+            self._conn.execute("DELETE FROM action_log WHERE session_id = ?", (sid,))
+
+    def _fail_count(self, row: sqlite3.Row) -> int:
+        r = self._conn.execute(
+            "SELECT COALESCE(SUM(failed), 0) AS n FROM action_log "
+            "WHERE session_id = ? AND product_id = ?",
+            (row["session_id"], row["product_id"]),
+        ).fetchone()
+        return int(r["n"] or 0)
+
     def _query(self, sql: str, params: tuple) -> list[ActionLogEntry]:
         rows = self._conn.execute(sql, params).fetchall()
         return [_row_to_entry(r) for r in rows]
@@ -222,6 +355,25 @@ def _and_product(product_id: str | None) -> str:
 
 def _params(session_id: UUID, product_id: str | None) -> tuple:
     return (str(session_id),) if product_id is None else (str(session_id), product_id)
+
+
+def _row_to_run(row: sqlite3.Row, fail_count: int) -> dict:
+    return {
+        "session_id": row["session_id"],
+        "demo_id": row["demo_id"],
+        "product_id": row["product_id"],
+        "platform": row["platform"],
+        "status": row["status"],
+        "host_os": row["host_os"],
+        "host_release": row["host_release"],
+        "host_machine": row["host_machine"],
+        "host_name": row["host_name"],
+        "browser": row["browser"],
+        "meeting_label": row["meeting_label"],
+        "started_at": row["started_at"],
+        "ended_at": row["ended_at"],
+        "fail_count": fail_count,
+    }
 
 
 def _row_to_entry(row: sqlite3.Row) -> ActionLogEntry:

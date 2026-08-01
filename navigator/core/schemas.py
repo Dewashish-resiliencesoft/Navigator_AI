@@ -42,7 +42,7 @@ class Postcondition(BaseModel):
     check: CheckKind
     selector: str | None = None
     expected: str | None = None
-    timeout_ms: int = Field(default=5000, gt=0)
+    timeout_ms: int = Field(default=15000, gt=0)
 
     @model_validator(mode="after")
     def _check_shape(self) -> Postcondition:
@@ -101,7 +101,7 @@ class Navigate(_ToolCallBase):
 class WaitFor(_ToolCallBase):
     tool: Literal["wait_for"] = "wait_for"
     selector: str
-    timeout_ms: int = Field(default=5000, gt=0)
+    timeout_ms: int = Field(default=15000, gt=0)
 
 
 ToolCall = Annotated[

@@ -65,11 +65,21 @@ def _describe(exc: Exception) -> str:
 # Each returns (detail, next_page_id) and lets exceptions escape to execute().
 
 
+def _action_timeout(ms: int) -> int:
+    """Real product UIs often need >5s; keep sub-1s timeouts for unit tests."""
+    if ms < 1000:
+        return ms
+    return max(ms, 15000)
+
+
 def click_element(
     page: Page, graph: SiteGraph, page_id: str, call: ClickElement
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
-    page.click(css, timeout=call.expects.timeout_ms)
+    timeout = _action_timeout(call.expects.timeout_ms)
+    loc = page.locator(css).first
+    loc.scroll_into_view_if_needed(timeout=timeout)
+    loc.click(timeout=timeout)
     return f"clicked {call.selector} ({css})", page_id
 
 
@@ -77,7 +87,10 @@ def fill_field(
     page: Page, graph: SiteGraph, page_id: str, call: FillField
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
-    page.fill(css, call.value, timeout=call.expects.timeout_ms)
+    timeout = _action_timeout(call.expects.timeout_ms)
+    loc = page.locator(css).first
+    loc.scroll_into_view_if_needed(timeout=timeout)
+    loc.fill(call.value, timeout=timeout)
     return f"filled {call.selector} with {call.value!r} (source={call.source})", page_id
 
 
@@ -99,7 +112,9 @@ def wait_for(
     page: Page, graph: SiteGraph, page_id: str, call: WaitFor
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
-    page.wait_for_selector(css, timeout=call.timeout_ms, state="visible")
+    page.wait_for_selector(
+        css, timeout=_action_timeout(call.timeout_ms), state="visible"
+    )
     return f"{call.selector} appeared", page_id
 
 

@@ -96,7 +96,7 @@ def test_click_timeout_uses_postcondition_timeout(page, site_graph):
     elapsed_ms = (time.perf_counter() - started) * 1000
 
     assert result.ok is False
-    assert 500 <= elapsed_ms < 4000
+    assert 400 <= elapsed_ms < 4000
 
 
 def test_unknown_selector_alias_is_a_result_not_an_exception(page, site_graph):

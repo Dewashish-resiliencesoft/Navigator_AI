@@ -95,9 +95,8 @@ def test_verifying_logs_a_passing_entry(state, deps):
     assert deps.log.entries(state["session_id"])[0] == entry
 
 
-def test_verifying_logs_a_failure_and_narrates_it_honestly(state, deps):
-    """A prospect can see the screen; claiming success would be worse than admitting
-    failure."""
+def test_verifying_logs_a_failure_and_narrates_softly(state, deps):
+    """Prospect hears a soft apology — never Playwright jargon."""
     state.update(planning(state, deps))
     state.update(executing(state, deps))  # navigate, so the page is loaded
     deps.page.evaluate("document.querySelector('#message-input').remove()")
@@ -109,7 +108,11 @@ def test_verifying_logs_a_failure_and_narrates_it_honestly(state, deps):
 
     (entry,) = out["failures"]
     assert entry.failed
-    assert "didn't do what I expected" in out["narration"][0]
+    line = out["narration"][0]
+    assert "on our side" in line or "not yours" in line or "Nothing you did" in line or "nothing you did" in line
+    assert "Page." not in line
+    assert "Timeout" not in line
+    assert "action failed" not in line
     assert deps.log.failures(state["session_id"]) == [entry]
 
 

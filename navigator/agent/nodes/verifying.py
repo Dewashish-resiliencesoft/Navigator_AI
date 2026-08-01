@@ -57,15 +57,19 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
 
 
 def _narrate(entry: ActionLogEntry, verdict: VerifyResult) -> str:
-    """What SPEAKING says about this step. Honest about failure -- a prospect can
-    see the screen, so pretending it worked is worse than admitting it didn't."""
+    """Prospect-facing line. Technical detail stays in the ActionLog only."""
     call = entry.tool_call
     if verdict.passed:
         return _success_line(call)
+    # Never speak Playwright/CSS/timeout jargon on the call.
+    print(
+        f"[verify] soft-fail spoken; selector={call.expects.selector!r} "
+        f"detail={verdict.actual!r}",
+        flush=True,
+    )
     return (
-        f"That didn't do what I expected. I was looking for "
-        f"{call.expects.check.replace('_', ' ')} on {call.expects.selector}, "
-        f"but I got: {verdict.actual}. Let me note that and keep going."
+        "Oh — something glitched on our side there, not yours. "
+        "It's nothing you did. We're sorting it; I'll keep going."
     )
 
 

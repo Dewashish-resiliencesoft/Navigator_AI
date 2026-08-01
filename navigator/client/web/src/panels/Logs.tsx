@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, PhoneOff } from "lucide-react";
 import { api, ApiError, type DemoRun, type RunEvent } from "../lib/api";
+import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { spring, stagger } from "../lib/motion";
-import { BarLoader, Card, CardTitle, Empty, StatusPill } from "../components/ui";
+import { BarLoader, Button, Card, CardTitle, Empty, StatusPill } from "../components/ui";
 import { errText, useUi } from "../store";
 
 function fmtTime(iso: string) {
@@ -28,7 +29,11 @@ function eventDetail(ev: RunEvent) {
 }
 
 export function Logs() {
-  const { err, logsSessionId, setLogsSessionId } = useUi();
+  const { err, ok, logsSessionId, setLogsSessionId } = useUi();
+  const activeDemo = useDemoSession((s) => s.demo);
+  const ending = useDemoSession((s) => s.ending);
+  const endSession = useDemoSession((s) => s.end);
+
   const [runs, setRuns] = useState<DemoRun[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -84,13 +89,26 @@ export function Logs() {
     };
     load();
     const run = runs?.find((r) => r.session_id === open);
-    const live = run && (run.status === "starting" || run.status === "running");
+    const live =
+      (run && (run.status === "starting" || run.status === "running")) ||
+      (activeDemo?.session_id === open && demoIsLive(activeDemo));
     const t = live ? setInterval(load, 2000) : undefined;
     return () => {
       alive = false;
       if (t) clearInterval(t);
     };
-  }, [open, runs, err]);
+  }, [open, runs, err, activeDemo]);
+
+  const endRun = async (demoId: string) => {
+    try {
+      await endSession(demoId);
+      ok("Demo ended.");
+      const list = await api.listRuns(7);
+      setRuns(list);
+    } catch (ex) {
+      err(errText(ex));
+    }
+  };
 
   if (!runs) {
     return (
@@ -108,48 +126,67 @@ export function Logs() {
       className="grid gap-4"
     >
       <Card span="lg:col-span-2">
-        <CardTitle hint="Last 7 days. Expand a run for full ActionLog (selectors, errors). Never spoken to prospects.">
+        <CardTitle hint="Last 7 days. Expand for ActionLog. End stops a live session from here too.">
           Demo runs
         </CardTitle>
         {!runs.length && <Empty>No runs in the last 7 days.</Empty>}
         <ul className="space-y-2">
           {runs.map((r) => {
             const expanded = open === r.session_id;
+            const isLive =
+              r.status === "starting" ||
+              r.status === "running" ||
+              (activeDemo?.demo_id === r.demo_id && demoIsLive(activeDemo));
             return (
               <li
                 key={r.session_id}
                 className="rounded-lg border"
                 style={{ borderColor: "var(--line)" }}
               >
-                <button
-                  type="button"
-                  onClick={() => setOpen(expanded ? null : r.session_id)}
-                  className="flex w-full items-start gap-3 px-3 py-2.5 text-left"
-                >
-                  {expanded ? (
-                    <ChevronDown size={15} className="mt-0.5 shrink-0 text-[var(--muted)]" />
-                  ) : (
-                    <ChevronRight size={15} className="mt-0.5 shrink-0 text-[var(--muted)]" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <StatusPill status={r.status} />
-                      <span className="text-[0.8rem] font-medium">{r.platform}</span>
-                      <span className="text-[0.72rem] text-[var(--muted)]">
-                        {fmtTime(r.started_at)}
-                      </span>
-                      {r.fail_count > 0 && (
-                        <span className="text-[0.72rem] text-red-600 dark:text-red-400">
-                          {r.fail_count} fail{r.fail_count === 1 ? "" : "s"}
+                <div className="flex items-start gap-2 px-3 py-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setOpen(expanded ? null : r.session_id)}
+                    className="flex min-w-0 flex-1 items-start gap-3 text-left"
+                  >
+                    {expanded ? (
+                      <ChevronDown size={15} className="mt-0.5 shrink-0 text-[var(--muted)]" />
+                    ) : (
+                      <ChevronRight size={15} className="mt-0.5 shrink-0 text-[var(--muted)]" />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <StatusPill status={isLive ? activeDemo?.status || r.status : r.status} />
+                        <span className="text-[0.8rem] font-medium">{r.platform}</span>
+                        <span className="text-[0.72rem] text-[var(--muted)]">
+                          {fmtTime(r.started_at)}
                         </span>
-                      )}
+                        {r.fail_count > 0 && (
+                          <span className="text-[0.72rem] text-red-600 dark:text-red-400">
+                            {r.fail_count} fail{r.fail_count === 1 ? "" : "s"}
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 truncate font-mono text-[0.72rem] text-[var(--muted)]">
+                        {[r.host_os, r.host_machine, r.host_name].filter(Boolean).join(" · ")}
+                        {r.meeting_label ? ` · ${r.meeting_label}` : ""}
+                      </p>
                     </div>
-                    <p className="mt-1 truncate font-mono text-[0.72rem] text-[var(--muted)]">
-                      {[r.host_os, r.host_machine, r.host_name].filter(Boolean).join(" · ")}
-                      {r.meeting_label ? ` · ${r.meeting_label}` : ""}
-                    </p>
-                  </div>
-                </button>
+                  </button>
+                  {isLive && (
+                    <Button
+                      variant="danger"
+                      className="shrink-0"
+                      disabled={ending}
+                      onClick={() => {
+                        void endRun(r.demo_id);
+                      }}
+                    >
+                      <PhoneOff size={14} />
+                      {ending ? "Ending…" : "End"}
+                    </Button>
+                  )}
+                </div>
                 {expanded && (
                   <motion.div
                     initial={{ opacity: 0, height: 0 }}

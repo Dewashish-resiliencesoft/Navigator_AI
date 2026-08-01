@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Copy, PhoneOff, Play } from "lucide-react";
-import { api, ApiError, type Demo, type RunEvent } from "../lib/api";
+import { api, ApiError, type RunEvent } from "../lib/api";
+import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { rise, spring, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -21,6 +22,12 @@ const LINK_PENDING = "Navigator joining meeting… link unlocks when the bot is 
 
 export function LiveDemo() {
   const { ok, err, setTab, setLogsSessionId } = useUi();
+  const demo = useDemoSession((s) => s.demo);
+  const starting = useDemoSession((s) => s.starting);
+  const ending = useDemoSession((s) => s.ending);
+  const startSession = useDemoSession((s) => s.start);
+  const endSession = useDemoSession((s) => s.end);
+
   const [platform, setPlatform] = useState("zoom");
   const [topic, setTopic] = useState("");
   const [name, setName] = useState("");
@@ -30,16 +37,14 @@ export function LiveDemo() {
   const [domain, setDomain] = useState("");
   const [domainPlaceholder, setDomainPlaceholder] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
-
-  const [demo, setDemo] = useState<Demo | null>(null);
-  const [starting, setStarting] = useState(false);
   const [copied, setCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
-  const demoId = demo?.demo_id ?? null;
-  const sessionId = demo?.session_id ?? null;
   const listRef = useRef<HTMLUListElement>(null);
 
-  const done = demo?.status === "finished" || demo?.status === "failed";
+  const live = demoIsLive(demo);
+  const done = !!demo && (demo.status === "finished" || demo.status === "failed");
+  const demoId = demo?.demo_id ?? null;
+  const sessionId = demo?.session_id ?? null;
   const joinUrl = demo?.bot_in_meeting ? demo.meeting_url : null;
 
   useEffect(() => {
@@ -60,33 +65,12 @@ export function LiveDemo() {
   }, [err]);
 
   useEffect(() => {
-    if (!demoId || done) return;
-    let alive = true;
-    const tick = async () => {
-      try {
-        const d = await api.getDemo(demoId);
-        if (!alive) return;
-        setDemo(d);
-        if (d.error) err(d.error);
-      } catch (e) {
-        if (alive) err(errText(e));
-      }
-    };
-    const t = setInterval(tick, 1000);
-    tick();
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [demoId, done, err]);
-
-  useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [demo?.said.length]);
 
   useEffect(() => {
-    if (!sessionId || done) {
-      if (done) return;
+    if (!sessionId || !live) {
+      if (!live) return;
       setEvents([]);
       return;
     }
@@ -99,7 +83,6 @@ export function LiveDemo() {
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 404) return;
-        // soft: avoid toast spam while run row catches up
       }
     };
     const t = setInterval(tick, 1500);
@@ -108,7 +91,7 @@ export function LiveDemo() {
       alive = false;
       clearInterval(t);
     };
-  }, [sessionId, done]);
+  }, [sessionId, live]);
 
   const saveDomain = async () => {
     setSavingDomain(true);
@@ -126,12 +109,15 @@ export function LiveDemo() {
 
   const start = async () => {
     if (domainPlaceholder || !domain.trim() || /example\.com/i.test(domain)) {
-      err("Set your product domain first (https://your-product.com).");
+      err("Set your product domain first (https://your-product.com), then Start.");
       return;
     }
-    setStarting(true);
+    if (live) {
+      err("A demo is already running — end it first.");
+      return;
+    }
     try {
-      const d = await api.startDemo({
+      await startSession({
         platform,
         topic: topic.trim() || undefined,
         intake: {
@@ -141,20 +127,16 @@ export function LiveDemo() {
           looking_for: looking.trim(),
         },
       });
-      setDemo(d);
       ok("Demo starting.");
     } catch (e) {
       err(errText(e));
-    } finally {
-      setStarting(false);
     }
   };
 
   const end = async () => {
     if (!demoId) return;
     try {
-      const d = await api.endDemo(demoId);
-      setDemo(d);
+      await endSession(demoId);
       ok("Demo ended.");
     } catch (e) {
       err(errText(e));
@@ -171,8 +153,6 @@ export function LiveDemo() {
       err("Copy failed — select the link manually.");
     }
   };
-
-  const live = !!demoId && !done;
 
   return (
     <motion.div
@@ -241,9 +221,9 @@ export function LiveDemo() {
             placeholder="optional — workflow or problem"
           />
         </Field>
-        <Button onClick={start} disabled={starting || live}>
+        <Button onClick={start} disabled={starting || live || ending}>
           <Play size={14} strokeWidth={2.2} />
-          {starting ? "Starting…" : "Start demo"}
+          {starting ? "Starting…" : live ? "Demo running…" : "Start demo"}
         </Button>
       </Card>
 
@@ -279,14 +259,14 @@ export function LiveDemo() {
           </div>
         )}
 
-        <div className="mt-4 flex gap-2">
+        <div className="mt-4 flex flex-wrap gap-2">
           <Button variant="secondary" onClick={copy} disabled={!joinUrl}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy link"}
           </Button>
-          <Button variant="danger" onClick={end} disabled={!demoId || done}>
+          <Button variant="danger" onClick={end} disabled={!demoId || (!live && done) || ending}>
             <PhoneOff size={14} />
-            End
+            {ending ? "Ending…" : "End"}
           </Button>
           {sessionId && (
             <Button
@@ -350,7 +330,7 @@ export function LiveDemo() {
 
       <Card span="lg:col-span-2">
         <CardTitle hint="What the agent has said so far, live.">Transcript</CardTitle>
-        {!demo?.said.length && <Empty>Nothing yet.</Empty>}
+        {!demo?.said?.length && <Empty>Nothing yet.</Empty>}
         <ul ref={listRef} className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
           <AnimatePresence initial={false}>
             {(demo?.said ?? []).map((line, i) => (

@@ -334,8 +334,8 @@ def signup(
     product_id = registered.product.product_id
     try:
         registry.put_site_graph(product_id, _BLANK_CLIENT_GRAPH, "yaml")
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(500, f"could not seed site graph: {exc}") from None
 
     try:
         user_id = store.create_user(product_id, email, req.password)
@@ -863,6 +863,11 @@ persona:
   one_liner: Configure this in the client dashboard
   agent_name: Navigator AI
   tone: friendly, clear, concise
+demo_playlist:
+  - order: 1
+    name: Default walkthrough
+    page_id: home
+    flow_id: default_walkthrough
 pages:
   home:
     name: Home
@@ -873,7 +878,7 @@ pages:
       default_walkthrough:
         - tool: wait_for
           selector: body
-          timeout_ms: 5000
+          timeout_ms: 15000
           expects: {check: visible, selector: body}
 """
 

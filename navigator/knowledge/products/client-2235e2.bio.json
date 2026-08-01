@@ -1,0 +1,14 @@
+{
+  "fields": [
+    {
+      "key": "company_name",
+      "label": "Company Name",
+      "value": "Resiliencesoft"
+    },
+    {
+      "key": "product",
+      "label": "Product",
+      "value": "ResilioHub"
+    }
+  ]
+}

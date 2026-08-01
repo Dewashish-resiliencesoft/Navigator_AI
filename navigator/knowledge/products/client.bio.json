@@ -1,0 +1,9 @@
+{
+  "fields": [
+    {
+      "key": "company_name",
+      "label": "Company name",
+      "value": "TestCo"
+    }
+  ]
+}

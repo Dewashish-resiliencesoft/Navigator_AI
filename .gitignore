@@ -15,6 +15,9 @@ registry.db
 .navigator_client_key
 .navigator_google_sa.json
 
+# Accidental setuptools `python setup.py build` / editable leftovers
+build/
+
 # SDK build output. sdk/src/generated/ is Fern's output -- regenerate it with
 # `npx fern-api generate`, never commit it.
 sdk/node_modules/

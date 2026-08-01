@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from uuid import uuid4
 
 from navigator.app.runner import DemoHandle, DemoRunner
@@ -30,6 +31,22 @@ def test_stop_leaves_attendee_bot():
     assert out is handle
     assert handle._stop.is_set()
     assert left == ["bot-xyz"]
+
+
+def test_stop_marks_finished_immediately_while_worker_alive():
+    """End must not leave UI stuck on 'running' until the worker exits."""
+    runner = DemoRunner(":memory:")
+    handle = _handle()
+    handle._thread = threading.Thread(target=lambda: time.sleep(30), daemon=True)
+    handle._thread.start()
+    runner._demos[handle.demo_id] = handle
+
+    out = runner.stop(handle.demo_id, "acme", leave_bot=lambda _: None)
+
+    assert out is handle
+    assert handle._stop.is_set()
+    assert handle.status == "finished"
+    assert handle.finished_at is not None
 
 
 def test_stop_without_bot_id_still_sets_event():

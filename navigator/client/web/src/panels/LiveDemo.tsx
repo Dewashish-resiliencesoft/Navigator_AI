@@ -196,11 +196,15 @@ export function LiveDemo() {
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy link"}
           </Button>
-          <Button variant="danger" onClick={end} disabled={!live}>
+          <Button variant="danger" onClick={end} disabled={!demoId || done}>
             <PhoneOff size={14} />
             End
           </Button>
         </div>
+
+        {demo?.error && (
+          <p className="mt-3 text-[0.78rem] text-red-600 dark:text-red-400">{demo.error}</p>
+        )}
 
         {demo && (
           <div

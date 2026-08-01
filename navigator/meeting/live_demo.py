@@ -136,7 +136,14 @@ def _require_live_settings(meeting_url: str) -> None:
         if not val
     ]
     if is_zoom_meeting(meeting_url) and not settings.public_base_url:
-        missing.append("NAVIGATOR_PUBLIC_BASE_URL")
+        # Empty is OK locally — zoom_zak_callback_url() auto-tunnels :8000.
+        # Still flag it when cloudflared is missing so the error is early.
+        from shutil import which
+        from pathlib import Path
+
+        tunnel = settings.tunnel_bin
+        if tunnel != "cloudflared" and not Path(tunnel).is_file() and not which(tunnel):
+            missing.append("NAVIGATOR_PUBLIC_BASE_URL (or a working tunnel_bin)")
     if missing:
         raise RuntimeError(f"missing config for live Meet demo: {', '.join(missing)}")
 
@@ -654,21 +661,21 @@ def run_live_meet_demo(
                 timeout_s=90.0,
                 settle_s=2.5,
             )
-                if live:
-                    try:
-                        meet_speaker.say(
-                            "Screen share is up. Let's walk through the product."
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[live] share-ready TTS skipped: {exc}", flush=True)
-                else:
-                    try:
-                        meet_speaker.say(
-                            "Screen share is still catching up — I'll start the "
-                            "walkthrough; tell me if you can't see my screen."
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[live] share-timeout TTS skipped: {exc}", flush=True)
+            if live:
+                try:
+                    meet_speaker.say(
+                        "Screen share is up. Let's walk through the product."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] share-ready TTS skipped: {exc}", flush=True)
+            else:
+                try:
+                    meet_speaker.say(
+                        "Screen share is still catching up — I'll start the "
+                        "walkthrough; tell me if you can't see my screen."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] share-timeout TTS skipped: {exc}", flush=True)
 
             deps = CallDeps(
                 graph=graph_cfg,

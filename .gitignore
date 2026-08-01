@@ -13,6 +13,7 @@ registry.db
 *.db-wal
 *.db-shm
 .navigator_client_key
+.navigator_google_sa.json
 
 # SDK build output. sdk/src/generated/ is Fern's output -- regenerate it with
 # `npx fern-api generate`, never commit it.

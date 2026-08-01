@@ -209,6 +209,11 @@ class DemoRunner:
                 leave(handle.bot_id)
             except Exception as exc:  # noqa: BLE001
                 print(f"[runner] end: leave bot {handle.bot_id} failed: {exc}", flush=True)
+        # UI End must free Start immediately — don't wait for worker teardown.
+        if handle.status in ("starting", "running"):
+            handle.status = "finished"
+            handle.error = None
+            handle.finished_at = datetime.now(timezone.utc)
         return handle
 
     @staticmethod
@@ -280,10 +285,6 @@ class DemoRunner:
         run: Callable[..., str] | None,
         kwargs: dict,
     ) -> None:
-        if run is None:
-            from navigator.meeting.live_demo import run_live_meet_demo
-
-            run = run_live_meet_demo
         def on_bot_joined(bot_id: str) -> None:
             handle.bot_id = bot_id
 
@@ -292,6 +293,10 @@ class DemoRunner:
             handle.said.append("Navigator is in the meeting — join link ready.")
 
         try:
+            if run is None:
+                from navigator.meeting.live_demo import run_live_meet_demo
+
+                run = run_live_meet_demo
             handle.status = "running"
             run(
                 meeting_url=handle.meeting_url,

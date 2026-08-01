@@ -140,15 +140,24 @@ def _google_token(sa_json: str, impersonate: str) -> str:
         raise MeetingProviderError(f"google-auth not installed: {exc}") from None
 
     raw = sa_json.strip()
-    info = (
-        json.loads(raw)
-        if raw.startswith("{")
-        else json.loads(Path(raw).read_text())
-    )
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=GOOGLE_SCOPES
-    ).with_subject(impersonate)
-    creds.refresh(GoogleRequest())
+    try:
+        info = (
+            json.loads(raw)
+            if raw.startswith("{")
+            else json.loads(Path(raw).expanduser().read_text())
+        )
+    except (OSError, json.JSONDecodeError, TypeError) as exc:
+        raise MeetingProviderError(
+            "NAVIGATOR_GOOGLE_SA_JSON is not valid JSON (use a single-line "
+            f"value or a path to the key file): {exc}"
+        ) from None
+    try:
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=GOOGLE_SCOPES
+        ).with_subject(impersonate)
+        creds.refresh(GoogleRequest())
+    except Exception as exc:  # noqa: BLE001
+        raise MeetingProviderError(f"Google SA token failed: {exc}") from None
     return creds.token
 
 

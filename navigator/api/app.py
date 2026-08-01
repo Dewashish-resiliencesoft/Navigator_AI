@@ -14,7 +14,7 @@ Run it:
 from __future__ import annotations
 
 import os
-from typing import Annotated
+from typing import Annotated, Callable
 from uuid import UUID
 
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query
@@ -33,6 +33,12 @@ from navigator.api.registry import (
 )
 from navigator.api.runner import DemoRunner
 from navigator.config.site_graph import SiteGraphError
+from navigator.meeting.providers import (
+    MeetingProvider,
+    MeetingProviderError,
+    Platform as MeetingPlatform,
+    make_provider,
+)
 from navigator.logs.store import ActionLog
 from navigator.schemas import ActionLogEntry
 from navigator.settings import settings
@@ -58,6 +64,14 @@ def get_runner() -> DemoRunner:
 
 def get_log() -> ActionLog:
     return _log
+
+
+def get_provider_factory() -> Callable[[MeetingPlatform | None], MeetingProvider]:
+    """A *factory*, not a provider: the platform is chosen per request.
+
+    Tests override this to hand back a fake, so no test ever calls Google or Zoom.
+    """
+    return make_provider
 
 
 _registry = Registry(os.environ.get("NAVIGATOR_REGISTRY_DB", "registry.db"))
@@ -86,6 +100,10 @@ AuthedProduct = Annotated[Product, Depends(authed)]
 Reg = Annotated[Registry, Depends(get_registry)]
 Runner = Annotated[DemoRunner, Depends(get_runner)]
 Log = Annotated[ActionLog, Depends(get_log)]
+Providers = Annotated[
+    Callable[[MeetingPlatform | None], MeetingProvider],
+    Depends(get_provider_factory),
+]
 
 
 # -- request/response bodies --------------------------------------------------
@@ -100,7 +118,8 @@ class NewDemo(BaseModel):
     page_id: str
     flow_id: str
     meeting_url: str | None = None
-    """Ignored until Phase 3. A demo currently runs against a local browser."""
+    """Ignored here -- POST /v1/demos runs headless, no meeting. See
+    POST /v1/demos/start, which creates its own link."""
 
 
 class DemoView(BaseModel):
@@ -114,6 +133,40 @@ class DemoView(BaseModel):
     failures: int
     error: str | None = None
     said: list[str] = Field(default_factory=list)
+    meeting_url: str | None = None
+    platform: str | None = None
+
+
+class IntakePrefill(BaseModel):
+    """What the landing page already knows, so the bot needn't ask again."""
+
+    name: str = ""
+    company: str = ""
+    business_type: str = ""
+    looking_for: str = ""
+
+
+class StartLiveDemo(BaseModel):
+    platform: MeetingPlatform | None = None
+    """None -> NAVIGATOR_MEETING_PLATFORM."""
+    page_id: str | None = None
+    flow_id: str | None = None
+    """None -> NAVIGATOR_LIVE_WALKTHROUGH_FLOW."""
+    intake: IntakePrefill | None = None
+
+
+class MeetingOut(BaseModel):
+    url: str
+    platform: str
+    provider_id: str
+    passcode: str = ""
+    open_access: bool = False
+    """True when the link admits anyone directly -- Navigator can join first
+    with nobody to let it out of the waiting room."""
+
+
+class LiveDemoView(DemoView):
+    meeting: MeetingOut
 
 
 # -- products -----------------------------------------------------------------
@@ -217,6 +270,66 @@ def start_demo(
         product.product_id, graph, revision, (spec.page_id, spec.flow_id)
     )
     return DemoView(**handle.public())
+
+
+@app.post("/v1/demos/start", response_model=LiveDemoView, status_code=202)
+def start_live_demo(
+    spec: StartLiveDemo,
+    product: AuthedProduct,
+    registry: Reg,
+    runner: Runner,
+    providers: Providers,
+) -> LiveDemoView:
+    """Create a meeting for *this* session and put Navigator in it, now.
+
+    The meeting is instant, not scheduled: it exists and is joinable the moment
+    this returns, which is the only useful semantics for a "Show Demo" button.
+    The link is minted per call, so two prospects can be demoed at once and no
+    human has to set NAVIGATOR_MEETING_URL first. The response carries the join
+    URL, which is what the button redirects to.
+
+    Ordering is deliberate: the graph is loaded and the flow validated *before*
+    any meeting is created, so a bad request never leaves an orphaned meeting
+    behind.
+    """
+    try:
+        graph = registry.load_graph(product.product_id)
+        revision = product.active_revision or 0
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+
+    page_id = spec.page_id or next(iter(graph.pages), "")
+    flow_id = spec.flow_id or settings.live_walkthrough_flow
+    try:
+        graph.flow(page_id, flow_id)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    try:
+        meeting = providers(spec.platform).create_meeting(
+            product.product_id, topic=f"Navigator demo — {product.name}"
+        )
+    except MeetingProviderError as exc:
+        # 502: the request was fine, the upstream conferencing provider was not.
+        raise HTTPException(502, f"could not create meeting: {exc}") from None
+
+    if not meeting.open_access:
+        print(
+            f"[api] {meeting.platform} link {meeting.url} is not open-access; "
+            "Navigator may wait to be admitted.",
+            flush=True,
+        )
+
+    handle = runner.start_live(
+        product.product_id,
+        graph,
+        revision,
+        (page_id, flow_id),
+        meeting_url=meeting.url,
+        platform=meeting.platform,
+        intake_prefill=None if spec.intake is None else spec.intake.model_dump(),
+    )
+    return LiveDemoView(**handle.public(), meeting=MeetingOut(**meeting.public()))
 
 
 @app.get("/v1/demos/{demo_id}", response_model=DemoView)

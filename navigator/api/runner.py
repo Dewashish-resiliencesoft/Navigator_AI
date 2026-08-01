@@ -21,7 +21,7 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 from uuid import UUID, uuid4
 
 from playwright.sync_api import sync_playwright
@@ -49,6 +49,9 @@ class DemoHandle:
     actions: int = 0
     failures: int = 0
     error: str | None = None
+    meeting_url: str | None = None
+    """The link created for *this* session. None for a headless local demo."""
+    platform: str | None = None
     started_at: datetime = field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
@@ -129,6 +132,45 @@ class DemoRunner:
         thread.start()
         return handle
 
+    def start_live(
+        self,
+        product_id: str,
+        graph: SiteGraph,
+        revision: int,
+        flow: tuple[str, str],
+        *,
+        meeting_url: str,
+        platform: str,
+        run: Callable[..., str] | None = None,
+        **kwargs,
+    ) -> DemoHandle:
+        """Run the *real* Meet pipeline: Attendee bot, tunnel, screenshare, agent.
+
+        Same handle, thread, and tenant scoping as `start()`; only the worker
+        differs. `run` is injectable so tests never touch Attendee or Playwright.
+        """
+        handle = DemoHandle(
+            demo_id=uuid4(),
+            product_id=product_id,
+            revision=revision,
+            session_id=uuid4(),
+            page_id=flow[0],
+            meeting_url=meeting_url,
+            platform=platform,
+        )
+        with self._lock:
+            self._demos[handle.demo_id] = handle
+
+        thread = threading.Thread(
+            target=self._run_live,
+            args=(handle, graph, flow, run, kwargs),
+            name=f"live-demo-{handle.demo_id}",
+            daemon=True,
+        )
+        handle._thread = thread
+        thread.start()
+        return handle
+
     def get(self, demo_id: UUID, product_id: str | None = None) -> DemoHandle | None:
         """A demo by id, scoped to a product so one tenant can't read another's."""
         handle = self._demos.get(demo_id)
@@ -199,3 +241,43 @@ class DemoRunner:
             handle.error = traceback.format_exc(limit=3)
         finally:
             handle.finished_at = datetime.now(timezone.utc)
+
+    def _run_live(
+        self,
+        handle: DemoHandle,
+        graph: SiteGraph,
+        flow: tuple[str, str],
+        run: Callable[..., str] | None,
+        kwargs: dict,
+    ) -> None:
+        if run is None:
+            from navigator.meeting.live_demo import run_live_meet_demo
+
+            run = run_live_meet_demo
+        try:
+            handle.status = "running"
+            run(
+                meeting_url=handle.meeting_url,
+                graph_cfg=graph,
+                product_id=handle.product_id,
+                session_id=handle.session_id,
+                page_id=flow[0],
+                flow_id=flow[1],
+                headful=self.headful,
+                # An API-started demo has no TTY and no local browser to open.
+                interactive_listen=False,
+                open_meet_in_browser=False,
+                **kwargs,
+            )
+            handle.status = "finished"
+        except Exception:
+            handle.status = "failed"
+            handle.error = traceback.format_exc(limit=3)
+        finally:
+            handle.finished_at = datetime.now(timezone.utc)
+            with ActionLog(self.db_path) as log:
+                entries = log.entries(handle.session_id, product_id=handle.product_id)
+            handle.actions = len(entries)
+            handle.failures = sum(
+                1 for e in entries if not (e.verify and e.verify.passed)
+            )

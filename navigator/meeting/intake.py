@@ -142,15 +142,28 @@ def run_intake(
     speaker: Speaker,
     interactive: bool,
     listen: Callable[[str], str] | None = None,
+    prefill: dict[str, str] | None = None,
 ) -> ProspectIntake:
-    """Ask intake questions via TTS; collect answers (STT / stdin / defaults)."""
+    """Ask intake questions via TTS; collect answers (STT / stdin / defaults).
+
+    `prefill` is what the landing page already collected. A field that arrives
+    filled is not asked again -- nobody wants to retype their company name to a
+    bot thirty seconds after typing it into a form.
+    """
     answers: dict[str, str] = {}
+    prefill = {k: v.strip() for k, v in (prefill or {}).items() if v and v.strip()}
 
     # Initial greet (name still unknown).
     hello = greet_line(persona)
     _say(speaker, hello)
 
     for key, question, default in _QUESTIONS:
+        if key in prefill:
+            answers[key] = _clean_field(key, prefill[key])
+            print(f"[intake] {key}={answers[key]!r} (prefilled)", flush=True)
+            if key == "name":
+                _say(speaker, name_ack_line(answers["name"]))
+            continue
         _say(speaker, question)
         if listen is not None:
             print(f"[intake] listening for {key}…", flush=True)

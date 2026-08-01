@@ -79,6 +79,43 @@ def test_run_intake_uses_listen_answers():
     assert any("Dewa" in s and "inbox" in s.lower() for s in speaker.said)
 
 
+def test_prefilled_fields_are_not_asked_again():
+    """The landing page already took their name; don't make them repeat it."""
+    speaker = _RecordingSpeaker()
+    persona = Persona(product_name="P", agent_name="Nav")
+    asked: list[str] = []
+
+    def listen(prompt: str) -> str:
+        asked.append(prompt)
+        return "spoken"
+
+    intake = run_intake(
+        persona=persona,
+        speaker=speaker,
+        interactive=False,
+        listen=listen,
+        prefill={"name": "Dewa", "company": "Resilio", "looking_for": ""},
+    )
+    assert intake.name == "Dewa"
+    assert intake.company == "Resilio"
+    assert intake.business_type == "spoken", "an empty prefill still gets asked"
+    assert intake.looking_for == "spoken"
+    assert len(asked) == 2, f"only the unfilled questions: {asked}"
+    assert any("Nice to meet you, Dewa" in s for s in speaker.said)
+
+
+def test_no_prefill_asks_everything():
+    speaker = _RecordingSpeaker()
+    asked: list[str] = []
+    run_intake(
+        persona=Persona(product_name="P", agent_name="Nav"),
+        speaker=speaker,
+        interactive=False,
+        listen=lambda p: asked.append(p) or "x",
+    )
+    assert len(asked) == 4
+
+
 def test_preferred_flow_from_looking_for():
     from navigator.meeting.intake import preferred_flow_id, solution_blurb
 

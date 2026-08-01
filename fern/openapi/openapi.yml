@@ -284,6 +284,57 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/demos/start:
+    post:
+      summary: Start Live Demo
+      description: 'Create a meeting for *this* session and put Navigator in it, now.
+
+
+        The meeting is instant, not scheduled: it exists and is joinable the moment
+
+        this returns, which is the only useful semantics for a "Show Demo" button.
+
+        The link is minted per call, so two prospects can be demoed at once and no
+
+        human has to set NAVIGATOR_MEETING_URL first. The response carries the join
+
+        URL, which is what the button redirects to.
+
+
+        Ordering is deliberate: the graph is loaded and the flow validated *before*
+
+        any meeting is created, so a bad request never leaves an orphaned meeting
+
+        behind.'
+      operationId: start_live_demo_v1_demos_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartLiveDemo'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveDemoView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/demos/{demo_id}:
     get:
       summary: Get Demo
@@ -695,6 +746,11 @@ components:
       properties:
         expects:
           $ref: '#/components/schemas/Postcondition'
+        spoken:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Spoken
         tool:
           type: string
           const: click_element
@@ -746,6 +802,16 @@ components:
             type: string
           type: array
           title: Said
+        meeting_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Meeting Url
+        platform:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Platform
       type: object
       required:
       - demo_id
@@ -761,6 +827,11 @@ components:
       properties:
         expects:
           $ref: '#/components/schemas/Postcondition'
+        spoken:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Spoken
         tool:
           type: string
           const: fill_field
@@ -794,6 +865,27 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    IntakePrefill:
+      properties:
+        name:
+          type: string
+          title: Name
+          default: ''
+        company:
+          type: string
+          title: Company
+          default: ''
+        business_type:
+          type: string
+          title: Business Type
+          default: ''
+        looking_for:
+          type: string
+          title: Looking For
+          default: ''
+      type: object
+      title: IntakePrefill
+      description: What the landing page already knows, so the bot needn't ask again.
     KnowledgeIngestBody:
       properties:
         text:
@@ -804,10 +896,102 @@ components:
       required:
       - text
       title: KnowledgeIngestBody
+    LiveDemoView:
+      properties:
+        demo_id:
+          type: string
+          format: uuid
+          title: Demo Id
+        product_id:
+          type: string
+          title: Product Id
+        revision:
+          type: integer
+          title: Revision
+        session_id:
+          type: string
+          format: uuid
+          title: Session Id
+        status:
+          type: string
+          title: Status
+        page_id:
+          type: string
+          title: Page Id
+        actions:
+          type: integer
+          title: Actions
+        failures:
+          type: integer
+          title: Failures
+        error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error
+        said:
+          items:
+            type: string
+          type: array
+          title: Said
+        meeting_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Meeting Url
+        platform:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Platform
+        meeting:
+          $ref: '#/components/schemas/MeetingOut'
+      type: object
+      required:
+      - demo_id
+      - product_id
+      - revision
+      - session_id
+      - status
+      - page_id
+      - actions
+      - failures
+      - meeting
+      title: LiveDemoView
+    MeetingOut:
+      properties:
+        url:
+          type: string
+          title: Url
+        platform:
+          type: string
+          title: Platform
+        provider_id:
+          type: string
+          title: Provider Id
+        passcode:
+          type: string
+          title: Passcode
+          default: ''
+        open_access:
+          type: boolean
+          title: Open Access
+          default: false
+      type: object
+      required:
+      - url
+      - platform
+      - provider_id
+      title: MeetingOut
     Navigate:
       properties:
         expects:
           $ref: '#/components/schemas/Postcondition'
+        spoken:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Spoken
         tool:
           type: string
           const: navigate
@@ -987,6 +1171,33 @@ components:
       required:
       - yaml
       title: SiteGraphUpload
+    StartLiveDemo:
+      properties:
+        platform:
+          anyOf:
+          - type: string
+            enum:
+            - google_meet
+            - zoom
+            - static
+          - type: 'null'
+          title: Platform
+        page_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Page Id
+        flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Id
+        intake:
+          anyOf:
+          - $ref: '#/components/schemas/IntakePrefill'
+          - type: 'null'
+      type: object
+      title: StartLiveDemo
     ToolResult:
       properties:
         ok:
@@ -1063,6 +1274,11 @@ components:
       properties:
         expects:
           $ref: '#/components/schemas/Postcondition'
+        spoken:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Spoken
         tool:
           type: string
           const: wait_for

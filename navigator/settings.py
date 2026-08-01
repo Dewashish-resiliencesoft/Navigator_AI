@@ -39,7 +39,19 @@ class Settings(BaseSettings):
     attendee_api_key: str = ""
 
     # Phase 3: Meet + Teams + product login
+    #: Fallback only: the CLI path (`python -m navigator.meeting.live_demo`) uses
+    #: this when no URL is passed in. The API creates a fresh link per session.
     meeting_url: str = ""
+    #: Which provider mints that per-session link. "static" reuses meeting_url.
+    meeting_platform: Literal["google_meet", "zoom", "static"] = "google_meet"
+    #: Service account JSON — inline, or a path to the key file. Needs
+    #: domain-wide delegation; a bare service account cannot create a Meet space.
+    google_sa_json: str = ""
+    #: Workspace user the service account impersonates (DWD subject).
+    google_impersonate: str = ""
+    zoom_account_id: str = ""
+    zoom_client_id: str = ""
+    zoom_client_secret: str = ""
     product_url: str = ""
     product_login_email: str = ""
     product_login_password: str = ""

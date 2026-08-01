@@ -116,7 +116,7 @@ def assert_live_site_graph(path: Path) -> None:
         )
 
 
-def _require_live_settings() -> None:
+def _require_live_settings(meeting_url: str) -> None:
     if "localhost" in settings.attendee_base_url:
         raise RuntimeError(
             "NAVIGATOR_ATTENDEE_BASE_URL still points at localhost; "
@@ -126,12 +126,13 @@ def _require_live_settings() -> None:
         name
         for name, val in [
             ("NAVIGATOR_ATTENDEE_API_KEY", settings.attendee_api_key),
-            ("NAVIGATOR_MEETING_URL", settings.meeting_url),
+            ("meeting_url (pass it in, or set NAVIGATOR_MEETING_URL for the CLI)",
+             meeting_url),
         ]
         if not val
     ]
     if missing:
-        raise RuntimeError(f"missing env for live Meet demo: {', '.join(missing)}")
+        raise RuntimeError(f"missing config for live Meet demo: {', '.join(missing)}")
 
 
 def wait_until_joined(
@@ -258,6 +259,7 @@ def _leave_stale_bots(client: AttendeeClient, meeting_url: str) -> None:
 
 def run_live_meet_demo(
     *,
+    meeting_url: str | None = None,
     page_id: str = "inbox",
     flow_id: str = "send_test_message",
     headful: bool = True,
@@ -267,14 +269,26 @@ def run_live_meet_demo(
     wait_for_human: bool = True,
     human_join_timeout_s: float = 300.0,
     bot_first: bool | None = None,
+    graph_cfg=None,
+    product_id: str | None = None,
+    session_id=None,
+    intake_prefill: dict[str, str] | None = None,
+    on_meeting_ready=None,
 ) -> str:
     """Join Meet, qualify prospect, then share screen and run demo. Returns bot id.
 
     Default: bot joins first, then Meet link is shared (you arrive to Navigator
     already present). Requires Meet Quick access so the bot is not stuck knocking.
+
+    `meeting_url` is passed in by the API (a link created for this session). The
+    env var is only the fallback for the standalone CLI run.
+    `graph_cfg` lets the API supply a registered product's site graph instead of
+    the on-disk NAVIGATOR_SITE_GRAPH.
     """
-    assert_live_site_graph(Path(settings.site_graph))
-    _require_live_settings()
+    if graph_cfg is None:
+        assert_live_site_graph(Path(settings.site_graph))
+    meeting_url = meeting_url or settings.meeting_url
+    _require_live_settings(meeting_url)
 
     if interactive_listen is None:
         interactive_listen = sys.stdin.isatty()
@@ -286,7 +300,7 @@ def run_live_meet_demo(
         open_meet_in_browser = True
 
     client = AttendeeClient(settings.attendee_base_url, settings.attendee_api_key)
-    _leave_stale_bots(client, settings.meeting_url)
+    _leave_stale_bots(client, meeting_url)
     speaker = _require_tts_for_meet(mute=mute)
     # Warm synthesizer so first Meet utterance isn't cold.
     if hasattr(speaker, "synthesize_wav"):
@@ -296,7 +310,8 @@ def run_live_meet_demo(
             print(f"[live] TTS warmed ({kind})", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[live] TTS warm skipped: {exc}", flush=True)
-    graph_cfg = load_site_graph(settings.site_graph)
+    if graph_cfg is None:
+        graph_cfg = load_site_graph(settings.site_graph)
     persona = graph_cfg.effective_persona()
 
     relay = start_relay()
@@ -334,7 +349,7 @@ def run_live_meet_demo(
 
         if not bot_first:
             # Legacy: host admits bot from waiting room.
-            _share_meet_link(meeting_url=settings.meeting_url, bot_ready=False)
+            _share_meet_link(meeting_url=meeting_url, bot_ready=False)
             print(
                 "[live] Open Meet as HOST and admit "
                 f"{persona.agent_name} if asked (or enable Quick access).",
@@ -343,7 +358,7 @@ def run_live_meet_demo(
             if open_meet_in_browser:
                 import webbrowser
 
-                webbrowser.open(settings.meeting_url)
+                webbrowser.open(meeting_url)
             time.sleep(8)
 
         print(
@@ -351,7 +366,7 @@ def run_live_meet_demo(
             flush=True,
         )
         bot = client.join(
-            settings.meeting_url,
+            meeting_url,
             bot_name=persona.agent_name,
             reserve_voice_agent=True,
             audio_websocket_url=audio_ws_url,
@@ -366,16 +381,18 @@ def run_live_meet_demo(
 
         if bot_first:
             # Link only after Navigator is already inside.
-            _share_meet_link(meeting_url=settings.meeting_url, bot_ready=True)
+            _share_meet_link(meeting_url=meeting_url, bot_ready=True)
+            if on_meeting_ready is not None:
+                on_meeting_ready(meeting_url)
             if open_meet_in_browser:
                 import webbrowser
 
                 print(
                     f"[live] opening Meet for you (Navigator already there): "
-                    f"{settings.meeting_url}",
+                    f"{meeting_url}",
                     flush=True,
                 )
-                webbrowser.open(settings.meeting_url)
+                webbrowser.open(meeting_url)
 
         if audio_bridge is not None:
             # Attendee retries WS up to ~60s; wait so intake isn't deaf.
@@ -465,6 +482,7 @@ def run_live_meet_demo(
             speaker=meet_speaker,
             interactive=interactive_listen,
             listen=intake_listen,
+            prefill=intake_prefill,
         )
         print(f"[live] intake done: {intake.model_dump()}", flush=True)
         from navigator.meeting.intake import preferred_flow_id
@@ -482,7 +500,7 @@ def run_live_meet_demo(
             audio_frames = client.audio_stream(bot.id, timeout_s=6.0)
             print("[live] Meet audio STT armed", flush=True)
 
-        session_id = uuid4()
+        session_id = session_id or uuid4()
         with ActionLog(settings.db_path) as log, sync_playwright() as pw:
             browser = pw.chromium.launch(headless=not headful)
             context = browser.new_context(viewport={"width": 1280, "height": 720})
@@ -592,7 +610,7 @@ def run_live_meet_demo(
                 log=log,
                 speaker=meet_speaker,
                 scripted_flow=None if conversational else (page_id, flow_id),
-                product_id=graph_cfg.site or "resiliohub",
+                product_id=product_id or graph_cfg.site or "resiliohub",
                 archive_dir=Path("archives"),
                 groq_api_key=settings.groq_api_key or None,
                 meeting_url=None,
@@ -685,7 +703,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Navigator live Meet demo")
     parser.add_argument("--login-only", action="store_true")
     parser.add_argument("--headful", action="store_true")
+    parser.add_argument(
+        "--meeting-url",
+        default=None,
+        help="Join this meeting. Default: NAVIGATOR_MEETING_URL.",
+    )
+    parser.add_argument(
+        "--create-meeting",
+        action="store_true",
+        help="Mint a fresh link first (NAVIGATOR_MEETING_PLATFORM), like the API does.",
+    )
     args = parser.parse_args()
     if args.login_only:
         raise SystemExit(run_login_only(headful=args.headful))
-    print(run_live_meet_demo())
+    url = args.meeting_url
+    if args.create_meeting:
+        from navigator.meeting.providers import make_provider
+
+        info = make_provider().create_meeting("cli")
+        print(f"[live] created {info.platform} meeting: {info.url}", flush=True)
+        url = info.url
+    print(run_live_meet_demo(meeting_url=url))

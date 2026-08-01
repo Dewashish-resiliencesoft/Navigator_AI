@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from navigator.agent.end_policy import SILENCE_S
 from navigator.agent.nodes.reflecting import classify_correction
 from navigator.agent.state import CallDeps, CallState
-from navigator.settings import settings
+from navigator.core.settings import settings
 from navigator.voice.stt import VoiceSegmenter, transcribe
 
 SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"

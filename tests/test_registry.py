@@ -6,14 +6,14 @@ import textwrap
 
 import pytest
 
-from navigator.api.registry import (
+from navigator.app.registry import (
     NewProduct,
     ProductNotFound,
     Registry,
     RegistryError,
     hash_key,
 )
-from navigator.config.site_graph import SiteGraphError
+from navigator.knowledge.site_graph import SiteGraphError
 
 GRAPH = textwrap.dedent(
     """

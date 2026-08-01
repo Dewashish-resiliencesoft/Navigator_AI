@@ -12,9 +12,9 @@ on:
     paths:
       - "fern/**"
       - "navigator/docs/**"
-      - "navigator/api/**"
+      - "navigator/app/**"
       - "navigator/schemas.py"
-      - "navigator/config/site_graph.py"
+      - "navigator/knowledge/site_graph.py"
 
 jobs:
   preview:

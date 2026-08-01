@@ -19,7 +19,7 @@ import yaml
 from navigator.docs import build as build_mod
 from navigator.docs.model import build as build_model, endpoints_from_openapi
 from navigator.docs.snippets import SNIPPETS
-from navigator.schemas import CheckKind
+from navigator.core.schemas import CheckKind
 
 
 @pytest.fixture(scope="module")
@@ -277,7 +277,7 @@ def test_documented_site_graph_example_actually_validates():
 
     A docs example that the server rejects is worse than no example.
     """
-    from navigator.config.site_graph import parse_site_graph
+    from navigator.knowledge.site_graph import parse_site_graph
 
     graph = parse_site_graph(SNIPPETS["site_graph_yaml"], origin="docs snippet")
 

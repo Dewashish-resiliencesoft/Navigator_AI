@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from navigator.record import (
+from navigator.automation.record import (
     RecordedStep,
     draft_site_graph,
     guess_postcondition,
@@ -26,7 +26,7 @@ def test_prefer_selector_id_fallback():
 
 def test_listeners_capture_click_on_page(page):
     """Regression: init_script-only path used to record 0 steps on live sites."""
-    from navigator.record import _install_listeners, inject_dom_listeners
+    from navigator.automation.record import _install_listeners, inject_dom_listeners
 
     steps: list = []
     _install_listeners(page, steps)

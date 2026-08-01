@@ -12,8 +12,8 @@ import typing
 from dataclasses import dataclass, field
 from typing import Any, get_args
 
-from navigator.config.site_graph import PageSpec, SiteGraph
-from navigator.schemas import (
+from navigator.knowledge.site_graph import PageSpec, SiteGraph
+from navigator.core.schemas import (
     CheckKind,
     ClickElement,
     FillField,
@@ -258,7 +258,7 @@ CHECK_DESCRIPTIONS = {
 def build(app: Any | None = None) -> DocsModel:
     """Assemble the docs model from live code."""
     if app is None:
-        from navigator.api.app import app as default_app
+        from navigator.app.main import app as default_app
 
         app = default_app
 

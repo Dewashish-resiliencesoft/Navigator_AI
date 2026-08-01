@@ -10,8 +10,14 @@ from collections.abc import Callable
 
 from pydantic import BaseModel, ConfigDict
 
-from navigator.meeting.intake_clean import clean_name, clean_phrase
-from navigator.schemas import Persona
+from navigator.meeting.intake_clean import (
+    clean_business,
+    clean_company,
+    clean_name,
+    clean_phrase,
+    summarize_need,
+)
+from navigator.core.schemas import Persona
 from navigator.voice.tts import Speaker
 
 
@@ -85,16 +91,25 @@ def solution_blurb(persona: Persona, looking_for: str) -> str:
     return f"{product} is {positioning} — we'll focus the walkthrough on what you asked for."
 
 
-def pitch_line(persona: Persona, intake: ProspectIntake) -> str:
+def pitch_line(
+    persona: Persona,
+    intake: ProspectIntake,
+    *,
+    will_share_screen: bool = True,
+) -> str:
     name = intake.name or "there"
     company = intake.company or "your team"
     biz = intake.business_type or "your business"
-    need = intake.looking_for or "what matters most to you"
+    need = summarize_need(intake.looking_for) or "what matters most to you"
     solve = solution_blurb(persona, intake.looking_for)
+    closer = (
+        "I'll share my screen and show you that live — jump in anytime."
+        if will_share_screen
+        else "I'll walk you through it live by voice — jump in anytime."
+    )
     return (
-        f"Got it, {name}. You're at {company} in {biz}, looking at {need}. "
-        f"{solve} "
-        f"I'll share my screen and show you that live — jump in anytime."
+        f"Got it, {name}. You're with {company} in {biz}, focused on {need}. "
+        f"{solve} {closer}"
     )
 
 
@@ -119,6 +134,11 @@ def format_with_intake(template: str, intake: ProspectIntake | None) -> str:
     """Fill {name}/{company}/{business}/{looking_for}/{need} in spoken lines."""
     if not template:
         return template
+    need = (
+        summarize_need(intake.looking_for)
+        if intake and intake.looking_for
+        else "what you care about"
+    )
     if intake is None:
         return (
             template.replace("{name}", "there")
@@ -131,8 +151,8 @@ def format_with_intake(template: str, intake: ProspectIntake | None) -> str:
         template.replace("{name}", intake.name or "there")
         .replace("{company}", intake.company or "your team")
         .replace("{business}", intake.business_type or "your business")
-        .replace("{looking_for}", intake.looking_for or "what you care about")
-        .replace("{need}", intake.looking_for or "what you care about")
+        .replace("{looking_for}", need or "what you care about")
+        .replace("{need}", need or "what you care about")
     )
 
 
@@ -143,6 +163,7 @@ def run_intake(
     interactive: bool,
     listen: Callable[[str], str] | None = None,
     prefill: dict[str, str] | None = None,
+    will_share_screen: bool = True,
 ) -> ProspectIntake:
     """Ask intake questions via TTS; collect answers (STT / stdin / defaults).
 
@@ -153,13 +174,13 @@ def run_intake(
     answers: dict[str, str] = {}
     prefill = {k: v.strip() for k, v in (prefill or {}).items() if v and v.strip()}
 
-    # Initial greet (name still unknown).
-    hello = greet_line(persona)
+    hello = greet_line(persona, prefill.get("name", ""))
     _say(speaker, hello)
 
     for key, question, default in _QUESTIONS:
         if key in prefill:
-            answers[key] = _clean_field(key, prefill[key])
+            cleaned = _clean_field(key, prefill[key])
+            answers[key] = cleaned or default
             print(f"[intake] {key}={answers[key]!r} (prefilled)", flush=True)
             if key == "name":
                 _say(speaker, name_ack_line(answers["name"]))
@@ -172,8 +193,8 @@ def run_intake(
                 heard = (listen(question) or "").strip()
             except Exception as exc:  # noqa: BLE001
                 print(f"[intake] listen failed ({exc}) — using default", flush=True)
-            answers[key] = heard or default
-            answers[key] = _clean_field(key, answers[key])
+            cleaned = _clean_field(key, heard) if heard else ""
+            answers[key] = cleaned or default
             print(
                 f"[intake] {key}={answers[key]!r}"
                 + ("" if heard else " (default)"),
@@ -184,9 +205,10 @@ def run_intake(
                 typed = input(f"[intake {key}] > ").strip()
             except EOFError:
                 typed = ""
-            answers[key] = _clean_field(key, typed or default)
+            cleaned = _clean_field(key, typed) if typed else ""
+            answers[key] = cleaned or default
         else:
-            answers[key] = _clean_field(key, default)
+            answers[key] = _clean_field(key, default) or default
             print(f"[intake] (non-interactive) {key}={answers[key]!r}", flush=True)
 
         # Short human ack right after name — hybrid C backchannel.
@@ -199,15 +221,21 @@ def run_intake(
         business_type=answers["business_type"],
         looking_for=answers["looking_for"],
     )
-    pitch = pitch_line(persona, intake)
+    pitch = pitch_line(persona, intake, will_share_screen=will_share_screen)
     _say(speaker, pitch)
     return intake
 
 
 def _clean_field(key: str, value: str) -> str:
     if key == "name":
-        return clean_name(value) or value
-    return clean_phrase(value) or value
+        return clean_name(value)
+    if key == "company":
+        return clean_company(value)
+    if key == "business_type":
+        return clean_business(value)
+    if key == "looking_for":
+        return summarize_need(value, max_len=120) or clean_phrase(value)
+    return clean_phrase(value)
 
 
 def _say(speaker: Speaker, text: str) -> None:

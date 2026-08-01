@@ -141,7 +141,8 @@ ZOOM_MEETING = {
 }
 
 
-def test_zoom_creates_a_meeting_the_bot_can_enter_first(calls):
+def test_zoom_creates_a_meeting_for_host_first_join(calls):
+    """Host (ZAK bot) starts the room; guests must not enter before host."""
     calls.replies.extend([{"access_token": "zt"}, ZOOM_MEETING])
     info = ZoomProvider(
         account_id="acc", client_id="cid", client_secret="sec"
@@ -161,8 +162,34 @@ def test_zoom_creates_a_meeting_the_bot_can_enter_first(calls):
     )
     assert "start_time" not in create_req["body"]
     settings_sent = create_req["body"]["settings"]
-    assert settings_sent["join_before_host"] is True
+    assert settings_sent["join_before_host"] is False
     assert settings_sent["waiting_room"] is False
+
+
+def test_zoom_fetch_zak_hits_user_token_endpoint(calls, monkeypatch):
+    recorded = []
+
+    def fake_get(url, *, headers):
+        recorded.append({"url": url, "headers": headers})
+        return {"token": "zak-abc"}
+
+    monkeypatch.setattr(mod, "_get", fake_get)
+    calls.replies.append({"access_token": "zt"})
+    zak = ZoomProvider(
+        account_id="acc", client_id="cid", client_secret="sec", user_id="me"
+    ).fetch_zak()
+    assert zak == "zak-abc"
+    assert recorded[0]["url"] == f"{mod.ZOOM_API}/users/me/token?type=zak"
+    assert recorded[0]["headers"]["Authorization"] == "Bearer zt"
+
+
+def test_zoom_fetch_zak_without_token_is_an_error(calls, monkeypatch):
+    monkeypatch.setattr(mod, "_get", lambda url, *, headers: {})
+    calls.replies.append({"access_token": "zt"})
+    with pytest.raises(MeetingProviderError, match="(?i)zak"):
+        ZoomProvider(
+            account_id="a", client_id="c", client_secret="s"
+        ).fetch_zak()
 
 
 def test_zoom_without_credentials_is_refused(calls):
@@ -194,7 +221,7 @@ def test_static_without_a_url_is_refused():
 
 
 def test_factory_reads_settings_and_honours_an_override(monkeypatch):
-    from navigator.settings import settings
+    from navigator.core.settings import settings
 
     monkeypatch.setattr(settings, "meeting_platform", "google_meet")
     monkeypatch.setattr(settings, "meeting_url", "https://meet.google.com/fixed")

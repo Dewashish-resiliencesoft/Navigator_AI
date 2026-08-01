@@ -30,15 +30,32 @@ def test_intro_names_the_product_from_its_persona(state, deps):
 
 def test_intro_renders_personalized_with_intake():
     from navigator.meeting.intake import ProspectIntake
-    from navigator.schemas import Persona
+    from navigator.core.schemas import Persona
 
     line = render_intro(
         Persona(product_name="ResilioHub", one_liner="WhatsApp CRM", agent_name="Navigator"),
         ProspectIntake(name="Dewa", company="Acme", looking_for="shared inbox"),
     )
     assert "Dewa" in line
-    assert "shared inbox" in line
+    assert "shared inbox" in line or "inbox" in line.lower()
     assert "Acme" in line
+
+
+def test_intro_does_not_dump_raw_stt_ramble():
+    from navigator.meeting.intake import ProspectIntake
+    from navigator.core.schemas import Persona
+
+    ramble = (
+        "Yeah, actually we need like we have a sharp quiz app, which is a quiz "
+        "game. We need WhatsApp CRM support for that"
+    )
+    line = render_intro(
+        Persona(product_name="ResilioHub", one_liner="WhatsApp CRM", agent_name="Navigator"),
+        ProspectIntake(name="Dewashish", company="ResilientSoft", looking_for=ramble),
+    )
+    assert "Yeah, actually" not in line
+    assert "Dewashish" in line
+    assert "ResilientSoft" in line
 
 
 def test_planning_replays_the_scripted_flow(state, deps):

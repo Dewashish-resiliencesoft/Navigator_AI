@@ -101,6 +101,18 @@ def _post(url: str, *, headers: dict[str, str], body: dict | str | None) -> dict
         raise MeetingProviderError(f"{url} -> {exc!r}") from None
 
 
+def _get(url: str, *, headers: dict[str, str]) -> dict:
+    req = Request(url, method="GET", headers=headers)
+    try:
+        with urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read() or b"{}")
+    except HTTPError as exc:
+        detail = exc.read().decode(errors="replace")[:600]
+        raise MeetingProviderError(f"{url} -> HTTP {exc.code}: {detail}") from None
+    except Exception as exc:  # noqa: BLE001
+        raise MeetingProviderError(f"{url} -> {exc!r}") from None
+
+
 # -- google -------------------------------------------------------------------
 
 
@@ -182,16 +194,26 @@ class GoogleMeetProvider:
 
 
 class ZoomProvider:
-    """Zoom meeting per session via a Server-to-Server OAuth app."""
+    """Zoom meeting per session via a Server-to-Server OAuth app.
+
+    The Attendee bot starts the meeting as host via ZAK (see ``fetch_zak`` and
+    ``POST /v1/zoom/zak``). Prospects only ever get ``join_url``.
+    """
 
     platform: Platform = "zoom"
 
     def __init__(
-        self, *, account_id: str, client_id: str, client_secret: str
+        self,
+        *,
+        account_id: str,
+        client_id: str,
+        client_secret: str,
+        user_id: str = "me",
     ) -> None:
         self.account_id = account_id
         self.client_id = client_id
         self.client_secret = client_secret
+        self.user_id = user_id or "me"
 
     def _token(self) -> str:
         missing = [
@@ -226,11 +248,24 @@ class ZoomProvider:
             raise MeetingProviderError(f"Zoom token response has no token: {data}")
         return str(token)
 
+    def fetch_zak(self, user_id: str | None = None) -> str:
+        """Mint a short-lived ZAK so Attendee can start the meeting as host."""
+        uid = user_id or self.user_id
+        data = _get(
+            f"{ZOOM_API}/users/{uid}/token?type=zak",
+            headers={"Authorization": f"Bearer {self._token()}"},
+        )
+        zak = data.get("token")
+        if not zak:
+            raise MeetingProviderError(f"Zoom ZAK response has no token: {data}")
+        return str(zak)
+
     def create_meeting(
         self, product_id: str, *, topic: str = ""
     ) -> MeetingInfo:
+        uid = self.user_id
         data = _post(
-            f"{ZOOM_API}/users/me/meetings",
+            f"{ZOOM_API}/users/{uid}/meetings",
             headers={
                 "Authorization": f"Bearer {self._token()}",
                 "Content-Type": "application/json",
@@ -242,9 +277,9 @@ class ZoomProvider:
                 # got: the meeting starts now or it is useless.
                 "type": 1,
                 "settings": {
-                    # Same requirement as Meet's accessType=OPEN: Navigator joins
-                    # first, so nothing may hold it in a waiting room.
-                    "join_before_host": True,
+                    # Host-first: Attendee joins with ZAK as host. Guests wait
+                    # until Navigator has started the meeting.
+                    "join_before_host": False,
                     "waiting_room": False,
                     "approval_type": 2,  # no registration
                 },
@@ -290,7 +325,7 @@ class StaticMeetingProvider:
 
 def make_provider(platform: Platform | None = None) -> MeetingProvider:
     """Build the configured provider. Import-time free of credentials."""
-    from navigator.settings import settings
+    from navigator.core.settings import settings
 
     choice = platform or settings.meeting_platform
     if choice == "google_meet":
@@ -303,6 +338,7 @@ def make_provider(platform: Platform | None = None) -> MeetingProvider:
             account_id=settings.zoom_account_id,
             client_id=settings.zoom_client_id,
             client_secret=settings.zoom_client_secret,
+            user_id=settings.zoom_user_id,
         )
     if choice == "static":
         return StaticMeetingProvider(settings.meeting_url)

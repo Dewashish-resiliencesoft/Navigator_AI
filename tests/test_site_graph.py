@@ -7,8 +7,8 @@ import textwrap
 import pytest
 from pydantic import ValidationError
 
-from navigator.config.site_graph import SiteGraphError, load_site_graph
-from navigator.schemas import Postcondition
+from navigator.knowledge.site_graph import SiteGraphError, load_site_graph
+from navigator.core.schemas import Postcondition
 
 
 def write_graph(tmp_path, body: str):

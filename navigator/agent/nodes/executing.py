@@ -8,14 +8,14 @@ building on a broken assumption.
 from __future__ import annotations
 
 from navigator.agent.state import CallDeps, CallState
-from navigator.browser.tools import execute as run_tool
+from navigator.automation.browser.tools import execute as run_tool
 
 
 def executing(state: CallState, deps: CallDeps) -> CallState:
     label = state.get("nav_click_label")
     if label:
-        from navigator.browser.nav_click import click_nav_label
-        from navigator.schemas import ToolResult
+        from navigator.automation.browser.nav_click import click_nav_label
+        from navigator.core.schemas import ToolResult
 
         try:
             click_nav_label(deps.page, label)

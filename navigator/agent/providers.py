@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 from typing import Protocol
 
-from navigator.settings import settings
+from navigator.core.settings import settings
 
 
 class LLMProvider(Protocol):

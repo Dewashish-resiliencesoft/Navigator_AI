@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from navigator.memory.pending import PendingCorrectionStore
-from navigator.memory.retrieval import retrieve_corrections
-from navigator.memory.seed import seed_correction
+from navigator.knowledge.memory.pending import PendingCorrectionStore
+from navigator.knowledge.memory.retrieval import retrieve_corrections
+from navigator.knowledge.memory.seed import seed_correction
 
 
 def test_approve_flow_seeds_chroma(tmp_path):

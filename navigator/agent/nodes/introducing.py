@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from navigator.agent.state import CallDeps, CallState
 from navigator.meeting.intake import ProspectIntake
-from navigator.schemas import Persona
+from navigator.meeting.intake_clean import summarize_need
+from navigator.core.schemas import Persona
 
 
 def render_intro(
@@ -17,12 +18,12 @@ def render_intro(
     positioning = f", {persona.one_liner}," if persona.one_liner else ""
     if intake and (intake.name or intake.looking_for):
         name = intake.name.strip() or "there"
-        need = intake.looking_for.strip() or "what you care about"
+        need = summarize_need(intake.looking_for) or "what you care about"
         company = intake.company.strip() or "your team"
         return (
             f"{name}, I'm {persona.agent_name} — walking you through "
             f"{persona.product_name}{positioning} with {company} in mind. "
-            f"You mentioned {need}, so I'll drive the real product live around that. "
+            f"We'll focus on {need}. "
             f"Jump in with your own data anytime and I'll type it in."
         )
     return (

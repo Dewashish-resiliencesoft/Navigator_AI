@@ -6,12 +6,12 @@ from uuid import uuid4
 import pytest
 
 from navigator.agent.state import CallDeps, initial_state
-from navigator.config.site_graph import load_site_graph
+from navigator.knowledge.site_graph import load_site_graph
 from navigator.logs.store import ActionLog
 from navigator.voice.tts import PrintSpeaker
 
 FIXTURES = Path(__file__).parent / "fixtures"
-SEED_GRAPH = Path(__file__).parent.parent / "navigator/config/sites/whatsapp_crm.yaml"
+SEED_GRAPH = Path(__file__).parent.parent / "navigator/knowledge/sites/whatsapp_crm.yaml"
 
 
 @pytest.fixture(scope="session")

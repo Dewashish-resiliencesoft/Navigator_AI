@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import time
 
-from navigator.browser.tools import execute
-from navigator.schemas import ClickElement, FillField, Navigate, Postcondition, WaitFor
+from navigator.automation.browser.tools import execute
+from navigator.core.schemas import ClickElement, FillField, Navigate, Postcondition, WaitFor
 
 VISIBLE_INPUT = Postcondition(check="visible", selector="message_input")
 

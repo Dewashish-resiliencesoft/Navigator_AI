@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from navigator.settings import settings
+from navigator.core.settings import settings
 
 pytestmark = pytest.mark.skipif(
     not settings.meet_live,

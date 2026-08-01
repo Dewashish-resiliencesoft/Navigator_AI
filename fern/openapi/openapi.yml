@@ -654,6 +654,412 @@ paths:
                   type: string
                 type: object
                 title: Response Healthz Healthz Get
+  /client:
+    get:
+      summary: Client Console
+      operationId: client_console_client_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/html:
+              schema:
+                type: string
+  /ops:
+    get:
+      summary: Legacy Ops Redirect
+      operationId: legacy_ops_redirect_ops_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /client/api/demos/start:
+    post:
+      summary: Client Start Live Demo
+      operationId: client_start_live_demo_client_api_demos_start_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartLiveDemo'
+        required: true
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LiveDemoView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/demos:
+    get:
+      summary: Client List Demos
+      operationId: client_list_demos_client_api_demos_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/DemoView'
+                type: array
+                title: Response Client List Demos Client Api Demos Get
+  /client/api/demos/{demo_id}:
+    get:
+      summary: Client Get Demo
+      operationId: client_get_demo_client_api_demos__demo_id__get
+      parameters:
+      - name: demo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Demo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/demos/{demo_id}/end:
+    post:
+      summary: Client End Demo
+      operationId: client_end_demo_client_api_demos__demo_id__end_post
+      parameters:
+      - name: demo_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Demo Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DemoView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/bootstrap:
+    post:
+      summary: Client Bootstrap
+      description: Ensure a client product + API key exist; persist key across reloads.
+      operationId: client_bootstrap_client_api_bootstrap_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Bootstrap Client Api Bootstrap Post
+  /client/api/site-graph:
+    get:
+      summary: Client Get Site Graph
+      operationId: client_get_site_graph_client_api_site_graph_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Get Site Graph Client Api Site Graph Get
+    put:
+      summary: Client Put Site Graph
+      operationId: client_put_site_graph_client_api_site_graph_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteGraphBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Put Site Graph Client Api Site Graph Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/bio:
+    get:
+      summary: Client Get Bio
+      operationId: client_get_bio_client_api_bio_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Get Bio Client Api Bio Get
+    put:
+      summary: Client Put Bio
+      operationId: client_put_bio_client_api_bio_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BioBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Put Bio Client Api Bio Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/knowledge:
+    get:
+      summary: Client Get Knowledge
+      operationId: client_get_knowledge_client_api_knowledge_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Get Knowledge Client Api Knowledge Get
+    put:
+      summary: Client Put Knowledge
+      operationId: client_put_knowledge_client_api_knowledge_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KnowledgeBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Put Knowledge Client Api Knowledge Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows:
+    get:
+      summary: Client Get Flows
+      operationId: client_get_flows_client_api_flows_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Get Flows Client Api Flows Get
+    put:
+      summary: Client Put Flows
+      operationId: client_put_flows_client_api_flows_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowsBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Put Flows Client Api Flows Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record:
+    get:
+      summary: Client Record Status
+      operationId: client_record_status_client_api_record_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Record Status Client Api Record Get
+  /client/api/record/start:
+    post:
+      summary: Client Record Start
+      operationId: client_record_start_client_api_record_start_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordStartBody'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Record Start Client Api Record Start Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/stop:
+    post:
+      summary: Client Record Stop
+      operationId: client_record_stop_client_api_record_stop_post
+      parameters:
+      - name: page_id
+        in: query
+        required: false
+        schema:
+          type: string
+          default: dashboard
+          title: Page Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Record Stop Client Api Record Stop Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/metrics:
+    get:
+      summary: Client Metrics
+      description: 'KPIs for the console. Durable counters from the action log, live state
+
+        from the in-process runner (which is empty after a restart).'
+      operationId: client_metrics_client_api_metrics_get
+      parameters:
+      - name: days
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 90
+          minimum: 1
+          default: 14
+          title: Days
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Metrics Client Api Metrics Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/zoom/zak:
+    post:
+      summary: Zoom Zak Callback
+      description: 'Attendee callback: mint a fresh ZAK so the bot can start Zoom as host.'
+      operationId: zoom_zak_callback_v1_zoom_zak_post
+      parameters:
+      - name: secret
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Secret
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: string
+                title: Response Zoom Zak Callback V1 Zoom Zak Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     ActionLogEntry:
@@ -733,6 +1139,19 @@ components:
       type: object
       title: ApproveCorrectionBody
       description: Optional override when promoting a pending rule into Chroma.
+    BioBody:
+      properties:
+        fields:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          title: Fields
+      type: object
+      required:
+      - fields
+      title: BioBody
     Body_activate_revision_v1_products_site_graph_activate_post:
       properties:
         revision:
@@ -812,6 +1231,10 @@ components:
           - type: string
           - type: 'null'
           title: Platform
+        bot_in_meeting:
+          type: boolean
+          title: Bot In Meeting
+          default: false
       type: object
       required:
       - demo_id
@@ -856,6 +1279,18 @@ components:
       - selector
       - value
       title: FillField
+    FlowsBody:
+      properties:
+        playlist:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Playlist
+      type: object
+      required:
+      - playlist
+      title: FlowsBody
     HTTPValidationError:
       properties:
         detail:
@@ -886,6 +1321,14 @@ components:
       type: object
       title: IntakePrefill
       description: What the landing page already knows, so the bot needn't ask again.
+    KnowledgeBody:
+      properties:
+        markdown:
+          type: string
+          title: Markdown
+          default: ''
+      type: object
+      title: KnowledgeBody
     KnowledgeIngestBody:
       properties:
         text:
@@ -944,6 +1387,10 @@ components:
           - type: string
           - type: 'null'
           title: Platform
+        bot_in_meeting:
+          type: boolean
+          title: Bot In Meeting
+          default: false
         meeting:
           $ref: '#/components/schemas/MeetingOut'
       type: object
@@ -1102,6 +1549,30 @@ components:
       - name
       - created_at
       title: Product
+    RecordStartBody:
+      properties:
+        start_url:
+          type: string
+          minLength: 1
+          title: Start Url
+        flow_name:
+          type: string
+          minLength: 1
+          title: Flow Name
+        flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Id
+        page_id:
+          type: string
+          title: Page Id
+          default: dashboard
+      type: object
+      required:
+      - start_url
+      - flow_name
+      title: RecordStartBody
     RegisteredProduct:
       properties:
         product:
@@ -1115,6 +1586,16 @@ components:
       - api_key
       title: RegisteredProduct
       description: Registration response. The API key is shown exactly once.
+    SiteGraphBody:
+      properties:
+        yaml:
+          type: string
+          minLength: 1
+          title: Yaml
+      type: object
+      required:
+      - yaml
+      title: SiteGraphBody
     SiteGraphRevision:
       properties:
         product_id:

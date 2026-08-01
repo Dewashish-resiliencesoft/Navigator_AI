@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from navigator.meeting.intake import ProspectIntake, greet_line, pitch_line, run_intake
-from navigator.schemas import Persona
+from navigator.core.schemas import Persona
 
 
 class _RecordingSpeaker:
@@ -44,6 +44,31 @@ def test_pitch_weaves_intake_and_persona():
     assert "shared inbox" in line.lower() or "Acme Inbox" in line
     assert "share my screen" in line.lower() or "screen" in line.lower()
 
+
+def test_pitch_paraphrases_noisy_stt_not_dumps_it():
+    persona = Persona(product_name="ResilioHub", one_liner="x", agent_name="N")
+    intake = ProspectIntake(
+        name="Dewashish",
+        company="ResilientSoft",
+        business_type="product and service company",
+        looking_for=(
+            "Yeah, actually we need like we have a sharp quiz app, which is a "
+            "quiz game. We need WhatsApp CRM support for that"
+        ),
+    )
+    line = pitch_line(persona, intake)
+    assert "Yeah, actually" not in line
+    assert "I'm with" not in line
+    assert "Dewashish" in line
+    assert "ResilientSoft" in line
+
+
+def test_pitch_skips_screenshare_claim_when_disabled():
+    persona = Persona(product_name="P", one_liner="x", agent_name="N")
+    intake = ProspectIntake(name="A", company="B", business_type="SaaS", looking_for="crm")
+    line = pitch_line(persona, intake, will_share_screen=False)
+    assert "share my screen" not in line.lower()
+    assert "screen" not in line.lower() or "walk" in line.lower()
 
 def test_run_intake_does_not_send_chat():
     speaker = _RecordingSpeaker()

@@ -1,6 +1,6 @@
 """Product brief loader — ResilioHub expert knowledge for demos."""
 
-from navigator.config.product_brief import load_product_brief
+from navigator.knowledge.product_brief import load_product_brief
 
 
 def test_load_resiliohub_brief():

@@ -35,13 +35,13 @@ dev = [
 ]
 
 [project.scripts]
-navigator-record = "navigator.record:main"
+navigator-record = "navigator.automation.record:main"
 
 [tool.setuptools.packages.find]
 include = ["navigator*"]
 
 [tool.setuptools.package-data]
-"navigator.config" = ["sites/*.yaml"]
+"navigator.knowledge" = ["sites/*.yaml", "products/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

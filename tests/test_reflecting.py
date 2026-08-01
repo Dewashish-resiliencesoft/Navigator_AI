@@ -7,8 +7,8 @@ from uuid import uuid4
 
 from navigator.agent.nodes.reflecting import classify_correction, reflecting
 from navigator.agent.state import CallDeps, initial_state
-from navigator.memory.pending import PendingCorrectionStore
-from navigator.schemas import (
+from navigator.knowledge.memory.pending import PendingCorrectionStore
+from navigator.core.schemas import (
     ActionLogEntry,
     ClickElement,
     Postcondition,

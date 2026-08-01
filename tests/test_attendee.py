@@ -43,6 +43,58 @@ def test_join_reserves_resources_without_screenshare():
     assert body["bot_chat_message"]["message"] == "Waiting for you"
 
 
+def test_join_includes_zoom_tokens_url_for_host_zak():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    captured: dict = {}
+    real_request = __import__("urllib.request", fromlist=["Request"]).Request
+
+    def capture_request(*args, **kwargs):
+        req = real_request(*args, **kwargs)
+        captured["data"] = req.data
+        return req
+
+    with patch("navigator.meeting.attendee.Request", side_effect=capture_request):
+        with patch(
+            "navigator.meeting.attendee.urlopen",
+            return_value=_resp(b'{"id":"bot_z","state":"joining"}', 201),
+        ):
+            client.join(
+                "https://zoom.us/j/1",
+                reserve_voice_agent=True,
+                zoom_tokens_url="https://api.example/v1/zoom/zak?secret=s",
+            )
+    body = json.loads(captured["data"])
+    assert body["callback_settings"]["zoom_tokens_url"] == (
+        "https://api.example/v1/zoom/zak?secret=s"
+    )
+    assert "zoom_settings" not in body
+
+
+def test_join_zoom_voice_agent_can_request_web_sdk():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    captured: dict = {}
+    real_request = __import__("urllib.request", fromlist=["Request"]).Request
+
+    def capture_request(*args, **kwargs):
+        req = real_request(*args, **kwargs)
+        captured["data"] = req.data
+        return req
+
+    with patch("navigator.meeting.attendee.Request", side_effect=capture_request):
+        with patch(
+            "navigator.meeting.attendee.urlopen",
+            return_value=_resp(b'{"id":"bot_z","state":"joining"}', 201),
+        ):
+            client.join(
+                "https://zoom.us/j/1",
+                reserve_voice_agent=True,
+                zoom_tokens_url="https://api.example/v1/zoom/zak",
+                zoom_sdk="web",
+            )
+    body = json.loads(captured["data"])
+    assert body["zoom_settings"]["sdk"] == "web"
+
+
 def test_enable_screenshare_patches():
     client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
     captured: dict = {}

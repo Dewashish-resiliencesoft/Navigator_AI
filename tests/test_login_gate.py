@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from navigator.browser.login_gate import (
+from navigator.automation.browser.login_gate import (
     LOGIN_APOLOGY,
     LOGIN_RETRY_LINE,
     LoginGateResult,

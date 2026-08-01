@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from navigator.logs.store import ActionLog
-from navigator.schemas import (
+from navigator.core.schemas import (
     ActionLogEntry,
     ClickElement,
     FillField,
@@ -44,6 +44,32 @@ def entry(session_id, *, ok=True, passed=True, verify=True, source="agent", tool
         source=source,
         timestamp=TS,
     )
+
+
+def test_product_metrics_aggregates_by_day_and_scopes_by_product(log):
+    mine, theirs = uuid4(), uuid4()
+    day_two = TS + timedelta(days=1)
+
+    ok_entry = entry(mine)
+    ok_entry.product_id = "acme"
+    log.append(ok_entry)
+
+    bad = entry(mine, ok=False, passed=False)
+    bad.product_id = "acme"
+    bad.timestamp = day_two
+    log.append(bad)
+
+    other = entry(theirs)
+    other.product_id = "globex"
+    log.append(other)
+
+    m = log.product_metrics("acme")
+    assert m["actions"] == 2
+    assert m["sessions"] == 1, "both acme rows share a session"
+    assert m["failures"] == 1
+    assert (m["verified"], m["passed"]) == (2, 1)
+    assert [d["day"] for d in m["series"]] == ["2026-07-31", "2026-08-01"]
+    assert log.product_metrics("globex")["actions"] == 1
 
 
 def test_round_trip_preserves_the_tool_call_union(log):

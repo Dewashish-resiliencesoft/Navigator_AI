@@ -8,9 +8,9 @@ successes are in there too.
 from __future__ import annotations
 
 from navigator.agent.state import CallDeps, CallState
-from navigator.browser.verify import check, check_with_vision
+from navigator.automation.browser.verify import check, check_with_vision
 from navigator.logs.store import utcnow
-from navigator.schemas import ActionLogEntry, FillField, VerifyResult
+from navigator.core.schemas import ActionLogEntry, FillField, VerifyResult
 
 
 def verifying(state: CallState, deps: CallDeps) -> CallState:

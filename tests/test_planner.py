@@ -9,7 +9,7 @@ import pytest
 from navigator.agent.nodes.planning import planning
 from navigator.agent.planner import FlowChoice, choose_flow, parse_flow_choice
 from navigator.agent.state import CallDeps, initial_state
-from navigator.schemas import Persona
+from navigator.core.schemas import Persona
 from navigator.voice.tts import PrintSpeaker
 
 
@@ -195,7 +195,7 @@ def test_planning_requires_key_without_scripted_or_chooser(
 def test_planning_passes_retrieved_corrections_into_chooser(
     site_graph, page, log, tmp_path, state
 ):
-    from navigator.memory.seed import seed_correction
+    from navigator.knowledge.memory.seed import seed_correction
 
     path = tmp_path / "chroma"
     seed_correction(

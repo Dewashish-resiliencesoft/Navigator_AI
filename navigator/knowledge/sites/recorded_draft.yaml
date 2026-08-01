@@ -1,0 +1,14 @@
+# Sample / empty recorded draft — not a production tenant.
+# Clients record via /client dashboard or: python -m navigator.automation.record --url …
+product:
+  name: Recorded Product
+  base_url: https://example.com
+  persona:
+    product_name: Recorded Product
+    one_liner: "Recorded draft — review aliases and postconditions."
+    agent_name: Navigator AI
+pages: {}
+_meta:
+  draft: true
+  note: 'Human must review: rename flows, fix postconditions, prefer data-testid.
+    Do not auto-trust guessed expects.'

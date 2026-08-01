@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from navigator.memory.collections import collection_name, get_collection
-from navigator.memory.retrieval import retrieve_corrections, retrieve_product_knowledge
-from navigator.memory.seed import seed_correction, seed_knowledge
+from navigator.knowledge.memory.collections import collection_name, get_collection
+from navigator.knowledge.memory.retrieval import retrieve_corrections, retrieve_product_knowledge
+from navigator.knowledge.memory.seed import seed_correction, seed_knowledge
 
 
 def test_collection_name_short_product():

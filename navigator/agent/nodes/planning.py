@@ -15,11 +15,11 @@ from __future__ import annotations
 from navigator.agent.end_policy import ANYTHING_ELSE, WRAP_UP, is_goodbye, next_silence_action
 from navigator.agent.planner import HANDOFF_SPOKEN, FlowChoice, choose_flow
 from navigator.agent.state import CallDeps, CallState
-from navigator.config.site_graph import SiteGraphError
+from navigator.knowledge.site_graph import SiteGraphError
 from navigator.meeting.intake import format_with_intake
-from navigator.memory.retrieval import retrieve_corrections, retrieve_product_knowledge
-from navigator.schemas import Plan
-from navigator.settings import settings
+from navigator.knowledge.memory.retrieval import retrieve_corrections, retrieve_product_knowledge
+from navigator.core.schemas import Plan
+from navigator.core.settings import settings
 
 _CONTINUE = frozenset({"ok", "continue", "go on", "yes", "sure"})
 
@@ -199,7 +199,7 @@ def _try_turn_brain(
     if not _use_turn_brain(deps):
         return None
     from navigator.agent.turn_brain import TurnDecision, capture_screenshot_png, decide_turn
-    from navigator.schemas import Navigate, Postcondition
+    from navigator.core.schemas import Navigate, Postcondition
 
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     allowed = set(deps.graph.pages.keys())
@@ -415,7 +415,7 @@ def _resolve_flow_choice(
 
 def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
     """Log prospect correction as pending rule; no Playwright."""
-    from navigator.memory.pending import PendingCorrectionStore
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
 
     query = _query_from_transcript(list(state.get("transcript") or []))
     spoken = (

@@ -1,0 +1,49 @@
+---
+description: Feature package layout + post-change graphify/Fern docs rebuild
+alwaysApply: true
+---
+
+# Navigator package structure
+
+Code lives under `navigator/` by **feature**, not by layer dump:
+
+| Package | What it is |
+|---------|------------|
+| `navigator/core/` | Shared `settings`, `schemas` |
+| `navigator/app/` | FastAPI entry (`main.py`), product registry, demo runner |
+| `navigator/client/` | Buyer dashboard UI + auth/content helpers |
+| `navigator/agent/` | Live demo conversation graph / nodes |
+| `navigator/automation/` | Playwright browser tools + flow recorder |
+| `navigator/meeting/` | Meet/Zoom join, intake, screenshare, tunnels |
+| `navigator/voice/` | TTS / STT |
+| `navigator/knowledge/` | Site graphs, bio, product briefs + `memory/` |
+| `navigator/logs/` | Action log (SQLite) |
+| `navigator/docs/` | Docs generator (HTML + Fern artifacts) |
+
+**Entry:** `uvicorn navigator.app.main:app --reload --workers 1`  
+**Dashboard:** `http://127.0.0.1:8000/client` (loopback only)
+
+Do **not** reintroduce `navigator.api`, `navigator.config`, `navigator.browser`, or top-level `navigator.settings` / `navigator.schemas`. Put new code in the matching feature package.
+
+---
+
+# After every code change (mandatory)
+
+When you edit Python under `navigator/` (or OpenAPI-affecting routes/models):
+
+1. **Graphify** — keep the knowledge graph current:
+   ```bash
+   graphify update .
+   ```
+   Never commit `graphify-out/` or `graphify/`.
+
+2. **Fern / docs** — regenerate committed docs artifacts from live code:
+   ```bash
+   .venv/bin/python -m navigator.docs build
+   npx fern-api check
+   ```
+   That refreshes `fern/openapi/openapi.yml`, `fern/pages/integration.mdx`, Fern config, and `docs/index.html`. Do not hand-edit generated Fern files — change code, then rebuild.
+
+3. If docs tests fail with “out of date”, rebuild (step 2) before claiming done.
+
+Skip Fern rebuild only for pure non-API docs (e.g. comment-only) that cannot affect OpenAPI or integration pages; still run `graphify update .` after any `navigator/` code edit.

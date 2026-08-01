@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from navigator.browser.verify import check
-from navigator.schemas import Postcondition
+from navigator.automation.browser.verify import check
+from navigator.core.schemas import Postcondition
 
 
 def verify(page, site_graph, **kwargs):

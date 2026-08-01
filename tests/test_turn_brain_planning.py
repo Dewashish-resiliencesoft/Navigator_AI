@@ -7,7 +7,7 @@ from uuid import uuid4
 from navigator.agent.nodes.planning import planning
 from navigator.agent.state import CallDeps, initial_state
 from navigator.agent.turn_brain import TurnDecision
-from navigator.schemas import Navigate
+from navigator.core.schemas import Navigate
 from navigator.voice.tts import PrintSpeaker
 
 

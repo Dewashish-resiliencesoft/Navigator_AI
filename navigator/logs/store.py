@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
-from navigator.schemas import ActionLogEntry
+from navigator.core.schemas import ActionLogEntry
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS action_log (
@@ -142,6 +142,51 @@ class ActionLog:
             "ORDER BY timestamp DESC, rowid DESC LIMIT ?",
             (product_id, limit),
         )
+
+    def product_metrics(self, product_id: str, days: int = 14) -> dict:
+        """Rolled-up counters + a daily series for one product's dashboard.
+
+        Aggregated in SQL rather than by hydrating entries: the action log is the
+        highest-volume table here and a dashboard poll must not scan it row by row.
+        """
+        totals = self._conn.execute(
+            "SELECT COUNT(*) AS actions, "
+            "COUNT(DISTINCT session_id) AS sessions, "
+            "COALESCE(SUM(failed), 0) AS failures, "
+            "COALESCE(SUM(passed IS NOT NULL), 0) AS verified, "
+            "COALESCE(SUM(passed = 1), 0) AS passed, "
+            "MAX(timestamp) AS last_seen "
+            "FROM action_log WHERE product_id = ?",
+            (product_id,),
+        ).fetchone()
+
+        rows = self._conn.execute(
+            "SELECT substr(timestamp, 1, 10) AS day, "
+            "COUNT(*) AS actions, "
+            "COUNT(DISTINCT session_id) AS sessions, "
+            "COALESCE(SUM(failed), 0) AS failures "
+            "FROM action_log WHERE product_id = ? "
+            "GROUP BY day ORDER BY day DESC LIMIT ?",
+            (product_id, max(1, days)),
+        ).fetchall()
+
+        return {
+            "actions": totals["actions"] or 0,
+            "sessions": totals["sessions"] or 0,
+            "failures": totals["failures"] or 0,
+            "verified": totals["verified"] or 0,
+            "passed": totals["passed"] or 0,
+            "last_seen": totals["last_seen"],
+            "series": [
+                {
+                    "day": r["day"],
+                    "actions": r["actions"],
+                    "sessions": r["sessions"],
+                    "failures": r["failures"],
+                }
+                for r in reversed(rows)
+            ],
+        }
 
     def sessions(self) -> list[UUID]:
         rows = self._conn.execute(

@@ -25,6 +25,10 @@ _STATE_MAP: dict[str, BotState] = {
 }
 
 
+class ParticipantWaitStopped(Exception):
+    """stop_event was set while waiting for a human join."""
+
+
 @dataclass
 class Bot:
     id: str
@@ -84,12 +88,16 @@ class AttendeeClient:
         audio_websocket_url: str | None = None,
         audio_sample_rate: int = 16000,
         google_meet_use_login: bool = False,
+        zoom_tokens_url: str | None = None,
+        zoom_sdk: str | None = None,
     ) -> Bot:
         """Join a meeting.
 
         Prefer `reserve_voice_agent=True` with no screenshare to join quietly,
         then call `enable_screenshare` after intake. Attendee rejects url +
         screenshare_url together.
+
+        For Zoom host join, pass ``zoom_tokens_url`` (Attendee POSTs for a ZAK).
         """
         payload: dict[str, Any] = {"meeting_url": meeting_url, "bot_name": bot_name}
         if screenshare_url:
@@ -114,6 +122,14 @@ class AttendeeClient:
                 "use_login": True,
                 "login_mode": "always",
             }
+
+        if zoom_tokens_url:
+            payload["callback_settings"] = {"zoom_tokens_url": zoom_tokens_url}
+
+        # Voice agent / screenshare on Zoom needs web SDK. Caller must pass
+        # zoom_sdk="web" explicitly — auto-forcing it hangs Attendee joins.
+        if zoom_sdk:
+            payload.setdefault("zoom_settings", {})["sdk"] = zoom_sdk
 
         if join_chat_message:
             payload["bot_chat_message"] = {
@@ -171,11 +187,14 @@ class AttendeeClient:
         *,
         timeout_s: float = 300.0,
         poll_s: float = 3.0,
+        stop_event=None,
     ) -> str:
         """Block until a non-bot participant join event appears. Returns their name."""
         deadline = time.time() + timeout_s
         seen_joins: set[str] = set()
         while time.time() < deadline:
+            if stop_event is not None and stop_event.is_set():
+                raise ParticipantWaitStopped("ended by operator")
             for ev in self.participant_events(bot_id):
                 if ev.event_type.lower() not in {"join", "joined"}:
                     continue

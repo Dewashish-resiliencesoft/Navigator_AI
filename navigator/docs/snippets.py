@@ -5,7 +5,7 @@ than reflections of the schema. Kept in one module so they are reviewable as a s
 and appear identically in the HTML and the Fern docs.
 
 The runnable parts are covered by tests elsewhere: `site_graph_yaml` mirrors the
-seed graph, and `sdk_config` mirrors sdk/example/navigator.config.js, which the
+seed graph, and `sdk_config` mirrors sdk/example/navigator.knowledge.js, which the
 SDK's own test suite compiles and pushes.
 """
 
@@ -98,7 +98,7 @@ ANNOTATE_JSX = """// Your component. One attribute per element the agent touches
 // keeps working, because the attribute travels with the element.
 """
 
-SDK_CONFIG = """// navigator.config.ts
+SDK_CONFIG = """// navigator.knowledge.ts
 import {
   defineConfig, flow, navigate, fillAndCheck, click, waitFor,
   expectVisible, expectText,

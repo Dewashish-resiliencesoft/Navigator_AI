@@ -15,9 +15,9 @@ from uuid import UUID
 
 from playwright.sync_api import Page
 
-from navigator.config.site_graph import SiteGraph
+from navigator.knowledge.site_graph import SiteGraph
 from navigator.logs.store import ActionLog
-from navigator.schemas import ActionLogEntry, Plan, ToolCall, ToolResult
+from navigator.core.schemas import ActionLogEntry, Plan, ToolCall, ToolResult
 from navigator.voice.tts import Speaker
 
 if TYPE_CHECKING:

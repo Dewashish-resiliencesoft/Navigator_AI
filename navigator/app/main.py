@@ -1,0 +1,923 @@
+"""The wrapper API: one deployment, many products.
+
+A customer registers a product, uploads a site graph, and asks for a demo. The
+site graph is the only interface between Navigator and any product, so this layer
+adds no product-specific logic whatsoever -- it is a registry, an authenticator,
+and a way to start demos.
+
+Run it:
+    .venv/bin/uvicorn navigator.app.main:app --reload --workers 1
+
+`--workers 1` matters: live demo state is in-process. See DemoRunner.
+"""
+
+from __future__ import annotations
+
+import os
+import secrets
+from pathlib import Path
+from typing import Annotated, Callable
+from uuid import UUID
+
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
+
+from navigator.client.auth import persist_client_key, resolve_client_api_key
+from navigator.client.dashboard import (
+    WEB_ASSETS,
+    client_index_html,
+    require_local_ops,
+)
+from navigator.client.content import (
+    apply_playlist_to_yaml,
+    merge_recorded_flow,
+    playlist_from_graph,
+    recorder_status,
+    recording_base_url,
+    start_recorder,
+    stop_recorder,
+)
+from navigator.knowledge.company_bio import load_bio, save_bio
+from navigator.knowledge.product_brief import load_product_brief, save_product_brief
+from navigator.app.registry import (
+    NewProduct,
+    Product,
+    ProductNotFound,
+    Registry,
+    RegistryError,
+    RegisteredProduct,
+    SiteGraphRevision,
+    SiteGraphSource,
+)
+from navigator.app.runner import DemoRunner
+from navigator.knowledge.site_graph import SiteGraphError, parse_site_graph
+from navigator.meeting.providers import (
+    MeetingProvider,
+    MeetingProviderError,
+    Platform as MeetingPlatform,
+    ZoomProvider,
+    make_provider,
+)
+from navigator.logs.store import ActionLog
+from navigator.core.schemas import ActionLogEntry
+from navigator.core.settings import settings
+
+app = FastAPI(
+    title="Navigator AI",
+    version="0.1.0",
+    description="Live interactive demo agent for any web product.",
+)
+
+
+# -- wiring -------------------------------------------------------------------
+# Module-level singletons, overridable in tests via dependency_overrides.
+
+
+def get_registry() -> Registry:
+    return _registry
+
+
+def get_runner() -> DemoRunner:
+    return _runner
+
+
+def get_log() -> ActionLog:
+    return _log
+
+
+def get_provider_factory() -> Callable[[MeetingPlatform | None], MeetingProvider]:
+    """A *factory*, not a provider: the platform is chosen per request.
+
+    Tests override this to hand back a fake, so no test ever calls Google or Zoom.
+    """
+    return make_provider
+
+
+_registry = Registry(os.environ.get("NAVIGATOR_REGISTRY_DB", "registry.db"))
+_log = ActionLog(settings.db_path)
+_runner = DemoRunner(str(settings.db_path), headful=settings.headful)
+
+
+def authed(
+    registry: Annotated[Registry, Depends(get_registry)],
+    authorization: Annotated[str | None, Header()] = None,
+) -> Product:
+    """Resolve the caller's product from its API key.
+
+    Every product-scoped route depends on this, so a route cannot accidentally
+    read across tenants: the product_id comes from the key, never from the path.
+    """
+    if not authorization or not authorization.lower().startswith("token "):
+        raise HTTPException(401, "expected: Authorization: Token <api key>")
+    try:
+        return registry.authenticate(authorization.split(None, 1)[1].strip())
+    except ProductNotFound:
+        raise HTTPException(401, "invalid API key") from None
+
+
+AuthedProduct = Annotated[Product, Depends(authed)]
+Reg = Annotated[Registry, Depends(get_registry)]
+Runner = Annotated[DemoRunner, Depends(get_runner)]
+Log = Annotated[ActionLog, Depends(get_log)]
+Providers = Annotated[
+    Callable[[MeetingPlatform | None], MeetingProvider],
+    Depends(get_provider_factory),
+]
+
+
+# -- request/response bodies --------------------------------------------------
+
+
+class SiteGraphUpload(BaseModel):
+    yaml: str = Field(min_length=1)
+    source: SiteGraphSource = "yaml"
+
+
+class NewDemo(BaseModel):
+    page_id: str
+    flow_id: str
+    meeting_url: str | None = None
+    """Ignored here -- POST /v1/demos runs headless, no meeting. See
+    POST /v1/demos/start, which creates its own link."""
+
+
+class DemoView(BaseModel):
+    demo_id: UUID
+    product_id: str
+    revision: int
+    session_id: UUID
+    status: str
+    page_id: str
+    actions: int
+    failures: int
+    error: str | None = None
+    said: list[str] = Field(default_factory=list)
+    meeting_url: str | None = None
+    platform: str | None = None
+    bot_in_meeting: bool = False
+
+
+class IntakePrefill(BaseModel):
+    """What the landing page already knows, so the bot needn't ask again."""
+
+    name: str = ""
+    company: str = ""
+    business_type: str = ""
+    looking_for: str = ""
+
+
+class StartLiveDemo(BaseModel):
+    platform: MeetingPlatform | None = None
+    """None -> NAVIGATOR_MEETING_PLATFORM."""
+    page_id: str | None = None
+    flow_id: str | None = None
+    """None -> NAVIGATOR_LIVE_WALKTHROUGH_FLOW."""
+    intake: IntakePrefill | None = None
+
+
+class MeetingOut(BaseModel):
+    url: str
+    platform: str
+    provider_id: str
+    passcode: str = ""
+    open_access: bool = False
+    """True when the link admits anyone directly -- Navigator can join first
+    with nobody to let it out of the waiting room."""
+
+
+class LiveDemoView(DemoView):
+    meeting: MeetingOut
+
+
+# -- products -----------------------------------------------------------------
+
+
+@app.post("/v1/products", response_model=RegisteredProduct, status_code=201)
+def register_product(spec: NewProduct, registry: Reg) -> RegisteredProduct:
+    """Register a product. The API key in the response is shown exactly once."""
+    try:
+        return registry.register(spec)
+    except RegistryError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.get("/v1/products/me", response_model=Product)
+def whoami(product: AuthedProduct) -> Product:
+    return product
+
+
+# -- site graph ---------------------------------------------------------------
+
+
+@app.put("/v1/products/site-graph", response_model=SiteGraphRevision, status_code=201)
+def upload_site_graph(
+    upload: SiteGraphUpload, product: AuthedProduct, registry: Reg
+) -> SiteGraphRevision:
+    """Validate and store a new site graph revision, and make it active.
+
+    Validation runs before anything is written, so a rejected upload cannot break
+    a live demo. The error text is identical to what the file loader produces --
+    there is one validator in the system, deliberately.
+    """
+    try:
+        return registry.put_site_graph(
+            product.product_id, upload.yaml, upload.source
+        )
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@app.get("/v1/products/site-graph", response_model=SiteGraphRevision)
+def get_site_graph(
+    product: AuthedProduct,
+    registry: Reg,
+    revision: Annotated[int | None, Query()] = None,
+) -> SiteGraphRevision:
+    try:
+        return registry.get_revision(product.product_id, revision)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@app.get("/v1/products/site-graph/revisions", response_model=list[SiteGraphRevision])
+def list_revisions(product: AuthedProduct, registry: Reg) -> list[SiteGraphRevision]:
+    return registry.revisions(product.product_id)
+
+
+@app.post("/v1/products/site-graph/activate", response_model=Product)
+def activate_revision(
+    product: AuthedProduct,
+    registry: Reg,
+    revision: Annotated[int, Body(embed=True)],
+) -> Product:
+    """Roll back to an earlier revision."""
+    try:
+        return registry.activate(product.product_id, revision)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@app.get("/v1/products/flows")
+def list_flows(product: AuthedProduct, registry: Reg) -> dict[str, list[str]]:
+    """Which flows this product's active site graph offers, per page."""
+    try:
+        graph = registry.load_graph(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    return {pid: sorted(page.flows) for pid, page in graph.pages.items()}
+
+
+# -- demos --------------------------------------------------------------------
+
+
+@app.post("/v1/demos", response_model=DemoView, status_code=202)
+def start_demo(
+    spec: NewDemo, product: AuthedProduct, registry: Reg, runner: Runner
+) -> DemoView:
+    """Start a demo. Returns immediately; poll GET /v1/demos/{id} for progress."""
+    try:
+        graph = registry.load_graph(product.product_id)
+        revision = product.active_revision or 0
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+
+    try:
+        graph.flow(spec.page_id, spec.flow_id)  # fail fast on a bad flow
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    handle = runner.start(
+        product.product_id, graph, revision, (spec.page_id, spec.flow_id)
+    )
+    return DemoView(**handle.public())
+
+
+@app.post("/v1/demos/start", response_model=LiveDemoView, status_code=202)
+def start_live_demo(
+    spec: StartLiveDemo,
+    product: AuthedProduct,
+    registry: Reg,
+    runner: Runner,
+    providers: Providers,
+) -> LiveDemoView:
+    """Create a meeting for *this* session and put Navigator in it, now.
+
+    The meeting is instant, not scheduled: it exists and is joinable the moment
+    this returns, which is the only useful semantics for a "Show Demo" button.
+    The link is minted per call, so two prospects can be demoed at once and no
+    human has to set NAVIGATOR_MEETING_URL first. The response carries the join
+    URL, which is what the button redirects to.
+
+    Ordering is deliberate: the graph is loaded and the flow validated *before*
+    any meeting is created, so a bad request never leaves an orphaned meeting
+    behind.
+    """
+    try:
+        graph = registry.load_graph(product.product_id)
+        revision = product.active_revision or 0
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+
+    page_id = spec.page_id
+    flow_id = spec.flow_id
+    if not page_id or not flow_id:
+        primary = graph.primary_flow()
+        if primary:
+            page_id = page_id or primary[0]
+            flow_id = flow_id or primary[1]
+    page_id = page_id or next(iter(graph.pages), "")
+    flow_id = flow_id or settings.live_walkthrough_flow
+    try:
+        graph.flow(page_id, flow_id)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    try:
+        meeting = providers(spec.platform).create_meeting(
+            product.product_id, topic=f"Navigator demo — {product.name}"
+        )
+    except MeetingProviderError as exc:
+        # 502: the request was fine, the upstream conferencing provider was not.
+        raise HTTPException(502, f"could not create meeting: {exc}") from None
+
+    if not meeting.open_access:
+        print(
+            f"[api] {meeting.platform} link {meeting.url} is not open-access; "
+            "Navigator may wait to be admitted.",
+            flush=True,
+        )
+
+    handle = runner.start_live(
+        product.product_id,
+        graph,
+        revision,
+        (page_id, flow_id),
+        meeting_url=meeting.url,
+        platform=meeting.platform,
+        intake_prefill=None if spec.intake is None else spec.intake.model_dump(),
+    )
+    return LiveDemoView(**handle.public(), meeting=MeetingOut(**meeting.public()))
+
+
+@app.get("/v1/demos/{demo_id}", response_model=DemoView)
+def get_demo(demo_id: UUID, product: AuthedProduct, runner: Runner) -> DemoView:
+    handle = runner.get(demo_id, product.product_id)
+    if handle is None:
+        raise HTTPException(404, "no such demo")
+    return DemoView(**handle.public())
+
+
+@app.get("/v1/demos", response_model=list[DemoView])
+def list_demos(product: AuthedProduct, runner: Runner) -> list[DemoView]:
+    return [DemoView(**h.public()) for h in runner.list(product.product_id)]
+
+
+@app.post("/v1/demos/{demo_id}/end", response_model=DemoView)
+def end_demo(demo_id: UUID, product: AuthedProduct, runner: Runner) -> DemoView:
+    handle = runner.stop(demo_id, product.product_id)
+    if handle is None:
+        raise HTTPException(404, "no such demo")
+    return DemoView(**handle.public())
+
+
+@app.get("/v1/demos/{demo_id}/actions", response_model=list[ActionLogEntry])
+def demo_actions(
+    demo_id: UUID, product: AuthedProduct, runner: Runner, log: Log
+) -> list[ActionLogEntry]:
+    """The ActionLog for one demo: every call, its expectation, and what happened.
+
+    This is the audit trail that makes the product sellable -- a customer can see
+    exactly what the agent did in front of their prospect.
+    """
+    handle = runner.get(demo_id, product.product_id)
+    if handle is None:
+        raise HTTPException(404, "no such demo")
+    return log.entries(handle.session_id, product_id=product.product_id)
+
+
+# -- health / failures --------------------------------------------------------
+
+
+@app.get("/v1/products/failures", response_model=list[ActionLogEntry])
+def product_failures(
+    product: AuthedProduct,
+    log: Log,
+    limit: Annotated[int, Query(ge=1, le=1000)] = 100,
+) -> list[ActionLogEntry]:
+    """Recent failures across all demos of this product -- which flows are rotting."""
+    return log.product_failures(product.product_id, limit)
+
+
+@app.get("/v1/products/corrections/pending")
+def pending_corrections(product: AuthedProduct) -> list[dict]:
+    """Reflection output awaiting human approval.
+
+    Never auto-promoted: an agent that can silently rewrite its own rules is
+    not debuggable.
+    """
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        return [row.as_dict() for row in store.list_pending(product.product_id)]
+
+
+class ApproveCorrectionBody(BaseModel):
+    """Optional override when promoting a pending rule into Chroma."""
+
+    rule: str | None = None
+
+
+@app.post("/v1/products/corrections/{correction_id}/approve")
+def approve_correction(
+    correction_id: str,
+    product: AuthedProduct,
+    body: ApproveCorrectionBody | None = None,
+) -> dict:
+    """Human approves a pending rule → live Chroma corrections collection."""
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+    from navigator.knowledge.memory.seed import seed_correction
+
+    body = body or ApproveCorrectionBody()
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product.product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        rule = (body.rule or row.rule).strip()
+        doc_id = seed_correction(
+            settings.chroma_path,
+            product_id=product.product_id,
+            rule=rule,
+            page=row.page,
+            tool_call_type=row.tool_call_type,
+            source_call_id=row.source_call_id,
+            doc_id=row.id,
+        )
+        updated = store.set_status(correction_id, product.product_id, "approved")
+    return {
+        "id": correction_id,
+        "status": "approved",
+        "chroma_id": doc_id,
+        "rule": rule,
+        "product_id": product.product_id,
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
+@app.post("/v1/products/corrections/{correction_id}/reject")
+def reject_correction(correction_id: str, product: AuthedProduct) -> dict:
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product.product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        updated = store.set_status(correction_id, product.product_id, "rejected")
+    return {
+        "id": correction_id,
+        "status": "rejected",
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
+class KnowledgeIngestBody(BaseModel):
+    text: str = Field(min_length=1)
+
+
+@app.post("/v1/products/knowledge", status_code=201)
+def ingest_knowledge(body: KnowledgeIngestBody, product: AuthedProduct) -> dict:
+    """Add a product_knowledge doc for planning retrieval."""
+    from navigator.knowledge.memory.seed import seed_knowledge
+
+    doc_id = seed_knowledge(
+        settings.chroma_path, product_id=product.product_id, text=body.text
+    )
+    return {"id": doc_id, "product_id": product.product_id}
+
+
+@app.get("/")
+def root() -> RedirectResponse:
+    return RedirectResponse(url="/docs")
+
+
+@app.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+# -- client dashboard (tenant companies) ---------------------------------------------------
+
+
+def _client_product(registry: Registry) -> Product:
+    key = resolve_client_api_key(settings.client_api_key)
+    if not key:
+        products = registry.list_products()
+        if len(products) == 1:
+            key = registry.rotate_api_key(products[0].product_id)
+            settings.client_api_key = key
+            persist_client_key(key)
+        else:
+            raise HTTPException(
+                503,
+                "set NAVIGATOR_CLIENT_API_KEY to your product API key "
+                "(from POST /v1/products or /client bootstrap)",
+            )
+    if not (settings.client_api_key or "").strip():
+        settings.client_api_key = key
+    try:
+        return registry.authenticate(key)
+    except ProductNotFound as exc:
+        products = registry.list_products()
+        if len(products) == 1:
+            key = registry.rotate_api_key(products[0].product_id)
+            settings.client_api_key = key
+            persist_client_key(key)
+            return products[0]
+        raise HTTPException(
+            503,
+            "NAVIGATOR_CLIENT_API_KEY is invalid — open /client to bootstrap again",
+        ) from exc
+
+
+@app.get("/client", response_class=HTMLResponse)
+def client_console(request: Request) -> HTMLResponse:
+    require_local_ops(request)
+    return HTMLResponse(client_index_html())
+
+
+if WEB_ASSETS.is_dir():
+    # Vite emits content-hashed filenames, so these are safe to cache hard.
+    app.mount("/client/assets", StaticFiles(directory=WEB_ASSETS), name="client-assets")
+
+
+@app.get("/ops")
+def legacy_ops_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/client", status_code=307)
+
+
+@app.post("/client/api/demos/start", response_model=LiveDemoView, status_code=202)
+def client_start_live_demo(
+    request: Request,
+    spec: StartLiveDemo,
+    registry: Reg,
+    runner: Runner,
+    providers: Providers,
+) -> LiveDemoView:
+    require_local_ops(request)
+    return start_live_demo(spec, _client_product(registry), registry, runner, providers)
+
+
+@app.get("/client/api/demos", response_model=list[DemoView])
+def client_list_demos(request: Request, registry: Reg, runner: Runner) -> list[DemoView]:
+    require_local_ops(request)
+    return list_demos(_client_product(registry), runner)
+
+
+@app.get("/client/api/demos/{demo_id}", response_model=DemoView)
+def client_get_demo(
+    request: Request, demo_id: UUID, registry: Reg, runner: Runner
+) -> DemoView:
+    require_local_ops(request)
+    return get_demo(demo_id, _client_product(registry), runner)
+
+
+@app.post("/client/api/demos/{demo_id}/end", response_model=DemoView)
+def client_end_demo(
+    request: Request, demo_id: UUID, registry: Reg, runner: Runner
+) -> DemoView:
+    require_local_ops(request)
+    return end_demo(demo_id, _client_product(registry), runner)
+
+
+_BLANK_CLIENT_GRAPH = """\
+version: 1
+site: client
+base_url: https://example.com/
+persona:
+  product_name: Your Product
+  one_liner: Configure this in the client dashboard
+  agent_name: Navigator AI
+  tone: friendly, clear, concise
+pages:
+  home:
+    name: Home
+    url: /
+    selectors:
+      body: body
+    flows:
+      default_walkthrough:
+        - tool: wait_for
+          selector: body
+          timeout_ms: 5000
+          expects: {check: visible, selector: body}
+"""
+
+
+@app.post("/client/api/bootstrap")
+def client_bootstrap(request: Request, registry: Reg) -> dict:
+    """Ensure a client product + API key exist; persist key across reloads."""
+    require_local_ops(request)
+    existing = resolve_client_api_key(settings.client_api_key)
+    if existing:
+        try:
+            product = registry.authenticate(existing)
+            settings.client_api_key = existing
+            persist_client_key(existing)
+            return {
+                "ok": True,
+                "product_id": product.product_id,
+                "api_key": None,
+                "message": "already configured",
+            }
+        except ProductNotFound:
+            pass
+
+    # One existing tenant, key lost (reload) → re-issue key, keep their graph/data.
+    products = registry.list_products()
+    if len(products) == 1:
+        product = products[0]
+        api_key = registry.rotate_api_key(product.product_id)
+        settings.client_api_key = api_key
+        persist_client_key(api_key)
+        return {
+            "ok": True,
+            "product_id": product.product_id,
+            "api_key": api_key,
+            "message": "restored existing client; key saved to .navigator_client_key",
+        }
+
+    yaml_text = _BLANK_CLIENT_GRAPH
+    try:
+        parse_site_graph(yaml_text)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    spec = NewProduct(
+        name="Your Product",
+        product_id=f"client-{secrets.token_hex(3)}",
+    )
+    try:
+        registered = registry.register(spec)
+    except RegistryError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+    registry.put_site_graph(registered.product.product_id, yaml_text, "yaml")
+    settings.client_api_key = registered.api_key
+    persist_client_key(registered.api_key)
+    return {
+        "ok": True,
+        "product_id": registered.product.product_id,
+        "api_key": registered.api_key,
+        "message": "key saved to .navigator_client_key",
+    }
+
+
+def _client_brief_id(registry: Registry, product: Product) -> str:
+    """Stable id for bio/knowledge files = product_id (not mutable graph site)."""
+    return product.product_id
+
+
+class BioBody(BaseModel):
+    fields: list[dict[str, str]]
+
+
+class KnowledgeBody(BaseModel):
+    markdown: str = ""
+
+
+class FlowsBody(BaseModel):
+    playlist: list[dict]
+
+
+class RecordStartBody(BaseModel):
+    start_url: str = Field(min_length=1)
+    flow_name: str = Field(min_length=1)
+    flow_id: str | None = None
+    page_id: str = "dashboard"
+
+
+@app.get("/client/api/site-graph")
+def client_get_site_graph(request: Request, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    try:
+        rev = registry.get_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    return {"yaml": rev.yaml, "revision": rev.revision, "site": rev.site}
+
+
+class SiteGraphBody(BaseModel):
+    yaml: str = Field(min_length=1)
+
+
+@app.put("/client/api/site-graph")
+def client_put_site_graph(request: Request, body: SiteGraphBody, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    try:
+        rev = registry.put_site_graph(product.product_id, body.yaml, "yaml")
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True, "revision": rev.revision, "site": rev.site}
+
+
+@app.get("/client/api/bio")
+def client_get_bio(request: Request, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    data = load_bio(product.product_id)
+    if not any(str(f.get("value") or "").strip() for f in data.get("fields", [])):
+        try:
+            site = registry.load_graph(product.product_id).site
+            alt = load_bio(site)
+            if any(str(f.get("value") or "").strip() for f in alt.get("fields", [])):
+                data = alt
+        except Exception:
+            pass
+    return data
+
+
+@app.put("/client/api/bio")
+def client_put_bio(request: Request, body: BioBody, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    try:
+        return save_bio(product.product_id, body.model_dump())
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+
+@app.get("/client/api/knowledge")
+def client_get_knowledge(request: Request, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    text = load_product_brief(product.product_id)
+    if not text.strip():
+        try:
+            site = registry.load_graph(product.product_id).site
+            text = load_product_brief(site)
+        except Exception:
+            pass
+    return {"markdown": text}
+
+
+@app.put("/client/api/knowledge")
+def client_put_knowledge(request: Request, body: KnowledgeBody, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    saved = save_product_brief(product.product_id, body.markdown)
+    chroma_id = None
+    if saved.strip():
+        try:
+            from navigator.knowledge.memory.seed import seed_knowledge
+
+            chroma_id = seed_knowledge(
+                settings.chroma_path, product_id=product.product_id, text=saved
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[client] chroma ingest skipped: {exc}", flush=True)
+    return {"markdown": saved, "chroma_id": chroma_id}
+
+
+@app.get("/client/api/flows")
+def client_get_flows(request: Request, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    try:
+        graph = registry.load_graph(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    return {"playlist": playlist_from_graph(graph), "site": graph.site}
+
+
+@app.put("/client/api/flows")
+def client_put_flows(request: Request, body: FlowsBody, registry: Reg) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    try:
+        rev = registry.get_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    try:
+        new_yaml = apply_playlist_to_yaml(rev.yaml, body.playlist)
+        registry.put_site_graph(product.product_id, new_yaml, "yaml")
+        graph = parse_site_graph(new_yaml)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"playlist": playlist_from_graph(graph)}
+
+
+@app.get("/client/api/record")
+def client_record_status(request: Request, registry: Reg) -> dict:
+    require_local_ops(request)
+    _client_product(registry)
+    return recorder_status()
+
+
+@app.post("/client/api/record/start")
+def client_record_start(
+    request: Request, body: RecordStartBody, registry: Reg
+) -> dict:
+    require_local_ops(request)
+    _client_product(registry)
+    try:
+        job = start_recorder(
+            start_url=body.start_url.strip(),
+            flow_name=body.flow_name.strip(),
+            flow_id=(body.flow_id or None),
+            headful=settings.headful,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {
+        "job_id": job.job_id,
+        "flow_id": job.flow_id,
+        "flow_name": job.flow_name,
+        "active": True,
+    }
+
+
+@app.post("/client/api/record/stop")
+def client_record_stop(
+    request: Request,
+    registry: Reg,
+    page_id: Annotated[str, Query()] = "dashboard",
+) -> dict:
+    require_local_ops(request)
+    product = _client_product(registry)
+    try:
+        job = stop_recorder()
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+    try:
+        rev = registry.get_revision(product.product_id)
+        persona = parse_site_graph(rev.yaml).effective_persona()
+        new_yaml = merge_recorded_flow(
+            rev.yaml,
+            flow_name=job.flow_name,
+            flow_id=job.flow_id,
+            page_id=page_id or "dashboard",
+            steps=list(job.steps),
+            product_name=persona.product_name,
+            base_url=recording_base_url(job.start_url),
+        )
+        registry.put_site_graph(product.product_id, new_yaml, "yaml")
+        graph = parse_site_graph(new_yaml)
+        playlist = playlist_from_graph(graph)
+    except SiteGraphError as exc:
+        raise HTTPException(422, f"merge failed: {exc}") from None
+    return {
+        "ok": True,
+        "steps": len(job.steps),
+        "error": job.error,
+        "flow_id": job.flow_id,
+        "playlist": playlist,
+    }
+
+
+@app.get("/client/api/metrics")
+def client_metrics(
+    request: Request,
+    registry: Reg,
+    runner: Runner,
+    log: Log,
+    days: Annotated[int, Query(ge=1, le=90)] = 14,
+) -> dict:
+    """KPIs for the console. Durable counters from the action log, live state
+    from the in-process runner (which is empty after a restart)."""
+    require_local_ops(request)
+    product = _client_product(registry)
+    metrics = log.product_metrics(product.product_id, days=days)
+    demos = runner.list(product.product_id)
+    metrics["live"] = {
+        "total": len(demos),
+        "running": sum(1 for d in demos if d.status in ("starting", "running")),
+        "failed": sum(1 for d in demos if d.status == "failed"),
+    }
+    return metrics
+
+
+@app.post("/v1/zoom/zak")
+def zoom_zak_callback(
+    body: Annotated[dict | None, Body()] = None,
+    secret: Annotated[str | None, Query()] = None,
+) -> dict[str, str]:
+    """Attendee callback: mint a fresh ZAK so the bot can start Zoom as host."""
+    _ = body  # Attendee sends bot_id / meeting_url; unused for minting
+    expected = (settings.zoom_zak_callback_secret or "").strip()
+    if expected and secret != expected:
+        raise HTTPException(401, "unauthorized")
+    try:
+        provider = make_provider("zoom")
+        if not isinstance(provider, ZoomProvider):
+            raise MeetingProviderError("meeting platform is not zoom")
+        zak = provider.fetch_zak()
+    except MeetingProviderError as exc:
+        raise HTTPException(502, str(exc)) from None
+    return {"zak_token": zak}

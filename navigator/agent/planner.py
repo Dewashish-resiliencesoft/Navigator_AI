@@ -8,8 +8,8 @@ from collections.abc import Callable, Sequence
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 from navigator.meeting.intake import ProspectIntake
-from navigator.memory.retrieval import Correction
-from navigator.schemas import Persona
+from navigator.knowledge.memory.retrieval import Correction
+from navigator.core.schemas import Persona
 
 MODEL = "llama-3.3-70b-versatile"
 

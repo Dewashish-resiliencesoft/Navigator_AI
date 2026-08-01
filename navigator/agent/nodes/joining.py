@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 
 from navigator.agent.state import CallDeps, CallState
+from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
+from navigator.core.settings import settings
 
 
 def joining(state: CallState, deps: CallDeps) -> CallState:
@@ -21,11 +23,16 @@ def joining(state: CallState, deps: CallDeps) -> CallState:
 
     client = deps.attendee
     persona = deps.graph.effective_persona()
+    zoom_tokens_url = None
+    if is_zoom_meeting(deps.meeting_url):
+        zoom_tokens_url = zoom_zak_callback_url()
     bot = client.join(
         deps.meeting_url,
-        bot_name=persona.agent_name,
+        bot_name=(persona.agent_name or "Navigator AI").strip() or "Navigator AI",
         voice_agent_url=deps.voice_agent_url,
         reserve_voice_agent=deps.voice_agent_url is None,
+        google_meet_use_login=settings.google_meet_use_login,
+        zoom_tokens_url=zoom_tokens_url,
     )
     deps.bot_id = bot.id
     deadline = time.time() + 180

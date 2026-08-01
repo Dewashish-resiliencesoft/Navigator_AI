@@ -13,9 +13,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from navigator.api import app as app_module
-from navigator.api.registry import Registry
-from navigator.api.runner import DemoRunner
+from navigator.app import main as app_module
+from navigator.app.registry import Registry
+from navigator.app.runner import DemoRunner
 from navigator.logs.store import ActionLog
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -356,8 +356,8 @@ def test_pending_corrections_empty_by_default(client, tmp_path, monkeypatch):
 
 
 def test_approve_and_reject_corrections(client, tmp_path, monkeypatch):
-    from navigator.memory.pending import PendingCorrectionStore
-    from navigator.memory.retrieval import retrieve_corrections
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+    from navigator.knowledge.memory.retrieval import retrieve_corrections
 
     db = tmp_path / "nav.db"
     chroma = tmp_path / "chroma"
@@ -408,7 +408,7 @@ def test_approve_and_reject_corrections(client, tmp_path, monkeypatch):
 
 
 def test_ingest_knowledge(client, tmp_path, monkeypatch):
-    from navigator.memory.retrieval import retrieve_product_knowledge
+    from navigator.knowledge.memory.retrieval import retrieve_product_knowledge
 
     chroma = tmp_path / "chroma"
     monkeypatch.setattr(app_module.settings, "chroma_path", chroma)

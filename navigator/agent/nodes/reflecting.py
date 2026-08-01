@@ -7,9 +7,9 @@ from collections.abc import Callable
 
 from navigator.agent.providers import LLMProvider, get_provider
 from navigator.agent.state import CallDeps, CallState
-from navigator.memory.pending import PendingCorrectionStore
-from navigator.schemas import ActionLogEntry
-from navigator.settings import settings
+from navigator.knowledge.memory.pending import PendingCorrectionStore
+from navigator.core.schemas import ActionLogEntry
+from navigator.core.settings import settings
 
 REFLECT_SYSTEM = (
     "You write one short corrective rule for a demo agent that drives a web app "

@@ -16,10 +16,10 @@ from uuid import uuid4
 
 from navigator.agent.graph import build_graph
 from navigator.agent.state import CallDeps, initial_state
-from navigator.config.site_graph import load_site_graph
+from navigator.knowledge.site_graph import load_site_graph
 from navigator.logs.store import ActionLog
-from navigator.browser.session import browser_page
-from navigator.settings import settings
+from navigator.automation.browser.session import browser_page
+from navigator.core.settings import settings
 from navigator.voice.tts import make_speaker
 
 

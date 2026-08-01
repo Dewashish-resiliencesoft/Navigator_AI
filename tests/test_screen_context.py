@@ -1,6 +1,6 @@
 """Screen context snapshot for planner."""
 
-from navigator.browser.screen_context import screen_snapshot
+from navigator.automation.browser.screen_context import screen_snapshot
 
 
 class _FakePage:

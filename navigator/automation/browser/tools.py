@@ -77,9 +77,9 @@ def click_element(
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
     timeout = _action_timeout(call.expects.timeout_ms)
-    loc = page.locator(css).first
-    loc.scroll_into_view_if_needed(timeout=timeout)
-    loc.click(timeout=timeout)
+    from navigator.automation.browser.cursor import click_with_cursor
+
+    click_with_cursor(page, css, timeout=timeout)
     return f"clicked {call.selector} ({css})", page_id
 
 
@@ -88,9 +88,17 @@ def fill_field(
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
     timeout = _action_timeout(call.expects.timeout_ms)
-    loc = page.locator(css).first
-    loc.scroll_into_view_if_needed(timeout=timeout)
-    loc.fill(call.value, timeout=timeout)
+    from navigator.automation.browser.cursor import (
+        PAUSE_AFTER_CLICK_MS,
+        _clear_highlight,
+        _wait_ms,
+        guide_to,
+    )
+
+    guide_to(page, css, timeout=timeout, highlight=True)
+    page.locator(css).first.fill(call.value, timeout=timeout)
+    _clear_highlight(page)
+    _wait_ms(page, PAUSE_AFTER_CLICK_MS)
     return f"filled {call.selector} with {call.value!r} (source={call.source})", page_id
 
 

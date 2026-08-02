@@ -18,9 +18,9 @@ def test_assert_live_site_graph_rejects_fixture_path():
 def test_share_media_join_opts_parity():
     meet_reserve, meet_sdk = share_media_join_opts(is_zoom=False)
     zoom_reserve, zoom_sdk = share_media_join_opts(is_zoom=True)
-    assert meet_reserve is True and zoom_reserve is True
-    assert meet_sdk is None
-    assert zoom_sdk == "web"
+    assert meet_reserve is True and meet_sdk is None
+    # Zoom: no voice-agent reserve, no web SDK (host join must succeed).
+    assert zoom_reserve is False and zoom_sdk is None
 
 
 def test_assert_live_site_graph_rejects_temp_fixture_yaml(tmp_path):

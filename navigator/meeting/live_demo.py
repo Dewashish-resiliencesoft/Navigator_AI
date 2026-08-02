@@ -1,7 +1,7 @@
 """Live meeting demo: join quietly → intake → screenshare → agent demo graph.
 
 Meet and Zoom share the same media path (tunnel → avatar tile → /view share).
-Zoom join adds ZAK callback + ``zoom_sdk=web`` so Attendee can screenshare.
+Zoom join: ZAK host + native SDK (no voice-agent / screenshare — Attendee limits).
 
 Order (what the prospect experiences):
 
@@ -124,11 +124,16 @@ def assert_live_site_graph(path: Path) -> None:
 
 
 def share_media_join_opts(*, is_zoom: bool) -> tuple[bool, str | None]:
-    """Meet/Zoom parity: always reserve voice agent; Zoom needs web SDK for share.
+    """Join flags for Meet vs Zoom.
 
-    Returns ``(reserve_voice_agent, zoom_sdk)``.
+    Meet: reserve voice agent → avatar tile + screenshare after join.
+    Zoom: native SDK + ZAK host only. Attendee rejects ``reserve_resources`` on
+    native Zoom (``voice agent not supported``); ``zoom_sdk=web`` hangs join so
+    guests sit on “waiting for the host”. Screenshare on Zoom stays deferred.
     """
-    return True, ("web" if is_zoom else None)
+    if is_zoom:
+        return False, None
+    return True, None
 
 
 def _require_live_settings(meeting_url: str) -> None:
@@ -388,7 +393,8 @@ def run_live_meet_demo(
             time.sleep(8)
 
         print(
-            "[live] Navigator joining meeting first (voice reserved; share after)…",
+            "[live] Navigator joining meeting first"
+            + (" (Zoom native + ZAK)…" if zoom_native else " (voice reserved; share after)…"),
             flush=True,
         )
         zoom_tokens_url = None
@@ -399,7 +405,9 @@ def run_live_meet_demo(
                 flush=True,
             )
             print(
-                "[live] Zoom: web SDK + screenshare (same path as Meet)",
+                "[live] Zoom: native SDK + ZAK host "
+                "(no voice-agent reserve — Attendee native forbids it; "
+                "web SDK hangs join)",
                 flush=True,
             )
         reserve, zoom_sdk = share_media_join_opts(is_zoom=zoom_native)
@@ -437,20 +445,29 @@ def run_live_meet_demo(
                 )
                 webbrowser.open(meeting_url)
 
-        # Screenshare tunnel after join — Meet and Zoom share the same relay pages.
-        print("[live] starting screenshare tunnel…", flush=True)
-        tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
-        public_view = f"{tunnel.public_url}/view"
-        public_agent = f"{tunnel.public_url}/agent"
-        print(f"[live] screenshare URL ready: {public_view}", flush=True)
-        if tunnel._proc.poll() is not None:
-            raise RuntimeError("cloudflared died before screenshare")
-        # Avatar on camera tile first (Attendee: url XOR screenshare_url).
-        try:
-            client.set_voice_agent_url(bot.id, public_agent)
-            print(f"[live] avatar tile armed: {public_agent}", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[live] avatar tile skipped: {exc}", flush=True)
+        # Screenshare tunnel after join — Meet only.
+        # Zoom native SDK cannot reserve voice-agent / screenshare (Attendee 400).
+        public_agent: str | None = None
+        if not zoom_native:
+            print("[live] starting screenshare tunnel…", flush=True)
+            tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
+            public_view = f"{tunnel.public_url}/view"
+            public_agent = f"{tunnel.public_url}/agent"
+            print(f"[live] screenshare URL ready: {public_view}", flush=True)
+            if tunnel._proc.poll() is not None:
+                raise RuntimeError("cloudflared died before screenshare")
+            # Avatar on camera tile first (Attendee: url XOR screenshare_url).
+            try:
+                client.set_voice_agent_url(bot.id, public_agent)
+                print(f"[live] avatar tile armed: {public_agent}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] avatar tile skipped: {exc}", flush=True)
+        else:
+            public_view = ""
+            print(
+                "[live] Zoom: skipping screenshare tunnel (native SDK — voice only)",
+                flush=True,
+            )
 
         if audio_bridge is not None:
             # Attendee retries WS up to ~60s; wait so intake isn't deaf.
@@ -557,7 +574,7 @@ def run_live_meet_demo(
             interactive=interactive_listen,
             listen=intake_listen,
             prefill=merged_prefill,
-            will_share_screen=True,
+            will_share_screen=not zoom_native,
         )
         print(f"[live] intake done: {intake.model_dump()}", flush=True)
         from navigator.meeting.intake import preferred_flow_id
@@ -650,42 +667,49 @@ def run_live_meet_demo(
                 time.sleep(0.15)
 
             baseline_hits = relay.frame_hits
-            print("[live] enabling screen share (holding start page)…", flush=True)
-            try:
-                meet_speaker.say(
-                    "One moment — I'm sharing my screen now. "
-                    "I'll start the walkthrough once you can see it."
-                )
-            except Exception as exc:  # noqa: BLE001
-                print(f"[live] pre-share TTS skipped: {exc}", flush=True)
-            
-            if not public_view:
-                raise RuntimeError("screenshare tunnel missing before arm")
+            if public_view:
+                print("[live] enabling screen share (holding start page)…", flush=True)
+                try:
+                    meet_speaker.say(
+                        "One moment — I'm sharing my screen now. "
+                        "I'll start the walkthrough once you can see it."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] pre-share TTS skipped: {exc}", flush=True)
 
-            arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
-            live = wait_until_screenshare_live(
-                relay,
-                push_frame=_push,
-                baseline_frame_hits=baseline_hits,
-                min_frame_hits=10,
-                timeout_s=90.0,
-                settle_s=2.5,
-            )
-            if live:
-                try:
-                    meet_speaker.say(
-                        "Screen share is up. Let's walk through the product."
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[live] share-ready TTS skipped: {exc}", flush=True)
+                arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
+                live = wait_until_screenshare_live(
+                    relay,
+                    push_frame=_push,
+                    baseline_frame_hits=baseline_hits,
+                    min_frame_hits=10,
+                    timeout_s=90.0,
+                    settle_s=2.5,
+                )
+                if live:
+                    try:
+                        meet_speaker.say(
+                            "Screen share is up. Let's walk through the product."
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[live] share-ready TTS skipped: {exc}", flush=True)
+                else:
+                    try:
+                        meet_speaker.say(
+                            "Screen share is still catching up — I'll start the "
+                            "walkthrough; tell me if you can't see my screen."
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[live] share-timeout TTS skipped: {exc}", flush=True)
             else:
+                print("[live] Zoom voice-only — no screenshare arm", flush=True)
                 try:
                     meet_speaker.say(
-                        "Screen share is still catching up — I'll start the "
-                        "walkthrough; tell me if you can't see my screen."
+                        "I'll walk you through the product on this call. "
+                        "Screen share isn't available on this Zoom path yet."
                     )
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[live] share-timeout TTS skipped: {exc}", flush=True)
+                    print(f"[live] voice-only TTS skipped: {exc}", flush=True)
 
             deps = CallDeps(
                 graph=graph_cfg,

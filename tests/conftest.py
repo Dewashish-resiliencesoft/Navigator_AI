@@ -14,6 +14,15 @@ FIXTURES = Path(__file__).parent / "fixtures"
 SEED_GRAPH = Path(__file__).parent.parent / "navigator/knowledge/sites/whatsapp_crm.yaml"
 
 
+@pytest.fixture(autouse=True)
+def _fast_cursor_motion(monkeypatch):
+    """Collapse demo cursor waits/animations in unit tests."""
+    monkeypatch.setattr(
+        "navigator.automation.browser.cursor.MOTION_SCALE",
+        0.0,
+    )
+
+
 @pytest.fixture(scope="session")
 def site_graph():
     return load_site_graph(SEED_GRAPH)

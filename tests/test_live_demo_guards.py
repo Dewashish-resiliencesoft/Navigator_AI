@@ -2,13 +2,25 @@ from pathlib import Path
 
 import pytest
 
-from navigator.meeting.live_demo import _require_live_settings, assert_live_site_graph
+from navigator.meeting.live_demo import (
+    _require_live_settings,
+    assert_live_site_graph,
+    share_media_join_opts,
+)
 from navigator.core.settings import settings
 
 
 def test_assert_live_site_graph_rejects_fixture_path():
     with pytest.raises(RuntimeError, match="(?i)fixture|record"):
         assert_live_site_graph(Path("navigator/knowledge/sites/whatsapp_crm.yaml"))
+
+
+def test_share_media_join_opts_parity():
+    meet_reserve, meet_sdk = share_media_join_opts(is_zoom=False)
+    zoom_reserve, zoom_sdk = share_media_join_opts(is_zoom=True)
+    assert meet_reserve is True and zoom_reserve is True
+    assert meet_sdk is None
+    assert zoom_sdk == "web"
 
 
 def test_assert_live_site_graph_rejects_temp_fixture_yaml(tmp_path):

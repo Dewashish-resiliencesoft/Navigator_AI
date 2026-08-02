@@ -1342,7 +1342,7 @@ paths:
   /client/api/runs:
     get:
       summary: Client List Runs
-      description: Last N days of demo runs for this product (default 7).
+      description: Last N days of demo runs; reconcile stale running rows with the live runner.
       operationId: client_list_runs_client_api_runs_get
       parameters:
       - name: days

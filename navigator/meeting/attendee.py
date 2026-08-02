@@ -145,8 +145,9 @@ class AttendeeClient:
         self._request("POST", f"/bots/{bot_id}/leave", {})
 
     def enable_screenshare(self, bot_id: str, screenshare_url: str, voice_agent_url: str | None = None) -> None:
-        """Start Meet screen share mid-call (requires reserve_resources at join).
+        """Start screen share mid-call (requires reserve_resources at join).
 
+        Works for Google Meet and Zoom (Zoom needs ``zoom_sdk="web"`` at join).
         Attendee rejects ``url`` + ``screenshare_url`` in one PATCH — only send
         screenshare here. Use ``set_voice_agent_url`` for the avatar tile.
         """

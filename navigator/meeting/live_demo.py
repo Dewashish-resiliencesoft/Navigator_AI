@@ -1,11 +1,14 @@
-"""Live Meet demo: join quietly → intake → screenshare → agent demo graph.
+"""Live meeting demo: join quietly → intake → screenshare → agent demo graph.
+
+Meet and Zoom share the same media path (tunnel → avatar tile → /view share).
+Zoom join adds ZAK callback + ``zoom_sdk=web`` so Attendee can screenshare.
 
 Order (what the prospect experiences):
 
-  1. Bot joins Meet *without* screen share (resources reserved)
-  2. Console prints Meet join link (Resend email parked until rewired)
+  1. Bot joins *without* screen share (resources reserved)
+  2. Console prints join link
   3. Wait until a human participant joins
-  4. Greet + ask name, company, business, what they're looking for (Meet chat)
+  4. Greet + ask name, company, business, what they're looking for
   5. Pitch the wrapped product from the site-graph persona
   6. Enable screenshare of Playwright, run intro→listen→plan→execute→verify
   7. Leave bot, tear down
@@ -118,6 +121,14 @@ def assert_live_site_graph(path: Path) -> None:
             "Record your product: python -m navigator.automation.record --url $NAVIGATOR_PRODUCT_URL "
             "or upload a live site graph for this client."
         )
+
+
+def share_media_join_opts(*, is_zoom: bool) -> tuple[bool, str | None]:
+    """Meet/Zoom parity: always reserve voice agent; Zoom needs web SDK for share.
+
+    Returns ``(reserve_voice_agent, zoom_sdk)``.
+    """
+    return True, ("web" if is_zoom else None)
 
 
 def _require_live_settings(meeting_url: str) -> None:
@@ -377,7 +388,7 @@ def run_live_meet_demo(
             time.sleep(8)
 
         print(
-            "[live] Navigator joining Meet first (voice only)…",
+            "[live] Navigator joining meeting first (voice reserved; share after)…",
             flush=True,
         )
         zoom_tokens_url = None
@@ -387,19 +398,19 @@ def run_live_meet_demo(
                 f"[live] Zoom host ZAK callback: {zoom_tokens_url.split('?', 1)[0]}",
                 flush=True,
             )
-            # ponytail: Attendee Zoom web SDK hangs on join; native + ZAK works.
-            # Voice-agent screenshare needs web SDK — skip share on Zoom for now.
             print(
-                "[live] Zoom: native SDK join (screenshare deferred — Attendee web SDK hang)",
+                "[live] Zoom: web SDK + screenshare (same path as Meet)",
                 flush=True,
             )
+        reserve, zoom_sdk = share_media_join_opts(is_zoom=zoom_native)
         bot = client.join(
             meeting_url,
             bot_name=(persona.agent_name or "Navigator AI").strip() or "Navigator AI",
-            reserve_voice_agent=not zoom_native,
+            reserve_voice_agent=reserve,
             audio_websocket_url=audio_ws_url,
             google_meet_use_login=settings.google_meet_use_login,
             zoom_tokens_url=zoom_tokens_url,
+            zoom_sdk=zoom_sdk,
         )
         bot_id = bot.id
         if on_bot_joined is not None:
@@ -408,7 +419,7 @@ def run_live_meet_demo(
             client.register_audio_hub(bot.id, audio_bridge.inbound)
         print(f"[live] bot {bot_id} created ({bot.raw_state or bot.state})", flush=True)
         wait_until_joined(client, bot.id, stop_event=stop_event)
-        print("[live] bot in Meet", flush=True)
+        print("[live] bot in meeting", flush=True)
         _check_stop(stop_event)
 
         if bot_first:
@@ -420,34 +431,26 @@ def run_live_meet_demo(
                 import webbrowser
 
                 print(
-                    f"[live] opening Meet for you (Navigator already there): "
+                    f"[live] opening meeting for you (Navigator already there): "
                     f"{meeting_url}",
                     flush=True,
                 )
                 webbrowser.open(meeting_url)
 
-        # Screenshare tunnel after join (Meet only — Zoom native skips share).
-        if not zoom_native:
-            print("[live] starting screenshare tunnel…", flush=True)
-            tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
-            public_view = f"{tunnel.public_url}/view"
-            public_agent = f"{tunnel.public_url}/agent"
-            print(f"[live] screenshare URL ready: {public_view}", flush=True)
-            if tunnel._proc.poll() is not None:
-                raise RuntimeError("cloudflared died before screenshare")
-            # Avatar on camera tile first (Attendee: url XOR screenshare_url).
-            try:
-                client.set_voice_agent_url(bot.id, public_agent)
-                print(f"[live] avatar tile armed: {public_agent}", flush=True)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[live] avatar tile skipped: {exc}", flush=True)
-        else:
-            public_view = ""
-            public_agent = None
-            print(
-                "[live] Zoom: skipping screenshare tunnel (native SDK)",
-                flush=True,
-            )
+        # Screenshare tunnel after join — Meet and Zoom share the same relay pages.
+        print("[live] starting screenshare tunnel…", flush=True)
+        tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
+        public_view = f"{tunnel.public_url}/view"
+        public_agent = f"{tunnel.public_url}/agent"
+        print(f"[live] screenshare URL ready: {public_view}", flush=True)
+        if tunnel._proc.poll() is not None:
+            raise RuntimeError("cloudflared died before screenshare")
+        # Avatar on camera tile first (Attendee: url XOR screenshare_url).
+        try:
+            client.set_voice_agent_url(bot.id, public_agent)
+            print(f"[live] avatar tile armed: {public_agent}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live] avatar tile skipped: {exc}", flush=True)
 
         if audio_bridge is not None:
             # Attendee retries WS up to ~60s; wait so intake isn't deaf.
@@ -554,7 +557,7 @@ def run_live_meet_demo(
             interactive=interactive_listen,
             listen=intake_listen,
             prefill=merged_prefill,
-            will_share_screen=not zoom_native,
+            will_share_screen=True,
         )
         print(f"[live] intake done: {intake.model_dump()}", flush=True)
         from navigator.meeting.intake import preferred_flow_id
@@ -658,10 +661,7 @@ def run_live_meet_demo(
             
             if not public_view:
                 raise RuntimeError("screenshare tunnel missing before arm")
-            
-            if zoom_native:
-                print("[live] Attempting Zoom screenshare (make sure Attendee SDK supports it)…", flush=True)
-            
+
             arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
             live = wait_until_screenshare_live(
                 relay,
@@ -699,13 +699,14 @@ def run_live_meet_demo(
                 meeting_url=None,
                 attendee=client,
                 bot_id=bot.id,
-                voice_agent_url=public_agent if not zoom_native else None,
+                voice_agent_url=public_agent,
                 push_frame=_push,
                 interactive_listen=interactive_listen,
                 audio_frames=audio_frames,
                 intake=intake,
                 is_bot_echo=lambda t: _is_likely_echo(t, meet_speaker.last_spoken),
                 set_status=lambda mode, label=None: relay.set_status(mode, label),
+                set_avatar_state=relay.set_avatar_state,
                 screen_context=lambda: screen_snapshot(page),
                 product_brief=load_agent_context(product_id or graph_cfg.site),
                 pending_barge_in=pending_barge_in,

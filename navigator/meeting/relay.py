@@ -14,7 +14,22 @@ import json
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
 from playwright.sync_api import Page
+
+_AVATAR_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "avatar"
+# Prefer the file the operator dropped; keep legacy name as fallback.
+_AVATAR_CANDIDATES = ("female_avatar.glb", "navigator_avatar.glb")
+
+
+def resolve_avatar_glb() -> Path | None:
+    for name in _AVATAR_CANDIDATES:
+        path = _AVATAR_DIR / name
+        if path.is_file() and path.stat().st_size > 1000:
+            return path
+    return None
+
 
 _AGENT_HTML = """<!doctype html>
 <html><head><meta charset=utf-8><title>Navigator AI</title>
@@ -132,6 +147,18 @@ function findMorphMeshes(obj) {
   }
 }
 
+function frameModel(obj) {
+  const box = new THREE.Box3().setFromObject(obj);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  if (!isFinite(size.x) || size.x + size.y + size.z < 1e-4) return;
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov * Math.PI / 180;
+  const dist = (maxDim / (2 * Math.tan(fov / 2))) * 0.7;
+  camera.position.set(center.x, center.y + size.y * 0.08, center.z + Math.max(dist, 0.45));
+  camera.lookAt(center.x, center.y + size.y * 0.12, center.z);
+}
+
 try {
   loader.load('/avatar.glb',
     gltf => {
@@ -139,9 +166,9 @@ try {
       model.position.set(0, 0, 0);
       scene.add(model);
       findMorphMeshes(model);
+      frameModel(model);
       if (!headMesh) {
-        console.warn('No morph target mesh found — using CSS fallback');
-        useFallback();
+        console.warn('No ARKit morph targets — showing static 3D avatar (no lip sync)');
       }
     },
     undefined,
@@ -190,69 +217,61 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
 
-  if (!loadFailed && headMesh) {
-    // Blink
-    blinkTimer += dt;
-    if (blinkTimer > nextBlink) {
-      setMorph(BLINK_L, 1, 0.5);
-      setMorph(BLINK_R, 1, 0.5);
-      if (blinkTimer > nextBlink + 0.15) {
-        blinkTimer = 0;
-        nextBlink = 2.5 + Math.random() * 3;
+  if (!loadFailed && model) {
+    if (headMesh) {
+      // Blink
+      blinkTimer += dt;
+      if (blinkTimer > nextBlink) {
+        setMorph(BLINK_L, 1, 0.5);
+        setMorph(BLINK_R, 1, 0.5);
+        if (blinkTimer > nextBlink + 0.15) {
+          blinkTimer = 0;
+          nextBlink = 2.5 + Math.random() * 3;
+        }
+      } else {
+        setMorph(BLINK_L, 0, 0.3);
+        setMorph(BLINK_R, 0, 0.3);
       }
-    } else {
-      setMorph(BLINK_L, 0, 0.3);
-      setMorph(BLINK_R, 0, 0.3);
     }
 
     if (avatarState === 'speaking') {
-      // Cycle through visemes with random timing
-      visemeTimer += dt;
-      if (visemeTimer > 0.08 + Math.random() * 0.12) {
-        visemeTimer = 0;
-        visemeIdx = (visemeIdx + 1) % VISEMES.length;
+      if (headMesh) {
+        visemeTimer += dt;
+        if (visemeTimer > 0.08 + Math.random() * 0.12) {
+          visemeTimer = 0;
+          visemeIdx = (visemeIdx + 1) % VISEMES.length;
+        }
+        for (const v of VISEMES) {
+          const isActive = v === VISEMES[visemeIdx];
+          const targetVal = isActive ? 0.3 + Math.random() * 0.4 : 0;
+          setMorph(v, targetVal, 0.25);
+        }
+        setMorph('jawOpen', 0.15 + Math.random() * 0.25, 0.2);
       }
-      // Animate current viseme
-      for (const v of VISEMES) {
-        const isActive = v === VISEMES[visemeIdx];
-        const targetVal = isActive ? 0.3 + Math.random() * 0.4 : 0;
-        setMorph(v, targetVal, 0.25);
-      }
-      // Jaw always partially open during speech
-      setMorph('jawOpen', 0.15 + Math.random() * 0.25, 0.2);
-      // Subtle head movement during speech
-      if (model) {
-        model.rotation.y = Math.sin(clock.elapsedTime * 0.8) * 0.03;
-        model.rotation.x = Math.sin(clock.elapsedTime * 0.5) * 0.01;
-      }
+      model.rotation.y = Math.sin(clock.elapsedTime * 0.8) * 0.03;
+      model.rotation.x = Math.sin(clock.elapsedTime * 0.5) * 0.01;
+      model.position.y = Math.sin(clock.elapsedTime * 4) * 0.004;
     } else if (avatarState === 'listening') {
       resetMorphs(0.08);
-      // Attentive expression
       setMorph('browInnerUp', 0.2, 0.1);
       setMorph('mouthSmileLeft', 0.15, 0.1);
       setMorph('mouthSmileRight', 0.15, 0.1);
-      if (model) {
-        model.rotation.y = Math.sin(clock.elapsedTime * 0.3) * 0.02;
-      }
+      model.rotation.y = Math.sin(clock.elapsedTime * 0.3) * 0.02;
     } else if (avatarState === 'thinking') {
       resetMorphs(0.08);
       setMorph('browInnerUp', 0.3, 0.1);
       setMorph('mouthPucker', 0.15 + Math.sin(clock.elapsedTime * 2) * 0.1, 0.1);
-      if (model) {
-        model.rotation.y = Math.sin(clock.elapsedTime * 0.4) * 0.04;
-        model.rotation.z = Math.sin(clock.elapsedTime * 0.6) * 0.01;
-      }
+      model.rotation.y = Math.sin(clock.elapsedTime * 0.4) * 0.04;
+      model.rotation.z = Math.sin(clock.elapsedTime * 0.6) * 0.01;
     } else {
-      // Idle: reset morphs, subtle breathing
       resetMorphs(0.06);
-      if (model) {
-        model.rotation.y = THREE.MathUtils.lerp(model.rotation.y, 0, 0.05);
-        model.position.y = Math.sin(clock.elapsedTime * 0.8) * 0.003;
-      }
+      model.rotation.y = THREE.MathUtils.lerp(model.rotation.y, 0, 0.05);
+      model.rotation.x = THREE.MathUtils.lerp(model.rotation.x || 0, 0, 0.05);
+      model.rotation.z = THREE.MathUtils.lerp(model.rotation.z || 0, 0, 0.05);
+      model.position.y = Math.sin(clock.elapsedTime * 0.8) * 0.003;
     }
     renderer.render(scene, camera);
   } else if (loadFailed) {
-    // CSS fallback animation
     fallback.className = avatarState === 'idle' ? '' : avatarState;
   }
 }
@@ -359,6 +378,9 @@ class RelayHandle:
         self.status_mode = mode
         self.status_label = label or mode.replace("_", " ").title()
 
+    def set_avatar_state(self, state: str) -> None:
+        self.avatar_state = (state or "idle").strip().lower() or "idle"
+
     def stop(self) -> None:
         self._httpd.shutdown()
         self._thread.join(timeout=5)
@@ -393,8 +415,8 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
                 self.wfile.write(payload)
                 return
             if path.startswith("/avatar.glb"):
-                glb_path = Path(__file__).resolve().parent.parent.parent / "assets" / "avatar" / "navigator_avatar.glb"
-                if glb_path.exists():
+                glb_path = resolve_avatar_glb()
+                if glb_path is not None:
                     data = glb_path.read_bytes()
                     self.send_response(200)
                     self.send_header("Content-Type", "model/gltf-binary")

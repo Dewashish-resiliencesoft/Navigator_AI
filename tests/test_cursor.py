@@ -38,3 +38,17 @@ def test_click_with_cursor_fires_real_click(page, monkeypatch):
     click_with_cursor(page, "#b")
     assert page.evaluate("window.__navClicks") >= 1
     assert page.locator("#nav-cursor").count() == 1
+
+
+def test_click_with_cursor_supports_has_text(page, monkeypatch):
+    """Login submit uses :has-text — must not blow up in document.querySelector."""
+    from navigator.automation.browser import cursor as cursor_mod
+    from navigator.automation.browser.cursor import click_with_cursor
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 0.0)
+    page.set_content('<button type="button">Sign in</button>')
+    page.evaluate(
+        "document.querySelector('button').onclick = () => { window.__navClicks = 1 }"
+    )
+    click_with_cursor(page, 'button:has-text("Sign in")')
+    assert page.evaluate("window.__navClicks") == 1

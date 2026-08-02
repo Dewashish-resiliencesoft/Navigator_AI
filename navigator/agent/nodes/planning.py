@@ -34,6 +34,35 @@ def _guide_page_id(state: CallState) -> str:
     )
 
 
+def _ensure_browser_on_page(deps: CallDeps, page_id: str) -> None:
+    """After a Topic detour, put the browser back where the Default step expects.
+
+    Only navigates when the path diverged — stay put when already correct.
+    """
+    if deps.page is None or not page_id:
+        return
+    try:
+        expected = deps.graph.url_for(page_id)
+    except SiteGraphError:
+        return
+    from navigator.automation.login_match import same_page_path
+
+    try:
+        current = deps.page.url or ""
+    except Exception:  # noqa: BLE001
+        return
+    if same_page_path(current, expected):
+        return
+    print(
+        f"[plan] resume re-nav {current!r} → {expected!r} (page {page_id})",
+        flush=True,
+    )
+    try:
+        deps.page.goto(expected, wait_until="domcontentloaded", timeout=30_000)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] resume re-nav failed: {exc}", flush=True)
+
+
 def planning(state: CallState, deps: CallDeps) -> CallState:
     if deps.set_status is not None:
         deps.set_status("tailoring", "Tailoring…")
@@ -325,6 +354,7 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
             "walkthrough phase requires walkthrough_flow_id on CallState "
             "(or CallDeps.scripted_flow for deterministic replay)"
         )
+    _ensure_browser_on_page(deps, page_id)
     step = int(state.get("walkthrough_step") or 0)
     try:
         calls = list(deps.graph.flow(page_id, flow_id))
@@ -333,14 +363,43 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
             f"walkthrough flow {flow_id!r} not found on page {page_id!r}"
         ) from exc
     if step >= len(calls):
-        return CallState(
-            phase="anything_else",
-            plan=Plan(spoken_response=ANYTHING_ELSE, tool_calls=[]),
-            pending_calls=[],
-            narration=[ANYTHING_ELSE],
-            transcript=[f"agent: {ANYTHING_ELSE}"],
-            silence_rounds=0,
-        )
+        auto_play = bool(state.get("auto_play", True))
+        advanced = False
+        if auto_play and deps.graph.demo_playlist:
+            playlist = sorted(deps.graph.demo_playlist, key=lambda x: x.order)
+            next_idx = -1
+            for i, item in enumerate(playlist):
+                if item.page_id == page_id and item.flow_id == flow_id:
+                    next_idx = i + 1
+                    break
+            if next_idx >= 0 and next_idx < len(playlist):
+                nxt_item = playlist[next_idx]
+                page_id = nxt_item.page_id
+                flow_id = nxt_item.flow_id
+                step = 0
+                try:
+                    calls = list(deps.graph.flow(page_id, flow_id))
+                except SiteGraphError as exc:
+                    raise RuntimeError(
+                        f"playlist next flow {flow_id!r} not found on page {page_id!r}"
+                    ) from exc
+                if calls:
+                    advanced = True
+                    _ensure_browser_on_page(deps, page_id)
+                    print(
+                        f"[plan] auto_play → next playlist flow "
+                        f"{page_id}/{flow_id} ({nxt_item.name or flow_id})",
+                        flush=True,
+                    )
+        if not advanced:
+            return CallState(
+                phase="anything_else",
+                plan=Plan(spoken_response=ANYTHING_ELSE, tool_calls=[]),
+                pending_calls=[],
+                narration=[ANYTHING_ELSE],
+                transcript=[f"agent: {ANYTHING_ELSE}"],
+                silence_rounds=0,
+            )
     nxt = calls[step]
     # YAML spoken as hint — vision generates the real narration.
     yaml_hint = (getattr(nxt, "spoken", None) or "").strip()
@@ -391,6 +450,9 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
 
     return CallState(
         phase="walkthrough",
+        page_id=page_id,
+        walkthrough_page_id=page_id,
+        walkthrough_flow_id=flow_id,
         walkthrough_step=step + 1,
         plan=Plan(spoken_response=spoken, tool_calls=[nxt]),
         pending_calls=[nxt],

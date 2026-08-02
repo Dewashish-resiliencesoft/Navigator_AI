@@ -7,6 +7,7 @@ prospect (intake name / need) so the walkthrough feels personal from the start.
 from __future__ import annotations
 
 from navigator.agent.state import CallDeps, CallState
+from navigator.agent.speech_safety import prospect_facing_persona
 from navigator.meeting.intake import ProspectIntake
 from navigator.meeting.intake_clean import summarize_need
 from navigator.core.schemas import Persona
@@ -35,5 +36,9 @@ def render_intro(
 
 
 def introducing(state: CallState, deps: CallDeps) -> CallState:
-    line = render_intro(deps.graph.effective_persona(), deps.intake)
+    raw = deps.graph.effective_persona()
+    persona = prospect_facing_persona(
+        raw, fallback_product=getattr(deps.graph, "site", "") or deps.product_id
+    )
+    line = render_intro(persona, deps.intake)
     return CallState(narration=[line], transcript=[f"agent: {line}"])

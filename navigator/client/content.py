@@ -15,7 +15,12 @@ import yaml
 from navigator.knowledge.company_bio import load_bio, save_bio
 from navigator.knowledge.product_brief import load_product_brief, save_product_brief
 from navigator.knowledge.site_graph import SiteGraph, SiteGraphError, parse_site_graph
-from navigator.automation.record import RecordedStep, draft_site_graph, record_session
+from navigator.automation.record import (
+    CaptureGate,
+    RecordedStep,
+    draft_site_graph,
+    record_session,
+)
 
 
 def playlist_from_graph(graph: SiteGraph) -> list[dict[str, Any]]:
@@ -160,6 +165,10 @@ class RecorderJob:
     flow_id: str = ""
     start_url: str = ""
     out_path: Path | None = None
+    phase: str = "setup"  # setup | capturing | done
+    setup_discarded: int = 0
+    flagged: list[dict[str, Any]] = field(default_factory=list)
+    gate: CaptureGate | None = None
 
 
 _recorder_lock = threading.Lock()
@@ -170,6 +179,10 @@ def recorder_status() -> dict[str, Any]:
     with _recorder_lock:
         if _active is None:
             return {"active": False}
+        if _active.gate is not None:
+            _active.phase = _active.gate.phase
+            _active.setup_discarded = _active.gate.setup_discarded
+            _active.flagged = list(_active.gate.flagged)
         return {
             "active": not _active.done,
             "job_id": _active.job_id,
@@ -178,6 +191,9 @@ def recorder_status() -> dict[str, Any]:
             "steps": len(_active.steps),
             "error": _active.error,
             "done": _active.done,
+            "phase": _active.phase if not _active.done else "done",
+            "setup_discarded": _active.setup_discarded,
+            "flagged": list(_active.flagged),
         }
 
 
@@ -188,6 +204,7 @@ def start_recorder(
     flow_id: str | None = None,
     headful: bool = True,
     out_dir: Path | None = None,
+    login_config_fn: Any = None,
 ) -> RecorderJob:
     global _active
     fid = (flow_id or _slug_flow(flow_name)).strip() or "recorded_flow"
@@ -195,12 +212,15 @@ def start_recorder(
         if _active is not None and not _active.done:
             raise RuntimeError("a recording session is already running")
         out = (out_dir or Path("archives") / "recordings") / f"{fid}.yaml"
+        gate = CaptureGate(phase="setup", login_config_fn=login_config_fn)
         job = RecorderJob(
             job_id=str(uuid4()),
             flow_name=flow_name,
             flow_id=fid,
             start_url=start_url,
             out_path=out,
+            phase="setup",
+            gate=gate,
         )
         _active = job
 
@@ -213,16 +233,34 @@ def start_recorder(
                 headful=headful,
                 stop_event=job.stop,
                 steps_out=job.steps,
+                gate=gate,
             )
         except Exception as exc:  # noqa: BLE001
             job.error = str(exc)
         finally:
+            gate.phase = "done"
+            job.phase = "done"
+            job.setup_discarded = gate.setup_discarded
+            job.flagged = list(gate.flagged)
             job.done = True
 
     t = threading.Thread(target=_run, name="ops-recorder", daemon=True)
     job.thread = t
     t.start()
     return job
+
+
+def begin_capture() -> RecorderJob:
+    """Flip setup → capturing. Nothing before this enters the saved flow."""
+    with _recorder_lock:
+        job = _active
+        if job is None or job.done:
+            raise RuntimeError("no active recording")
+        if job.gate is None:
+            raise RuntimeError("recording has no capture gate")
+        job.gate.phase = "capturing"
+        job.phase = "capturing"
+        return job
 
 
 def stop_recorder() -> RecorderJob:
@@ -233,6 +271,10 @@ def stop_recorder() -> RecorderJob:
         job.stop.set()
     if job.thread:
         job.thread.join(timeout=120)
+    if job.gate is not None:
+        job.phase = "done"
+        job.setup_discarded = job.gate.setup_discarded
+        job.flagged = list(job.gate.flagged)
     return job
 
 

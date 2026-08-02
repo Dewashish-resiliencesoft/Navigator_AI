@@ -104,6 +104,14 @@ class CallDeps:
     decide_turn: Callable[..., object] | None = None
     #: Prefer Gemini Vision interrupt path when True (default if key present).
     use_turn_brain: bool | None = None
+    #: Resolve VAULT_PASSWORD_SENTINEL → plaintext at fill time. Server-side only.
+    resolve_password: Callable[[], str | None] | None = None
+    #: Current login URL config for session-expiry detection (live, not cached).
+    login_config: object | None = None
+    #: Mid-demo silent re-auth. Returns True on success. None → no recovery.
+    relogin: Callable[[], bool] | None = None
+    #: Operator End / human left Meet — nodes should finish without more TTS/clicks.
+    stop_event: object | None = None
 
 
 def append_only(existing: list, new: list) -> list:
@@ -158,6 +166,8 @@ class CallState(TypedDict, total=False):
     silence_rounds: int
     #: Sidebar label for cursor click (hybrid nav); EXECUTING consumes.
     nav_click_label: str | None
+    #: Continue to the next demo_playlist flow when the current one ends.
+    auto_play: bool
 
 
 def initial_state(
@@ -165,6 +175,8 @@ def initial_state(
     page_id: str,
     max_turns: int = 1,
     walkthrough_flow_id: str = "",
+    *,
+    auto_play: bool = True,
 ) -> CallState:
     return CallState(
         session_id=session_id,
@@ -187,4 +199,5 @@ def initial_state(
         walkthrough_page_id=page_id,
         walkthrough_step=0,
         silence_rounds=0,
+        auto_play=auto_play,
     )

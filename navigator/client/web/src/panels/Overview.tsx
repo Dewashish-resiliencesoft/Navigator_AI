@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowUpRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
-import { api, type Demo, type Metrics } from "../lib/api";
-import { rise, soft, stagger } from "../lib/motion";
+import { ArrowUpRight, ArrowDownRight, ArrowRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
+import { api, type DemoRun, type Metrics } from "../lib/api";
+import { soft, stagger } from "../lib/motion";
 import { AreaChart, Sparkbars } from "../components/Chart";
-import { BarLoader, Card, CardTitle, Empty } from "../components/ui";
+import { BarLoader, Card, CardTitle, Empty, StatusPill } from "../components/ui";
 import { errText, useUi } from "../store";
 
 const Kpi = ({
@@ -12,18 +12,27 @@ const Kpi = ({
   label,
   value,
   sub,
+  trend,
+  onClick,
 }: {
   icon: typeof Zap;
   label: string;
   value: string;
   sub?: string;
+  trend?: "up" | "down" | "flat";
+  onClick?: () => void;
 }) => (
-  <Card>
+  <Card interactive={!!onClick} onClick={onClick}>
     <div className="flex items-start justify-between">
       <div>
-        <p className="text-[0.72rem] font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
-          {label}
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="text-[0.72rem] font-medium uppercase tracking-[0.08em] text-[var(--muted)]">
+            {label}
+          </p>
+          {trend === "up" && <ArrowUpRight size={14} className="text-emerald-500" />}
+          {trend === "down" && <ArrowDownRight size={14} className="text-red-500" />}
+          {trend === "flat" && <ArrowRight size={14} className="text-[var(--muted)]" />}
+        </div>
         <motion.p
           key={value}
           initial={{ opacity: 0, y: 6 }}
@@ -42,20 +51,30 @@ const Kpi = ({
   </Card>
 );
 
+function calcTrend(series: Metrics["series"], key: "sessions" | "actions" | "failures"): "up" | "down" | "flat" {
+  if (series.length < 2) return "flat";
+  const mid = Math.floor(series.length / 2);
+  const firstHalf = series.slice(0, mid).reduce((sum, d) => sum + d[key], 0);
+  const secondHalf = series.slice(mid).reduce((sum, d) => sum + d[key], 0);
+  if (secondHalf > firstHalf) return "up";
+  if (secondHalf < firstHalf) return "down";
+  return "flat";
+}
+
 export function Overview() {
-  const err = useUi((s) => s.err);
+  const { err, setTab, setLogsSessionId } = useUi();
   const [m, setM] = useState<Metrics | null>(null);
-  const [demos, setDemos] = useState<Demo[] | null>(null);
+  const [runs, setRuns] = useState<DemoRun[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const [metrics, list] = await Promise.all([api.metrics(), api.listDemos()]);
+        const [metrics, runList] = await Promise.all([api.metrics(), api.listRuns(7)]);
         if (!alive) return;
         setM(metrics);
-        setDemos(list);
+        setRuns(runList);
         setLoadErr(null);
       } catch (e) {
         if (!alive) return;
@@ -63,6 +82,7 @@ export function Overview() {
         setLoadErr(msg);
         err(msg);
         setM({
+          test_sessions: 0,
           actions: 0,
           sessions: 0,
           failures: 0,
@@ -72,7 +92,7 @@ export function Overview() {
           series: [],
           live: { total: 0, running: 0, failed: 0 },
         });
-        setDemos([]);
+        setRuns([]);
       }
     };
     load();
@@ -109,11 +129,20 @@ export function Overview() {
       )}
       <Kpi
         icon={Radio}
-        label="Sessions"
+        label="Visitor sessions"
         value={String(m.sessions)}
-        sub={`${m.live.running} running now`}
+        sub={`${m.live.running} running now · ${m.test_sessions} test`}
+        trend={calcTrend(m.series, "sessions")}
+        onClick={() => setTab("logs")}
       />
-      <Kpi icon={Zap} label="Actions" value={String(m.actions)} sub="tool calls logged" />
+      <Kpi
+        icon={Zap}
+        label="Actions"
+        value={String(m.actions)}
+        sub="tool calls logged"
+        trend={calcTrend(m.series, "actions")}
+        onClick={() => setTab("logs")}
+      />
       <Kpi
         icon={CircleCheck}
         label="Pass rate"
@@ -125,6 +154,8 @@ export function Overview() {
         label="Failures"
         value={String(m.failures)}
         sub={m.last_seen ? `last ${m.last_seen.slice(0, 10)}` : "never run"}
+        trend={calcTrend(m.series, "failures")}
+        onClick={() => setTab("logs")}
       />
 
       <Card span="sm:col-span-2 xl:col-span-3">
@@ -152,42 +183,74 @@ export function Overview() {
       </Card>
 
       <Card span="sm:col-span-2 xl:col-span-4">
-        <CardTitle hint="In-process registry — clears when the server restarts.">
-          Recent demos
+        <CardTitle hint="Last 7 days of demo runs — click to expand in Logs.">
+          Recent runs
         </CardTitle>
-        {demos && demos.length === 0 && <Empty>No demos yet.</Empty>}
-        <motion.ul variants={stagger(0.03)} initial="hidden" animate="show" className="space-y-1.5">
-          <AnimatePresence initial={false}>
-            {(demos ?? [])
-              .slice()
-              .reverse()
-              .map((d) => (
-                <motion.li
-                  key={d.demo_id}
-                  layout
-                  variants={rise}
-                  exit={{ opacity: 0, x: -8 }}
-                  transition={soft}
-                  className="flex items-center justify-between rounded-lg border px-3 py-2 text-[0.79rem]"
-                  style={{ borderColor: "var(--line)" }}
-                >
-                  <span className="flex items-center gap-2.5">
-                    <span className="font-medium">{d.status}</span>
-                    <span className="text-[var(--muted)]">{d.platform ?? "—"}</span>
-                    <span className="font-mono text-[0.72rem] text-[var(--muted)]">
-                      {d.demo_id.slice(0, 8)}
-                    </span>
-                  </span>
-                  <span className="flex items-center gap-3 text-[var(--muted)]">
-                    <span className="font-mono text-[0.72rem]">
-                      {d.actions}a / {d.failures}f
-                    </span>
-                    {d.meeting_url && <ArrowUpRight size={13} />}
-                  </span>
-                </motion.li>
-              ))}
-          </AnimatePresence>
-        </motion.ul>
+        {runs && runs.length === 0 && <Empty>No demos run recently.</Empty>}
+        <div className="-mx-2 overflow-x-auto">
+          <table className="w-full min-w-[600px] text-left text-[0.8rem]">
+            <thead>
+              <tr className="border-b text-[0.72rem] uppercase tracking-wider text-[var(--muted)]" style={{ borderColor: "var(--line)" }}>
+                <th className="px-3 py-2 font-medium">Status</th>
+                <th className="px-3 py-2 font-medium">Platform</th>
+                <th className="px-3 py-2 font-medium">Origin</th>
+                <th className="px-3 py-2 font-medium">Started</th>
+                <th className="px-3 py-2 font-medium">Duration</th>
+                <th className="px-3 py-2 font-medium">Failures</th>
+              </tr>
+            </thead>
+            <tbody>
+              <AnimatePresence initial={false}>
+                {(runs ?? []).slice(0, 6).map((run) => {
+                  const duration =
+                    run.started_at && run.ended_at
+                      ? Math.round(
+                          (new Date(run.ended_at).getTime() - new Date(run.started_at).getTime()) / 1000
+                        )
+                      : null;
+                  return (
+                    <motion.tr
+                      key={run.session_id}
+                      layout
+                      initial={{ opacity: 0, y: -5 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      className="group cursor-pointer border-b hover:bg-black/[0.02] dark:hover:bg-white/[0.02]"
+                      style={{ borderColor: "var(--line)" }}
+                      onClick={() => {
+                        setLogsSessionId(run.session_id);
+                        setTab("logs");
+                      }}
+                    >
+                      <td className="px-3 py-2.5">
+                        <StatusPill status={run.status} />
+                      </td>
+                      <td className="px-3 py-2.5 font-medium">{run.platform}</td>
+                      <td className="px-3 py-2.5">
+                        <span className="rounded bg-black/[0.04] px-1.5 py-0.5 text-[0.72rem] dark:bg-white/[0.06]">
+                          {run.origin}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-[var(--muted)]">
+                        {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}
+                      </td>
+                      <td className="px-3 py-2.5 text-[var(--muted)]">
+                        {duration !== null ? `${duration}s` : "—"}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        {run.fail_count > 0 ? (
+                          <span className="text-red-500">{run.fail_count}</span>
+                        ) : (
+                          <span className="text-[var(--muted)]">0</span>
+                        )}
+                      </td>
+                    </motion.tr>
+                  );
+                })}
+              </AnimatePresence>
+            </tbody>
+          </table>
+        </div>
       </Card>
     </motion.div>
   );

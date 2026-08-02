@@ -51,6 +51,11 @@ class SiteGraphRevision(BaseModel):
     site: str
     graph_version: int
     """The `version` field inside the graph itself, which the customer controls."""
+    published: bool = False
+    """True once this revision has been the product's active revision.
+
+    A draft is editable and testable but invisible to End Users; only a published
+    revision may serve a live demo. See docs/PRODUCT_MODEL.md."""
 
 
 class NewProduct(BaseModel):
@@ -91,6 +96,7 @@ CREATE TABLE IF NOT EXISTS site_graph_revisions (
     created_at     TEXT NOT NULL,
     site           TEXT NOT NULL,
     graph_version  INTEGER NOT NULL,
+    published      INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (product_id, revision)
 );
 CREATE INDEX IF NOT EXISTS products_api_key ON products (api_key_hash);
@@ -118,6 +124,26 @@ class Registry:
         # in a threadpool and sqlite3 forbids sharing a connection across threads.
         self._local = threading.local()
         self._conn.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add site_graph_revisions.published to a pre-draft-model DB.
+
+        Every revision used to be activated on upload, so existing revisions were
+        all reachable by live demos -- backfilling them to published keeps that
+        true instead of silently taking a tenant's live demo away.
+        """
+        cols = {
+            r["name"]
+            for r in self._conn.execute(
+                "PRAGMA table_info(site_graph_revisions)"
+            ).fetchall()
+        }
+        if "published" not in cols:
+            self._conn.execute(
+                "ALTER TABLE site_graph_revisions ADD COLUMN published "
+                "INTEGER NOT NULL DEFAULT 1"
+            )
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -192,9 +218,20 @@ class Registry:
     # -- site graph revisions -------------------------------------------------
 
     def put_site_graph(
-        self, product_id: str, yaml_text: str, source: SiteGraphSource = "yaml"
+        self,
+        product_id: str,
+        yaml_text: str,
+        source: SiteGraphSource = "yaml",
+        *,
+        publish: bool,
     ) -> SiteGraphRevision:
-        """Validate, store as a new revision, and make it active.
+        """Validate and store a new revision, publishing it only if asked.
+
+        `publish` is required and has no default on purpose. An unpublished
+        revision is a draft: the Client can test it from their dashboard, but End
+        Users on the Client's landing page keep getting the published revision
+        until the Client explicitly publishes. Saving an edit must never change
+        what live visitors see -- see docs/PRODUCT_MODEL.md.
 
         Validation happens before anything is written, so a rejected upload leaves
         the active revision untouched -- a customer cannot break a live demo with a
@@ -215,7 +252,7 @@ class Registry:
 
         self._conn.execute(
             "INSERT INTO site_graph_revisions (product_id, revision, source, yaml, "
-            "created_at, site, graph_version) VALUES (?,?,?,?,?,?,?)",
+            "created_at, site, graph_version, published) VALUES (?,?,?,?,?,?,?,?)",
             (
                 product_id,
                 revision,
@@ -224,12 +261,14 @@ class Registry:
                 now.isoformat(),
                 graph.site,
                 graph.version,
+                int(publish),
             ),
         )
-        self._conn.execute(
-            "UPDATE products SET active_revision = ? WHERE product_id = ?",
-            (revision, product_id),
-        )
+        if publish:
+            self._conn.execute(
+                "UPDATE products SET active_revision = ? WHERE product_id = ?",
+                (revision, product_id),
+            )
         return SiteGraphRevision(
             product_id=product_id,
             revision=revision,
@@ -238,7 +277,29 @@ class Registry:
             created_at=now,
             site=graph.site,
             graph_version=graph.version,
+            published=publish,
         )
+
+    def latest_revision(self, product_id: str) -> SiteGraphRevision:
+        """The newest revision, published or not -- what the Client is editing."""
+        row = self._conn.execute(
+            "SELECT * FROM site_graph_revisions WHERE product_id = ? "
+            "ORDER BY revision DESC LIMIT 1",
+            (product_id,),
+        ).fetchone()
+        if row is None:
+            raise ProductNotFound(f"product {product_id!r} has no site graph yet")
+        return SiteGraphRevision.model_validate(dict(row))
+
+    def published_revision(self, product_id: str) -> int:
+        """The revision a live demo must run, or raise if nothing is published."""
+        revision = self.get(product_id).active_revision
+        if revision is None:
+            raise ProductNotFound(
+                f"product {product_id!r} has no published site graph -- "
+                "publish a revision before running live demos"
+            )
+        return revision
 
     def get_revision(
         self, product_id: str, revision: int | None = None
@@ -276,8 +337,16 @@ class Registry:
         )
 
     def activate(self, product_id: str, revision: int) -> Product:
-        """Point demos at an older revision -- the rollback path."""
+        """Publish a revision: the go-live path for a draft, and the rollback path.
+
+        This is the only way a revision becomes visible to End Users.
+        """
         self.get_revision(product_id, revision)
+        self._conn.execute(
+            "UPDATE site_graph_revisions SET published = 1 "
+            "WHERE product_id = ? AND revision = ?",
+            (product_id, revision),
+        )
         self._conn.execute(
             "UPDATE products SET active_revision = ? WHERE product_id = ?",
             (revision, product_id),

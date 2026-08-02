@@ -173,6 +173,65 @@ def _check_stop(stop_event: threading.Event | None) -> None:
         raise LiveDemoStopped("ended by operator")
 
 
+def _start_human_leave_watcher(
+    *,
+    client: AttendeeClient,
+    bot_id: str,
+    human_name: str,
+    agent_name: str,
+    stop_event: threading.Event | None,
+    speaker_box: list,
+) -> threading.Thread:
+    """When the prospect leaves Meet, kill the demo so they cannot rejoin mid-run."""
+
+    def _run() -> None:
+        poll_s = 2.0
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                return
+            try:
+                left = client.human_has_left(
+                    bot_id,
+                    human_name=human_name,
+                    bot_names=frozenset(
+                        {
+                            agent_name,
+                            "Navigator",
+                            "Navigator AI",
+                            "Attendee",
+                        }
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] leave-watch poll skipped: {exc}", flush=True)
+                left = False
+            if left:
+                print(
+                    f"[live] human left Meet ({human_name!r}) — "
+                    "ending demo, bot leaving now",
+                    flush=True,
+                )
+                if stop_event is not None:
+                    stop_event.set()
+                if speaker_box:
+                    try:
+                        speaker_box[0].bot_ended = True
+                    except Exception:  # noqa: BLE001
+                        pass
+                try:
+                    client.leave(bot_id)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] leave-on-human-exit failed: {exc}", flush=True)
+                return
+            time.sleep(poll_s)
+
+    t = threading.Thread(
+        target=_run, name=f"leave-watch-{bot_id}", daemon=True
+    )
+    t.start()
+    return t
+
+
 def wait_until_joined(
     client: AttendeeClient,
     bot_id: str,
@@ -304,6 +363,7 @@ def run_live_meet_demo(
     product_id: str | None = None,
     session_id=None,
     intake_prefill: dict[str, str] | None = None,
+    auto_play: bool = True,
     on_meeting_ready=None,
     stop_event: threading.Event | None = None,
     on_bot_joined: Callable[[str], None] | None = None,
@@ -392,14 +452,37 @@ def run_live_meet_demo(
                 webbrowser.open(meeting_url)
             time.sleep(8)
 
-        print(
-            "[live] Navigator joining meeting first"
-            + (" (Zoom native + ZAK)…" if zoom_native else " (voice reserved; share after)…"),
-            flush=True,
-        )
+        if bot_first:
+            print(
+                "[live] Navigator joining meeting first"
+                + (
+                    " (Zoom native + ZAK)…"
+                    if zoom_native
+                    else " (voice reserved; share after)…"
+                ),
+                flush=True,
+            )
+        else:
+            print(
+                "[live] Navigator joining as guest — admit from host UI if asked…",
+                flush=True,
+            )
         zoom_tokens_url = None
         if zoom_native:
             zoom_tokens_url = zoom_zak_callback_url()
+            # Tunnel may need a few more seconds after ensure_public_base_url's
+            # probe loop; don't abort the demo on one flaky dig — Attendee will
+            # hit the callback when it needs the ZAK.
+            from navigator.meeting.zoom_host import _zak_origin_reachable, ensure_public_base_url
+
+            base = ensure_public_base_url()
+            if not _zak_origin_reachable(base):
+                print(
+                    f"[live] WARN: ZAK probe failed for {base}/v1/zoom/zak — "
+                    "continuing; if Zoom waits for host, set "
+                    "NAVIGATOR_PUBLIC_BASE_URL to a stable public origin",
+                    flush=True,
+                )
             print(
                 f"[live] Zoom host ZAK callback: {zoom_tokens_url.split('?', 1)[0]}",
                 flush=True,
@@ -430,11 +513,13 @@ def run_live_meet_demo(
         print("[live] bot in meeting", flush=True)
         _check_stop(stop_event)
 
+        # Mark ready whether bot-first or admit-flow — UI/status need the flag.
+        if on_meeting_ready is not None:
+            on_meeting_ready(meeting_url)
+
         if bot_first:
             # Link only after Navigator is already inside.
             _share_meet_link(meeting_url=meeting_url, bot_ready=True)
-            if on_meeting_ready is not None:
-                on_meeting_ready(meeting_url)
             if open_meet_in_browser:
                 import webbrowser
 
@@ -456,12 +541,13 @@ def run_live_meet_demo(
             print(f"[live] screenshare URL ready: {public_view}", flush=True)
             if tunnel._proc.poll() is not None:
                 raise RuntimeError("cloudflared died before screenshare")
-            # Avatar on camera tile first (Attendee: url XOR screenshare_url).
-            try:
-                client.set_voice_agent_url(bot.id, public_agent)
-                print(f"[live] avatar tile armed: {public_agent}", flush=True)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[live] avatar tile skipped: {exc}", flush=True)
+            # Avatar tile temporarily off — focus on product screenshare.
+            # try:
+            #     client.set_voice_agent_url(bot.id, public_agent)
+            #     print(f"[live] avatar tile armed: {public_agent}", flush=True)
+            # except Exception as exc:  # noqa: BLE001
+            #     print(f"[live] avatar tile skipped: {exc}", flush=True)
+            _ = public_agent  # keep tunnel agent path warm for later re-enable
         else:
             public_view = ""
             print(
@@ -496,6 +582,7 @@ def run_live_meet_demo(
                 print(f"[speak] drained {n} echo frame(s)", flush=True)
 
         pending_barge_in: list[str] = []
+        speaker_box: list = []
         meet_speaker: MeetSpeaker | PrintSpeaker | PiperSpeaker | FishSpeaker = MeetSpeaker(
             speaker,
             client,
@@ -503,7 +590,9 @@ def run_live_meet_demo(
             synthesizer=speaker if hasattr(speaker, "synthesize_wav") else None,
             also_chat=False,
             after_speak=_after_speak,
+            set_avatar_state=relay.set_avatar_state,
         )
+        speaker_box.append(meet_speaker)
         if audio_bridge is not None and settings.groq_api_key:
             from navigator.meeting.barge_in import make_barge_in_checker
             from navigator.voice.stt import transcribe as _stt
@@ -531,6 +620,14 @@ def run_live_meet_demo(
                     or ""
                 )
                 print(f"[live] human joined: {human_name!r}", flush=True)
+                _start_human_leave_watcher(
+                    client=client,
+                    bot_id=bot.id,
+                    human_name=human_name or "there",
+                    agent_name=persona.agent_name,
+                    stop_event=stop_event,
+                    speaker_box=speaker_box,
+                )
             except LiveDemoStopped:
                 raise
             except ParticipantWaitStopped as exc:
@@ -568,8 +665,12 @@ def run_live_meet_demo(
         print("[live] starting intake (voice into Meet)…", flush=True)
         _check_stop(stop_event)
         relay.set_status("listening", "Listening…")
+        from navigator.agent.speech_safety import prospect_facing_persona
+
         intake = run_intake(
-            persona=persona,
+            persona=prospect_facing_persona(
+                persona, fallback_product=product_id or graph_cfg.site or ""
+            ),
             speaker=meet_speaker,
             interactive=interactive_listen,
             listen=intake_listen,
@@ -618,15 +719,41 @@ def run_live_meet_demo(
                 )
 
             origin = _real_origin()
-            if settings.product_login_email and settings.product_login_password:
-                login_url = settings.product_url.strip() or origin
+            # Prefer per-product vault; fall back to legacy process-wide env for
+            # CLI smoke / single-tenant local runs.
+            login_email = ""
+            login_password = ""
+            login_url = ""
+            if product_id:
+                try:
+                    from navigator.app.credential_vault import (
+                        CredentialVault,
+                        VaultNotConfigured,
+                    )
+
+                    with CredentialVault(settings.credential_db_path) as vault:
+                        creds = vault.credentials_for(product_id)
+                        if creds is not None:
+                            login_url, login_email, login_password = creds
+                except VaultNotConfigured:
+                    print(
+                        "[live] credential vault not configured — "
+                        "falling back to NAVIGATOR_PRODUCT_LOGIN_*",
+                        flush=True,
+                    )
+            if not (login_email and login_password):
+                login_email = settings.product_login_email
+                login_password = settings.product_login_password
+            if login_email and login_password:
+                if not login_url:
+                    login_url = settings.product_url.strip() or origin
                 if "fixtures" in login_url or login_url.endswith(".html"):
                     login_url = origin
                 gate = run_login_gate(
                     login_fn=_do_login,
                     url=login_url,
-                    email=settings.product_login_email,
-                    password=settings.product_login_password,
+                    email=login_email,
+                    password=login_password,
                     speaker=meet_speaker,
                     attendee=client,
                     bot_id=bot.id,
@@ -711,6 +838,43 @@ def run_live_meet_demo(
                 except Exception as exc:  # noqa: BLE001
                     print(f"[live] voice-only TTS skipped: {exc}", flush=True)
 
+            from navigator.automation.login_match import LoginConfig
+
+            _login_cfg = LoginConfig(login_url=login_url or "")
+            _login_email = login_email
+            _login_password = login_password
+            _login_url = login_url or origin
+
+            def _resolve_password() -> str | None:
+                if _login_password:
+                    return _login_password
+                if not product_id:
+                    return None
+                try:
+                    from navigator.app.credential_vault import (
+                        CredentialVault,
+                        VaultNotConfigured,
+                    )
+
+                    with CredentialVault(settings.credential_db_path) as vault:
+                        return vault.password_for(product_id)
+                except VaultNotConfigured:
+                    return None
+
+            def _relogin() -> bool:
+                if not (_login_email and _login_password):
+                    return False
+                gate = run_login_gate(
+                    login_fn=_do_login,
+                    url=_login_url,
+                    email=_login_email,
+                    password=_login_password,
+                    speaker=None,  # silent — verifying already spoke the stall
+                    attendee=None,
+                    bot_id=None,
+                )
+                return gate is LoginGateResult.ok
+
             deps = CallDeps(
                 graph=graph_cfg,
                 page=page,
@@ -734,6 +898,10 @@ def run_live_meet_demo(
                 screen_context=lambda: screen_snapshot(page),
                 product_brief=load_agent_context(product_id or graph_cfg.site),
                 pending_barge_in=pending_barge_in,
+                resolve_password=_resolve_password,
+                login_config=_login_cfg,
+                relogin=_relogin if (_login_email and _login_password) else None,
+                stop_event=stop_event,
             )
 
             mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"
@@ -744,7 +912,8 @@ def run_live_meet_demo(
                     session_id,
                     page_id,
                     max_turns=settings.live_max_turns,
-            walkthrough_flow_id=flow_id or settings.live_walkthrough_flow,
+                    walkthrough_flow_id=flow_id or settings.live_walkthrough_flow,
+                    auto_play=auto_play,
                 )
             )
             _push()

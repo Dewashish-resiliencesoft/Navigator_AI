@@ -25,23 +25,10 @@ class _Speaker(Protocol):
     def say(self, text: str) -> None: ...
 
 
-class _Attendee(Protocol):
-    def send_chat(self, bot_id: str, message: str, *, to: str = "everyone") -> None: ...
-
-
-def _say(
-    speaker: _Speaker | None,
-    attendee: _Attendee | None,
-    bot_id: str | None,
-    text: str,
-) -> None:
+def _say(speaker: _Speaker | None, text: str) -> None:
+    # Voice only — never Meet chat (intake/demo already speak into the call).
     if speaker is not None:
         speaker.say(text)
-    if attendee is not None and bot_id:
-        try:
-            attendee.send_chat(bot_id, text)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[live] login_gate chat failed: {exc}", flush=True)
 
 
 def run_login_gate(
@@ -51,11 +38,12 @@ def run_login_gate(
     email: str,
     password: str,
     speaker: _Speaker | None = None,
-    attendee: _Attendee | None = None,
+    attendee: Any = None,  # kept for call-site compat; unused (no chat)
     bot_id: str | None = None,
     login_kwargs: dict[str, Any] | None = None,
 ) -> LoginGateResult:
     """Run product login with at most one retry. Empty creds → skipped."""
+    del attendee, bot_id  # no longer mirror lines into Meet chat
     if not (email.strip() and password.strip()):
         print("[live] login=skip (no creds)", flush=True)
         return LoginGateResult.skipped
@@ -67,12 +55,12 @@ def run_login_gate(
         return LoginGateResult.ok
     except Exception as first:  # noqa: BLE001
         print(f"[live] login=fail attempt=1 err={first!r}", flush=True)
-        _say(speaker, attendee, bot_id, LOGIN_RETRY_LINE)
+        _say(speaker, LOGIN_RETRY_LINE)
         try:
             login_fn(**kwargs)
             print("[live] login=pass attempt=2", flush=True)
             return LoginGateResult.ok
         except Exception as second:  # noqa: BLE001
             print(f"[live] login=fail attempt=2 err={second!r}", flush=True)
-            _say(speaker, attendee, bot_id, LOGIN_APOLOGY)
+            _say(speaker, LOGIN_APOLOGY)
             return LoginGateResult.failed

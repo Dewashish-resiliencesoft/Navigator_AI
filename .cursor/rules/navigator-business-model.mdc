@@ -1,40 +1,92 @@
 ---
-description: Navigator AI business model — clients vs end users; no hardcode ResilioHub
+description: Navigator AI business model — three roles, test vs live demos, drafts vs published, auth boundaries, no ResilioHub hardcode
 alwaysApply: true
 ---
 
-# Navigator AI — who is who (check BEFORE any change)
+# Navigator AI — check BEFORE any change
 
-Navigator AI is a **B2B service**: companies buy Navigator to run **automated live product demos** (meeting join + agent driving *their* product). Integration sits on **their** site (“Show Demo”), not as Navigator’s own end-user product site.
+**[`docs/PRODUCT_MODEL.md`](../../docs/PRODUCT_MODEL.md) is the standing
+reference.** Read it before touching code. This rule is the summary.
 
-## Actors (use these words in code/docs/UI)
+Navigator AI is a **B2B service** built by **Resiliencesoft**: a company buys
+Navigator, embeds it on **their** landing page, and their visitors get a live,
+AI-run demo of **that company's** product. Navigator is invisible infrastructure
+to the visitor, not a branded product.
 
-| Role | Who | What they do with Navigator |
+## Three roles (use these words in code, docs, and UI)
+
+| Role | Who | What they touch |
 |---|---|---|
-| **Client (tenant)** | Company that **buys** Navigator | Logs into **Navigator client dashboard**: company bio, knowledge MD, record/order demo flows, API keys, site graph. Configures how the agent demos **their** product. |
-| **End user (prospect)** | Customer of the **client** | On **client’s website** clicks **Show Demo** → gets meeting link / joins live session. **Only** engages Navigator AI **inside that live meeting demo**. |
-| **ResilioHub / fixtures** | **Test example only** | One sample product for local/dev. **Not** the product Navigator sells; **not** the default tenant in production code. |
+| **Platform** | Resiliencesoft | Builds and operates Navigator: backend, LangGraph agent, meeting infra. Not a tenant. |
+| **Client (tenant)** | Company that **buys** Navigator (e.g. Edureka) | Dashboard login via JWT. Owns site graph, flows, knowledge base, credentials. Embeds the SDK on their own landing page. Scoped by `product_id`. |
+| **End User (visitor)** | A visitor on the **Client's** landing page | Never authenticates. Never sees dashboard, flow editor, site graph, or corrections queue. Sees one button — **"Start a demo"** — then a live demo. |
+| **ResilioHub / fixtures** | **Sample tenant only** | Local/dev example. Not the product Navigator sells; not a production default. |
 
-Never call the client an “end user.” Never build UI that assumes the prospect configures Navigator.
+Never call a Client an "end user". Never build UI that assumes a visitor
+configures anything.
 
-## Surfaces
+## Test demo vs live demo — explicit, never inferred
 
-1. **Client dashboard** (Navigator-hosted, for paying companies) — bio fields, knowledge MD, flows, keys, start/monitor demos for *their* prospects.
-2. **Client website CTA** — “Show Demo” → Navigator API (`/v1/demos/start` etc.) with that client’s product/graph; returns join link to the prospect.
-3. **Live meeting** — only place the **end user** talks to / sees Navigator AI agent.
+| | Test demo | Live demo |
+|---|---|---|
+| `origin` | `dashboard_test` | `public_embed` |
+| Triggered by | Client, from the dashboard | End User, on the Client's landing page |
+| Auth | dashboard JWT | `sess_` embed session token (or `nav_` key server-side) |
+| Purpose | validate a flow or site graph before publishing | the actual product |
+| Counts toward usage / billing | **no** | **yes** |
+| Site graph used | may be an unpublished **draft** | **published revision only** |
+| Visible to | Client only | End User only |
 
-Do **not** treat local `/client` as an end-user website. The client dashboard is for **tenant companies** configuring their demo — never prospect self-serve as if they own Navigator.
+`origin` is set **at the auth boundary from the credential type** — never from a
+request body — and is immutable once written (`DemoHandle.origin`,
+`demo_runs.origin`, excluded from `ON CONFLICT DO UPDATE`).
+
+## Drafts vs published
+
+Saving a site graph must never change what live visitors see.
+
+- `Registry.put_site_graph(..., publish=...)` — `publish` is required, no default.
+- `Registry.latest_revision()` — drafts included. Dashboard edits and test demos.
+- `Registry.published_revision()` — live demos only. Raises if nothing published.
+- `Registry.activate()` — the only way a revision becomes visible to End Users.
+
+## Auth boundaries
+
+- `nav_` API key → `/v1/*`, **server-side only**. Never in client-side HTML/JS.
+- `sess_` session token → `POST /v1/demos/start`, single-use, short-lived. What
+  the public embed uses.
+- Dashboard JWT → `/client/api/*`. Every route. No unauthenticated config or
+  recorder endpoints.
+- `product_id` always comes from the credential, never from a path or body.
+- The client dashboard is loopback-only and never embeddable on a public page.
+
+## UI copy
+
+- Public embed: exactly **"Start a demo"**. Not "Show Demo", not "Navigator AI
+  Demo", not any Platform-branded label.
+- Dashboard start button reads as a **test** demo, because that is what it is.
+- Site graph editor: "Save draft" and "Publish", with the live/draft state shown.
 
 ## Hardcoding ban
 
-- **Do not** hardcode ResilioHub (or ResilienceSoft) names, URLs, copy, credentials, or flows into Navigator **core** (`navigator/api`, `navigator/meeting`, `navigator/agent`, shared UI).
-- ResilioHub may live only under **config/fixtures/docs/examples** (e.g. `navigator/config/sites/resiliohub.yaml`, `navigator/config/products/resiliohub.md`) as a **sample tenant**.
-- Defaults, placeholders, and UI strings must be **generic** (“your product”, `product_id`, site graph persona) or loaded from the **active client’s** registry/graph/brief.
-- Tests may use ResilioHub/fixtures; production paths must work for **any** registered product.
+- **Do not** hardcode ResilioHub or ResilienceSoft names, URLs, copy,
+  credentials, or flows into Navigator **core** (`navigator/app`,
+  `navigator/agent`, `navigator/meeting`, `navigator/voice`, shared UI).
+- ResilioHub may live only under config/fixtures/docs/examples (e.g.
+  `navigator/config/sites/resiliohub.yaml`) as a **sample tenant**.
+- Defaults, placeholders, and UI strings must be generic ("your product",
+  `product_id`, site graph persona) or loaded from the **active Client's**
+  registry / graph / brief.
+- Tests may use ResilioHub fixtures; production paths must work for **any**
+  registered product.
 
 ## Before coding checklist
 
-1. Who is this change for — **client** or **end user**?
-2. If end user: does it only affect **live demo session** or client-site CTA handoff (link)? If not → wrong surface.
-3. Any ResilioHub string/URL in core? → move to sample config or parameterize via site graph / product brief / registry.
-4. Dashboard copy: speak to **companies using Navigator**, not to their prospects.
+1. Who is this for — Platform, Client, or End User?
+2. Which `origin` does this path produce, and is it set from the credential?
+3. Does this read a draft or a published revision — and is that right for the
+   caller?
+4. Does this move a usage counter? Should it, given the origin?
+5. Any ResilioHub string or URL in core? Move it to sample config or parameterize
+   via site graph / product brief / registry.
+6. Dashboard copy speaks to **companies using Navigator**, not to their visitors.

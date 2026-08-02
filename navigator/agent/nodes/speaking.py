@@ -12,7 +12,10 @@ from navigator.agent.state import CLEAR, CallDeps, CallState
 
 
 def speaking(state: CallState, deps: CallDeps) -> CallState:
-    if getattr(deps.speaker, "bot_ended", False):
+    ev = deps.stop_event
+    if (ev is not None and getattr(ev, "is_set", lambda: False)()) or getattr(
+        deps.speaker, "bot_ended", False
+    ):
         return CallState(narration=CLEAR, finished=True, phase="ending")
     if deps.set_status is not None:
         deps.set_status("speaking", "Speaking…")
@@ -27,6 +30,8 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
         if deps.push_frame is not None:
             deps.push_frame()
         safe = prospect_safe_line(line)
+        if not (safe or "").strip():
+            continue
         if safe != line:
             print(f"[speak] scrubbed technical narration: {line!r}", flush=True)
         deps.speaker.say(safe)

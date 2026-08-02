@@ -111,4 +111,4 @@ def test_session_token_cross_tenant(client, registry):
     )
     # 404 because P1 has no graph uploaded, meaning it successfully resolved as P1.
     assert res2.status_code == 404
-    assert "no site graph yet" in res2.text or "no such product" in res2.text
+    assert "no published site graph" in res2.text or "no such product" in res2.text

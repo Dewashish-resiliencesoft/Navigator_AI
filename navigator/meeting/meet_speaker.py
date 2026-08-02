@@ -57,6 +57,7 @@ class MeetSpeaker:
         synthesizer: WavSynthesizer | None = None,
         also_chat: bool = False,
         after_speak: Callable[[], None] | None = None,
+        set_avatar_state: Callable[[str], None] | None = None,
         playback_pad_s: float = 0.35,
         short_pad_s: float = 0.12,
         short_chars: int = 72,
@@ -68,6 +69,7 @@ class MeetSpeaker:
         self.synthesizer = synthesizer
         self.also_chat = also_chat
         self.after_speak = after_speak
+        self.set_avatar_state = set_avatar_state
         self.playback_pad_s = playback_pad_s
         self.short_pad_s = short_pad_s
         self.short_chars = short_chars
@@ -99,17 +101,23 @@ class MeetSpeaker:
         try:
             wav = synth.synthesize_wav(text)
             if wav:
-                self.attendee.speak(self.bot_id, wav)
-                print("[speak] Meet audio sent", flush=True)
-                pad = (
-                    self.short_pad_s
-                    if len(text.strip()) <= self.short_chars
-                    else self.playback_pad_s
-                )
-                wait = wav_duration_s(wav) + pad
-                self._wait_playback(wait)
-                if self.after_speak is not None:
-                    self.after_speak()
+                if self.set_avatar_state is not None:
+                    self.set_avatar_state("speaking")
+                try:
+                    self.attendee.speak(self.bot_id, wav)
+                    print("[speak] Meet audio sent", flush=True)
+                    pad = (
+                        self.short_pad_s
+                        if len(text.strip()) <= self.short_chars
+                        else self.playback_pad_s
+                    )
+                    wait = wav_duration_s(wav) + pad
+                    self._wait_playback(wait)
+                    if self.after_speak is not None:
+                        self.after_speak()
+                finally:
+                    if self.set_avatar_state is not None:
+                        self.set_avatar_state("idle")
             else:
                 print("[speak] WARNING: synthesize_wav returned empty", flush=True)
         except Exception as exc:  # noqa: BLE001

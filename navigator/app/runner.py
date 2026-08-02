@@ -35,6 +35,18 @@ from navigator.voice.tts import PrintSpeaker, Speaker
 
 DemoStatus = Literal["starting", "running", "finished", "failed"]
 
+DemoOrigin = Literal["dashboard_test", "public_embed"]
+"""Who started this demo, and therefore what it is for.
+
+`dashboard_test` -- a Client validating their own setup from the dashboard.
+Never billable, may run an unpublished draft revision.
+`public_embed` -- an End User on the Client's landing page. The real product:
+billable, and pinned to the published revision.
+
+Set from the credential type at the auth boundary, never from a request body.
+See docs/PRODUCT_MODEL.md.
+"""
+
 
 @dataclass
 class DemoHandle:
@@ -44,6 +56,7 @@ class DemoHandle:
     product_id: str
     revision: int
     session_id: UUID
+    origin: DemoOrigin
     status: DemoStatus = "starting"
     page_id: str = ""
     """Where in the site graph the agent currently is."""
@@ -134,12 +147,15 @@ class DemoRunner:
         revision: int,
         flow: tuple[str, str],
         speaker: Speaker | None = None,
+        *,
+        origin: DemoOrigin,
     ) -> DemoHandle:
         handle = DemoHandle(
             demo_id=uuid4(),
             product_id=product_id,
             revision=revision,
             session_id=uuid4(),
+            origin=origin,
             page_id=flow[0],
         )
         with self._lock:
@@ -167,6 +183,7 @@ class DemoRunner:
         *,
         meeting_url: str,
         platform: str,
+        origin: DemoOrigin,
         run: Callable[..., str] | None = None,
         **kwargs,
     ) -> DemoHandle:
@@ -180,6 +197,7 @@ class DemoRunner:
             product_id=product_id,
             revision=revision,
             session_id=uuid4(),
+            origin=origin,
             page_id=flow[0],
             meeting_url=meeting_url,
             platform=platform,
@@ -266,6 +284,7 @@ class DemoRunner:
                     product_id=handle.product_id,
                     platform=handle.platform or "local",
                     status=handle.status,
+                    origin=handle.origin,
                     meeting_label=meeting_label(handle.meeting_url, handle.platform),
                     started_at=handle.started_at,
                     ended_at=handle.finished_at,
@@ -360,6 +379,9 @@ class DemoRunner:
                 run = run_live_meet_demo
             handle.status = "running"
             self._persist_run(handle)
+            # Dashboard static admit-flow may pass open_meet_in_browser=True;
+            # default False so API workers don't pop a browser on the server.
+            open_browser = bool(kwargs.pop("open_meet_in_browser", False))
             run(
                 meeting_url=handle.meeting_url,
                 graph_cfg=graph,
@@ -368,9 +390,8 @@ class DemoRunner:
                 page_id=flow[0],
                 flow_id=flow[1],
                 headful=self.headful,
-                # An API-started demo has no TTY and no local browser to open.
                 interactive_listen=False,
-                open_meet_in_browser=False,
+                open_meet_in_browser=open_browser,
                 **kwargs,
                 stop_event=handle._stop,
                 on_bot_joined=on_bot_joined,
@@ -387,6 +408,7 @@ class DemoRunner:
             else:
                 handle.status = "failed"
                 handle.error = traceback.format_exc(limit=3)
+                print(f"[runner] live demo failed:\n{handle.error}", flush=True)
         finally:
             handle.finished_at = datetime.now(timezone.utc)
             with ActionLog(self.db_path) as log:

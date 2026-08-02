@@ -41,7 +41,13 @@ function Toast() {
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: 6 }}
           transition={soft}
-          className="fixed bottom-5 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2.5 rounded-xl border px-4 py-2.5 backdrop-blur-xl"
+          drag="y"
+          dragConstraints={{ top: 0, bottom: 50 }}
+          dragElastic={0.2}
+          onDragEnd={(_e, info) => {
+            if (info.offset.y > 20 || info.velocity.y > 100) clear();
+          }}
+          className="fixed bottom-5 left-1/2 z-50 flex max-w-[92vw] -translate-x-1/2 items-center gap-2.5 rounded-xl border px-4 py-2.5 backdrop-blur-xl cursor-grab active:cursor-grabbing"
           style={{
             borderColor: "var(--line)",
             background: "color-mix(in oklch, var(--panel) 82%, transparent)",
@@ -169,6 +175,16 @@ export default function App() {
 
   const Panel = PANELS[tab] ?? Overview;
   const title = TABS.find((t) => t.id === tab)?.label ?? "Overview";
+  const subtitles: Record<string, string> = {
+    overview: "High-level metrics and recent demo activity.",
+    demo: "Start and monitor headful browser sessions in real-time.",
+    logs: "Detailed action logs and transcripts for all demos.",
+    flows: "Configure automated steps and sequences.",
+    graph: "Edit the site graph and page topology.",
+    knowledge: "Manage knowledge snippets available to the agent.",
+    bio: "Define company identity and product details.",
+  };
+  const subtitle = subtitles[tab] ?? "Configure your product settings.";
 
   return (
     <>
@@ -188,7 +204,7 @@ export default function App() {
                   {title}
                 </h1>
                 <p className="mt-1 text-[0.79rem] text-[var(--muted)]">
-                  Configure demos, flows, and knowledge for your product.
+                  {subtitle}
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-2">
@@ -222,9 +238,19 @@ export default function App() {
                   Live demo · {demo.platform || "meeting"} · {demo.page_id || "…"}
                 </span>
                 <div className="ml-auto flex gap-2">
-                  <Button variant="secondary" onClick={() => setTab("demo")}>
-                    Open Live demo
-                  </Button>
+                  {tab !== "demo" && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => setTab("demo")}
+                      className="border-emerald-500/30 text-emerald-600 hover:bg-emerald-500/10 dark:text-emerald-400"
+                    >
+                      <span className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                      </span>
+                      View Live demo
+                    </Button>
+                  )}
                   <Button variant="danger" disabled={ending} onClick={endLive}>
                     <PhoneOff size={14} />
                     {ending ? "Ending…" : "End demo"}

@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS demo_runs (
     product_id     TEXT NOT NULL,
     platform       TEXT NOT NULL,
     status         TEXT NOT NULL,
+    origin         TEXT NOT NULL DEFAULT 'dashboard_test',
     host_os        TEXT NOT NULL DEFAULT '',
     host_release   TEXT NOT NULL DEFAULT '',
     host_machine   TEXT NOT NULL DEFAULT '',
@@ -80,6 +81,23 @@ class ActionLog:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._conn.executescript(_SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Add demo_runs.origin to a DB created before the column existed.
+
+        Pre-existing rows predate the test/live split, so they cannot be proven
+        billable -- they backfill to dashboard_test rather than inflate usage.
+        """
+        cols = {
+            r["name"]
+            for r in self._conn.execute("PRAGMA table_info(demo_runs)").fetchall()
+        }
+        if "origin" not in cols:
+            self._conn.execute(
+                "ALTER TABLE demo_runs ADD COLUMN origin TEXT NOT NULL "
+                "DEFAULT 'dashboard_test'"
+            )
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -164,9 +182,22 @@ class ActionLog:
     def product_metrics(self, product_id: str, days: int = 14) -> dict:
         """Rolled-up counters + a daily series for one product's dashboard.
 
+        Counts LIVE demos only. A Client running test demos from their dashboard
+        must not move their own usage numbers -- see docs/PRODUCT_MODEL.md. Test
+        runs are reported separately under `test_sessions` so the dashboard can
+        still show them, clearly labelled as non-billable.
+
         Aggregated in SQL rather than by hydrating entries: the action log is the
         highest-volume table here and a dashboard poll must not scan it row by row.
         """
+        # action_log has no origin of its own; a session's origin lives on its
+        # demo_runs row. Subtracting test sessions (rather than selecting live
+        # ones) means a run row that failed to persist still bills, instead of
+        # a bookkeeping failure silently erasing a Client's usage.
+        live_only = (
+            "AND session_id NOT IN (SELECT session_id FROM demo_runs "
+            "WHERE product_id = ? AND origin = 'dashboard_test') "
+        )
         totals = self._conn.execute(
             "SELECT COUNT(*) AS actions, "
             "COUNT(DISTINCT session_id) AS sessions, "
@@ -174,8 +205,8 @@ class ActionLog:
             "COALESCE(SUM(passed IS NOT NULL), 0) AS verified, "
             "COALESCE(SUM(passed = 1), 0) AS passed, "
             "MAX(timestamp) AS last_seen "
-            "FROM action_log WHERE product_id = ?",
-            (product_id,),
+            "FROM action_log WHERE product_id = ? " + live_only,
+            (product_id, product_id),
         ).fetchone()
 
         rows = self._conn.execute(
@@ -183,12 +214,19 @@ class ActionLog:
             "COUNT(*) AS actions, "
             "COUNT(DISTINCT session_id) AS sessions, "
             "COALESCE(SUM(failed), 0) AS failures "
-            "FROM action_log WHERE product_id = ? "
+            "FROM action_log WHERE product_id = ? " + live_only +
             "GROUP BY day ORDER BY day DESC LIMIT ?",
-            (product_id, max(1, days)),
+            (product_id, product_id, max(1, days)),
         ).fetchall()
 
+        test_sessions = self._conn.execute(
+            "SELECT COUNT(*) AS n FROM demo_runs "
+            "WHERE product_id = ? AND origin = 'dashboard_test'",
+            (product_id,),
+        ).fetchone()
+
         return {
+            "test_sessions": test_sessions["n"] or 0,
             "actions": totals["actions"] or 0,
             "sessions": totals["sessions"] or 0,
             "failures": totals["failures"] or 0,
@@ -223,6 +261,7 @@ class ActionLog:
         product_id: str,
         platform: str,
         status: str,
+        origin: str,
         host_os: str = "",
         host_release: str = "",
         host_machine: str = "",
@@ -237,10 +276,10 @@ class ActionLog:
         self._conn.execute(
             """
             INSERT INTO demo_runs (
-                session_id, demo_id, product_id, platform, status,
+                session_id, demo_id, product_id, platform, status, origin,
                 host_os, host_release, host_machine, host_name, browser,
                 meeting_label, started_at, ended_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(session_id) DO UPDATE SET
                 demo_id=excluded.demo_id,
                 product_id=excluded.product_id,
@@ -255,12 +294,15 @@ class ActionLog:
                 started_at=excluded.started_at,
                 ended_at=excluded.ended_at
             """,
+            # origin is absent from DO UPDATE on purpose: a later status upsert
+            # must not be able to reclassify a billable live run as a test.
             (
                 str(session_id),
                 str(demo_id),
                 product_id,
                 platform,
                 status,
+                origin,
                 host_os,
                 host_release,
                 host_machine,
@@ -371,6 +413,7 @@ def _row_to_run(row: sqlite3.Row, fail_count: int) -> dict:
         "product_id": row["product_id"],
         "platform": row["platform"],
         "status": row["status"],
+        "origin": row["origin"],
         "host_os": row["host_os"],
         "host_release": row["host_release"],
         "host_machine": row["host_machine"],

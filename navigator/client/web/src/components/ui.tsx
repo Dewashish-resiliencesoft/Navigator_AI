@@ -9,11 +9,13 @@ export function Card({
   className,
   span,
   interactive = true,
+  onClick,
 }: {
   children: ReactNode;
   className?: string;
   span?: string;
   interactive?: boolean;
+  onClick?: () => void;
 }) {
   const mx = useMotionValue(-200);
   const my = useMotionValue(-200);
@@ -23,6 +25,7 @@ export function Card({
     <motion.section
       variants={rise}
       {...(interactive ? cardHover : {})}
+      onClick={onClick}
       onPointerMove={(e) => {
         const r = e.currentTarget.getBoundingClientRect();
         mx.set(e.clientX - r.left);
@@ -36,6 +39,7 @@ export function Card({
         "group relative overflow-hidden rounded-xl border p-5",
         "bg-white/60 dark:bg-white/[0.02] backdrop-blur-md",
         "shadow-[0_1px_2px_rgba(0,0,0,0.04)] hover:shadow-[0_12px_40px_-12px_rgba(0,0,0,0.25)]",
+        onClick && "cursor-pointer",
         span,
         className,
       )}
@@ -117,6 +121,7 @@ export function Button({
         "inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2",
         "text-[0.82rem] font-medium tracking-tight",
         "disabled:cursor-not-allowed",
+        "focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50 focus-visible:outline-none",
         variants[variant],
         className,
       )}
@@ -158,6 +163,7 @@ export function Input({
   required,
   autoComplete,
   name,
+  disabled,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -167,6 +173,7 @@ export function Input({
   required?: boolean;
   autoComplete?: string;
   name?: string;
+  disabled?: boolean;
 }) {
   return (
     <input
@@ -176,6 +183,7 @@ export function Input({
       placeholder={placeholder}
       required={required}
       autoComplete={autoComplete}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
       className={cn(fieldBase, className)}
       style={{ borderColor: "var(--line)" }}
@@ -189,12 +197,14 @@ export function Textarea({
   placeholder,
   rows = 4,
   mono,
+  className,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   rows?: number;
   mono?: boolean;
+  className?: string;
 }) {
   return (
     <textarea
@@ -202,7 +212,7 @@ export function Textarea({
       rows={rows}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
-      className={cn(fieldBase, "resize-y", mono && "font-mono text-[0.78rem]")}
+      className={cn(fieldBase, "resize-y", mono && "font-mono text-[0.78rem]", className)}
       style={{ borderColor: "var(--line)" }}
     />
   );
@@ -244,9 +254,15 @@ const dotTone: Record<string, string> = {
 
 export function StatusPill({ status, label }: { status: string; label?: string }) {
   const live = status === "running" || status === "starting" || status === "recording";
+  const desc = status === "starting" ? "Initializing and opening browser" :
+               status === "running" ? "Agent is driving the browser" :
+               status === "finished" ? "Demo completed normally" :
+               status === "failed" ? "Demo ended with an error" :
+               status === "recording" ? "Recording a new flow" : "Idle";
   return (
-    <div
-      className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[0.76rem] font-medium tracking-tight"
+    <Tooltip content={desc}>
+      <div
+        className="inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-[0.76rem] font-medium tracking-tight"
       style={{ borderColor: "var(--line)" }}
     >
       <span className="relative flex h-2 w-2">
@@ -262,7 +278,8 @@ export function StatusPill({ status, label }: { status: string; label?: string }
         />
       </span>
       {label ?? status}
-    </div>
+      </div>
+    </Tooltip>
   );
 }
 
@@ -293,5 +310,76 @@ export function BarLoader({ label }: { label?: string }) {
 export function Empty({ children }: { children: ReactNode }) {
   return (
     <p className="py-2 text-[0.82rem] text-[var(--muted)]">{children}</p>
+  );
+}
+
+import { useState } from "react";
+import { AnimatePresence } from "motion/react";
+
+export function Tooltip({ children, content }: { children: ReactNode, content: string }) {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="relative inline-block" onMouseEnter={() => setShow(true)} onMouseLeave={() => setShow(false)}>
+      {children}
+      <AnimatePresence>
+        {show && (
+          <motion.div
+            initial={{ opacity: 0, y: 5 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 5 }}
+            transition={{ duration: 0.15 }}
+            className="absolute bottom-full left-1/2 z-50 mb-2 w-max -translate-x-1/2 rounded-md bg-[var(--text)] px-2.5 py-1.5 text-[0.72rem] text-[var(--bg)] shadow-md"
+          >
+            {content}
+            <div className="absolute left-1/2 top-full -mt-[1px] h-0 w-0 -translate-x-1/2 border-[5px] border-transparent border-t-[var(--text)]" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </span>
+  );
+}
+
+export function ConfirmDialog({
+  title,
+  message,
+  onConfirm,
+  onCancel,
+  confirmLabel,
+  danger,
+}: {
+  title: string;
+  message: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+  confirmLabel?: string;
+  danger?: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        transition={soft}
+        className="w-full max-w-[400px] overflow-hidden rounded-xl border bg-[var(--panel)] shadow-xl"
+        style={{ borderColor: "var(--line)" }}
+      >
+        <div className="p-6">
+          <h3 className="mb-2 text-[1.1rem] font-semibold tracking-tight">{title}</h3>
+          <p className="text-[0.85rem] leading-relaxed text-[var(--muted)]">{message}</p>
+        </div>
+        <div
+          className="flex justify-end gap-2 border-t bg-black/[0.02] p-4 dark:bg-white/[0.02]"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <Button variant="ghost" onClick={onCancel}>
+            Cancel
+          </Button>
+          <Button variant={danger ? "danger" : "primary"} onClick={onConfirm}>
+            {confirmLabel ?? "Confirm"}
+          </Button>
+        </div>
+      </motion.div>
+    </div>
   );
 }

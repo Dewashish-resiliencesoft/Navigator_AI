@@ -15,6 +15,7 @@ def _handle(**kw) -> DemoHandle:
         product_id="acme",
         revision=1,
         session_id=uuid4(),
+        origin="public_embed",
         status="running",
         **kw,
     )
@@ -80,6 +81,7 @@ def test_live_worker_gets_stop_event_and_records_bot(site_graph):
         flow=(page_id, flow_id),
         meeting_url="https://meet.example/x",
         platform="google_meet",
+        origin="public_embed",
         run=fake_run,
     )
     runner.wait(handle.demo_id, timeout=5.0)
@@ -112,6 +114,7 @@ def test_live_worker_sets_bot_in_meeting_when_ready(site_graph):
         flow=(page_id, flow_id),
         meeting_url="https://meet.example/ready",
         platform="google_meet",
+        origin="public_embed",
         run=fake_run,
     )
     runner.wait(handle.demo_id, timeout=5.0)
@@ -138,6 +141,7 @@ def test_live_worker_bot_in_meeting_false_until_ready(site_graph):
         flow=(page_id, flow_id),
         meeting_url="https://meet.example/early",
         platform="google_meet",
+        origin="public_embed",
         run=fake_run,
     )
     runner.wait(handle.demo_id, timeout=5.0)

@@ -28,6 +28,7 @@ def test_start_live_persists_demo_run(tmp_path):
         (page_id, flow_id),
         meeting_url="https://meet.google.com/haw-cyyt-ynv?pwd=SECRET",
         platform="static",
+        origin="public_embed",
         run=fake_run,
     )
     runner.wait(handle.demo_id, timeout=10)

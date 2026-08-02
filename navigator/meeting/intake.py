@@ -47,6 +47,9 @@ _QUESTIONS: tuple[tuple[str, str, str], ...] = (
 
 
 def greet_line(persona: Persona, prospect_name: str = "") -> str:
+    from navigator.agent.speech_safety import prospect_facing_persona
+
+    persona = prospect_facing_persona(persona)
     who = prospect_name.strip() or "there"
     return (
         f"Hi {who}, I'm {persona.agent_name}. Thanks for joining — "
@@ -62,6 +65,9 @@ def name_ack_line(name: str) -> str:
 
 def solution_blurb(persona: Persona, looking_for: str) -> str:
     """Map prospect need → product angle (short, spoken)."""
+    from navigator.agent.speech_safety import prospect_facing_persona
+
+    persona = prospect_facing_persona(persona)
     need = (looking_for or "").lower()
     product = persona.product_name
     if any(k in need for k in ("inbox", "chat", "message", "reply", "conversation")):

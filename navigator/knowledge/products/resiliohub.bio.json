@@ -1,0 +1,89 @@
+{
+  "fields": [
+    {
+      "key": "company_name",
+      "label": "Company name",
+      "value": "Resiliencesoft"
+    },
+    {
+      "key": "owner",
+      "label": "Owner / leadership",
+      "value": ""
+    },
+    {
+      "key": "founded",
+      "label": "Founded year",
+      "value": ""
+    },
+    {
+      "key": "headquarters",
+      "label": "Headquarters",
+      "value": ""
+    },
+    {
+      "key": "team_size",
+      "label": "Team size",
+      "value": ""
+    },
+    {
+      "key": "website",
+      "label": "Website",
+      "value": ""
+    },
+    {
+      "key": "industry",
+      "label": "Industry",
+      "value": ""
+    },
+    {
+      "key": "products",
+      "label": "Products",
+      "value": "ResilioHub"
+    },
+    {
+      "key": "about",
+      "label": "What the company is about",
+      "value": ""
+    },
+    {
+      "key": "target_market",
+      "label": "Target market",
+      "value": ""
+    },
+    {
+      "key": "key_features",
+      "label": "Key features",
+      "value": ""
+    },
+    {
+      "key": "pricing_model",
+      "label": "Pricing model",
+      "value": ""
+    },
+    {
+      "key": "usp",
+      "label": "Unique selling proposition",
+      "value": ""
+    },
+    {
+      "key": "support_email",
+      "label": "Support contact",
+      "value": ""
+    },
+    {
+      "key": "social_links",
+      "label": "Social media links",
+      "value": ""
+    },
+    {
+      "key": "linkedin",
+      "label": "LinkedIn",
+      "value": ""
+    },
+    {
+      "key": "twitter",
+      "label": "Twitter / X",
+      "value": ""
+    }
+  ]
+}

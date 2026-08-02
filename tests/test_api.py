@@ -101,7 +101,9 @@ def register(client, name: str, yaml_text: str | None = None) -> dict:
     headers = {"Authorization": f"Token {body['api_key']}"}
     if yaml_text:
         up = client.put(
-            "/v1/products/site-graph", json={"yaml": yaml_text}, headers=headers
+            "/v1/products/site-graph",
+            json={"yaml": yaml_text, "publish": True},
+            headers=headers,
         )
         assert up.status_code == 201, up.text
     return {"id": body["product"]["product_id"], "headers": headers}
@@ -193,7 +195,11 @@ def test_uploads_are_versioned_and_rollback_works(client):
     p = register(client, "Acme Inbox", ACME)
     client.put(
         "/v1/products/site-graph",
-        json={"yaml": ACME.replace("version: 1", "version: 2"), "source": "sdk"},
+        json={
+            "yaml": ACME.replace("version: 1", "version: 2"),
+            "source": "sdk",
+            "publish": True,
+        },
         headers=p["headers"],
     )
     assert len(client.get("/v1/products/site-graph/revisions", headers=p["headers"]).json()) == 2

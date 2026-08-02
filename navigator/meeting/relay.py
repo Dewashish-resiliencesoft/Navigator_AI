@@ -130,13 +130,16 @@ function findMorphMeshes(obj) {
   obj.traverse(child => {
     if (!child.isMesh || !child.morphTargetDictionary) return;
     const name = (child.name || '').toLowerCase();
-    if (name.includes('head') || name.includes('face')) {
-      headMesh = child;
-      morphDict = child.morphTargetDictionary;
+    if (name.includes('wolf3d_head') || name === 'head' ||
+        name.includes('head') || name.includes('face')) {
+      // Prefer the named head mesh over a random morph mesh.
+      if (!headMesh || name.includes('wolf3d_head') || name.includes('head')) {
+        headMesh = child;
+        morphDict = child.morphTargetDictionary;
+      }
     }
     if (name.includes('teeth')) teethMesh = child;
   });
-  // Fallback: use first mesh with morph targets
   if (!headMesh) {
     obj.traverse(child => {
       if (child.isMesh && child.morphTargetDictionary && !headMesh) {
@@ -148,15 +151,20 @@ function findMorphMeshes(obj) {
 }
 
 function frameModel(obj) {
-  const box = new THREE.Box3().setFromObject(obj);
+  // Portrait crop: head (or whole model) fills the tile like a photo.
+  const target = headMesh || obj;
+  const box = new THREE.Box3().setFromObject(target);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   if (!isFinite(size.x) || size.x + size.y + size.z < 1e-4) return;
   const maxDim = Math.max(size.x, size.y, size.z);
+  camera.fov = 26;
+  camera.updateProjectionMatrix();
   const fov = camera.fov * Math.PI / 180;
-  const dist = (maxDim / (2 * Math.tan(fov / 2))) * 0.7;
-  camera.position.set(center.x, center.y + size.y * 0.08, center.z + Math.max(dist, 0.45));
-  camera.lookAt(center.x, center.y + size.y * 0.12, center.z);
+  // Closer than full-body — shoulders-up portrait.
+  const dist = (maxDim / (2 * Math.tan(fov / 2))) * (headMesh ? 1.35 : 0.75);
+  camera.position.set(center.x, center.y + size.y * 0.02, center.z + Math.max(dist, 0.35));
+  camera.lookAt(center.x, center.y + size.y * 0.05, center.z);
 }
 
 try {
@@ -169,6 +177,8 @@ try {
       frameModel(model);
       if (!headMesh) {
         console.warn('No ARKit morph targets — showing static 3D avatar (no lip sync)');
+      } else {
+        console.log('Lip sync ready — morphs:', Object.keys(morphDict).length);
       }
     },
     undefined,
@@ -237,20 +247,23 @@ function animate() {
     if (avatarState === 'speaking') {
       if (headMesh) {
         visemeTimer += dt;
-        if (visemeTimer > 0.08 + Math.random() * 0.12) {
+        if (visemeTimer > 0.07 + Math.random() * 0.1) {
           visemeTimer = 0;
           visemeIdx = (visemeIdx + 1) % VISEMES.length;
         }
         for (const v of VISEMES) {
           const isActive = v === VISEMES[visemeIdx];
-          const targetVal = isActive ? 0.3 + Math.random() * 0.4 : 0;
-          setMorph(v, targetVal, 0.25);
+          const targetVal = isActive ? 0.45 + Math.random() * 0.45 : 0;
+          setMorph(v, targetVal, 0.35);
         }
-        setMorph('jawOpen', 0.15 + Math.random() * 0.25, 0.2);
+        // Strong jaw so lip motion reads on a Meet thumbnail.
+        setMorph('jawOpen', 0.28 + Math.random() * 0.42, 0.35);
+        setMorph('mouthClose', 0, 0.3);
       }
-      model.rotation.y = Math.sin(clock.elapsedTime * 0.8) * 0.03;
-      model.rotation.x = Math.sin(clock.elapsedTime * 0.5) * 0.01;
-      model.position.y = Math.sin(clock.elapsedTime * 4) * 0.004;
+      // Subtle head nod / sway synced to speech cadence.
+      model.rotation.y = Math.sin(clock.elapsedTime * 2.4) * 0.06;
+      model.rotation.x = Math.sin(clock.elapsedTime * 1.7) * 0.03;
+      model.position.y = Math.sin(clock.elapsedTime * 5.5) * 0.006;
     } else if (avatarState === 'listening') {
       resetMorphs(0.08);
       setMorph('browInnerUp', 0.2, 0.1);

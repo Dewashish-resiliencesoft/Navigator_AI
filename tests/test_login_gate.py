@@ -83,7 +83,8 @@ def test_login_gate_retries_then_ok():
     assert result == LoginGateResult.ok
     assert attempts["n"] == 2
     assert LOGIN_RETRY_LINE in speaker.said[0]
-    assert attendee.chats[0] == speaker.said[0]
+    # Voice only — never mirror into Meet chat.
+    assert attendee.chats == []
 
 
 def test_login_gate_double_fail_apology():
@@ -104,4 +105,4 @@ def test_login_gate_double_fail_apology():
     assert result == LoginGateResult.failed
     assert any(LOGIN_RETRY_LINE in s for s in speaker.said)
     assert any(LOGIN_APOLOGY in s for s in speaker.said)
-    assert LOGIN_APOLOGY in attendee.chats[-1]
+    assert attendee.chats == []

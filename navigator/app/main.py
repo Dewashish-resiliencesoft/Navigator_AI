@@ -33,6 +33,7 @@ from navigator.client.dashboard import (
 )
 from navigator.client.content import (
     apply_playlist_to_yaml,
+    begin_capture,
     merge_recorded_flow,
     playlist_from_graph,
     recorder_status,
@@ -52,7 +53,12 @@ from navigator.app.registry import (
     SiteGraphRevision,
     SiteGraphSource,
 )
-from navigator.app.runner import DemoRunner
+from navigator.app.credential_vault import (
+    CredentialVault,
+    CredentialVaultError,
+    VaultNotConfigured,
+)
+from navigator.app.runner import DemoOrigin, DemoRunner
 
 import jwt
 import bcrypt
@@ -118,6 +124,11 @@ def get_auth_store() -> AuthStore:
 
 _runner = DemoRunner(str(settings.db_path), headful=settings.headful)
 
+_vault = CredentialVault(settings.credential_db_path)
+
+def get_vault() -> CredentialVault:
+    return _vault
+
 
 def authed(
     registry: Annotated[Registry, Depends(get_registry)],
@@ -173,9 +184,15 @@ def authed_or_session(
     store: Annotated[SessionTokenStore, Depends(get_token_store)],
     authorization: Annotated[str | None, Header()] = None,
 ) -> tuple[Product, IntakePrefill | None]:
+    """Auth for the live-demo path: the Client's server key, or an embed token.
+
+    Both credentials mean a LIVE demo. A dashboard JWT is deliberately not
+    accepted here -- a Client's own test run must go through the dashboard route
+    so it is never counted as live traffic. See docs/PRODUCT_MODEL.md.
+    """
     if not authorization or not authorization.lower().startswith("token "):
         raise HTTPException(401, "expected: Authorization: Token <key_or_token>")
-    
+
     token = authorization.split(None, 1)[1].strip()
     if token.startswith("nav_"):
         try:
@@ -197,6 +214,7 @@ def authed_or_session(
 
 AuthedOrSession = Annotated[tuple[Product, IntakePrefill | None], Depends(authed_or_session)]
 Reg = Annotated[Registry, Depends(get_registry)]
+Vault = Annotated[CredentialVault, Depends(get_vault)]
 Runner = Annotated[DemoRunner, Depends(get_runner)]
 Log = Annotated[ActionLog, Depends(get_log)]
 Providers = Annotated[
@@ -205,12 +223,26 @@ Providers = Annotated[
 ]
 
 
+def _reject_login_in_yaml(product_id: str, yaml_text: str, vault: CredentialVault) -> None:
+    """Save/activate gate: login steps belong in Product Login, not in flows."""
+    from navigator.automation.login_match import LoginConfig, assert_no_login_in_graph
+
+    graph = parse_site_graph(yaml_text, origin=f"product {product_id}")
+    assert_no_login_in_graph(
+        graph,
+        LoginConfig(login_url=vault.login_url(product_id)),
+        include_login_in_default_flow=vault.include_login_in_default_flow(product_id),
+    )
+
+
 # -- request/response bodies --------------------------------------------------
 
 
 class SiteGraphUpload(BaseModel):
     yaml: str = Field(min_length=1)
     source: SiteGraphSource = "yaml"
+    publish: bool = False
+    """Default false: an upload is a draft until the Client publishes it."""
 
 
 class NewDemo(BaseModel):
@@ -226,6 +258,7 @@ class DemoView(BaseModel):
     product_id: str
     revision: int
     session_id: UUID
+    origin: DemoOrigin
     status: str
     page_id: str
     actions: int
@@ -245,6 +278,7 @@ class DemoRunView(BaseModel):
     product_id: str
     platform: str
     status: str
+    origin: DemoOrigin = "dashboard_test"
     host_os: str = ""
     host_release: str = ""
     host_machine: str = ""
@@ -333,7 +367,9 @@ def signup(
 
     product_id = registered.product.product_id
     try:
-        registry.put_site_graph(product_id, _BLANK_CLIENT_GRAPH, "yaml")
+        # A brand-new tenant has nothing live to protect, and needs a published
+        # revision to exist at all before they can run anything.
+        registry.put_site_graph(product_id, _BLANK_CLIENT_GRAPH, "yaml", publish=True)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(500, f"could not seed site graph: {exc}") from None
 
@@ -418,6 +454,8 @@ class StartLiveDemo(BaseModel):
     flow_id: str | None = None
     """None -> NAVIGATOR_LIVE_WALKTHROUGH_FLOW."""
     intake: IntakePrefill | None = None
+    auto_play: bool = True
+    """When True, finish one playlist flow then continue to the next."""
 
 
 class MeetingOut(BaseModel):
@@ -456,17 +494,22 @@ def whoami(product: AuthedProduct) -> Product:
 
 @app.put("/v1/products/site-graph", response_model=SiteGraphRevision, status_code=201)
 def upload_site_graph(
-    upload: SiteGraphUpload, product: AuthedProduct, registry: Reg
+    upload: SiteGraphUpload, product: AuthedProduct, registry: Reg, vault: Vault
 ) -> SiteGraphRevision:
-    """Validate and store a new site graph revision, and make it active.
+    """Validate and store a new site graph revision as a draft.
+
+    An upload does not go live on its own: pass `publish: true`, or call
+    POST /v1/products/site-graph/activate afterwards. Pushing a graph must not
+    change what End Users see mid-edit.
 
     Validation runs before anything is written, so a rejected upload cannot break
     a live demo. The error text is identical to what the file loader produces --
     there is one validator in the system, deliberately.
     """
     try:
+        _reject_login_in_yaml(product.product_id, upload.yaml, vault)
         return registry.put_site_graph(
-            product.product_id, upload.yaml, upload.source
+            product.product_id, upload.yaml, upload.source, publish=upload.publish
         )
     except SiteGraphError as exc:
         raise HTTPException(422, str(exc)) from None
@@ -493,13 +536,18 @@ def list_revisions(product: AuthedProduct, registry: Reg) -> list[SiteGraphRevis
 def activate_revision(
     product: AuthedProduct,
     registry: Reg,
+    vault: Vault,
     revision: Annotated[int, Body(embed=True)],
 ) -> Product:
     """Roll back to an earlier revision."""
     try:
+        rev = registry.get_revision(product.product_id, revision)
+        _reject_login_in_yaml(product.product_id, rev.yaml, vault)
         return registry.activate(product.product_id, revision)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
 
 
 @app.get("/v1/products/flows")
@@ -519,10 +567,15 @@ def list_flows(product: AuthedProduct, registry: Reg) -> dict[str, list[str]]:
 def start_demo(
     spec: NewDemo, product: AuthedProduct, registry: Reg, runner: Runner
 ) -> DemoView:
-    """Start a demo. Returns immediately; poll GET /v1/demos/{id} for progress."""
+    """Start a headless demo. Returns immediately; poll GET /v1/demos/{id}.
+
+    No meeting and no End User: this is a Client verifying a flow (what
+    `navigator verify` drives), so it is a test demo and runs their latest
+    revision, draft included.
+    """
     try:
-        graph = registry.load_graph(product.product_id)
-        revision = product.active_revision or 0
+        revision = registry.latest_revision(product.product_id).revision
+        graph = registry.load_graph(product.product_id, revision)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
 
@@ -532,7 +585,11 @@ def start_demo(
         raise HTTPException(422, str(exc)) from None
 
     handle = runner.start(
-        product.product_id, graph, revision, (spec.page_id, spec.flow_id)
+        product.product_id,
+        graph,
+        revision,
+        (spec.page_id, spec.flow_id),
+        origin="dashboard_test",
     )
     return DemoView(**handle.public())
 
@@ -567,8 +624,32 @@ def start_live_demo(
     runner: Runner,
     providers: Providers,
 ) -> LiveDemoView:
-    product, token_intake = auth_ctx
+    """A LIVE demo: an End User on the Client's landing page. Billable.
 
+    Runs the Client's published revision only. See _run_live_demo.
+    """
+    product, token_intake = auth_ctx
+    return _run_live_demo(
+        spec,
+        product,
+        token_intake,
+        registry,
+        runner,
+        providers,
+        origin="public_embed",
+    )
+
+
+def _run_live_demo(
+    spec: StartLiveDemo,
+    product: Product,
+    token_intake: IntakePrefill | None,
+    registry: Registry,
+    runner: DemoRunner,
+    providers: Callable[[MeetingPlatform | None], MeetingProvider],
+    *,
+    origin: DemoOrigin,
+) -> LiveDemoView:
     """Create a meeting for *this* session and put Navigator in it, now.
 
     The meeting is instant, not scheduled: it exists and is joinable the moment
@@ -580,10 +661,19 @@ def start_live_demo(
     Ordering is deliberate: the graph is loaded and the flow validated *before*
     any meeting is created, so a bad request never leaves an orphaned meeting
     behind.
+
+    Revision resolution is the boundary that matters here. A live demo runs the
+    published revision and nothing else, so an End User can never be shown a
+    half-finished draft the Client is still editing. A dashboard test demo runs
+    the Client's latest revision, draft included -- validating a draft before
+    publishing is the entire point of a test demo.
     """
     try:
-        graph = registry.load_graph(product.product_id)
-        revision = product.active_revision or 0
+        if origin == "public_embed":
+            revision = registry.published_revision(product.product_id)
+        else:
+            revision = registry.latest_revision(product.product_id).revision
+        graph = registry.load_graph(product.product_id, revision)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
 
@@ -611,11 +701,34 @@ def start_live_demo(
         raise HTTPException(502, f"could not create meeting: {exc}") from None
 
     if not meeting.open_access:
+        if origin == "public_embed":
+            # End Users cannot admit a bot from a waiting room.
+            raise HTTPException(
+                422,
+                "This meeting link is not open-access: Navigator would wait in the "
+                "lobby for a host that never comes. Use platform 'google_meet' "
+                "(creates a new open Meet space) or 'zoom' (Navigator joins as "
+                "Zoom host via ZAK).",
+            )
+        # Dashboard test + static: Client is the host. Navigator joins as guest;
+        # Client opens the link and admits the bot (admit-flow, not bot-first).
         print(
-            f"[api] {meeting.platform} link {meeting.url} is not open-access; "
-            "Navigator may wait to be admitted.",
+            f"[api] dashboard_test static link {meeting.url} — "
+            "admit-flow (you are host; admit Navigator when Meet asks)",
             flush=True,
         )
+
+    live_kw: dict = {
+        "intake_prefill": (
+            (token_intake or spec.intake).model_dump()
+            if (token_intake or spec.intake)
+            else None
+        ),
+        "auto_play": bool(spec.auto_play),
+    }
+    if not meeting.open_access and origin == "dashboard_test":
+        live_kw["bot_first"] = False
+        live_kw["open_meet_in_browser"] = True
 
     handle = runner.start_live(
         product.product_id,
@@ -624,7 +737,8 @@ def start_live_demo(
         (page_id, flow_id),
         meeting_url=meeting.url,
         platform=meeting.platform,
-        intake_prefill=(token_intake or spec.intake).model_dump() if (token_intake or spec.intake) else None,
+        origin=origin,
+        **live_kw,
     )
     return LiveDemoView(**handle.public(), meeting=MeetingOut(**meeting.public()))
 
@@ -664,6 +778,7 @@ def end_demo(
         product_id=product.product_id,
         revision=0,
         session_id=UUID(row["session_id"]),
+        origin=row["origin"],
         status="finished",
         page_id="",
         actions=0,
@@ -807,37 +922,6 @@ def healthz() -> dict[str, str]:
 # -- client dashboard (tenant companies) ---------------------------------------------------
 
 
-def _client_product(registry: Registry) -> Product:
-    key = resolve_client_api_key(settings.client_api_key)
-    if not key:
-        products = registry.list_products()
-        if len(products) == 1:
-            key = registry.rotate_api_key(products[0].product_id)
-            settings.client_api_key = key
-            persist_client_key(key)
-        else:
-            raise HTTPException(
-                503,
-                "set NAVIGATOR_CLIENT_API_KEY to your product API key "
-                "(from POST /v1/products or /client bootstrap)",
-            )
-    if not (settings.client_api_key or "").strip():
-        settings.client_api_key = key
-    try:
-        return registry.authenticate(key)
-    except ProductNotFound as exc:
-        products = registry.list_products()
-        if len(products) == 1:
-            key = registry.rotate_api_key(products[0].product_id)
-            settings.client_api_key = key
-            persist_client_key(key)
-            return products[0]
-        raise HTTPException(
-            503,
-            "NAVIGATOR_CLIENT_API_KEY is invalid — open /client to bootstrap again",
-        ) from exc
-
-
 @app.get("/client", response_class=HTMLResponse)
 def client_console(request: Request) -> HTMLResponse:
     require_local_ops(request)
@@ -862,7 +946,14 @@ def client_start_live_demo(
     runner: Runner,
     providers: Providers,
 ) -> LiveDemoView:
-    return start_live_demo(spec, (product, None), registry, runner, providers)
+    """A TEST demo: the Client checking their own setup. Not billable.
+
+    JWT-only, so an End User cannot reach it, and it runs the Client's latest
+    revision (draft included) rather than the published one.
+    """
+    return _run_live_demo(
+        spec, product, None, registry, runner, providers, origin="dashboard_test"
+    )
 
 
 @app.get("/client/api/demos", response_model=list[DemoView])
@@ -887,8 +978,8 @@ version: 1
 site: client
 base_url: https://example.com/
 persona:
-  product_name: Your Product
-  one_liner: Configure this in the client dashboard
+  product_name: your product
+  one_liner: ""
   agent_name: Navigator AI
   tone: friendly, clear, concise
 demo_playlist:
@@ -960,7 +1051,9 @@ def client_bootstrap(request: Request, registry: Reg) -> dict:
     except RegistryError as exc:
         raise HTTPException(409, str(exc)) from None
 
-    registry.put_site_graph(registered.product.product_id, yaml_text, "yaml")
+    registry.put_site_graph(
+        registered.product.product_id, yaml_text, "yaml", publish=True
+    )
     settings.client_api_key = registered.api_key
     persist_client_key(registered.api_key)
     return {
@@ -988,10 +1081,51 @@ def apply_base_url_to_yaml(yaml_text: str, base_url: str) -> str:
 class ProductDomainBody(BaseModel):
     base_url: str = Field(min_length=1)
 
+
+class ProductLoginBody(BaseModel):
+    login_url: str = ""
+    username: str = ""
+    #: None = keep stored password; "" = clear; str = replace.
+    password: str | None = None
+    include_login_in_default_flow: bool = False
+
+
+@app.get("/client/api/product-login")
+def client_get_product_login(product: DashboardAuthedProduct, vault: Vault) -> dict:
+    """Public shape only — never the plaintext password."""
+    return vault.public(product.product_id)
+
+
+@app.put("/client/api/product-login")
+def client_put_product_login(
+    product: DashboardAuthedProduct, body: ProductLoginBody, vault: Vault
+) -> dict:
+    try:
+        vault.put(
+            product.product_id,
+            login_url=body.login_url,
+            username=body.username,
+            password=body.password,
+            include_login_in_default_flow=body.include_login_in_default_flow,
+        )
+    except VaultNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from None
+    except CredentialVaultError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True, **vault.public(product.product_id)}
+
+
+@app.delete("/client/api/product-login")
+def client_delete_product_login(product: DashboardAuthedProduct, vault: Vault) -> dict:
+    vault.delete(product.product_id)
+    return {"ok": True, **vault.public(product.product_id)}
+
+
 @app.get("/client/api/product-domain")
 def client_get_product_domain(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    # Latest, not published: the dashboard edits drafts.
     try:
-        graph = registry.load_graph(product.product_id)
+        graph = parse_site_graph(registry.latest_revision(product.product_id).yaml)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
     return {
@@ -1012,10 +1146,12 @@ def client_put_product_domain(
         parsed = urlparse(body.base_url)
     normalized = f"{parsed.scheme}://{parsed.netloc}/"
     try:
-        rev = registry.get_revision(product.product_id)
+        rev = registry.latest_revision(product.product_id)
         yaml_text = apply_base_url_to_yaml(rev.yaml, normalized)
-        rev = registry.put_site_graph(product.product_id, yaml_text, "yaml")
-        graph = registry.load_graph(product.product_id)
+        rev = registry.put_site_graph(
+            product.product_id, yaml_text, "yaml", publish=False
+        )
+        graph = parse_site_graph(rev.yaml)
         settings.product_url = normalized
     except Exception as exc:
         raise HTTPException(422, str(exc)) from None
@@ -1023,6 +1159,7 @@ def client_put_product_domain(
         "ok": True,
         "base_url": graph.base_url,
         "revision": rev.revision,
+        "published": rev.published,
         "placeholder": "example.com" in (graph.base_url or "").lower(),
     }
 
@@ -1047,11 +1184,18 @@ class RecordStartBody(BaseModel):
 
 @app.get("/client/api/site-graph")
 def client_get_site_graph(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    """The revision the Client is editing -- the latest, draft or published."""
     try:
-        rev = registry.get_revision(product.product_id)
+        rev = registry.latest_revision(product.product_id)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
-    return {"yaml": rev.yaml, "revision": rev.revision, "site": rev.site}
+    return {
+        "yaml": rev.yaml,
+        "revision": rev.revision,
+        "site": rev.site,
+        "published": rev.published,
+        "published_revision": product.active_revision,
+    }
 
 
 class SiteGraphBody(BaseModel):
@@ -1059,12 +1203,43 @@ class SiteGraphBody(BaseModel):
 
 
 @app.put("/client/api/site-graph")
-def client_put_site_graph(product: DashboardAuthedProduct, body: SiteGraphBody, registry: Reg) -> dict:
+def client_put_site_graph(
+    product: DashboardAuthedProduct, body: SiteGraphBody, registry: Reg, vault: Vault
+) -> dict:
+    """Save as a draft. End Users keep the published revision until publish."""
     try:
-        rev = registry.put_site_graph(product.product_id, body.yaml, "yaml")
+        _reject_login_in_yaml(product.product_id, body.yaml, vault)
+        rev = registry.put_site_graph(
+            product.product_id, body.yaml, "yaml", publish=False
+        )
     except SiteGraphError as exc:
         raise HTTPException(422, str(exc)) from None
-    return {"ok": True, "revision": rev.revision, "site": rev.site}
+    return {
+        "ok": True,
+        "revision": rev.revision,
+        "site": rev.site,
+        "published": False,
+    }
+
+
+@app.post("/client/api/site-graph/publish")
+def client_publish_site_graph(
+    product: DashboardAuthedProduct,
+    registry: Reg,
+    vault: Vault,
+    revision: Annotated[int | None, Body(embed=True)] = None,
+) -> dict:
+    """Make a revision live for End Users. Defaults to the latest draft."""
+    try:
+        target = revision or registry.latest_revision(product.product_id).revision
+        rev = registry.get_revision(product.product_id, target)
+        _reject_login_in_yaml(product.product_id, rev.yaml, vault)
+        updated = registry.activate(product.product_id, target)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True, "published_revision": updated.active_revision}
 
 
 @app.get("/client/api/bio")
@@ -1120,7 +1295,7 @@ def client_put_knowledge(product: DashboardAuthedProduct, body: KnowledgeBody, r
 @app.get("/client/api/flows")
 def client_get_flows(product: DashboardAuthedProduct, registry: Reg) -> dict:
     try:
-        graph = registry.load_graph(product.product_id)
+        graph = parse_site_graph(registry.latest_revision(product.product_id).yaml)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
     return {"playlist": playlist_from_graph(graph), "site": graph.site}
@@ -1129,35 +1304,45 @@ def client_get_flows(product: DashboardAuthedProduct, registry: Reg) -> dict:
 @app.put("/client/api/flows")
 def client_put_flows(product: DashboardAuthedProduct, body: FlowsBody, registry: Reg) -> dict:
     try:
-        rev = registry.get_revision(product.product_id)
+        rev = registry.latest_revision(product.product_id)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
     try:
         new_yaml = apply_playlist_to_yaml(rev.yaml, body.playlist)
-        registry.put_site_graph(product.product_id, new_yaml, "yaml")
+        rev = registry.put_site_graph(
+            product.product_id, new_yaml, "yaml", publish=False
+        )
         graph = parse_site_graph(new_yaml)
     except SiteGraphError as exc:
         raise HTTPException(422, str(exc)) from None
-    return {"playlist": playlist_from_graph(graph)}
+    return {
+        "playlist": playlist_from_graph(graph),
+        "revision": rev.revision,
+        "published": False,
+    }
 
 
 @app.get("/client/api/record")
-def client_record_status(request: Request, registry: Reg) -> dict:
-    _client_product(registry)
+def client_record_status(product: DashboardAuthedProduct) -> dict:
     return recorder_status()
 
 
 @app.post("/client/api/record/start")
 def client_record_start(
-    request: Request, body: RecordStartBody, registry: Reg
+    product: DashboardAuthedProduct, body: RecordStartBody, vault: Vault
 ) -> dict:
-    _client_product(registry)
+    from navigator.automation.login_match import LoginConfig
+
+    def _live_login_config() -> LoginConfig:
+        return LoginConfig(login_url=vault.login_url(product.product_id))
+
     try:
         job = start_recorder(
             start_url=body.start_url.strip(),
             flow_name=body.flow_name.strip(),
             flow_id=(body.flow_id or None),
             headful=settings.headful,
+            login_config_fn=_live_login_config,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
@@ -1166,13 +1351,32 @@ def client_record_start(
         "flow_id": job.flow_id,
         "flow_name": job.flow_name,
         "active": True,
+        "phase": job.phase,
+    }
+
+
+@app.post("/client/api/record/capture")
+def client_record_capture(product: DashboardAuthedProduct) -> dict:
+    """Leave Setup: from now on, clicks become flow content."""
+    try:
+        job = begin_capture()
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return {
+        "ok": True,
+        "phase": job.phase,
+        "setup_discarded": job.setup_discarded
+        if job.gate is None
+        else job.gate.setup_discarded,
+        "steps": len(job.steps),
     }
 
 
 @app.post("/client/api/record/stop")
 def client_record_stop(
-    request: Request,
+    product: DashboardAuthedProduct,
     registry: Reg,
+    vault: Vault,
     page_id: Annotated[str, Query()] = "dashboard",
 ) -> dict:
     try:
@@ -1180,7 +1384,7 @@ def client_record_stop(
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
     try:
-        rev = registry.get_revision(product.product_id)
+        rev = registry.latest_revision(product.product_id)
         persona = parse_site_graph(rev.yaml).effective_persona()
         new_yaml = merge_recorded_flow(
             rev.yaml,
@@ -1191,7 +1395,10 @@ def client_record_stop(
             product_name=persona.product_name,
             base_url=recording_base_url(job.start_url),
         )
-        registry.put_site_graph(product.product_id, new_yaml, "yaml")
+        _reject_login_in_yaml(product.product_id, new_yaml, vault)
+        rev = registry.put_site_graph(
+            product.product_id, new_yaml, "recorded", publish=False
+        )
         graph = parse_site_graph(new_yaml)
         playlist = playlist_from_graph(graph)
     except SiteGraphError as exc:
@@ -1202,6 +1409,11 @@ def client_record_stop(
         "error": job.error,
         "flow_id": job.flow_id,
         "playlist": playlist,
+        "revision": rev.revision,
+        "published": False,
+        "flagged": list(getattr(job, "flagged", []) or []),
+        "setup_discarded": int(getattr(job, "setup_discarded", 0) or 0),
+        "phase": getattr(job, "phase", "done"),
     }
 
 

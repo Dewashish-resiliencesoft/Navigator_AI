@@ -6,7 +6,7 @@
 // 1. Add this script to your HTML:
 //    <script src="navigator.js" data-token="sess_YOUR_SESSION_TOKEN_HERE"></script>
 //
-// 2. The script will render a "Show Demo" button.
+// 2. The script will render a "Start a demo" button.
 // 3. When clicked, it will call the Navigator AI backend to start a live demo
 //    and automatically redirect the user to the generated meeting URL.
 
@@ -29,7 +29,7 @@
     container.style.zIndex = '999999';
 
     const btn = document.createElement('button');
-    btn.innerText = 'Show Demo';
+    btn.innerText = 'Start a demo';
     btn.style.padding = '12px 24px';
     btn.style.backgroundColor = '#0055FF';
     btn.style.color = '#FFF';
@@ -40,7 +40,7 @@
     btn.style.boxShadow = '0 4px 6px rgba(0,0,0,0.1)';
 
     btn.onclick = async function() {
-        btn.innerText = 'Starting Demo...';
+        btn.innerText = 'Starting…';
         btn.disabled = true;
 
         try {
@@ -69,7 +69,7 @@
         } catch (err) {
             console.error("Navigator AI Error:", err);
             alert("Failed to start the demo. Please try again later.");
-            btn.innerText = 'Show Demo';
+            btn.innerText = 'Start a demo';
             btn.disabled = false;
         }
     };

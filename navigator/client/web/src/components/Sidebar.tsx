@@ -51,16 +51,16 @@ export function Sidebar({ onLogout }: { onLogout?: () => void }) {
               onClick={() => setTab(id)}
               className={cn(
                 "relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left",
-                "text-[0.83rem] font-medium tracking-tight",
-                active ? "text-[var(--text)]" : "text-[var(--muted)] hover:text-[var(--text)]",
+                "text-[0.83rem] font-medium tracking-tight transition-colors",
+                active ? "text-[var(--text)]" : "text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--text)] dark:hover:bg-white/[0.06]",
               )}
             >
               {active && (
                 <motion.span
                   layoutId="nav-capsule"
                   transition={soft}
-                  className="absolute inset-0 rounded-lg border bg-black/[0.045] dark:bg-white/[0.07]"
-                  style={{ borderColor: "var(--line)" }}
+                  className="absolute inset-0 rounded-lg border border-l-[3px] border-l-[var(--accent)] bg-black/[0.045] dark:bg-white/[0.07]"
+                  style={{ borderColor: "var(--line)", borderLeftColor: "var(--accent)" }}
                 />
               )}
               <Icon size={15} strokeWidth={1.9} className="relative shrink-0" />
@@ -82,7 +82,7 @@ export function Sidebar({ onLogout }: { onLogout?: () => void }) {
           </button>
         )}
         <p className="text-[0.68rem] leading-relaxed text-[var(--muted)]">
-          Loopback only. Bound to localhost.
+          Powered by Resiliencesoft
         </p>
       </div>
     </aside>

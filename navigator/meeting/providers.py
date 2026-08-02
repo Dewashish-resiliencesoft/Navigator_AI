@@ -286,10 +286,10 @@ class ZoomProvider:
                 # got: the meeting starts now or it is useless.
                 "type": 1,
                 "settings": {
-                    # Guests can enter while Navigator finishes ZAK host join.
-                    # Still prefer bot-first UX; avoids forever "waiting for host"
-                    # if Attendee is slow. Host privileges still via ZAK.
-                    "join_before_host": True,
+                    # Host-first: Navigator starts the room via ZAK. Guests wait
+                    # until the bot is host — if ZAK fails they would both hang
+                    # forever with join_before_host=True and no host present.
+                    "join_before_host": False,
                     "waiting_room": False,
                     "approval_type": 2,  # no registration
                 },

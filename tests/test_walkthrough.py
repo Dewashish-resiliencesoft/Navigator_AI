@@ -60,6 +60,7 @@ def test_planning_walkthrough_exhausted_asks_anything_else(
     state["walkthrough_flow_id"] = "send_test_message"
     state["walkthrough_step"] = flow_len
     state["transcript"] = []
+    state["auto_play"] = False
 
     deps = _walkthrough_deps(
         site_graph,
@@ -72,6 +73,100 @@ def test_planning_walkthrough_exhausted_asks_anything_else(
     assert out["phase"] == "anything_else"
     assert out["pending_calls"] == []
     assert ANYTHING_ELSE in out["narration"][0]
+
+
+_PLAYLIST_GRAPH = """
+version: 1
+site: acme
+base_url: https://example.com/
+persona:
+  product_name: Acme
+  one_liner: test
+pages:
+  main:
+    name: Main
+    url: /
+    selectors:
+      body: body
+    flows:
+      first:
+        - tool: navigate
+          page_id: main
+          expects: {check: visible, selector: body}
+      second:
+        - tool: navigate
+          page_id: main
+          expects: {check: visible, selector: body}
+demo_playlist:
+  - order: 1
+    name: First
+    page_id: main
+    flow_id: first
+  - order: 2
+    name: Second
+    page_id: main
+    flow_id: second
+"""
+
+
+def test_auto_play_advances_to_next_playlist_flow(log, tmp_path, state):
+    from navigator.knowledge.site_graph import parse_site_graph
+
+    graph = parse_site_graph(_PLAYLIST_GRAPH)
+    state["phase"] = "walkthrough"
+    state["page_id"] = "main"
+    state["walkthrough_page_id"] = "main"
+    state["walkthrough_flow_id"] = "first"
+    state["walkthrough_step"] = 1  # exhausted first (1 step)
+    state["transcript"] = []
+    state["auto_play"] = True
+
+    deps = CallDeps(
+        graph=graph,
+        page=None,
+        log=log,
+        speaker=PrintSpeaker(),
+        scripted_flow=None,
+        product_id="acme",
+        archive_dir=tmp_path / "archives",
+        chroma_path=tmp_path / "chroma",
+        groq_api_key=None,
+        choose_flow=lambda **k: (_ for _ in ()).throw(AssertionError("no chooser")),
+    )
+    out = planning(state, deps)
+    assert out.get("phase") == "walkthrough"
+    assert out["walkthrough_flow_id"] == "second"
+    assert out["walkthrough_step"] == 1
+    assert len(out["pending_calls"]) == 1
+
+
+def test_auto_play_off_stops_at_flow_end(log, tmp_path, state):
+    from navigator.knowledge.site_graph import parse_site_graph
+
+    graph = parse_site_graph(_PLAYLIST_GRAPH)
+    state["phase"] = "walkthrough"
+    state["page_id"] = "main"
+    state["walkthrough_page_id"] = "main"
+    state["walkthrough_flow_id"] = "first"
+    state["walkthrough_step"] = 1
+    state["transcript"] = []
+    state["auto_play"] = False
+
+    deps = CallDeps(
+        graph=graph,
+        page=None,
+        log=log,
+        speaker=PrintSpeaker(),
+        scripted_flow=None,
+        product_id="acme",
+        archive_dir=tmp_path / "archives",
+        chroma_path=tmp_path / "chroma",
+        groq_api_key=None,
+        choose_flow=lambda **k: (_ for _ in ()).throw(AssertionError("no chooser")),
+    )
+    out = planning(state, deps)
+    assert out["phase"] == "anything_else"
+    assert out["pending_calls"] == []
 
 
 def test_interrupt_keeps_walkthrough_step(site_graph, page, log, tmp_path, state):

@@ -29,6 +29,16 @@ class ParticipantWaitStopped(Exception):
     """stop_event was set while waiting for a human join."""
 
 
+def _is_join_event(event_type: str) -> bool:
+    t = (event_type or "").lower()
+    return t in {"join", "joined", "participant_join", "participant_joined"}
+
+
+def _is_leave_event(event_type: str) -> bool:
+    t = (event_type or "").lower()
+    return t in {"leave", "left", "participant_leave", "participant_left"}
+
+
 @dataclass
 class Bot:
     id: str
@@ -211,7 +221,7 @@ class AttendeeClient:
             if stop_event is not None and stop_event.is_set():
                 raise ParticipantWaitStopped("ended by operator")
             for ev in self.participant_events(bot_id):
-                if ev.event_type.lower() not in {"join", "joined"}:
+                if not _is_join_event(ev.event_type):
                     continue
                 key = ev.name or "participant"
                 if key in seen_joins:
@@ -222,6 +232,35 @@ class AttendeeClient:
         raise TimeoutError(
             f"no human joined Meet within {timeout_s}s (bot {bot_id})"
         )
+
+    def human_has_left(
+        self,
+        bot_id: str,
+        *,
+        human_name: str,
+        bot_names: frozenset[str] | None = None,
+    ) -> bool:
+        """True once the joined human's leave event is seen (event log)."""
+        want = (human_name or "").strip().lower()
+        bots = {n.lower() for n in (bot_names or frozenset())}
+        bots.update({"navigator", "navigator ai", "attendee"})
+        present: dict[str, bool] = {}
+        for ev in self.participant_events(bot_id):
+            name = (ev.name or "").strip()
+            if not name:
+                continue
+            low = name.lower()
+            if low in bots:
+                continue
+            if _is_join_event(ev.event_type):
+                present[low] = True
+            elif _is_leave_event(ev.event_type):
+                present[low] = False
+        if want and want in present:
+            return present[want] is False
+        # Fallback: every tracked human has left (or none remain in).
+        humans = [v for k, v in present.items() if k not in bots]
+        return bool(humans) and not any(humans)
 
     def speak(self, bot_id: str, wav: bytes) -> None:
         """Play audio into the meeting via Attendee output_audio (MP3)."""

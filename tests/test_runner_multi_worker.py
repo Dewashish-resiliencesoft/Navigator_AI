@@ -16,7 +16,7 @@ def get_mock_graph():
 def test_single_worker_lifecycle(tmp_path):
     runner = DemoRunner(str(tmp_path / "db.sqlite"), redis_url=None)
     graph = get_mock_graph()
-    handle = runner.start("prod_1", graph, 1, ("home", "flow_1"))
+    handle = runner.start("prod_1", graph, 1, ("home", "flow_1"), origin="dashboard_test")
     assert handle.demo_id is not None
     assert runner.get(handle.demo_id).status in ("starting", "running")
     
@@ -38,7 +38,7 @@ def test_multi_worker_visibility_and_stop(tmp_path, monkeypatch):
     
     # Start on runner 1
     graph = get_mock_graph()
-    handle = runner1.start("prod_1", graph, 1, ("home", "flow_1"))
+    handle = runner1.start("prod_1", graph, 1, ("home", "flow_1"), origin="dashboard_test")
     
     # Wait for sync loop to save to redis
     time.sleep(1.2)

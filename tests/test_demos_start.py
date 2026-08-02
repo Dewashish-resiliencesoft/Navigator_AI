@@ -132,6 +132,113 @@ def test_no_env_var_is_read(client, monkeypatch):
     assert "STALE" not in client.runner.live_calls[0]["meeting_url"]
 
 
+def test_non_open_access_meeting_is_rejected(tmp_path):
+    """Public embed + static Meet = End User can't admit — refuse up front."""
+    registry = Registry(tmp_path / "registry.db")
+    log = ActionLog(tmp_path / "actions.db")
+    runner = SpyRunner(
+        str(tmp_path / "actions.db"), headful=False, archive_dir=tmp_path / "archives"
+    )
+
+    class ClosedProvider:
+        platform = "static"
+
+        def create_meeting(self, product_id, *, topic=""):
+            return MeetingInfo(
+                url="https://meet.google.com/abc-defg-hij",
+                platform="static",
+                provider_id="static",
+                open_access=False,
+            )
+
+    provider = ClosedProvider()
+    app_module.app.dependency_overrides[app_module.get_registry] = lambda: registry
+    app_module.app.dependency_overrides[app_module.get_log] = lambda: log
+    app_module.app.dependency_overrides[app_module.get_runner] = lambda: runner
+    app_module.app.dependency_overrides[app_module.get_provider_factory] = (
+        lambda: (lambda platform=None: provider)
+    )
+    client = TestClient(app_module.app)
+    try:
+        p = register(client, "Acme Inbox", ACME)
+        r = client.post(
+            "/v1/demos/start",
+            headers=p["headers"],
+            json={"platform": "static", "page_id": "main", "flow_id": "happy_path"},
+        )
+        assert r.status_code == 422, r.text
+        assert "open-access" in r.text.lower() or "waiting" in r.text.lower()
+        assert runner.live_calls == []
+    finally:
+        app_module.app.dependency_overrides.clear()
+        registry.close()
+        log.close()
+
+
+def test_dashboard_static_uses_admit_flow(tmp_path):
+    """Client test demo may use static Meet: Client is host and admits the bot."""
+    from navigator.app.auth_store import AuthStore
+
+    registry = Registry(tmp_path / "registry.db")
+    log = ActionLog(tmp_path / "actions.db")
+    auth_store = AuthStore(tmp_path / "auth.db")
+    runner = SpyRunner(
+        str(tmp_path / "actions.db"), headful=False, archive_dir=tmp_path / "archives"
+    )
+
+    class ClosedProvider:
+        platform = "static"
+
+        def create_meeting(self, product_id, *, topic=""):
+            return MeetingInfo(
+                url="https://meet.google.com/haw-cyyt-ynv",
+                platform="static",
+                provider_id="static",
+                open_access=False,
+            )
+
+    provider = ClosedProvider()
+    app_module.app.dependency_overrides[app_module.get_registry] = lambda: registry
+    app_module.app.dependency_overrides[app_module.get_log] = lambda: log
+    app_module.app.dependency_overrides[app_module.get_auth_store] = lambda: auth_store
+    app_module.app.dependency_overrides[app_module.get_runner] = lambda: runner
+    app_module.app.dependency_overrides[app_module.get_provider_factory] = (
+        lambda: (lambda platform=None: provider)
+    )
+    client = TestClient(app_module.app)
+    try:
+        p = register(client, "Acme Inbox", ACME)
+        auth_store.create_user(
+            product_id=p["id"], email="client@acme.com", password="password"
+        )
+        login = client.post(
+            "/v1/auth/login",
+            json={"email": "client@acme.com", "password": "password"},
+            headers={"Host": "localhost"},
+        )
+        assert login.status_code == 200, login.text
+        headers = {
+            "Host": "localhost",
+            "Authorization": f"Bearer {login.json()['access_token']}",
+        }
+        r = client.post(
+            "/client/api/demos/start",
+            headers=headers,
+            json={"platform": "static", "page_id": "main", "flow_id": "happy_path"},
+        )
+        assert r.status_code == 202, r.text
+        assert r.json()["meeting"]["url"] == "https://meet.google.com/haw-cyyt-ynv"
+        assert runner.live_calls, "runner should start"
+        call = runner.live_calls[0]
+        assert call.get("bot_first") is False
+        assert call.get("open_meet_in_browser") is True
+        assert call["origin"] == "dashboard_test"
+    finally:
+        app_module.app.dependency_overrides.clear()
+        registry.close()
+        log.close()
+
+
 def test_two_sessions_get_two_meetings(client):
     p = register(client, "Acme Inbox", ACME)
     a = start(client, p, page_id="main", flow_id="happy_path").json()
@@ -280,6 +387,7 @@ def test_the_runner_passes_the_link_into_run_live_meet_demo(tmp_path):
         ("main", "happy_path"),
         meeting_url="https://meet.example/fresh",
         platform="google_meet",
+        origin="public_embed",
         run=fake_run,
     )
     runner.wait(handle.demo_id, timeout=10)
@@ -305,6 +413,7 @@ def test_a_live_run_that_raises_is_recorded_not_swallowed(tmp_path):
         ("main", "happy_path"),
         meeting_url="https://meet.example/x",
         platform="google_meet",
+        origin="public_embed",
         run=boom,
     )
     runner.wait(handle.demo_id, timeout=10)

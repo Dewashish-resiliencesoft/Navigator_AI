@@ -15,6 +15,7 @@ def login_product(
     password: str,
     email_selector: str = "#email",
     password_selector: str = "#password",
+    # Prefer labeled Sign-in — carousel sites often have other type=submit buttons.
     submit_selector: str = 'button:has-text("Sign in")',
     ready_selector: str | None = None,
 ) -> None:

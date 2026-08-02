@@ -90,7 +90,7 @@ def test_explicit_product_id_is_honoured(registry):
 
 
 def test_upload_becomes_revision_one_and_activates(registry, product):
-    rev = registry.put_site_graph(product.product.product_id, GRAPH)
+    rev = registry.put_site_graph(product.product.product_id, GRAPH, publish=True)
     assert rev.revision == 1
     assert rev.source == "yaml"
     assert rev.site == "acme-inbox"
@@ -99,8 +99,10 @@ def test_upload_becomes_revision_one_and_activates(registry, product):
 
 def test_uploads_never_overwrite(registry, product):
     pid = product.product.product_id
-    registry.put_site_graph(pid, GRAPH)
-    second = registry.put_site_graph(pid, GRAPH.replace("version: 1", "version: 2"))
+    registry.put_site_graph(pid, GRAPH, publish=True)
+    second = registry.put_site_graph(
+        pid, GRAPH.replace("version: 1", "version: 2"), publish=True
+    )
 
     assert second.revision == 2
     assert len(registry.revisions(pid)) == 2
@@ -111,11 +113,11 @@ def test_uploads_never_overwrite(registry, product):
 def test_invalid_upload_is_rejected_and_leaves_active_alone(registry, product):
     """A customer must not be able to break a live demo with a bad push."""
     pid = product.product.product_id
-    registry.put_site_graph(pid, GRAPH)
+    registry.put_site_graph(pid, GRAPH, publish=True)
 
     broken = GRAPH.replace("selector: send_button", "selector: ghost")
     with pytest.raises(SiteGraphError, match="unknown selector 'ghost'"):
-        registry.put_site_graph(pid, broken)
+        registry.put_site_graph(pid, broken, publish=True)
 
     assert registry.get(pid).active_revision == 1
     assert len(registry.revisions(pid)) == 1, "nothing stored on rejection"
@@ -126,18 +128,20 @@ def test_upload_requires_an_absolute_base_url(registry, product):
     path-traversal foothold."""
     relative = GRAPH.replace("https://app.acme.test/", "../../etc/")
     with pytest.raises(SiteGraphError, match="must be absolute"):
-        registry.put_site_graph(product.product.product_id, relative)
+        registry.put_site_graph(product.product.product_id, relative, publish=True)
 
 
 def test_source_is_recorded_for_provenance(registry, product):
-    rev = registry.put_site_graph(product.product.product_id, GRAPH, source="sdk")
+    rev = registry.put_site_graph(
+        product.product.product_id, GRAPH, source="sdk", publish=True
+    )
     assert rev.source == "sdk"
     assert registry.get_revision(product.product.product_id).source == "sdk"
 
 
 def test_load_graph_returns_a_usable_site_graph(registry, product):
     pid = product.product.product_id
-    registry.put_site_graph(pid, GRAPH)
+    registry.put_site_graph(pid, GRAPH, publish=True)
     graph = registry.load_graph(pid)
 
     assert graph.selector("inbox", "send_button") == "[data-nav='send_button']"
@@ -147,12 +151,52 @@ def test_load_graph_returns_a_usable_site_graph(registry, product):
 
 def test_activate_rolls_back_to_an_older_revision(registry, product):
     pid = product.product.product_id
-    registry.put_site_graph(pid, GRAPH)
-    registry.put_site_graph(pid, GRAPH.replace("version: 1", "version: 7"))
+    registry.put_site_graph(pid, GRAPH, publish=True)
+    registry.put_site_graph(
+        pid, GRAPH.replace("version: 1", "version: 7"), publish=True
+    )
     assert registry.load_graph(pid).version == 7
 
     registry.activate(pid, 1)
     assert registry.load_graph(pid).version == 1
+
+
+# --- drafts: an unpublished revision must not reach End Users ----------------
+
+
+def test_an_unpublished_upload_does_not_change_what_is_live(registry, product):
+    pid = product.product.product_id
+    registry.put_site_graph(pid, GRAPH, publish=True)
+    draft = registry.put_site_graph(
+        pid, GRAPH.replace("version: 1", "version: 9"), publish=False
+    )
+
+    assert draft.revision == 2 and draft.published is False
+    assert registry.published_revision(pid) == 1
+    assert registry.load_graph(pid).version == 1, "live traffic keeps revision 1"
+    assert registry.latest_revision(pid).revision == 2, "the draft is what's edited"
+
+
+def test_publishing_a_draft_makes_it_live(registry, product):
+    pid = product.product.product_id
+    registry.put_site_graph(pid, GRAPH, publish=True)
+    registry.put_site_graph(
+        pid, GRAPH.replace("version: 1", "version: 9"), publish=False
+    )
+
+    registry.activate(pid, 2)
+
+    assert registry.published_revision(pid) == 2
+    assert registry.load_graph(pid).version == 9
+    assert registry.get_revision(pid, 2).published is True
+
+
+def test_a_product_with_only_drafts_has_nothing_to_serve_live(registry, product):
+    pid = product.product.product_id
+    registry.put_site_graph(pid, GRAPH, publish=False)
+
+    with pytest.raises(ProductNotFound, match="no published site graph"):
+        registry.published_revision(pid)
 
 
 def test_activate_rejects_a_missing_revision(registry, product):
@@ -167,7 +211,7 @@ def test_demo_before_any_upload_is_an_error(registry, product):
 
 def test_upload_to_unknown_product_is_an_error(registry):
     with pytest.raises(ProductNotFound):
-        registry.put_site_graph("ghost-product", GRAPH)
+        registry.put_site_graph("ghost-product", GRAPH, publish=True)
 
 
 def test_persona_defaults_from_site_when_absent(registry, product):
@@ -176,6 +220,6 @@ def test_persona_defaults_from_site_when_absent(registry, product):
         for line in GRAPH.splitlines()
         if not line.startswith(("persona:", "  product_name:", "  one_liner:"))
     )
-    registry.put_site_graph(product.product.product_id, no_persona)
+    registry.put_site_graph(product.product.product_id, no_persona, publish=True)
     persona = registry.load_graph(product.product.product_id).effective_persona()
     assert persona.product_name == "acme inbox"

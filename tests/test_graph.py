@@ -129,16 +129,23 @@ def test_narration_from_two_nodes_is_not_lost(state, deps):
     state.update(narration=queue(state["narration"], planning(state, deps)["narration"]))
     assert len(state["narration"]) == 2
     speaking(state, deps)
-    assert deps.speaker.said[0] == render_intro(
-        deps.graph.effective_persona()
-    ), "the intro must actually be spoken"
+    from navigator.agent.speech_safety import prospect_facing_persona
+
+    expected = render_intro(
+        prospect_facing_persona(
+            deps.graph.effective_persona(),
+            fallback_product=deps.graph.site or deps.product_id,
+        )
+    )
+    assert deps.speaker.said[0] == expected, "the intro must actually be spoken"
 
 
 # --- routing -----------------------------------------------------------------
 
 
-def test_routes_back_to_executing_while_calls_remain():
-    assert after_speaking({"pending_calls": [object()]}) == "executing"
+def test_routes_to_ending_when_finished_mid_speak():
+    assert after_speaking({"finished": True, "pending_calls": []}) == "ending"
+    assert after_speaking({"phase": "ending", "plan": object()}) == "ending"
 
 
 def test_routes_to_listening_after_the_intro():
@@ -184,9 +191,10 @@ def test_scripted_demo_runs_end_to_end(deps, tmp_path):
     # The message really landed in the DOM, not just in the log.
     assert deps.page.inner_text(".message.sent") == "Hi from Navigator AI"
 
-    # And it was narrated out loud, step by step.
-    assert len(deps.speaker.said) >= 5
-
+    # Intro + plan spoken; per-click "I've clicked that" is intentionally silent.
+    assert len(deps.speaker.said) >= 2
+    assert not any("clicked that" in s.lower() for s in deps.speaker.said)
+    assert any("inbox" in s.lower() for s in deps.speaker.said)
     # Archived under the product's own directory, not a shared one.
     archived = list((tmp_path / "archives" / deps.product_id).glob("*"))
     assert len(archived) == 2

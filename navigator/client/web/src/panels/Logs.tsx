@@ -171,8 +171,24 @@ export function Logs() {
                       </div>
                       <p className="mt-1 truncate font-mono text-[0.72rem] text-[var(--muted)]">
                         {[r.host_os, r.host_machine, r.host_name].filter(Boolean).join(" · ")}
-                        {r.meeting_label ? ` · ${r.meeting_label}` : ""}
                       </p>
+                      {r.meeting_label ? (
+                        <p className="mt-0.5 truncate font-mono text-[0.72rem]">
+                          {r.meeting_label.startsWith("meet:") ? (
+                            <a
+                              href={`https://meet.google.com/${r.meeting_label.slice(5)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[var(--accent)] hover:underline"
+                              onClick={(e) => e.stopPropagation()}
+                            >
+                              {r.meeting_label}
+                            </a>
+                          ) : (
+                            <span className="text-[var(--muted)]">{r.meeting_label}</span>
+                          )}
+                        </p>
+                      ) : null}
                     </div>
                   </button>
                   {canEnd && (

@@ -46,8 +46,27 @@ def prefer_selector(el_info: dict[str, Any]) -> tuple[str, str]:
     if name:
         return _slug(name, "el"), f'{tag}[name="{name}"]'
     if text:
-        return _slug(text, tag), f"text={text[:40]}"
+        # One short line only — multi-line dumps become unusable text= selectors.
+        first = text.splitlines()[0].strip()[:40]
+        return _slug(first, tag), f"text={first}"
     return f"{tag}_el", tag
+
+
+def junk_record_reason(el_info: dict[str, Any], *, alias: str, selector: str) -> str | None:
+    """Why this click should not enter the saved flow (recorder noise)."""
+    tag = (el_info.get("tag") or "").lower()
+    text = (el_info.get("text") or "").strip()
+    if tag in {"svg", "path", "circle", "rect", "g", "line", "polyline", "polygon"}:
+        return "decorative svg"
+    if selector in {"svg", "path", "div", "span", "button", "a", "body", "html"}:
+        return f"bare tag selector ({selector})"
+    if "\n" in text or text.count(" ") > 10:
+        return "multi-line chrome dump"
+    if re.search(r"verify your account", text, re.I):
+        return "verify / banner chrome"
+    if alias.startswith(("svg_", "div_", "span_", "path_")) and not el_info.get("testid"):
+        return "generic element alias"
+    return None
 
 
 def guess_postcondition(step: RecordedStep) -> dict[str, Any]:
@@ -131,19 +150,38 @@ _INJECT_JS = """
   };
   const elInfo = (t) => {
     if (!t || !t.tagName) return null;
+    // Prefer the interactive ancestor — raw SVG/path clicks become useless selectors.
+    let node = t;
+    for (let i = 0; i < 6 && node; i++) {
+      const tag = (node.tagName || '').toLowerCase();
+      const role = (node.getAttribute && node.getAttribute('role')) || '';
+      const tid = (node.getAttribute && node.getAttribute('data-testid')) || '';
+      const id = node.id || '';
+      if (tid || id || tag === 'button' || tag === 'a' || tag === 'input' ||
+          tag === 'textarea' || tag === 'select' ||
+          role === 'button' || role === 'link' || role === 'menuitem') {
+        t = node;
+        break;
+      }
+      node = node.parentElement;
+    }
+    const rawText = (t.innerText || t.value || '').trim();
+    const firstLine = rawText.split('\\n').map(s => s.trim()).filter(Boolean)[0] || '';
     return {
       tag: t.tagName.toLowerCase(),
       id: t.id || '',
       name: t.getAttribute('name') || '',
       testid: t.getAttribute('data-testid') || '',
-      text: (t.innerText || t.value || '').trim().slice(0, 60),
+      text: firstLine.slice(0, 60),
+      type: (t.getAttribute && t.getAttribute('type')) || t.type || '',
+      autocomplete: (t.getAttribute && t.getAttribute('autocomplete')) || '',
     };
   };
   document.addEventListener('click', (ev) => {
     const raw = (ev.composedPath && ev.composedPath()[0]) || ev.target;
     const info = elInfo(raw);
     if (!info) return;
-    send({ tool: 'click_element', ...info });
+    send({ tool: 'click_element', url: location.href, ...info });
   }, true);
   document.addEventListener('change', (ev) => {
     const raw = (ev.composedPath && ev.composedPath()[0]) || ev.target;
@@ -153,6 +191,7 @@ _INJECT_JS = """
     if (!['input','textarea','select'].includes(tag)) return;
     send({
       tool: 'fill_field',
+      url: location.href,
       ...info,
       text: (raw.getAttribute && raw.getAttribute('placeholder')) || tag,
       value: raw.value || '',
@@ -167,18 +206,64 @@ def inject_dom_listeners(page: Page) -> None:
     page.evaluate(_INJECT_JS)
 
 
-def _install_listeners(page: Page, steps: list[RecordedStep]) -> None:
+def _install_listeners(
+    page: Page,
+    steps: list[RecordedStep],
+    *,
+    gate: CaptureGate | None = None,
+) -> None:
     """Expose binding + inject click/fill capture (and re-inject on every navigation).
 
     `add_init_script` alone is not enough: SPA navigations, CSP timing, and silent
     `catch` meant clicks often never reached Python → 0 steps. We also evaluate into
     the live document after each load.
+
+    Phase gate lives here (Python), not in JS — the browser is untrusted.
     """
 
     def _on_payload(payload: object) -> None:
         if not isinstance(payload, dict):
             return
         step = _step_from_payload(payload)
+        if gate is not None and gate.phase != "capturing":
+            gate.setup_discarded += 1
+            print(
+                f"[record] setup discard +{step.tool} "
+                f"(phase={gate.phase}, discarded={gate.setup_discarded})",
+                flush=True,
+            )
+            return
+        junk = junk_record_reason(
+            payload, alias=step.alias, selector=step.selector
+        )
+        if junk and step.tool == "click_element":
+            print(f"[record] skip junk click ({junk}): {step.alias!r}", flush=True)
+            return
+        # Defense-in-depth: even while capturing, login-shaped steps are flagged
+        # and kept out of the saved flow. Config is fetched live each time.
+        if gate is not None and gate.login_config_fn is not None:
+            from navigator.automation.login_match import looks_like_login
+
+            reason = looks_like_login(
+                config=gate.login_config_fn(),
+                element={
+                    "type": payload.get("type") or "",
+                    "autocomplete": payload.get("autocomplete") or "",
+                },
+                url=str(payload.get("url") or page.url or ""),
+                selector=step.selector or step.alias or "",
+            )
+            if reason:
+                gate.flagged.append(
+                    {
+                        "tool": step.tool,
+                        "selector": step.selector,
+                        "alias": step.alias,
+                        "reason": reason,
+                    }
+                )
+                print(f"[record] flagged login step: {reason}", flush=True)
+                return
         steps.append(step)
         print(
             f"[record] +{step.tool} alias={step.alias!r} sel={step.selector!r}"
@@ -201,16 +286,44 @@ def _install_listeners(page: Page, steps: list[RecordedStep]) -> None:
 
 
 def _step_from_payload(payload: dict[str, Any]) -> RecordedStep:
+    from navigator.automation.login_match import (
+        VAULT_PASSWORD_SENTINEL,
+        is_password_field,
+    )
+
     alias, css = prefer_selector(payload)
     tool = str(payload.get("tool") or "click_element")
+    value = payload.get("value")
+    # Never persist a typed secret. Sentinel tells EXECUTING to pull from vault.
+    if is_password_field(
+        {
+            "type": payload.get("type") or "",
+            "autocomplete": payload.get("autocomplete") or "",
+        }
+    ):
+        value = VAULT_PASSWORD_SENTINEL if tool == "fill_field" else value
     step = RecordedStep(
         tool=tool,
         alias=alias,
         selector=css,
-        value=payload.get("value"),
+        value=value,
     )
     step.postcondition = guess_postcondition(step)
     return step
+
+
+@dataclass
+class CaptureGate:
+    """Shared mutable phase for a recording session.
+
+    Listeners close over this so POST /record/capture can flip phase without
+    restarting Playwright.
+    """
+
+    phase: str = "setup"  # setup | capturing | done
+    setup_discarded: int = 0
+    flagged: list[dict[str, Any]] = field(default_factory=list)
+    login_config_fn: Any = None  # Callable[[], LoginConfig] | None
 
 
 def record_session(
@@ -221,14 +334,18 @@ def record_session(
     headful: bool = True,
     stop_event: threading.Event | None = None,
     steps_out: list[RecordedStep] | None = None,
+    gate: CaptureGate | None = None,
 ) -> Path:
     """Open browser, record clicks/fills until Enter — or until `stop_event` is set."""
     steps: list[RecordedStep] = steps_out if steps_out is not None else []
+    # CLI path has no Setup/Recording UI — capture immediately.
+    if gate is None:
+        gate = CaptureGate(phase="capturing")
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=not headful)
         context = browser.new_context()
         page = context.new_page()
-        _install_listeners(page, steps)
+        _install_listeners(page, steps, gate=gate)
         page.goto(url, wait_until="domcontentloaded")
         try:
             inject_dom_listeners(page)
@@ -248,7 +365,8 @@ def record_session(
                 pass
         else:
             print(
-                "[record] Ops session: click through the product, then Stop in /client.",
+                "[record] Ops session: log in during Setup, then "
+                "'Start capturing this flow' in /client.",
                 flush=True,
             )
             while not stop_event.wait(0.25):

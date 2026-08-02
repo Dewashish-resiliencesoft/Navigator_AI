@@ -160,7 +160,14 @@ paths:
   /v1/products/site-graph:
     put:
       summary: Upload Site Graph
-      description: 'Validate and store a new site graph revision, and make it active.
+      description: 'Validate and store a new site graph revision as a draft.
+
+
+        An upload does not go live on its own: pass `publish: true`, or call
+
+        POST /v1/products/site-graph/activate afterwards. Pushing a graph must not
+
+        change what End Users see mid-edit.
 
 
         Validation runs before anything is written, so a rejected upload cannot break
@@ -327,7 +334,14 @@ paths:
   /v1/demos:
     post:
       summary: Start Demo
-      description: Start a demo. Returns immediately; poll GET /v1/demos/{id} for progress.
+      description: 'Start a headless demo. Returns immediately; poll GET /v1/demos/{id}.
+
+
+        No meeting and no End User: this is a Client verifying a flow (what
+
+        `navigator verify` drives), so it is a test demo and runs their latest
+
+        revision, draft included.'
       operationId: start_demo_v1_demos_post
       parameters:
       - name: authorization
@@ -420,6 +434,10 @@ paths:
   /v1/demos/start:
     post:
       summary: Start Live Demo
+      description: 'A LIVE demo: an End User on the Client''s landing page. Billable.
+
+
+        Runs the Client''s published revision only. See _run_live_demo.'
       operationId: start_live_demo_v1_demos_start_post
       parameters:
       - name: authorization
@@ -792,6 +810,12 @@ paths:
   /client/api/demos/start:
     post:
       summary: Client Start Live Demo
+      description: 'A TEST demo: the Client checking their own setup. Not billable.
+
+
+        JWT-only, so an End User cannot reach it, and it runs the Client''s latest
+
+        revision (draft included) rather than the published one.'
       operationId: client_start_live_demo_client_api_demos_start_post
       parameters:
       - name: authorization
@@ -929,6 +953,95 @@ paths:
                 additionalProperties: true
                 type: object
                 title: Response Client Bootstrap Client Api Bootstrap Post
+  /client/api/product-login:
+    get:
+      summary: Client Get Product Login
+      description: "Public shape only \u2014 never the plaintext password."
+      operationId: client_get_product_login_client_api_product_login_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Get Product Login Client Api Product Login Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Client Put Product Login
+      operationId: client_put_product_login_client_api_product_login_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductLoginBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Put Product Login Client Api Product Login Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Client Delete Product Login
+      operationId: client_delete_product_login_client_api_product_login_delete
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Delete Product Login Client Api Product Login Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/product-domain:
     get:
       summary: Client Get Product Domain
@@ -993,6 +1106,7 @@ paths:
   /client/api/site-graph:
     get:
       summary: Client Get Site Graph
+      description: The revision the Client is editing -- the latest, draft or published.
       operationId: client_get_site_graph_client_api_site_graph_get
       parameters:
       - name: authorization
@@ -1020,6 +1134,7 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Site Graph
+      description: Save as a draft. End Users keep the published revision until publish.
       operationId: client_put_site_graph_client_api_site_graph_put
       parameters:
       - name: authorization
@@ -1045,6 +1160,40 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Client Put Site Graph Client Api Site Graph Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/site-graph/publish:
+    post:
+      summary: Client Publish Site Graph
+      description: Make a revision live for End Users. Defaults to the latest draft.
+      operationId: client_publish_site_graph_client_api_site_graph_publish_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Body_client_publish_site_graph_client_api_site_graph_publish_post'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Publish Site Graph Client Api Site Graph Publish Post
         '422':
           description: Validation Error
           content:
@@ -1238,34 +1387,87 @@ paths:
     get:
       summary: Client Record Status
       operationId: client_record_status_client_api_record_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Record Status Client Api Record Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/record/start:
     post:
       summary: Client Record Start
       operationId: client_record_start_client_api_record_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/RecordStartBody'
-        required: true
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                additionalProperties: true
                 type: object
+                additionalProperties: true
                 title: Response Client Record Start Client Api Record Start Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/capture:
+    post:
+      summary: Client Record Capture
+      description: 'Leave Setup: from now on, clicks become flow content.'
+      operationId: client_record_capture_client_api_record_capture_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Record Capture Client Api Record Capture Post
         '422':
           description: Validation Error
           content:
@@ -1284,6 +1486,14 @@ paths:
           type: string
           default: dashboard
           title: Page Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
@@ -1588,6 +1798,15 @@ components:
       required:
       - revision
       title: Body_activate_revision_v1_products_site_graph_activate_post
+    Body_client_publish_site_graph_client_api_site_graph_publish_post:
+      properties:
+        revision:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Revision
+      type: object
+      title: Body_client_publish_site_graph_client_api_site_graph_publish_post
     ClickElement:
       properties:
         expects:
@@ -1629,6 +1848,13 @@ components:
         status:
           type: string
           title: Status
+        origin:
+          type: string
+          enum:
+          - dashboard_test
+          - public_embed
+          title: Origin
+          default: dashboard_test
         host_os:
           type: string
           title: Host Os
@@ -1693,6 +1919,12 @@ components:
           type: string
           format: uuid
           title: Session Id
+        origin:
+          type: string
+          enum:
+          - dashboard_test
+          - public_embed
+          title: Origin
         status:
           type: string
           title: Status
@@ -1735,6 +1967,7 @@ components:
       - product_id
       - revision
       - session_id
+      - origin
       - status
       - page_id
       - actions
@@ -1849,6 +2082,12 @@ components:
           type: string
           format: uuid
           title: Session Id
+        origin:
+          type: string
+          enum:
+          - dashboard_test
+          - public_embed
+          title: Origin
         status:
           type: string
           title: Status
@@ -1893,6 +2132,7 @@ components:
       - product_id
       - revision
       - session_id
+      - origin
       - status
       - page_id
       - actions
@@ -2070,6 +2310,27 @@ components:
       required:
       - base_url
       title: ProductDomainBody
+    ProductLoginBody:
+      properties:
+        login_url:
+          type: string
+          title: Login Url
+          default: ''
+        username:
+          type: string
+          title: Username
+          default: ''
+        password:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Password
+        include_login_in_default_flow:
+          type: boolean
+          title: Include Login In Default Flow
+          default: false
+      type: object
+      title: ProductLoginBody
     RecordStartBody:
       properties:
         start_url:
@@ -2199,6 +2460,10 @@ components:
         graph_version:
           type: integer
           title: Graph Version
+        published:
+          type: boolean
+          title: Published
+          default: false
       type: object
       required:
       - product_id
@@ -2223,6 +2488,10 @@ components:
           - sdk
           title: Source
           default: yaml
+        publish:
+          type: boolean
+          title: Publish
+          default: false
       type: object
       required:
       - yaml
@@ -2257,6 +2526,10 @@ components:
           anyOf:
           - $ref: '#/components/schemas/IntakePrefill'
           - type: 'null'
+        auto_play:
+          type: boolean
+          title: Auto Play
+          default: true
       type: object
       title: StartLiveDemo
     TokenResponse:

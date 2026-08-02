@@ -12,6 +12,7 @@ import {
   Field,
   Input,
   StatusPill,
+  ConfirmDialog,
 } from "../components/ui";
 import { errText, useUi } from "../store";
 
@@ -22,14 +23,34 @@ export function Flows() {
   const { ok, err } = useUi();
   const [rows, setRows] = useState<Flow[] | null>(null);
   const [recording, setRecording] = useState(false);
+  const [recPhase, setRecPhase] = useState<string>("");
+  const [setupDiscarded, setSetupDiscarded] = useState(0);
+  const [capturedSteps, setCapturedSteps] = useState(0);
   const [recName, setRecName] = useState("");
   const [recUrl, setRecUrl] = useState("");
+  const [stepCount, setStepCount] = useState<Record<string, number>>({});
+  const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const timer = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const d = await api.getFlows();
+      const [d, g] = await Promise.all([api.getFlows(), api.getSiteGraph()]);
       setRows(d.playlist ?? []);
+      
+      const counts: Record<string, number> = {};
+      let inFlows = false;
+      let currentFlow = null;
+      for (const line of g.yaml.split("\n")) {
+        if (line.startsWith("flows:")) { inFlows = true; continue; }
+        if (line.match(/^[a-z]/)) { inFlows = false; }
+        if (!inFlows) continue;
+        const m = line.match(/^  ([^:\s]+):/);
+        if (m) { currentFlow = m[1]; counts[currentFlow] = 0; }
+        else if (currentFlow && line.trim().startsWith("- tool:")) {
+          counts[currentFlow]++;
+        }
+      }
+      setStepCount(counts);
     } catch (e) {
       err(errText(e));
     }
@@ -53,6 +74,9 @@ export function Flows() {
       const s = await api.recordStatus();
       const active = isRecording(s);
       setRecording(active);
+      setRecPhase(s.phase || "");
+      setSetupDiscarded(s.setup_discarded ?? 0);
+      setCapturedSteps(s.steps ?? 0);
       if (!active) {
         stopPolling();
         load();
@@ -68,9 +92,26 @@ export function Flows() {
     try {
       await api.recordStart(recUrl.trim(), recName.trim());
       setRecording(true);
+      setRecPhase("setup");
+      setSetupDiscarded(0);
+      setCapturedSteps(0);
       stopPolling();
       timer.current = window.setInterval(poll, 1500);
-      ok("Recording — drive your product in the opened browser.");
+      ok("Setup — log in and navigate to where the flow should begin, then Start capturing.");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const startCapture = async () => {
+    try {
+      const r = await api.recordCapture();
+      setRecPhase(r.phase);
+      setSetupDiscarded(r.setup_discarded);
+      setCapturedSteps(r.steps);
+      ok(
+        `Capturing — ${r.setup_discarded} setup action${r.setup_discarded === 1 ? "" : "s"} ignored.`,
+      );
     } catch (e) {
       err(errText(e));
     }
@@ -80,9 +121,18 @@ export function Flows() {
     try {
       const r = await api.recordStop();
       setRecording(false);
+      setRecPhase("");
       stopPolling();
       await load();
-      ok(r.error ? `Stopped with error: ${r.error}` : `Recorded ${r.steps} steps.`);
+      const flagged = r.flagged?.length ?? 0;
+      const base = r.error
+        ? `Stopped with error: ${r.error}`
+        : `Recorded ${r.steps} steps.`;
+      const extra =
+        flagged > 0
+          ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"} (re-record after login if unexpected).`
+          : "";
+      ok(base + extra);
     } catch (e) {
       err(errText(e));
     }
@@ -147,8 +197,11 @@ export function Flows() {
                 className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-center gap-2 rounded-lg border px-2 py-1.5"
                 style={{ borderColor: "var(--line)" }}
               >
-                <span className="text-center font-mono text-[0.72rem] text-[var(--muted)]">
-                  {i + 1}
+                <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] flex flex-col justify-center">
+                  <span>#{i + 1}</span>
+                  {f.flow_id && stepCount[f.flow_id] !== undefined && (
+                    <span className="text-[0.6rem] mt-0.5">{stepCount[f.flow_id]} steps</span>
+                  )}
                 </span>
                 <span className="flex flex-col">
                   <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0} className="h-5 px-1 py-0">
@@ -163,8 +216,8 @@ export function Flows() {
                 <Input value={f.flow_id ?? ""} onChange={(v) => patch(i, "flow_id", v)} placeholder="flow_id" />
                 <Button
                   variant="ghost"
-                  onClick={() => setRows(rows.filter((_, n) => n !== i))}
-                  className="px-1.5"
+                  onClick={() => setConfirmDelete(i)}
+                  className="px-1.5 hover:text-red-500"
                 >
                   <Trash2 size={13} />
                 </Button>
@@ -172,6 +225,19 @@ export function Flows() {
             ))}
           </AnimatePresence>
         </div>
+        {confirmDelete !== null && (
+          <ConfirmDialog
+            title="Remove flow from playlist?"
+            message={`Are you sure you want to remove "${rows?.[confirmDelete]?.name || "this flow"}" from the playlist? The flow definition will remain in the site graph.`}
+            confirmLabel="Remove"
+            danger
+            onConfirm={() => {
+              setRows(rows!.filter((_, n) => n !== confirmDelete));
+              setConfirmDelete(null);
+            }}
+            onCancel={() => setConfirmDelete(null)}
+          />
+        )}
       </Card>
 
       <Card>
@@ -189,17 +255,47 @@ export function Flows() {
             <Input value={recUrl} onChange={setRecUrl} placeholder="https://your-product.example/" />
           </Field>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button onClick={startRecord} disabled={recording}>
-            <Circle size={13} /> Start record
+            <Circle size={13} /> Start setup
+          </Button>
+          <Button
+            onClick={startCapture}
+            disabled={!recording || recPhase === "capturing"}
+          >
+            Start capturing this flow
           </Button>
           <Button variant="danger" onClick={stopRecord} disabled={!recording}>
-            <Square size={13} /> Stop record
+            <Square size={13} /> Stop
           </Button>
         </div>
         {recording && (
-          <div className="mt-3">
-            <BarLoader label="capturing steps" />
+          <div className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]" style={{ borderColor: "var(--line)" }}>
+            <div className="flex items-center justify-between text-[0.78rem] font-medium tracking-tight mb-4">
+              <div className={`flex items-center gap-2 ${recPhase === "setup" ? "text-blue-500" : "text-emerald-500"}`}>
+                <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-current">1</div>
+                Setup
+              </div>
+              <div className="h-[2px] flex-1 mx-3 bg-black/10 dark:bg-white/10" />
+              <div className={`flex items-center gap-2 ${recPhase === "capturing" ? "text-emerald-500" : "text-[var(--muted)]"}`}>
+                <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-current">2</div>
+                Capturing
+              </div>
+            </div>
+            <div className="space-y-2">
+              <BarLoader
+                label={
+                  recPhase === "capturing"
+                    ? `Recording — ${capturedSteps} step${capturedSteps === 1 ? "" : "s"} captured`
+                    : `Setup — ${setupDiscarded} action${setupDiscarded === 1 ? "" : "s"} ignored`
+                }
+              />
+              <p className="text-[0.72rem] text-[var(--muted)] leading-relaxed">
+                {recPhase === "capturing"
+                  ? "Only actions from this point are saved as the flow."
+                  : "Log in and get to the flow’s starting screen. Nothing is saved yet."}
+              </p>
+            </div>
           </div>
         )}
       </Card>

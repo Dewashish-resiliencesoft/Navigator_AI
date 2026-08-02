@@ -59,8 +59,15 @@ class Settings(BaseSettings):
     #: Optional shared secret appended as ?secret= on zoom_tokens_url.
     zoom_zak_callback_secret: str = ""
     product_url: str = ""
+    #: Legacy single-tenant product login. Per-Client credentials now live in the
+    #: credential vault, keyed by product_id; these remain as a fallback for the
+    #: CLI login smoke test and single-tenant local runs.
     product_login_email: str = ""
     product_login_password: str = ""
+    #: Fernet key encrypting Clients' product login passwords at rest. No default:
+    #: an absent key must fail the save, never silently store plaintext.
+    credential_key: str = ""
+    credential_db_path: str = "data/credentials.db"
     #: Inbox that receives the Meet link (Resend auto-send or mailto fallback).
     notify_email: str = ""
     #: Resend API key — https://resend.com (free). When set, email is auto-sent.

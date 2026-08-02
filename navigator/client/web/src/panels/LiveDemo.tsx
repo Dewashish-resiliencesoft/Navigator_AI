@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Copy, PhoneOff, Play } from "lucide-react";
+import { Check, Copy, PhoneOff, Play, Mic } from "lucide-react";
 import { api, ApiError, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { rise, soft, stagger } from "../lib/motion";
@@ -18,7 +18,7 @@ import {
 } from "../components/ui";
 import { errText, useUi } from "../store";
 
-const LINK_PENDING = "Navigator joining meeting… link unlocks when the bot is in.";
+const LINK_PENDING = "Creating meeting link…";
 
 export function LiveDemo() {
   const { ok, err, setTab, setLogsSessionId } = useUi();
@@ -28,8 +28,9 @@ export function LiveDemo() {
   const startSession = useDemoSession((s) => s.start);
   const endSession = useDemoSession((s) => s.end);
 
-  const [platform, setPlatform] = useState("zoom");
+  const [platform, setPlatform] = useState("google_meet");
   const [topic, setTopic] = useState("");
+  const [autoPlay, setAutoPlay] = useState(true);
   const [name, setName] = useState("");
   const [company, setCompany] = useState("");
   const [business, setBusiness] = useState("");
@@ -37,6 +38,13 @@ export function LiveDemo() {
   const [domain, setDomain] = useState("");
   const [domainPlaceholder, setDomainPlaceholder] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
+  const [loginUrl, setLoginUrl] = useState("");
+  const [loginUser, setLoginUser] = useState("");
+  const [loginPass, setLoginPass] = useState("");
+  const [hasPassword, setHasPassword] = useState(false);
+  const [changingPass, setChangingPass] = useState(false);
+  const [includeLogin, setIncludeLogin] = useState(false);
+  const [savingLogin, setSavingLogin] = useState(false);
   const [copied, setCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const listRef = useRef<HTMLUListElement>(null);
@@ -45,7 +53,11 @@ export function LiveDemo() {
   const done = !!demo && (demo.status === "finished" || demo.status === "failed");
   const demoId = demo?.demo_id ?? null;
   const sessionId = demo?.session_id ?? null;
-  const joinUrl = demo?.bot_in_meeting ? demo.meeting_url : null;
+  // Show the link as soon as the meeting exists. Gating on bot_in_meeting
+  // deadlocks test demos: static Meet (and some Zoom joins) leave the bot in
+  // the waiting room until a human opens the link and admits it.
+  const joinUrl = demo?.meeting_url ?? null;
+  const botReady = !!demo?.bot_in_meeting;
 
   useEffect(() => {
     let alive = true;
@@ -55,6 +67,18 @@ export function LiveDemo() {
         if (!alive) return;
         setDomain(d.base_url || "");
         setDomainPlaceholder(!!d.placeholder);
+      } catch (e) {
+        if (alive) err(errText(e));
+      }
+      try {
+        const login = await api.getProductLogin();
+        if (!alive) return;
+        setLoginUrl(login.login_url || "");
+        setLoginUser(login.username || "");
+        setHasPassword(!!login.has_password);
+        setIncludeLogin(!!login.include_login_in_default_flow);
+        setChangingPass(!login.has_password);
+        setLoginPass("");
       } catch (e) {
         if (alive) err(errText(e));
       }
@@ -69,8 +93,7 @@ export function LiveDemo() {
   }, [demo?.said.length]);
 
   useEffect(() => {
-    if (!sessionId || !live) {
-      if (!live) return;
+    if (!sessionId) {
       setEvents([]);
       return;
     }
@@ -79,18 +102,25 @@ export function LiveDemo() {
       try {
         const rows = await api.runEvents(sessionId);
         if (!alive) return;
-        setEvents(rows.slice(-20));
+        setEvents(rows);
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 404) return;
       }
     };
-    const t = setInterval(tick, 1500);
-    tick();
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
+    if (live) {
+      const t = setInterval(tick, 1500);
+      tick();
+      return () => {
+        alive = false;
+        clearInterval(t);
+      };
+    } else {
+      tick();
+      return () => {
+        alive = false;
+      };
+    }
   }, [sessionId, live]);
 
   const saveDomain = async () => {
@@ -107,6 +137,39 @@ export function LiveDemo() {
     }
   };
 
+  const saveLogin = async () => {
+    setSavingLogin(true);
+    try {
+      const body: {
+        login_url: string;
+        username: string;
+        password?: string | null;
+        include_login_in_default_flow: boolean;
+      } = {
+        login_url: loginUrl.trim(),
+        username: loginUser.trim(),
+        include_login_in_default_flow: includeLogin,
+      };
+      if (changingPass) {
+        body.password = loginPass;
+      } else {
+        body.password = null;
+      }
+      const saved = await api.putProductLogin(body);
+      setLoginUrl(saved.login_url || "");
+      setLoginUser(saved.username || "");
+      setHasPassword(!!saved.has_password);
+      setIncludeLogin(!!saved.include_login_in_default_flow);
+      setChangingPass(!saved.has_password);
+      setLoginPass("");
+      ok("Product login saved.");
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setSavingLogin(false);
+    }
+  };
+
   const start = async () => {
     if (domainPlaceholder || !domain.trim() || /example\.com/i.test(domain)) {
       err("Set your product domain first (https://your-product.com), then Start.");
@@ -120,6 +183,7 @@ export function LiveDemo() {
       await startSession({
         platform,
         topic: topic.trim() || undefined,
+        auto_play: autoPlay,
         intake: {
           name: name.trim(),
           company: company.trim(),
@@ -182,6 +246,75 @@ export function LiveDemo() {
         </Button>
       </Card>
 
+      <Card span="lg:col-span-2">
+        <CardTitle hint="Credentials Playwright uses to sign into your product before a demo. Never stored in the site graph.">
+          Product Login
+        </CardTitle>
+        <div className="grid gap-x-3 sm:grid-cols-2">
+          <Field label="Login URL (optional — defaults to product URL)">
+            <Input
+              value={loginUrl}
+              onChange={setLoginUrl}
+              placeholder="https://your-product.com/login"
+            />
+          </Field>
+          <Field label="Username / email">
+            <Input
+              value={loginUser}
+              onChange={setLoginUser}
+              placeholder="demo@your-product.com"
+              autoComplete="username"
+            />
+          </Field>
+        </div>
+        <Field label="Password">
+          {hasPassword && !changingPass ? (
+            <div className="flex items-center gap-2">
+              <Input value="••••••••••••" onChange={() => {}} disabled />
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setChangingPass(true);
+                  setLoginPass("");
+                }}
+              >
+                Change
+              </Button>
+            </div>
+          ) : (
+            <Input
+              value={loginPass}
+              onChange={setLoginPass}
+              placeholder={hasPassword ? "enter a new password" : "password"}
+              type="password"
+              autoComplete="new-password"
+            />
+          )}
+        </Field>
+        <label className="mb-3 flex cursor-pointer items-start gap-2 text-[0.78rem] leading-snug text-[var(--muted)]">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={includeLogin}
+            onChange={(e) => setIncludeLogin(e.target.checked)}
+          />
+          <span>
+            Include login as part of the Default flow&apos;s demo (off by
+            default). Topic flows never include login steps.
+          </span>
+        </label>
+        <Button
+          onClick={saveLogin}
+          disabled={
+            savingLogin ||
+            !loginUser.trim() ||
+            (changingPass && !loginPass && !hasPassword)
+          }
+        >
+          {savingLogin ? "Saving…" : "Save product login"}
+        </Button>
+      </Card>
+
       <Card>
         <CardTitle hint="Prefill what the landing page already knows so the bot needn't ask.">
           New demo
@@ -192,9 +325,15 @@ export function LiveDemo() {
               value={platform}
               onChange={setPlatform}
               options={[
-                { value: "zoom", label: "Zoom" },
-                { value: "google_meet", label: "Google Meet (new space)" },
-                { value: "static", label: "Static Meet link (.env)" },
+                {
+                  value: "google_meet",
+                  label: "Google Meet (new open space — recommended)",
+                },
+                { value: "zoom", label: "Zoom (Navigator hosts via ZAK)" },
+                {
+                  value: "static",
+                  label: "Static Meet (.env) — you open link & admit Navigator",
+                },
               ]}
             />
           </Field>
@@ -202,6 +341,18 @@ export function LiveDemo() {
             <Input value={topic} onChange={setTopic} placeholder="Navigator demo — ..." />
           </Field>
         </div>
+        {platform === "static" && (
+          <p className="mb-3 text-[0.76rem] text-amber-600 dark:text-amber-400">
+            Uses NAVIGATOR_MEETING_URL. You are the host — open the join link and
+            admit Navigator when Meet asks. Prefer Google Meet (new space) for
+            hands-free bot-first demos.
+          </p>
+        )}
+        {platform === "zoom" && (
+          <p className="mb-3 text-[0.74rem] text-[var(--muted)]">
+            Navigator hosts via ZAK (auto-tunnels :8000 if PUBLIC_BASE_URL unset).
+          </p>
+        )}
         <div className="grid gap-x-3 sm:grid-cols-2">
           <Field label="Name">
             <Input value={name} onChange={setName} placeholder="optional" />
@@ -221,9 +372,22 @@ export function LiveDemo() {
             placeholder="optional — workflow or problem"
           />
         </Field>
+        <label className="mb-3 flex cursor-pointer items-start gap-2 text-[0.78rem] leading-snug text-[var(--muted)]">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={autoPlay}
+            onChange={(e) => setAutoPlay(e.target.checked)}
+          />
+          <span>Auto-play: continue sequentially through all flows in the playlist</span>
+        </label>
         <Button onClick={start} disabled={starting || live || ending}>
           <Play size={14} strokeWidth={2.2} />
-          {starting ? "Starting…" : live ? "Demo running…" : "Start demo"}
+          {starting
+            ? "Starting…"
+            : live
+              ? "Test demo running…"
+              : "Run a test demo"}
         </Button>
       </Card>
 
@@ -248,15 +412,20 @@ export function LiveDemo() {
               transition={soft}
               className={joinUrl ? "" : "text-[var(--muted)]"}
             >
-              {joinUrl ?? (live ? LINK_PENDING : "—")}
+              {joinUrl ?? (live || starting ? LINK_PENDING : "—")}
             </motion.span>
           </AnimatePresence>
         </div>
 
-        {live && !joinUrl && (
+        {live && joinUrl && !botReady && (
           <div className="mt-3">
-            <BarLoader label="waiting for bot to join" />
+            <BarLoader label="Navigator joining — open the link; admit the bot if asked" />
           </div>
+        )}
+        {live && botReady && (
+          <p className="mt-2 text-[0.74rem] text-emerald-700 dark:text-emerald-400">
+            Navigator is in the meeting.
+          </p>
         )}
 
         <div className="mt-4 flex flex-wrap gap-2">
@@ -309,23 +478,63 @@ export function LiveDemo() {
           Live log
         </CardTitle>
         {!events.length && <Empty>{live ? "Waiting for actions…" : "Nothing yet."}</Empty>}
-        <ul className="max-h-48 space-y-1 overflow-y-auto font-mono text-[0.72rem] text-[var(--muted)]">
-          {events.map((ev) => {
-            const fail = !ev.actual_result?.ok || (ev.verify && !ev.verify.passed);
-            const sel =
-              typeof ev.tool_call?.selector === "string" ? ev.tool_call.selector : "";
-            return (
-              <li
-                key={ev.call_id}
-                className={fail ? "text-red-700 dark:text-red-400" : undefined}
-              >
-                {ev.tool_call?.tool ?? "?"} · {ev.page} · {fail ? "FAIL" : "OK"}
-                {sel ? ` · ${sel}` : ""}
-                {ev.actual_result?.detail ? ` · ${ev.actual_result.detail}` : ""}
-              </li>
-            );
-          })}
-        </ul>
+        {events.length > 0 && (
+          <div className="terminal-log flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg bg-[#0d1117] p-4 font-mono text-[0.72rem] leading-relaxed shadow-inner">
+            {live && (
+              <div className="mb-2 flex items-center gap-2 text-emerald-400">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+                Streaming — {events.length} events
+              </div>
+            )}
+            {events.map((ev) => {
+              const fail = !ev.actual_result?.ok || (ev.verify && !ev.verify.passed);
+              const sel = typeof ev.tool_call?.selector === "string" ? ev.tool_call.selector : "";
+              const time = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString([], { hour12: false }) : "";
+              return (
+                <div key={ev.call_id} className="py-0.5 opacity-90 transition-opacity hover:opacity-100">
+                  <span className="text-slate-500 mr-2">{time}</span>
+                  <span className="text-cyan-400 font-medium">{ev.tool_call?.tool ?? "?"}</span>
+                  <span className="text-slate-400 mx-2">·</span>
+                  <span className="text-slate-200">{ev.page}</span>
+                  <span className="text-slate-400 mx-2">·</span>
+                  <span className={fail ? "text-red-400 font-semibold" : "text-emerald-400 font-semibold"}>
+                    {fail ? "FAIL" : "OK"}
+                  </span>
+                  {sel && (
+                    <>
+                      <span className="text-slate-500 mx-2">→</span>
+                      <span className="text-slate-300">{sel}</span>
+                    </>
+                  )}
+                  {ev.actual_result?.detail && (
+                    <div className="mt-0.5 pl-[4.5rem] text-[0.68rem] text-slate-400">
+                      {ev.actual_result.detail}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            {!live && events.length > 0 && (
+              <div className="mt-2 border-t border-white/10 pt-2 text-emerald-500">
+                Demo completed — {events.length} actions, {demo?.failures ?? 0} failures.
+                <button
+                  type="button"
+                  onClick={() => {
+                    setLogsSessionId(sessionId);
+                    setTab("logs");
+                  }}
+                  className="ml-3 underline decoration-emerald-500/30 underline-offset-4 hover:decoration-emerald-500"
+                >
+                  View full session log
+                </button>
+              </div>
+            )}
+            <div ref={(el) => { if (el) el.scrollIntoView({ behavior: "smooth" }) }} />
+          </div>
+        )}
       </Card>
 
       <Card span="lg:col-span-2">
@@ -339,10 +548,14 @@ export function LiveDemo() {
                 variants={rise}
                 initial="hidden"
                 animate="show"
-                className="rounded-lg border px-3 py-2 text-[0.81rem] leading-relaxed"
+                className="rounded-lg border bg-black/[0.015] px-4 py-2.5 text-[0.81rem] leading-relaxed dark:bg-white/[0.02]"
                 style={{ borderColor: "var(--line)" }}
               >
-                {line}
+                <div className="mb-1 flex items-center gap-2 text-[0.68rem] font-medium text-[var(--muted)]">
+                  <Mic size={11} className="text-[var(--accent)]" />
+                  <span>Agent</span>
+                </div>
+                <div className="pl-4">{line}</div>
               </motion.li>
             ))}
           </AnimatePresence>

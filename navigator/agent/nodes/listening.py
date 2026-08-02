@@ -23,7 +23,14 @@ from navigator.voice.stt import VoiceSegmenter, transcribe
 SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"
 
 
+def _aborted(deps: CallDeps) -> bool:
+    ev = deps.stop_event
+    return ev is not None and getattr(ev, "is_set", lambda: False)()
+
+
 def listening(state: CallState, deps: CallDeps) -> CallState:
+    if _aborted(deps) or getattr(deps.speaker, "bot_ended", False):
+        return CallState(finished=True, phase="ending")
     if deps.set_status is not None:
         deps.set_status("listening", "Listening…")
     if deps.set_avatar_state is not None:
@@ -134,6 +141,8 @@ def _from_audio(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
         frames = _frames_until_deadline(deps.audio_frames, silence_timeout)
     segmenter = VoiceSegmenter()
     for pcm in segmenter.segments(frames):
+        if _aborted(deps) or getattr(deps.speaker, "bot_ended", False):
+            return ""
         if deps.transcribe_audio is not None:
             text = deps.transcribe_audio(pcm) or ""
         else:

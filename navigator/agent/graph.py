@@ -62,12 +62,14 @@ NODES = (
 
 def after_speaking(
     state: CallState,
-) -> Literal["listening", "executing", "reflecting", "turn_done"]:
+) -> Literal["listening", "executing", "reflecting", "turn_done", "ending"]:
     """SPEAKING is the single TTS owner, so several paths converge on it.
 
     Where it goes next depends on why it was reached: the intro (no plan yet),
     mid-plan (calls still pending), or end of turn.
     """
+    if state.get("finished") or state.get("phase") == "ending":
+        return "ending"
     if state.get("pending_calls"):
         return "executing"
     if state.get("plan") is None:

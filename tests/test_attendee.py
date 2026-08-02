@@ -164,3 +164,32 @@ def test_leave_posts():
             return_value=_resp(b"{}"),
         ):
             client.leave("bot_1")
+
+
+def test_human_has_left_tracks_join_then_leave():
+    from navigator.meeting.attendee import ParticipantEvent
+
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    joined = [
+        ParticipantEvent("Dewa", "join"),
+        ParticipantEvent("Navigator AI", "join"),
+    ]
+    left = joined + [ParticipantEvent("Dewa", "leave")]
+    with patch.object(client, "participant_events", return_value=joined):
+        assert (
+            client.human_has_left(
+                "bot_1",
+                human_name="Dewa",
+                bot_names=frozenset({"Navigator AI"}),
+            )
+            is False
+        )
+    with patch.object(client, "participant_events", return_value=left):
+        assert (
+            client.human_has_left(
+                "bot_1",
+                human_name="Dewa",
+                bot_names=frozenset({"Navigator AI"}),
+            )
+            is True
+        )

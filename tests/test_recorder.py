@@ -6,6 +6,7 @@ from navigator.automation.record import (
     RecordedStep,
     draft_site_graph,
     guess_postcondition,
+    junk_record_reason,
     prefer_selector,
 )
 
@@ -22,6 +23,25 @@ def test_prefer_selector_id_fallback():
     alias, css = prefer_selector({"testid": "", "id": "composer", "tag": "input"})
     assert css == "#composer"
     assert alias == "composer"
+
+
+def test_junk_record_skips_svg_and_verify_banner():
+    assert junk_record_reason(
+        {"tag": "svg", "text": ""}, alias="svg_el", selector="svg"
+    )
+    assert junk_record_reason(
+        {"tag": "div", "text": "Verify your account — email and phone"},
+        alias="verify_your_account_email_and_phone_are_",
+        selector="text=Verify your account — email and phone",
+    )
+    assert (
+        junk_record_reason(
+            {"tag": "button", "text": "Inbox", "testid": ""},
+            alias="inbox",
+            selector="text=Inbox",
+        )
+        is None
+    )
 
 
 def test_listeners_capture_click_on_page(page):

@@ -1103,6 +1103,68 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/tier2:
+    get:
+      summary: Client Get Tier2
+      description: Per-product opt-in for constrained live Tier-2 fallback. Default OFF.
+      operationId: client_get_tier2_client_api_tier2_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Get Tier2 Client Api Tier2 Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Client Put Tier2
+      operationId: client_put_tier2_client_api_tier2_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Tier2Body'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Put Tier2 Client Api Tier2 Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/site-graph:
     get:
       summary: Client Get Site Graph
@@ -2214,6 +2276,11 @@ components:
           - user
           title: Source
           default: agent
+        live_question:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Live Question
       type: object
       required:
       - expects
@@ -2508,6 +2575,10 @@ components:
           - type: integer
           - type: 'null'
           title: Active Revision
+        tier2_enabled:
+          type: boolean
+          title: Tier2 Enabled
+          default: false
       type: object
       required:
       - product_id
@@ -2748,6 +2819,15 @@ components:
           default: true
       type: object
       title: StartLiveDemo
+    Tier2Body:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+      type: object
+      required:
+      - enabled
+      title: Tier2Body
     TokenResponse:
       properties:
         access_token:

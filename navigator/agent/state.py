@@ -112,6 +112,25 @@ class CallDeps:
     relogin: Callable[[], bool] | None = None
     #: Operator End / human left Meet — nodes should finish without more TTS/clicks.
     stop_event: object | None = None
+    #: Call-scoped memory (flows/topics/facts already covered). None → PLANNING
+    #: makes one per call, so an existing caller keeps working unchanged.
+    memory: object | None = None
+    #: SQLite path for DecisionTrace. None → settings.db_path.
+    decision_db_path: Path | None = None
+    #: Injected retrieval for tests. Signature matches knowledge.retrieve_context.
+    retrieve: Callable[..., object] | None = None
+    #: Injected phrasing for tests. Signature matches agent.phrasing.phrase_turn.
+    phrase: Callable[..., str] | None = None
+    #: Mid-step STT for requires_live_input fills. Signature (prompt: str) -> heard.
+    listen_once: Callable[[str], str] | None = None
+    #: Entity extraction for live fills. Signature (key, question, heard) -> str.
+    extract_entity: Callable[..., str] | None = None
+    #: Per-product Tier 2 live fallback. Default OFF — must be explicitly enabled.
+    tier2_enabled: bool = False
+    #: Injected Tier 2 proposer for tests / live reasoner. Returns dict|None.
+    tier2_propose: Callable[..., object] | None = None
+    #: Injected guardrail classify. Defaults to explore.guardrail.classify_action.
+    tier2_classify: Callable[..., object] | None = None
 
 
 def append_only(existing: list, new: list) -> list:
@@ -168,6 +187,12 @@ class CallState(TypedDict, total=False):
     nav_click_label: str | None
     #: Continue to the next demo_playlist flow when the current one ends.
     auto_play: bool
+    #: Set when a detour is running; the default flow resumes at this step after.
+    resume_step: int | None
+    #: Page the default flow was on when it was paused.
+    resume_page_id: str
+    #: Flow the pending clarifying question would run on a yes.
+    awaiting_confirm_flow_id: str | None
 
 
 def initial_state(
@@ -200,4 +225,7 @@ def initial_state(
         walkthrough_step=0,
         silence_rounds=0,
         auto_play=auto_play,
+        resume_step=None,
+        resume_page_id="",
+        awaiting_confirm_flow_id=None,
     )

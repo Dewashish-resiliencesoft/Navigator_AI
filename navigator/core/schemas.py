@@ -89,7 +89,14 @@ class FillField(_ToolCallBase):
     selector: str
     value: str
     source: Source = "agent"
-    """"user" marks live prospect-supplied data typed into the product mid-call."""
+    """"user" marks live prospect-supplied data typed into the product mid-call.
+
+    That is the requires_live_input flag from the live-input design: EXECUTING
+    pauses, asks `live_question`, listens, and falls back to `value` (the Client's
+    example from setup) if the answer stays unclear.
+    """
+    live_question: str | None = None
+    """Spoken when source=user. None → a generic question from the selector alias."""
 
 
 class Navigate(_ToolCallBase):

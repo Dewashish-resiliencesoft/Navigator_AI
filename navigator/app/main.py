@@ -1106,6 +1106,10 @@ class ProductDomainBody(BaseModel):
     base_url: str = Field(min_length=1)
 
 
+class Tier2Body(BaseModel):
+    enabled: bool
+
+
 class ProductLoginBody(BaseModel):
     login_url: str = ""
     username: str = ""
@@ -1156,6 +1160,21 @@ def client_get_product_domain(product: DashboardAuthedProduct, registry: Reg) ->
         "base_url": graph.base_url,
         "placeholder": "example.com" in (graph.base_url or "").lower(),
     }
+
+
+@app.get("/client/api/tier2")
+def client_get_tier2(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    """Per-product opt-in for constrained live Tier-2 fallback. Default OFF."""
+    fresh = registry.get(product.product_id)
+    return {"enabled": bool(fresh.tier2_enabled)}
+
+
+@app.put("/client/api/tier2")
+def client_put_tier2(
+    product: DashboardAuthedProduct, body: Tier2Body, registry: Reg
+) -> dict:
+    updated = registry.set_tier2_enabled(product.product_id, body.enabled)
+    return {"ok": True, "enabled": bool(updated.tier2_enabled)}
 
 @app.put("/client/api/product-domain")
 def client_put_product_domain(

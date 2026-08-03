@@ -12,6 +12,8 @@ from navigator.voice.tts import PrintSpeaker
 
 
 def test_interrupt_turn_brain_navigates(site_graph, page, log, tmp_path):
+    from navigator.knowledge.context import RetrievalResult
+
     def fake_decide(**kwargs):
         return TurnDecision(
             intent="navigate_page",
@@ -19,6 +21,18 @@ def test_interrupt_turn_brain_navigates(site_graph, page, log, tmp_path):
             spoken_response="Taking you to the inbox.",
             nav_label=None,
             clean_intake=None,
+        )
+
+    def empty_retrieve(query, product_id, **kw):
+        return RetrievalResult(
+            product_id=product_id,
+            query=query,
+            knowledge_chunks=[],
+            candidate_flows=[],
+            relevant_areas=[],
+            knowledge_based_on_revision=None,
+            current_published_revision=None,
+            is_stale=False,
         )
 
     deps = CallDeps(
@@ -32,6 +46,7 @@ def test_interrupt_turn_brain_navigates(site_graph, page, log, tmp_path):
         groq_api_key=None,
         decide_turn=fake_decide,
         use_turn_brain=True,
+        retrieve=empty_retrieve,
         choose_flow=lambda **k: (_ for _ in ()).throw(RuntimeError("should not Groq")),
     )
     # page.screenshot used by capture — Playwright page fixture should support it

@@ -62,7 +62,15 @@ def get_client(path: str | Path):
 
 
 def get_collection(path: str | Path, product_id: str, kind: Kind):
-    """One product's collection, created if absent."""
+    """One product's collection, created if absent.
+
+    New collections use cosine distance so retrieval scores land on a scale a
+    threshold can be tuned against. Chroma ignores this on a collection that
+    already exists, so anything created earlier stays `l2` -- readers convert by
+    the collection's actual space rather than assuming (see
+    `navigator.knowledge.context._similarity`).
+    """
     return get_client(path).get_or_create_collection(
-        name=collection_name(product_id, kind)
+        name=collection_name(product_id, kind),
+        configuration={"hnsw": {"space": "cosine"}},
     )

@@ -40,6 +40,8 @@ class Product(BaseModel):
     created_at: datetime
     active_revision: int | None = None
     """Which site graph revision demos use. None until the first upload."""
+    tier2_enabled: bool = False
+    """Opt-in constrained live fallback when retrieval finds nothing. Default OFF."""
 
 
 class SiteGraphRevision(BaseModel):
@@ -160,6 +162,15 @@ class Registry:
             self._conn.execute(
                 "ALTER TABLE site_graph_revisions ADD COLUMN published "
                 "INTEGER NOT NULL DEFAULT 1"
+            )
+        product_cols = {
+            r["name"]
+            for r in self._conn.execute("PRAGMA table_info(products)").fetchall()
+        }
+        if "tier2_enabled" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN tier2_enabled "
+                "INTEGER NOT NULL DEFAULT 0"
             )
 
     @property
@@ -372,6 +383,15 @@ class Registry:
 
     # -- lifecycle -----------------------------------------------------------
 
+    def set_tier2_enabled(self, product_id: str, enabled: bool) -> Product:
+        """Opt a product into (or out of) constrained live Tier-2 fallback."""
+        self.get(product_id)
+        self._conn.execute(
+            "UPDATE products SET tier2_enabled = ? WHERE product_id = ?",
+            (1 if enabled else 0, product_id),
+        )
+        return self.get(product_id)
+
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
         if conn is not None:
@@ -386,9 +406,12 @@ class Registry:
 
 
 def _to_product(row: sqlite3.Row) -> Product:
+    keys = row.keys()
+    tier2 = bool(row["tier2_enabled"]) if "tier2_enabled" in keys else False
     return Product(
         product_id=row["product_id"],
         name=row["name"],
         created_at=row["created_at"],
         active_revision=row["active_revision"],
+        tier2_enabled=tier2,
     )

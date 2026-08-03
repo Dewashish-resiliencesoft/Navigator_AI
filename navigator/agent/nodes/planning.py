@@ -6,16 +6,27 @@ injectable chooser, expand tool_calls from the site graph. The model never
 invents selectors or postconditions. flow_id null → confidential handoff, no tools.
 
 Live walkthrough path: advance one tool per turn from walkthrough_flow_id; real
-user asks interrupt via choose_flow without clearing walkthrough_step. After the
+user speech routes through `_decide_live_turn`, which retrieves context and
+branches on match confidence without clearing walkthrough_step. After the
 walkthrough, anything_else handles goodbye and silence policy D.
+
+Every live turn writes one DecisionTrace row -- including the boring ones.
 """
 
 from __future__ import annotations
 
+from navigator.agent.call_memory import CallMemory
 from navigator.agent.end_policy import ANYTHING_ELSE, WRAP_UP, is_goodbye, next_silence_action
 from navigator.agent.planner import HANDOFF_SPOKEN, FlowChoice, choose_flow
+from navigator.agent.phrasing import phrase_turn
 from navigator.agent.speech_safety import REFUSE_SPOKEN, is_exfil_request
 from navigator.agent.state import CallDeps, CallState
+from navigator.knowledge.context import (
+    HIGH_CONFIDENCE,
+    MEDIUM_CONFIDENCE,
+    flow_text,
+    retrieve_context,
+)
 from navigator.knowledge.site_graph import SiteGraphError
 from navigator.meeting.intake import format_with_intake
 from navigator.knowledge.memory.retrieval import retrieve_corrections, retrieve_product_knowledge
@@ -23,6 +34,71 @@ from navigator.core.schemas import Plan
 from navigator.core.settings import settings
 
 _CONTINUE = frozenset({"ok", "continue", "go on", "yes", "sure"})
+_AFFIRM = frozenset(
+    {"yes", "yeah", "yep", "sure", "ok", "okay", "please", "go ahead", "do it",
+     "that one", "correct", "right", "exactly", "the first", "the second"}
+)
+_NEGATE = frozenset(
+    {"no", "nope", "nah", "not that", "never mind", "nevermind", "cancel",
+     "skip", "don't", "do not"}
+)
+
+
+def _memory(deps: CallDeps) -> CallMemory:
+    """Call-scoped memory, created on first use so old callers keep working."""
+    mem = getattr(deps, "memory", None)
+    if not isinstance(mem, CallMemory):
+        mem = CallMemory()
+        deps.memory = mem
+    return mem
+
+
+def _trace(deps: CallDeps, state: CallState, **kw) -> None:
+    """Record one turn's decision. Never let logging break a live call."""
+    from navigator.logs.decisions import DecisionTraceStore
+
+    try:
+        store = DecisionTraceStore(deps.decision_db_path or settings.db_path)
+        try:
+            store.record(
+                product_id=deps.product_id, session_id=state.get("session_id", ""), **kw
+            )
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[trace] skipped: {exc}", flush=True)
+
+
+def _say(
+    deps: CallDeps,
+    *,
+    intent: str,
+    fallback: str,
+    utterance: str = "",
+    context: str = "",
+    pacing: str = "neutral",
+) -> str:
+    """One spoken line via the phrasing layer, falling back to a template."""
+    phrase = deps.phrase or phrase_turn
+    api_key = deps.groq_api_key if deps.groq_api_key is not None else settings.groq_api_key
+    try:
+        line = phrase(
+            intent=intent,
+            utterance=utterance,
+            context=context,
+            memory=_memory(deps),
+            pacing=pacing,
+            persona_name=deps.graph.effective_persona().product_name,
+            product_brief=deps.product_brief or "",
+            fallback=fallback,
+            api_key=api_key or None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] phrasing failed ({exc}); using template", flush=True)
+        line = fallback
+    line = (line or fallback).strip() or fallback
+    _memory(deps).note_spoken(line)
+    return line
 
 
 def _guide_page_id(state: CallState) -> str:
@@ -120,6 +196,10 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
     if phase == "anything_else":
         return _plan_anything_else(state, deps, utterance=utterance, transcript=transcript)
 
+    # Clarifying-question follow-up must see "yes"/"ok" — those are also continue tokens.
+    if (state.get("awaiting_confirm_flow_id") or "").strip() and utterance:
+        return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
+
     if utterance and not _is_continue(utterance):
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
 
@@ -196,33 +276,413 @@ def _plan_interrupt(
     utterance: str,
     transcript: list[str],
 ) -> CallState:
+    pending = (state.get("awaiting_confirm_flow_id") or "").strip()
+    if pending:
+        return _resolve_awaiting_confirm(
+            state, deps, utterance=utterance, pending_flow_id=pending
+        )
+
+    decided = _decide_live_turn(state, deps, utterance=utterance)
+    if decided is not None:
+        return decided
+
+    # Retrieval found nothing — optional Tier 2 (default OFF per product).
+    tier2 = _try_tier2(state, deps, utterance=utterance)
+    if tier2 is not None:
+        return tier2
+
+    # Retrieve found nothing actionable — vision turn-brain may still navigate.
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     brain = _try_turn_brain(state, deps, utterance=utterance)
     if brain is not None:
         return brain
 
-    choice = _resolve_flow_choice(state, deps, transcript=transcript)
-    if choice.flow_id is None:
-        return _plan_handoff(
-            deps,
-            query=utterance,
-            spoken=HANDOFF_SPOKEN,
-            phase="walkthrough",
-            walkthrough_step=walkthrough_step,
-        )
-    page_id = _guide_page_id(state)
-    page = deps.graph.page(page_id)
-    if choice.flow_id not in page.flows:
-        flow_ids = sorted(page.flows)
-        raise ValueError(f"flow_id {choice.flow_id!r} not in allowed {flow_ids}")
-    return _plan_from_flow(
+    spoken = _say(
         deps,
-        page_id,
-        choice.flow_id,
-        spoken=choice.spoken_response,
+        intent="handoff",
+        fallback=HANDOFF_SPOKEN,
+        utterance=utterance,
+        pacing=_memory(deps).classify_pacing(utterance),
+    )
+    _trace(
+        deps,
+        state,
+        utterance=utterance,
+        branch="handoff",
+        spoken=spoken,
+        detail="no flow match, no knowledge, tier2 skipped/off, turn-brain skipped",
+    )
+    return _plan_handoff(
+        deps,
+        query=utterance,
+        spoken=spoken,
         phase="walkthrough",
         walkthrough_step=walkthrough_step,
+        awaiting_confirm_flow_id=None,
     )
+
+
+def _try_tier2(
+    state: CallState, deps: CallDeps, *, utterance: str
+) -> CallState | None:
+    """Constrained live fallback. None when toggle off or proposer declines."""
+    if not getattr(deps, "tier2_enabled", False):
+        return None
+
+    from navigator.agent.tier2 import pending_rule_for, run_tier2
+    from navigator.agent.tier2_propose import bind_ephemeral_selector, propose_from_page
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+
+    walkthrough_step = int(state.get("walkthrough_step") or 0)
+    page_id = _guide_page_id(state)
+
+    propose = deps.tier2_propose
+    if propose is None:
+        if deps.page is None:
+            return None
+
+        def propose(**_kw):
+            return propose_from_page(utterance=utterance, page=deps.page)
+
+    outcome = run_tier2(
+        utterance=utterance,
+        propose=propose,
+        classify=deps.tier2_classify,
+    )
+    if outcome is None:
+        return None
+
+    spoken = _say(
+        deps,
+        intent="handoff" if outcome.branch == "tier2_refused" else "flow_intro",
+        fallback=outcome.spoken,
+        utterance=utterance,
+        context=outcome.detail,
+        pacing=_memory(deps).classify_pacing(utterance),
+    )
+    _trace(
+        deps,
+        state,
+        utterance=utterance,
+        branch=outcome.branch,
+        spoken=spoken,
+        detail=outcome.detail,
+    )
+
+    if outcome.branch == "tier2_refused" or outcome.call is None:
+        return CallState(
+            phase="walkthrough",
+            walkthrough_step=walkthrough_step,
+            plan=Plan(spoken_response=spoken, tool_calls=[]),
+            pending_calls=[],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
+            awaiting_confirm_flow_id=None,
+        )
+
+    # Bind ephemeral alias so tools.execute can resolve the click.
+    el = outcome.element or {}
+    alias = str(el.get("_tier2_alias") or getattr(outcome.call, "selector", "") or "")
+    css = str(el.get("_tier2_css") or "")
+    if alias and css:
+        deps.graph = bind_ephemeral_selector(deps.graph, page_id, alias, css)
+
+    store_path = deps.pending_db_path or settings.db_path
+    store = PendingCorrectionStore(store_path)
+    try:
+        store.add(
+            product_id=deps.product_id,
+            session_id=state.get("session_id", ""),
+            page=page_id,
+            tool_call_type=outcome.call.tool,
+            rule=pending_rule_for(outcome, utterance),
+            source_call_id=state.get("session_id", ""),
+        )
+    finally:
+        store.close()
+
+    return CallState(
+        phase="walkthrough",
+        walkthrough_step=walkthrough_step,
+        resume_step=walkthrough_step,
+        resume_page_id=state.get("walkthrough_page_id") or page_id,
+        plan=Plan(spoken_response=spoken, tool_calls=[outcome.call]),
+        pending_calls=[outcome.call],
+        narration=[spoken],
+        transcript=[f"agent: {spoken}"],
+        awaiting_confirm_flow_id=None,
+    )
+
+
+def _is_affirm(utterance: str) -> bool:
+    text = (utterance or "").strip().lower()
+    if text in _AFFIRM:
+        return True
+    return any(text == w or text.startswith(w + " ") for w in _AFFIRM)
+
+
+def _is_negate(utterance: str) -> bool:
+    text = (utterance or "").strip().lower()
+    if text in _NEGATE:
+        return True
+    return any(text.startswith(w) for w in _NEGATE)
+
+
+def _flow_texts_for_page(deps: CallDeps, page_id: str) -> dict[str, str]:
+    """Match text per flow: id + playlist name when present."""
+    page = deps.graph.page(page_id)
+    names: dict[str, str] = {}
+    for item in deps.graph.demo_playlist:
+        if item.page_id == page_id and item.name.strip():
+            names[item.flow_id] = item.name.strip()
+    return {
+        fid: flow_text(fid, name=names.get(fid, ""))
+        for fid in page.flows
+    }
+
+
+def _knowledge_hits(
+    result,
+) -> list[tuple[str, float]]:
+    return [(chunk.id or chunk.summary or "chunk", score) for chunk, score in result.knowledge_chunks]
+
+
+def _resolve_awaiting_confirm(
+    state: CallState,
+    deps: CallDeps,
+    *,
+    utterance: str,
+    pending_flow_id: str,
+) -> CallState:
+    """Medium-confidence follow-up: yes → run flow; no → clear and re-decide."""
+    walkthrough_step = int(state.get("walkthrough_step") or 0)
+    page_id = _guide_page_id(state)
+    pacing = _memory(deps).note_turn(utterance)
+
+    if _is_affirm(utterance):
+        spoken = _say(
+            deps,
+            intent="flow_intro",
+            fallback=_describe(deps.graph.page(page_id).name, pending_flow_id),
+            utterance=utterance,
+            context=f"Confirmed flow: {pending_flow_id}",
+            pacing=pacing,
+        )
+        _memory(deps).note_flow(pending_flow_id)
+        _trace(
+            deps,
+            state,
+            utterance=utterance,
+            branch="flow_executed",
+            spoken=spoken,
+            chosen_flow_id=pending_flow_id,
+            detail="prospect confirmed clarifying question",
+        )
+        return _plan_from_flow(
+            deps,
+            page_id,
+            pending_flow_id,
+            spoken=spoken,
+            phase="walkthrough",
+            walkthrough_step=walkthrough_step,
+            resume_step=walkthrough_step,
+            resume_page_id=state.get("walkthrough_page_id") or page_id,
+            awaiting_confirm_flow_id=None,
+        )
+
+    if _is_negate(utterance):
+        spoken = _say(
+            deps,
+            intent="handoff",
+            fallback="No problem — what would you like to see instead?",
+            utterance=utterance,
+            pacing=pacing,
+        )
+        _trace(
+            deps,
+            state,
+            utterance=utterance,
+            branch="handoff",
+            spoken=spoken,
+            detail=f"declined confirm for {pending_flow_id}",
+        )
+        return CallState(
+            phase="walkthrough",
+            walkthrough_step=walkthrough_step,
+            awaiting_confirm_flow_id=None,
+            plan=Plan(spoken_response=spoken, tool_calls=[]),
+            pending_calls=[],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
+        )
+
+    # Unclear answer to the clarify — re-run live decision on this utterance.
+    cleared = {**state, "awaiting_confirm_flow_id": None}
+    return _decide_live_turn(cleared, deps, utterance=utterance) or _plan_handoff(
+        deps,
+        query=utterance,
+        spoken=HANDOFF_SPOKEN,
+        phase="walkthrough",
+        walkthrough_step=walkthrough_step,
+        awaiting_confirm_flow_id=None,
+    )
+
+
+def _decide_live_turn(
+    state: CallState,
+    deps: CallDeps,
+    *,
+    utterance: str,
+) -> CallState | None:
+    """Retrieve + confidence bands. None → caller may try turn-brain / handoff."""
+    page_id = _guide_page_id(state)
+    walkthrough_step = int(state.get("walkthrough_step") or 0)
+    walkthrough_page = state.get("walkthrough_page_id") or page_id
+    mem = _memory(deps)
+    pacing = mem.note_turn(utterance)
+
+    flow_texts = _flow_texts_for_page(deps, page_id)
+    retrieve = deps.retrieve or retrieve_context
+    chroma_path = (
+        deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
+    )
+    try:
+        result = retrieve(
+            utterance,
+            deps.product_id,
+            flow_texts=flow_texts,
+            available_flow_ids=list(flow_texts),
+            chroma_path=chroma_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] retrieve failed ({exc}); no live decision", flush=True)
+        return None
+
+    candidates = list(result.candidate_flows)
+    # Prefer a flow the prospect has not already seen this call.
+    actionable = [
+        (fid, conf) for fid, conf in candidates if not mem.has_covered_flow(fid)
+    ]
+    ranked = actionable or candidates
+    band_source = ranked[0] if ranked else None
+
+    def _band_for(pair: tuple[str, float] | None) -> str:
+        if pair is None or pair[1] < MEDIUM_CONFIDENCE:
+            return "none"
+        return "high" if pair[1] >= HIGH_CONFIDENCE else "medium"
+
+    band = _band_for(band_source)
+    k_hits = _knowledge_hits(result)
+    flow_cands = [(fid, conf) for fid, conf in candidates]
+
+    if band == "high" and band_source is not None:
+        flow_id, conf = band_source
+        spoken = _say(
+            deps,
+            intent="flow_intro",
+            fallback=_describe(deps.graph.page(page_id).name, flow_id),
+            utterance=utterance,
+            context=f"Matched flow {flow_id} at confidence {conf:.2f}",
+            pacing=pacing,
+        )
+        mem.note_flow(flow_id)
+        _trace(
+            deps,
+            state,
+            utterance=utterance,
+            branch="flow_executed",
+            spoken=spoken,
+            chosen_flow_id=flow_id,
+            flow_candidates=flow_cands,
+            knowledge_hits=k_hits,
+            detail=f"high confidence {conf:.2f}",
+        )
+        return _plan_from_flow(
+            deps,
+            page_id,
+            flow_id,
+            spoken=spoken,
+            phase="walkthrough",
+            walkthrough_step=walkthrough_step,
+            resume_step=walkthrough_step,
+            resume_page_id=walkthrough_page,
+            awaiting_confirm_flow_id=None,
+        )
+
+    if band == "medium" and band_source is not None:
+        flow_id, conf = band_source
+        label = flow_id.replace("_", " ").replace("-", " ")
+        fallback = f"Want me to show you {label}?"
+        spoken = _say(
+            deps,
+            intent="clarify",
+            fallback=fallback,
+            utterance=utterance,
+            context=f"Candidate flow: {flow_id} (confidence {conf:.2f})",
+            pacing=pacing,
+        )
+        _trace(
+            deps,
+            state,
+            utterance=utterance,
+            branch="clarifying_question",
+            spoken=spoken,
+            chosen_flow_id=flow_id,
+            flow_candidates=flow_cands,
+            knowledge_hits=k_hits,
+            detail=f"medium confidence {conf:.2f}; awaiting confirm",
+        )
+        return CallState(
+            phase="walkthrough",
+            walkthrough_step=walkthrough_step,
+            awaiting_confirm_flow_id=flow_id,
+            resume_step=walkthrough_step,
+            resume_page_id=walkthrough_page,
+            plan=Plan(spoken_response=spoken, tool_calls=[]),
+            pending_calls=[],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
+        )
+
+    relevant = result.relevant_knowledge
+    if relevant:
+        chunk, score = relevant[0]
+        context = chunk.text or chunk.summary
+        spoken = _say(
+            deps,
+            intent="answer",
+            fallback=(chunk.summary or chunk.text or "Here's what I know about that.")[
+                :280
+            ],
+            utterance=utterance,
+            context=context,
+            pacing=pacing,
+        )
+        topic = chunk.summary or chunk.category or chunk.id or "topic"
+        mem.note_topic(topic)
+        mem.note_fact((chunk.summary or chunk.text)[:160])
+        _trace(
+            deps,
+            state,
+            utterance=utterance,
+            branch="knowledge_only",
+            spoken=spoken,
+            flow_candidates=flow_cands,
+            knowledge_hits=k_hits,
+            detail=f"knowledge hit {score:.2f}; no flow run",
+        )
+        return CallState(
+            phase="walkthrough",
+            walkthrough_step=walkthrough_step,
+            awaiting_confirm_flow_id=None,
+            plan=Plan(spoken_response=spoken, tool_calls=[]),
+            pending_calls=[],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
+        )
+
+    # Nothing relevant — Phase 4 Tier-2 hook attaches here later.
+    return None
 
 
 def _use_turn_brain(deps: CallDeps) -> bool:
@@ -354,14 +814,31 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
             "walkthrough phase requires walkthrough_flow_id on CallState "
             "(or CallDeps.scripted_flow for deterministic replay)"
         )
+
+    # After a Topic detour, resume at the remembered step/page.
+    resume_step = state.get("resume_step")
+    if resume_step is not None:
+        step = int(resume_step)
+        page_id = state.get("resume_page_id") or page_id
+    else:
+        step = int(state.get("walkthrough_step") or 0)
+
     _ensure_browser_on_page(deps, page_id)
-    step = int(state.get("walkthrough_step") or 0)
     try:
         calls = list(deps.graph.flow(page_id, flow_id))
     except SiteGraphError as exc:
         raise RuntimeError(
             f"walkthrough flow {flow_id!r} not found on page {page_id!r}"
         ) from exc
+
+    mem = _memory(deps)
+    pacing = mem.pacing_history[-1] if mem.pacing_history else "neutral"
+
+    # Coarse pacing nudge: several rushed signals → skip one step when safe.
+    if pacing == "rushed" and step + 1 < len(calls) and resume_step is None:
+        step = step + 1
+        print(f"[plan] pacing=rushed; skip ahead to step {step}", flush=True)
+
     if step >= len(calls):
         auto_play = bool(state.get("auto_play", True))
         advanced = False
@@ -392,13 +869,24 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
                         flush=True,
                     )
         if not advanced:
+            spoken = ANYTHING_ELSE
+            _trace(
+                deps,
+                state,
+                utterance="",
+                branch="continuation",
+                spoken=spoken,
+                detail="walkthrough exhausted → anything_else",
+            )
             return CallState(
                 phase="anything_else",
-                plan=Plan(spoken_response=ANYTHING_ELSE, tool_calls=[]),
+                plan=Plan(spoken_response=spoken, tool_calls=[]),
                 pending_calls=[],
-                narration=[ANYTHING_ELSE],
-                transcript=[f"agent: {ANYTHING_ELSE}"],
+                narration=[spoken],
+                transcript=[f"agent: {spoken}"],
                 silence_rounds=0,
+                resume_step=None,
+                resume_page_id="",
             )
     nxt = calls[step]
     # YAML spoken as hint — vision generates the real narration.
@@ -413,6 +901,15 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     if step == 0 and deps.intake and deps.intake.name:
         need = deps.intake.looking_for or "what you asked about"
         yaml_hint = f"Alright {deps.intake.name}, focusing on {need}. {yaml_hint}"
+
+    if resume_step is not None:
+        yaml_hint = _say(
+            deps,
+            intent="resume",
+            fallback=f"Back to where we were. {yaml_hint}",
+            context=yaml_hint,
+            pacing=pacing,
+        )
 
     # Vision-first: agent looks at screen and generates narration.
     spoken = yaml_hint  # default if vision unavailable
@@ -448,12 +945,24 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
         except Exception as exc:  # noqa: BLE001
             print(f"[plan] vision narration skipped: {exc}", flush=True)
 
+    mem.note_spoken(spoken)
+    _trace(
+        deps,
+        state,
+        utterance="",
+        branch="continuation",
+        spoken=spoken,
+        chosen_flow_id=flow_id,
+        detail=f"walkthrough step {step} → {step + 1}",
+    )
     return CallState(
         phase="walkthrough",
         page_id=page_id,
         walkthrough_page_id=page_id,
         walkthrough_flow_id=flow_id,
         walkthrough_step=step + 1,
+        resume_step=None,
+        resume_page_id="",
         plan=Plan(spoken_response=spoken, tool_calls=[nxt]),
         pending_calls=[nxt],
         narration=[spoken],

@@ -7,10 +7,12 @@ building on a broken assumption.
 
 from __future__ import annotations
 
+from navigator.agent.live_input import needs_live_input, resolve_live_fill
 from navigator.agent.state import CallDeps, CallState
 from navigator.automation.browser.tools import execute as run_tool
 from navigator.automation.login_match import VAULT_PASSWORD_SENTINEL
 from navigator.core.schemas import FillField
+from navigator.core.settings import settings
 
 
 def executing(state: CallState, deps: CallDeps) -> CallState:
@@ -63,6 +65,11 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             )
         call = call.model_copy(update={"value": pwd})
         from_vault = True
+
+    if isinstance(call, FillField) and needs_live_input(call) and not from_vault:
+        call, live_detail = _resolve_user_fill(deps, call)
+        _trace_live_input(deps, state, call, live_detail)
+
     ran_on = state["page_id"]
     result, next_page_id = run_tool(deps.page, deps.graph, ran_on, call)
     if from_vault:
@@ -81,3 +88,41 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         last_page_id=ran_on,
         page_id=next_page_id,
     )
+
+
+def _resolve_user_fill(deps: CallDeps, call: FillField) -> tuple[FillField, str]:
+    def speak(line: str) -> None:
+        try:
+            deps.speaker.say(line)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live_input] TTS failed: {exc}", flush=True)
+
+    return resolve_live_fill(
+        call,
+        listen_once=deps.listen_once,
+        extract_entity=deps.extract_entity,
+        speak=speak,
+    )
+
+
+def _trace_live_input(
+    deps: CallDeps, state: CallState, call: FillField, detail: str
+) -> None:
+    from navigator.logs.decisions import DecisionTraceStore
+
+    try:
+        store = DecisionTraceStore(deps.decision_db_path or settings.db_path)
+        try:
+            store.record(
+                product_id=deps.product_id,
+                session_id=state.get("session_id", ""),
+                utterance="",
+                branch="live_input",
+                spoken=call.live_question or "",
+                chosen_flow_id=None,
+                detail=detail,
+            )
+        finally:
+            store.close()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[trace] live_input skipped: {exc}", flush=True)

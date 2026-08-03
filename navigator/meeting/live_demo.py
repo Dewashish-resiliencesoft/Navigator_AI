@@ -367,6 +367,7 @@ def run_live_meet_demo(
     on_meeting_ready=None,
     stop_event: threading.Event | None = None,
     on_bot_joined: Callable[[str], None] | None = None,
+    tier2_enabled: bool = False,
 ) -> str:
     """Join Meet, qualify prospect, then share screen and run demo. Returns bot id.
 
@@ -875,6 +876,34 @@ def run_live_meet_demo(
                 )
                 return gate is LoginGateResult.ok
 
+            def _listen_once(prompt: str) -> str:
+                """STT/stdin for requires_live_input FillField pauses."""
+                from types import SimpleNamespace
+
+                print(f"[live_input] {prompt}", flush=True)
+                if audio_frames is not None:
+                    from navigator.agent.nodes.listening import _from_audio
+
+                    try:
+                        return (
+                            _from_audio(
+                                SimpleNamespace(
+                                    audio_frames=audio_frames,
+                                    transcribe_audio=None,
+                                ),
+                                silence_timeout=12.0,
+                            )
+                            or ""
+                        ).strip()
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[live_input] audio listen failed: {exc}", flush=True)
+                if interactive_listen:
+                    try:
+                        return input("[live_input] > ").strip()
+                    except EOFError:
+                        return ""
+                return ""
+
             deps = CallDeps(
                 graph=graph_cfg,
                 page=page,
@@ -902,6 +931,8 @@ def run_live_meet_demo(
                 login_config=_login_cfg,
                 relogin=_relogin if (_login_email and _login_password) else None,
                 stop_event=stop_event,
+                listen_once=_listen_once,
+                tier2_enabled=tier2_enabled,
             )
 
             mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"

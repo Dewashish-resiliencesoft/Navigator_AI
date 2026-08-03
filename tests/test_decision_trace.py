@@ -1,7 +1,8 @@
 """DecisionTrace recording and queries.
 
-Phase 1 is infrastructure: nothing in the live path writes here yet, so these
-build a turn sequence by hand and prove it comes back out queryable.
+Phase 1 built the store. Phase 2 wires live planning to write one row per turn
+(`tests/test_live_decision.py`). These tests still prove the store round-trips
+a hand-built sequence.
 """
 
 from __future__ import annotations

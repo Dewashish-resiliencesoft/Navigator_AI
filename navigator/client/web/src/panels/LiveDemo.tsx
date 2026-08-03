@@ -38,6 +38,8 @@ export function LiveDemo() {
   const [domain, setDomain] = useState("");
   const [domainPlaceholder, setDomainPlaceholder] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
+  const [tier2Enabled, setTier2Enabled] = useState(false);
+  const [savingTier2, setSavingTier2] = useState(false);
   const [loginUrl, setLoginUrl] = useState("");
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
@@ -67,6 +69,13 @@ export function LiveDemo() {
         if (!alive) return;
         setDomain(d.base_url || "");
         setDomainPlaceholder(!!d.placeholder);
+      } catch (e) {
+        if (alive) err(errText(e));
+      }
+      try {
+        const t2 = await api.getTier2();
+        if (!alive) return;
+        setTier2Enabled(!!t2.enabled);
       } catch (e) {
         if (alive) err(errText(e));
       }
@@ -134,6 +143,23 @@ export function LiveDemo() {
       err(errText(e));
     } finally {
       setSavingDomain(false);
+    }
+  };
+
+  const saveTier2 = async (enabled: boolean) => {
+    setSavingTier2(true);
+    try {
+      const d = await api.putTier2(enabled);
+      setTier2Enabled(!!d.enabled);
+      ok(
+        d.enabled
+          ? "Live fallback ON — only when no trained flow or knowledge matches."
+          : "Live fallback OFF.",
+      );
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setSavingTier2(false);
     }
   };
 
@@ -244,6 +270,26 @@ export function LiveDemo() {
         <Button onClick={saveDomain} disabled={savingDomain || !domain.trim()}>
           {savingDomain ? "Saving…" : "Save domain"}
         </Button>
+      </Card>
+
+      <Card span="lg:col-span-2">
+        <CardTitle hint="When no trained flow or knowledge matches, optionally try one read-only on-screen click. Destructive actions are always refused. Default off.">
+          Live fallback (Tier 2)
+        </CardTitle>
+        <label className="mb-3 flex cursor-pointer items-start gap-2 text-[0.78rem] leading-snug text-[var(--muted)]">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={tier2Enabled}
+            disabled={savingTier2}
+            onChange={(e) => saveTier2(e.target.checked)}
+          />
+          <span>
+            Allow a constrained live click when the agent has no flow or
+            knowledge hit. Successful attempts go to the corrections queue for
+            review — never auto-promoted.
+          </span>
+        </label>
       </Card>
 
       <Card span="lg:col-span-2">

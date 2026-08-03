@@ -346,6 +346,9 @@ export const api = {
 
   getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
   putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),
+  getTier2: () => get<{ enabled: boolean }>("/client/api/tier2"),
+  putTier2: (enabled: boolean) =>
+    send<{ ok: boolean; enabled: boolean }>("/client/api/tier2", "PUT", { enabled }),
 
   getProductLogin: () =>
     get<{

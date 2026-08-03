@@ -35,6 +35,58 @@ export type RecorderStatus = {
   flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
 };
 
+export type ExploreQuestion = {
+  qid: string;
+  alias: string;
+  prompt: string;
+  context: Record<string, string>;
+};
+
+export type ExploreFlagged = {
+  label: string;
+  selector: string;
+  url: string;
+  reason: string;
+  source: string;
+};
+
+export type ExploreFieldDecision = {
+  alias: string;
+  label: string;
+  classification: "guessable_safe" | "business_specific" | string;
+  value: string;
+  answered_by: "auto" | "client" | "skipped_timeout" | "skipped_client" | string;
+};
+
+export type ExploreStatus = {
+  active: boolean;
+  has_credentials?: boolean;
+  job_id?: string;
+  phase?: string;
+  visited?: number;
+  steps?: number;
+  flagged?: ExploreFlagged[];
+  field_decisions?: ExploreFieldDecision[];
+  elapsed_s?: number;
+  error?: string;
+  flow_id?: string;
+  revision?: number | null;
+  pending_question?: ExploreQuestion | null;
+};
+
+/** One frame off the exploration WebSocket. `type` discriminates the payload. */
+export type ExploreEvent = {
+  type: string;
+  msg?: string;
+  level?: string;
+  phase?: string;
+  qid?: string;
+  alias?: string;
+  prompt?: string;
+  context?: Record<string, string>;
+  [key: string]: unknown;
+};
+
 export type MetricPoint = {
   day: string;
   actions: number;
@@ -360,7 +412,27 @@ export const api = {
       flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
       setup_discarded?: number;
     }>("/client/api/record/stop", "POST"),
+
+  exploreStatus: () => get<ExploreStatus>("/client/api/explore"),
+  exploreStart: (body: {
+    base_url?: string | null;
+    max_pages?: number;
+    max_steps?: number;
+    max_wall_clock_s?: number;
+  }) => send<ExploreStatus>("/client/api/explore/start", "POST", body),
+  exploreStop: () => send<ExploreStatus>("/client/api/explore/stop", "POST"),
+  exploreAnswer: (qid: string, value: string, skip = false) =>
+    send<{ ok: boolean }>("/client/api/explore/answer", "POST", { qid, value, skip }),
+  exploreTicket: () =>
+    send<{ ticket: string; expires_in_s: number }>("/client/api/explore/ticket", "POST"),
 };
+
+/** WebSocket URL for the live exploration log. Ticket is single-use. */
+export async function exploreSocketUrl(): Promise<string> {
+  const { ticket } = await api.exploreTicket();
+  const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+  return `${scheme}://${window.location.host}/client/api/explore/ws?ticket=${encodeURIComponent(ticket)}`;
+}
 
 export const slugKey = (label: string): string =>
   label

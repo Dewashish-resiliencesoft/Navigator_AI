@@ -122,6 +122,49 @@ Enforced in `navigator/app/registry.py`:
 A rejected upload is validated *before* anything is written, so a bad push can
 never break a running live demo.
 
+### Two ways to create a flow, one way to activate it
+
+A Client can produce a flow two ways. They differ only in who does the walking.
+
+| | Manual recording | Autonomous exploration |
+|---|---|---|
+| Trigger | "Record a flow" — `POST /client/api/record/start` | "Auto-Explore & Generate Flow" — `POST /client/api/explore/start` |
+| Who drives | A human clicks through the product | The explorer picks actions itself (`navigator/automation/explore/`) |
+| Actions used | Playwright, captured from real clicks | The same four tools — `click_element`, `fill_field`, `navigate`, `wait_for` |
+| Output | `list[RecordedStep]` | `list[RecordedStep]` — the identical type |
+| Merge | `merge_recorded_flow()` | `merge_recorded_flow()` — the identical function |
+| Stored as | `put_site_graph(..., "recorded", publish=False)` | `put_site_graph(..., "explored", publish=False)` |
+
+Both land as an **unpublished draft**. Both are reviewed and edited in the same
+dashboard UI, and both become live only through `activate()` /
+`POST /client/api/site-graph/publish`. The `source` column records provenance
+for audit; it grants no extra privilege. **Nothing produced by autonomous
+exploration is ever auto-activated.**
+
+Exploration is bounded and fail-closed:
+
+- **Bounded** by `ExplorationBudget` — max pages, max steps, wall clock, and an
+  early stop when a full pass finds no unvisited interactive element. Page
+  states are identified by URL *path plus a DOM structure hash*, never URL
+  alone, so an SPA that changes state without changing the URL is tracked, and a
+  paginated list that links back to itself terminates.
+- **Fail-closed on mutation.** Before dispatching anything,
+  `guardrail.classify_action()` runs a keyword heuristic *and* an LLM judgment
+  pass on the element about to be touched. A hit, a missing judge, an
+  unreachable judge, or an unparseable answer all mean *do not execute*; the
+  action goes on a "skipped — needs your review" list instead. This check lives
+  in the executor (`explore/explorer.py::_step`), not in the reasoning prompt, so
+  a model that suggests a destructive action still cannot perform one.
+- **Fail-closed on unknown data.** A form field is auto-filled only when a
+  generic placeholder is provably harmless (a name, an email, a date). Anything
+  business-specific pauses the run and asks the Client over the live exploration
+  channel; the run resumes when they answer, and skips the field if they don't.
+
+Exploration failures are written to `ActionLog` with the same schema and the same
+`product_id` scoping as live-call failures, so the reflection pass and the
+corrections queue treat them identically and a later run can retrieve what an
+earlier one learned.
+
 ---
 
 ## 5. Usage and billing
@@ -165,8 +208,15 @@ Rules:
   embeddable on, a public landing page.
 - Every `/client/api/*` route takes `DashboardAuthedProduct`. There are no
   unauthenticated config or recorder routes — the recorder
-  (`/client/api/record/*`) drives a headful browser and writes to the site
-  graph, so it is dashboard-JWT-only.
+  (`/client/api/record/*`) and the explorer (`/client/api/explore/*`) both drive
+  a browser and write to the site graph, so both are dashboard-JWT-only.
+- The one exception in *form* is `WS /client/api/explore/ws`, because a browser
+  WebSocket cannot send an `Authorization` header. It is not an exception in
+  *substance*: the dashboard exchanges its JWT on the authed
+  `POST /client/api/explore/ticket` for a single-use 60-second ticket, and the
+  socket is read-only. Answers to the explorer's questions go back over the
+  authed `POST /client/api/explore/answer`, never over the socket, so a redeemed
+  ticket can never be used to inject a field value.
 
 ---
 
@@ -207,3 +257,7 @@ needs belongs in their site graph, not in the code.
 6. An End User never authenticates and never reaches a Client surface.
 7. A Client dashboard surface is never reachable from the public embed path.
 8. The public embed button says exactly "Start a demo".
+9. Manual recording and autonomous exploration both produce unpublished drafts
+   and converge on the same review-and-activate gate. Nothing explored is ever
+   auto-activated, and the exploration guardrail is enforced in the executor,
+   not in a prompt.

@@ -24,7 +24,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from navigator.knowledge.site_graph import SiteGraph, SiteGraphError, parse_site_graph
 
-SiteGraphSource = Literal["yaml", "recorded", "sdk"]
+SiteGraphSource = Literal["yaml", "recorded", "explored", "sdk"]
+"""How a revision was produced. `recorded` is a human walkthrough, `explored` is
+autonomous exploration -- both land as unpublished drafts in the same review
+gate, but the provenance is worth keeping for audit."""
 """How a revision was authored. Provenance only -- all three are treated alike,
 because a human wrote or approved the postconditions either way."""
 

@@ -20,7 +20,17 @@ from typing import Annotated, Callable
 from uuid import UUID
 from datetime import datetime, timezone
 
-from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
@@ -1429,6 +1439,186 @@ def client_record_stop(
         "setup_discarded": int(getattr(job, "setup_discarded", 0) or 0),
         "phase": getattr(job, "phase", "done"),
     }
+
+
+# -- autonomous exploration ---------------------------------------------------
+#
+# The second flow-creation path. It produces the same RecordedStep list as the
+# manual recorder and merges through the same `merge_recorded_flow` +
+# `put_site_graph(publish=False)`, so an explored flow lands in the identical
+# review-before-activate gate. Nothing here publishes anything.
+
+
+class ExploreStartBody(BaseModel):
+    base_url: str | None = None
+    """Defaults to the stored product login URL / site graph base_url."""
+    max_pages: int = Field(default=25, ge=1, le=200)
+    max_steps: int = Field(default=120, ge=1, le=1000)
+    max_wall_clock_s: float = Field(default=600.0, ge=30.0, le=7200.0)
+    answer_timeout_s: float = Field(default=300.0, ge=10.0, le=3600.0)
+
+
+class ExploreAnswerBody(BaseModel):
+    qid: str = Field(min_length=1)
+    value: str = ""
+    skip: bool = False
+
+
+def _explore_base_url(product: Product, registry: Registry, vault: CredentialVault) -> str:
+    login_url = (vault.login_url(product.product_id) or "").strip()
+    if login_url:
+        return login_url
+    try:
+        return parse_site_graph(registry.latest_revision(product.product_id).yaml).base_url
+    except (ProductNotFound, SiteGraphError):
+        raise HTTPException(
+            400, "no product URL on file — set Product Login or upload a site graph first"
+        ) from None
+
+
+@app.get("/client/api/explore")
+def client_explore_status(product: DashboardAuthedProduct, vault: Vault) -> dict:
+    from navigator.automation.explore.runner import active_session
+
+    session = active_session()
+    status: dict = (
+        {"active": False}
+        if session is None or session.product_id != product.product_id
+        else session.status()
+    )
+    # public(), not credentials_for(): the dashboard only needs to know a login
+    # exists, and this route must not decrypt (or fail on an unconfigured key).
+    status["has_credentials"] = bool(vault.public(product.product_id)["has_password"])
+    return status
+
+
+@app.post("/client/api/explore/start", status_code=202)
+def client_explore_start(
+    product: DashboardAuthedProduct, body: ExploreStartBody, registry: Reg, vault: Vault
+) -> dict:
+    from navigator.automation.explore.runner import start_exploration
+    from navigator.automation.explore.session import ExplorationBudget
+
+    base_url = (body.base_url or "").strip() or _explore_base_url(product, registry, vault)
+    try:
+        persona = parse_site_graph(
+            registry.latest_revision(product.product_id).yaml
+        ).effective_persona()
+        product_name = persona.product_name
+    except (ProductNotFound, SiteGraphError):
+        raise HTTPException(
+            400, "upload or record a site graph before exploring"
+        ) from None
+
+    try:
+        session = start_exploration(
+            product_id=product.product_id,
+            base_url=base_url,
+            product_name=product_name,
+            budget=ExplorationBudget(
+                max_pages=body.max_pages,
+                max_steps=body.max_steps,
+                max_wall_clock_s=body.max_wall_clock_s,
+                answer_timeout_s=body.answer_timeout_s,
+            ),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return session.status()
+
+
+@app.post("/client/api/explore/stop")
+def client_explore_stop(product: DashboardAuthedProduct) -> dict:
+    from navigator.automation.explore.runner import active_session
+
+    session = active_session()
+    if session is None or session.product_id != product.product_id:
+        raise HTTPException(409, "no active exploration")
+    session.request_stop()
+    return session.status()
+
+
+@app.post("/client/api/explore/answer")
+def client_explore_answer(
+    product: DashboardAuthedProduct, body: ExploreAnswerBody
+) -> dict:
+    """Answer the pending business-specific field question; exploration resumes."""
+    from navigator.automation.explore.runner import active_session
+
+    session = active_session()
+    if session is None or session.product_id != product.product_id:
+        raise HTTPException(409, "no active exploration")
+    ok = (
+        session.skip_question(body.qid)
+        if body.skip
+        else session.answer(body.qid, body.value)
+    )
+    if not ok:
+        # Stale tab: the question it is answering is no longer the open one.
+        raise HTTPException(409, "that question is no longer pending")
+    return {"ok": True}
+
+
+@app.post("/client/api/explore/ticket", status_code=201)
+def client_explore_ticket(product: DashboardAuthedProduct) -> dict:
+    """Mint a single-use, short-lived ticket for the exploration WebSocket.
+
+    The browser WebSocket API cannot set an Authorization header, so the JWT is
+    exchanged here (on an authed route) for a one-shot ticket carried in the
+    query string. Same shape as the public `sess_` token: single use, hashed
+    nowhere it can leak, and useless once redeemed.
+    """
+    from navigator.automation.explore.tickets import mint_ticket
+
+    return {"ticket": mint_ticket(product.product_id), "expires_in_s": 60}
+
+
+@app.websocket("/client/api/explore/ws")
+async def client_explore_ws(websocket: WebSocket, ticket: str = Query(default="")) -> None:
+    """Live exploration channel: replayed log, then events as they happen.
+
+    Read-only. Answers go over the authed POST route, not this socket, so a
+    redeemed ticket can never be used to inject a field value.
+    """
+    import asyncio
+
+    from navigator.automation.explore.runner import active_session
+    from navigator.automation.explore.tickets import redeem_ticket
+
+    product_id = redeem_ticket(ticket)
+    if product_id is None:
+        await websocket.close(code=4401)
+        return
+    session = active_session()
+    if session is None or session.product_id != product_id:
+        await websocket.close(code=4404)
+        return
+
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue(maxsize=1000)
+
+    class _Bridge:
+        """The explorer runs on a plain thread; hop each event onto the loop."""
+
+        def put_nowait(self, event: dict) -> None:
+            loop.call_soon_threadsafe(queue.put_nowait, event)
+
+    bridge = _Bridge()
+    replay = session.add_listener(bridge)
+    try:
+        await websocket.send_json({"type": "status", **session.status()})
+        for event in replay:
+            await websocket.send_json(event)
+        while True:
+            event = await queue.get()
+            await websocket.send_json(event)
+            if event.get("type") == "done":
+                break
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        session.remove_listener(bridge)
 
 
 @app.get("/client/api/metrics")

@@ -1509,6 +1509,169 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/explore:
+    get:
+      summary: Client Explore Status
+      operationId: client_explore_status_client_api_explore_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Explore Status Client Api Explore Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/explore/start:
+    post:
+      summary: Client Explore Start
+      operationId: client_explore_start_client_api_explore_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExploreStartBody'
+      responses:
+        '202':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Explore Start Client Api Explore Start Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/explore/stop:
+    post:
+      summary: Client Explore Stop
+      operationId: client_explore_stop_client_api_explore_stop_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Explore Stop Client Api Explore Stop Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/explore/answer:
+    post:
+      summary: Client Explore Answer
+      description: Answer the pending business-specific field question; exploration resumes.
+      operationId: client_explore_answer_client_api_explore_answer_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExploreAnswerBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Explore Answer Client Api Explore Answer Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/explore/ticket:
+    post:
+      summary: Client Explore Ticket
+      description: 'Mint a single-use, short-lived ticket for the exploration WebSocket.
+
+
+        The browser WebSocket API cannot set an Authorization header, so the JWT is
+
+        exchanged here (on an authed route) for a one-shot ticket carried in the
+
+        query string. Same shape as the public `sess_` token: single use, hashed
+
+        nowhere it can leak, and useless once redeemed.'
+      operationId: client_explore_ticket_client_api_explore_ticket_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Explore Ticket Client Api Explore Ticket Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/metrics:
     get:
       summary: Client Metrics
@@ -1973,6 +2136,57 @@ components:
       - actions
       - failures
       title: DemoView
+    ExploreAnswerBody:
+      properties:
+        qid:
+          type: string
+          minLength: 1
+          title: Qid
+        value:
+          type: string
+          title: Value
+          default: ''
+        skip:
+          type: boolean
+          title: Skip
+          default: false
+      type: object
+      required:
+      - qid
+      title: ExploreAnswerBody
+    ExploreStartBody:
+      properties:
+        base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Url
+        max_pages:
+          type: integer
+          maximum: 200.0
+          minimum: 1.0
+          title: Max Pages
+          default: 25
+        max_steps:
+          type: integer
+          maximum: 1000.0
+          minimum: 1.0
+          title: Max Steps
+          default: 120
+        max_wall_clock_s:
+          type: number
+          maximum: 7200.0
+          minimum: 30.0
+          title: Max Wall Clock S
+          default: 600.0
+        answer_timeout_s:
+          type: number
+          maximum: 3600.0
+          minimum: 10.0
+          title: Answer Timeout S
+          default: 300.0
+      type: object
+      title: ExploreStartBody
     FillField:
       properties:
         expects:
@@ -2445,6 +2659,7 @@ components:
           enum:
           - yaml
           - recorded
+          - explored
           - sdk
           title: Source
         yaml:
@@ -2485,6 +2700,7 @@ components:
           enum:
           - yaml
           - recorded
+          - explored
           - sdk
           title: Source
           default: yaml

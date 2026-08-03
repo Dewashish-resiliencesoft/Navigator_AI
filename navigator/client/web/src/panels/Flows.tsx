@@ -1,7 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowDown, ArrowUp, Circle, Plus, Save, Square, Trash2 } from "lucide-react";
-import { api, type Flow, type RecorderStatus } from "../lib/api";
+import {
+  ArrowDown,
+  ArrowUp,
+  Circle,
+  Compass,
+  Plus,
+  Save,
+  ShieldAlert,
+  Square,
+  Trash2,
+} from "lucide-react";
+import {
+  api,
+  exploreSocketUrl,
+  type ExploreEvent,
+  type ExploreQuestion,
+  type ExploreStatus,
+  type Flow,
+  type RecorderStatus,
+} from "../lib/api";
 import { soft, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -299,6 +317,261 @@ export function Flows() {
           </div>
         )}
       </Card>
+
+      <AutoExplore onFinished={load} />
     </motion.div>
+  );
+}
+
+/** The second flow-creation path. Same review gate, no human walkthrough. */
+function AutoExplore({ onFinished }: { onFinished: () => void }) {
+  const { ok, err } = useUi();
+  const [status, setStatus] = useState<ExploreStatus>({ active: false });
+  const [baseUrl, setBaseUrl] = useState("");
+  const [events, setEvents] = useState<ExploreEvent[]>([]);
+  const [question, setQuestion] = useState<ExploreQuestion | null>(null);
+  const [answer, setAnswer] = useState("");
+  const socket = useRef<WebSocket | null>(null);
+  const logEnd = useRef<HTMLDivElement | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const s = await api.exploreStatus();
+      setStatus(s);
+      setQuestion(s.pending_question ?? null);
+      return s;
+    } catch (e) {
+      err(errText(e));
+      return null;
+    }
+  }, [err]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    logEnd.current?.scrollIntoView({ block: "nearest" });
+  }, [events.length]);
+
+  const connect = useCallback(async () => {
+    socket.current?.close();
+    const ws = new WebSocket(await exploreSocketUrl());
+    socket.current = ws;
+    ws.onmessage = (m) => {
+      const event: ExploreEvent = JSON.parse(m.data);
+      if (event.type === "status") {
+        setStatus(event as unknown as ExploreStatus);
+        return;
+      }
+      setEvents((prev) => [...prev, event]);
+      if (event.type === "question") {
+        setQuestion({
+          qid: String(event.qid),
+          alias: String(event.alias),
+          prompt: String(event.prompt),
+          context: (event.context ?? {}) as Record<string, string>,
+        });
+        setAnswer("");
+      }
+      if (event.type === "done") {
+        setQuestion(null);
+        refresh();
+        onFinished();
+      }
+    };
+    ws.onclose = () => {
+      socket.current = null;
+    };
+  }, [onFinished, refresh]);
+
+  useEffect(() => () => socket.current?.close(), []);
+
+  const start = async () => {
+    try {
+      setEvents([]);
+      const s = await api.exploreStart({ base_url: baseUrl.trim() || null });
+      setStatus(s);
+      await connect();
+      ok("Exploring — nothing is activated until you review it.");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const stop = async () => {
+    try {
+      setStatus(await api.exploreStop());
+      ok("Stopping — the steps found so far are saved as a draft.");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const reply = async (skip: boolean) => {
+    if (!question) return;
+    try {
+      await api.exploreAnswer(question.qid, answer, skip);
+      setQuestion(null);
+      setAnswer("");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const running = status.active;
+  const flagged = status.flagged ?? [];
+
+  return (
+    <Card>
+      <CardTitle
+        hint="Explores your product on its own and drafts a flow. Uses your stored Product Login. Nothing is activated until you review it."
+        right={
+          <StatusPill
+            status={running ? (question ? "starting" : "running") : "idle"}
+            label={question ? "Waiting on you" : undefined}
+          />
+        }
+      >
+        Auto-Explore &amp; Generate Flow
+      </CardTitle>
+
+      <div className="grid gap-x-3 sm:grid-cols-2">
+        <Field label="Product URL">
+          <Input
+            value={baseUrl}
+            onChange={setBaseUrl}
+            placeholder="Defaults to your stored Product Login URL"
+          />
+        </Field>
+        <Field label="Credentials">
+          <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
+            {status.has_credentials
+              ? "Using your saved Product Login. No credentials are entered here."
+              : "No Product Login saved — only your signed-out pages will be explored."}
+          </p>
+        </Field>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={start} disabled={running}>
+          <Compass size={13} /> Start exploring
+        </Button>
+        <Button variant="danger" onClick={stop} disabled={!running}>
+          <Square size={13} /> Stop
+        </Button>
+      </div>
+
+      {question && (
+        <div
+          className="mt-4 rounded-xl border-2 border-amber-500/60 p-4"
+          style={{ background: "rgb(245 158 11 / 0.06)" }}
+        >
+          <p className="text-[0.78rem] font-medium tracking-tight">Waiting on your input</p>
+          <p className="mt-1 text-[0.8rem]">{question.prompt}</p>
+          <p className="mt-0.5 text-[0.7rem] text-[var(--muted)]">
+            Field <code>{question.alias}</code>
+            {question.context?.url ? ` on ${question.context.url}` : ""}
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <Input value={answer} onChange={setAnswer} placeholder="Your answer" />
+            <Button onClick={() => reply(false)} disabled={!answer.trim()}>
+              Answer &amp; resume
+            </Button>
+            <Button variant="secondary" onClick={() => reply(true)}>
+              Skip this field
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {(running || events.length > 0) && (
+        <div
+          className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <BarLoader
+            label={
+              running
+                ? `${status.phase ?? "exploring"} — ${status.steps ?? 0} step${(status.steps ?? 0) === 1 ? "" : "s"}, ${status.visited ?? 0} page${(status.visited ?? 0) === 1 ? "" : "s"}`
+                : `Finished — ${status.steps ?? 0} step${(status.steps ?? 0) === 1 ? "" : "s"} drafted${status.revision ? ` as revision ${status.revision}` : ""}`
+            }
+          />
+          <div className="mt-3 max-h-56 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed">
+            {events
+              .filter((e) => e.type === "log" || e.type === "flagged" || e.type === "field")
+              .map((e, i) => (
+                <div
+                  key={i}
+                  className={
+                    e.type === "flagged"
+                      ? "text-amber-600 dark:text-amber-400"
+                      : e.level === "warn"
+                        ? "text-red-500"
+                        : "text-[var(--muted)]"
+                  }
+                >
+                  {e.type === "flagged"
+                    ? `skipped "${e.label}" — ${e.reason}`
+                    : e.type === "field"
+                      ? `filled ${e.alias} (${e.classification})`
+                      : String(e.msg ?? "")}
+                </div>
+              ))}
+            <div ref={logEnd} />
+          </div>
+        </div>
+      )}
+
+      {flagged.length > 0 && (
+        <div className="mt-4">
+          <p className="flex items-center gap-1.5 text-[0.78rem] font-medium tracking-tight">
+            <ShieldAlert size={14} className="text-amber-500" />
+            Skipped — needs your review ({flagged.length})
+          </p>
+          <p className="mt-1 text-[0.7rem] text-[var(--muted)]">
+            These looked like they change or send real data, so they were never clicked.
+            Record them manually if you want them in a demo.
+          </p>
+          <div className="mt-2 space-y-1">
+            {flagged.map((f, i) => (
+              <div
+                key={i}
+                className="rounded-lg border px-2 py-1.5 text-[0.72rem]"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <span className="font-medium">{f.label}</span>
+                <span className="text-[var(--muted)]"> — {f.reason}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {status.field_decisions && status.field_decisions.length > 0 && !running && (
+        <div className="mt-4">
+          <p className="text-[0.78rem] font-medium tracking-tight">Form fields</p>
+          <div className="mt-2 space-y-1">
+            {status.field_decisions.map((d, i) => (
+              <div
+                key={i}
+                className="rounded-lg border px-2 py-1.5 text-[0.72rem]"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <span className="font-medium">{d.label || d.alias}</span>
+                <span className="text-[var(--muted)]">
+                  {" — "}
+                  {d.classification === "guessable_safe"
+                    ? `placeholder "${d.value}"`
+                    : d.answered_by === "client"
+                      ? `your answer "${d.value}"`
+                      : "skipped, no answer given"}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }

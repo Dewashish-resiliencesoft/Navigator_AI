@@ -730,7 +730,7 @@ paths:
   /v1/products/knowledge:
     post:
       summary: Ingest Knowledge
-      description: Add a product_knowledge doc for planning retrieval.
+      description: 'Add product knowledge: chunk, tag, and deduplicate.'
       operationId: ingest_knowledge_v1_products_knowledge_post
       parameters:
       - name: authorization

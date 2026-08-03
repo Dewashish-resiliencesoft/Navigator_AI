@@ -100,6 +100,20 @@ CREATE TABLE IF NOT EXISTS site_graph_revisions (
     PRIMARY KEY (product_id, revision)
 );
 CREATE INDEX IF NOT EXISTS products_api_key ON products (api_key_hash);
+CREATE TABLE IF NOT EXISTS product_map (
+    product_id     TEXT NOT NULL,
+    area_id        TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    purpose        TEXT NOT NULL,
+    flow_ids       TEXT NOT NULL,
+    chunk_ids      TEXT NOT NULL,
+    categories     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (product_id, area_id),
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+);
+CREATE INDEX IF NOT EXISTS product_map_product ON product_map (product_id);
 """
 
 

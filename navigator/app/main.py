@@ -899,14 +899,28 @@ class KnowledgeIngestBody(BaseModel):
 
 
 @app.post("/v1/products/knowledge", status_code=201)
-def ingest_knowledge(body: KnowledgeIngestBody, product: AuthedProduct) -> dict:
-    """Add a product_knowledge doc for planning retrieval."""
-    from navigator.knowledge.memory.seed import seed_knowledge
+def ingest_knowledge(body: KnowledgeIngestBody, product: AuthedProduct, registry: Reg) -> dict:
+    """Add product knowledge: chunk, tag, and deduplicate."""
+    from navigator.knowledge.ingest import ingest_knowledge_text
 
-    doc_id = seed_knowledge(
-        settings.chroma_path, product_id=product.product_id, text=body.text
+    try:
+        current_revision = registry.published_revision(product.product_id)
+    except ProductNotFound:
+        current_revision = None
+
+    chunk_ids = ingest_knowledge_text(
+        body.text,
+        product.product_id,
+        revision_tied_to=current_revision,
+        judge=None,  # v1: no LLM tagging; placeholder for future
+        chroma_path=settings.chroma_path,
     )
-    return {"id": doc_id, "product_id": product.product_id}
+    return {
+        "chunk_ids": chunk_ids,
+        "chunk_count": len(chunk_ids),
+        "product_id": product.product_id,
+        "ingested_at_revision": current_revision,
+    }
 
 
 @app.get("/")

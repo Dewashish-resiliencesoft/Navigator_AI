@@ -909,14 +909,28 @@ class KnowledgeIngestBody(BaseModel):
 
 
 @app.post("/v1/products/knowledge", status_code=201)
-def ingest_knowledge(body: KnowledgeIngestBody, product: AuthedProduct) -> dict:
-    """Add a product_knowledge doc for planning retrieval."""
-    from navigator.knowledge.memory.seed import seed_knowledge
+def ingest_knowledge(body: KnowledgeIngestBody, product: AuthedProduct, registry: Reg) -> dict:
+    """Add product knowledge: chunk, tag, and deduplicate."""
+    from navigator.knowledge.ingest import ingest_knowledge_text
 
-    doc_id = seed_knowledge(
-        settings.chroma_path, product_id=product.product_id, text=body.text
+    try:
+        current_revision = registry.published_revision(product.product_id)
+    except ProductNotFound:
+        current_revision = None
+
+    chunk_ids = ingest_knowledge_text(
+        body.text,
+        product.product_id,
+        revision_tied_to=current_revision,
+        judge=None,  # v1: no LLM tagging; placeholder for future
+        chroma_path=settings.chroma_path,
     )
-    return {"id": doc_id, "product_id": product.product_id}
+    return {
+        "chunk_ids": chunk_ids,
+        "chunk_count": len(chunk_ids),
+        "product_id": product.product_id,
+        "ingested_at_revision": current_revision,
+    }
 
 
 @app.get("/")
@@ -1092,6 +1106,10 @@ class ProductDomainBody(BaseModel):
     base_url: str = Field(min_length=1)
 
 
+class Tier2Body(BaseModel):
+    enabled: bool
+
+
 class ProductLoginBody(BaseModel):
     login_url: str = ""
     username: str = ""
@@ -1142,6 +1160,21 @@ def client_get_product_domain(product: DashboardAuthedProduct, registry: Reg) ->
         "base_url": graph.base_url,
         "placeholder": "example.com" in (graph.base_url or "").lower(),
     }
+
+
+@app.get("/client/api/tier2")
+def client_get_tier2(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    """Per-product opt-in for constrained live Tier-2 fallback. Default OFF."""
+    fresh = registry.get(product.product_id)
+    return {"enabled": bool(fresh.tier2_enabled)}
+
+
+@app.put("/client/api/tier2")
+def client_put_tier2(
+    product: DashboardAuthedProduct, body: Tier2Body, registry: Reg
+) -> dict:
+    updated = registry.set_tier2_enabled(product.product_id, body.enabled)
+    return {"ok": True, "enabled": bool(updated.tier2_enabled)}
 
 @app.put("/client/api/product-domain")
 def client_put_product_domain(

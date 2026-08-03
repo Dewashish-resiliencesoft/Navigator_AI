@@ -382,6 +382,8 @@ class DemoRunner:
             # Dashboard static admit-flow may pass open_meet_in_browser=True;
             # default False so API workers don't pop a browser on the server.
             open_browser = bool(kwargs.pop("open_meet_in_browser", False))
+            if "tier2_enabled" not in kwargs:
+                kwargs["tier2_enabled"] = self._product_tier2_enabled(handle.product_id)
             run(
                 meeting_url=handle.meeting_url,
                 graph_cfg=graph,
@@ -418,3 +420,15 @@ class DemoRunner:
                 1 for e in entries if not (e.verify and e.verify.passed)
             )
             self._persist_run(handle)
+
+    @staticmethod
+    def _product_tier2_enabled(product_id: str) -> bool:
+        """Read per-product Tier-2 opt-in. Missing product / DB → OFF."""
+        try:
+            from navigator.app.registry import ProductNotFound, Registry
+            from navigator.core.settings import settings
+
+            with Registry(settings.db_path) as reg:
+                return bool(reg.get(product_id).tier2_enabled)
+        except Exception:  # noqa: BLE001
+            return False

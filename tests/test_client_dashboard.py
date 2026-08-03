@@ -350,3 +350,34 @@ def test_client_runs_list_empty_and_scoped(tmp_path):
         assert events.json() == []
     finally:
         _cleanup(bundle, prev)
+
+
+def test_client_tier2_toggle_roundtrip(tmp_path):
+    bundle = _client(tmp_path, client_api_key="")
+    client, prev, registry, log, auth_store = bundle
+    try:
+        p = register(client, "Acme Inbox", ACME)
+        auth_store.create_user(product_id=p["id"], email="test@acme.com", password="password")
+        login_resp = client.post(
+            "/v1/auth/login",
+            json={"email": "test@acme.com", "password": "password"},
+            headers={"Host": "localhost"},
+        )
+        assert login_resp.status_code == 200, login_resp.text
+        jwt = login_resp.json()["access_token"]
+        headers = {"Host": "localhost", "Authorization": f"Bearer {jwt}"}
+
+        got = client.get("/client/api/tier2", headers=headers)
+        assert got.status_code == 200, got.text
+        assert got.json()["enabled"] is False
+
+        on = client.put("/client/api/tier2", json={"enabled": True}, headers=headers)
+        assert on.status_code == 200, on.text
+        assert on.json()["enabled"] is True
+        assert registry.get(p["id"]).tier2_enabled is True
+
+        off = client.put("/client/api/tier2", json={"enabled": False}, headers=headers)
+        assert off.status_code == 200
+        assert off.json()["enabled"] is False
+    finally:
+        _cleanup(bundle, prev)

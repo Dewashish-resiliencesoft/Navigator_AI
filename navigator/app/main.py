@@ -935,7 +935,8 @@ def ingest_knowledge(body: KnowledgeIngestBody, product: AuthedProduct, registry
 
 @app.get("/")
 def root() -> RedirectResponse:
-    return RedirectResponse(url="/docs")
+    """Landing URL when the API starts — Client dashboard, not OpenAPI docs."""
+    return RedirectResponse(url="/client", status_code=307)
 
 
 @app.get("/healthz")

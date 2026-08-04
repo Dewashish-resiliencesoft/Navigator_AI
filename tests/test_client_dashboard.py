@@ -50,6 +50,17 @@ def _cleanup(client_bundle, prev_key):
     log.close()
 
 
+def test_root_redirects_to_client(tmp_path):
+    bundle = _client(tmp_path, client_api_key="nav_test")
+    client, prev, *_ = bundle
+    try:
+        r = client.get("/", headers={"Host": "localhost"}, follow_redirects=False)
+        assert r.status_code == 307
+        assert r.headers["location"] == "/client"
+    finally:
+        _cleanup(bundle, prev)
+
+
 def test_client_page_ok_on_localhost(tmp_path):
     bundle = _client(tmp_path, client_api_key="nav_test")
     client, prev, registry, log, auth_store = bundle

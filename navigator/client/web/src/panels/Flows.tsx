@@ -18,7 +18,9 @@ import {
   formatExploreElapsed,
   useExploreSession,
 } from "../lib/exploreSession";
+import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
+import { ExploreWatch } from "../components/ExploreWatch";
 import {
   BarLoader,
   Button,
@@ -38,6 +40,9 @@ const isRecording = (s: RecorderStatus) =>
 
 export function Flows() {
   const { ok, err } = useUi();
+  const epoch = useProductData((s) => s.epoch);
+  const applyPlaylist = useProductData((s) => s.applyPlaylist);
+  const setPlaylist = useProductData((s) => s.setPlaylist);
   const [rows, setRows] = useState<Flow[] | null>(null);
   const [recording, setRecording] = useState(false);
   const [recPhase, setRecPhase] = useState<string>("");
@@ -52,8 +57,11 @@ export function Flows() {
   const load = useCallback(async () => {
     try {
       const [d, g] = await Promise.all([api.getFlows(), api.getSiteGraph()]);
-      setRows(d.playlist ?? []);
-      
+      const playlist = d.playlist ?? [];
+      setRows(playlist);
+      // ponytail: setPlaylist only — applyPlaylist would re-bump epoch and loop load
+      setPlaylist(playlist);
+
       const counts: Record<string, number> = {};
       let inFlows = false;
       let currentFlow = null;
@@ -71,11 +79,11 @@ export function Flows() {
     } catch (e) {
       err(errText(e));
     }
-  }, [err]);
+  }, [err, setPlaylist]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void load();
+  }, [load, epoch]);
 
   const stopPolling = () => {
     if (timer.current !== null) {
@@ -173,8 +181,44 @@ export function Flows() {
     if (!rows) return;
     try {
       const d = await api.putFlows(rows);
-      setRows(d.playlist ?? rows);
+      const playlist = d.playlist ?? rows;
+      setRows(playlist);
+      applyPlaylist(playlist);
       ok("Flow playlist saved.");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const confirmRemoveFlow = async () => {
+    if (confirmDelete === null || !rows) return;
+    const idx = confirmDelete;
+    const row = rows[idx];
+    setConfirmDelete(null);
+    if (!row) return;
+
+    // Empty / unsaved playlist row — local drop only.
+    if (!row.flow_id?.trim()) {
+      const next = rows
+        .filter((_, n) => n !== idx)
+        .map((f, n) => ({ ...f, order: n + 1 }));
+      setRows(next);
+      setPlaylist(next);
+      ok("Row removed.");
+      return;
+    }
+
+    try {
+      const d = await api.deleteFlow(row.flow_id.trim(), row.page_id?.trim() || null);
+      const playlist = d.playlist ?? [];
+      setRows(playlist);
+      applyPlaylist(playlist);
+      const explore = useExploreSession.getState();
+      if (explore.targetFlowId === row.flow_id.trim()) {
+        explore.setTargetFlowId("");
+        explore.setTargetFlowName("");
+      }
+      ok(`Deleted “${row.name || row.flow_id}” from the draft site graph.`);
     } catch (e) {
       err(errText(e));
     }
@@ -244,13 +288,12 @@ export function Flows() {
         </div>
         {confirmDelete !== null && (
           <ConfirmDialog
-            title="Remove flow from playlist?"
-            message={`Are you sure you want to remove "${rows?.[confirmDelete]?.name || "this flow"}" from the playlist? The flow definition will remain in the site graph.`}
-            confirmLabel="Remove"
+            title="Delete this flow?"
+            message={`Remove “${rows?.[confirmDelete]?.name || rows?.[confirmDelete]?.flow_id || "this flow"}” from the playlist and delete its steps from the draft site graph. Publish later to make the change live.`}
+            confirmLabel="Delete"
             danger
             onConfirm={() => {
-              setRows(rows!.filter((_, n) => n !== confirmDelete));
-              setConfirmDelete(null);
+              void confirmRemoveFlow();
             }}
             onCancel={() => setConfirmDelete(null)}
           />
@@ -516,7 +559,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const stopExplore = useExploreSession((s) => s.stop);
   const replyExplore = useExploreSession((s) => s.reply);
   const logEnd = useRef<HTMLDivElement | null>(null);
-  const [flows, setFlows] = useState<Flow[]>([]);
+  const flows = useProductData((s) => s.playlist).filter((f) => !!f.flow_id?.trim());
 
   useEffect(() => {
     setOnFlowDrafted(onFinished);
@@ -528,11 +571,11 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   }, [hydrate]);
 
   useEffect(() => {
-    void api
-      .getFlows()
-      .then((r) => setFlows(r.playlist ?? []))
-      .catch(() => setFlows([]));
-  }, []);
+    if (!targetFlowId) return;
+    if (flows.some((f) => f.flow_id === targetFlowId)) return;
+    setTargetFlowId("");
+    setTargetFlowName("");
+  }, [flows, targetFlowId, setTargetFlowId, setTargetFlowName]);
 
   useEffect(() => {
     logEnd.current?.scrollIntoView({ block: "nearest" });
@@ -739,6 +782,8 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
           </div>
         </div>
       )}
+
+      <ExploreWatch live={running} />
 
       {(running || logLines.length > 0 || visitedPaths.length > 0) && (
         <div

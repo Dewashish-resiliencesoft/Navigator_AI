@@ -98,12 +98,18 @@ def inventory(page: Page) -> list[dict[str, Any]]:
     ]
 
 
-def screenshot_b64(page: Page) -> str:
-    """Viewport PNG as base64, for the vision escalation path. "" on failure."""
+def screenshot_b64(
+    page: Page, *, image_type: str = "png", quality: int = 55
+) -> str:
+    """Viewport image as base64. JPEG preferred for live Watch-bot frames."""
     import base64
 
     try:
-        return base64.b64encode(page.screenshot(type="png")).decode()
+        kind = "jpeg" if image_type == "jpeg" else "png"
+        kwargs: dict[str, Any] = {"type": kind}
+        if kind == "jpeg":
+            kwargs["quality"] = max(1, min(100, quality))
+        return base64.b64encode(page.screenshot(**kwargs)).decode()
     except Exception as exc:  # noqa: BLE001
         print(f"[explore] screenshot failed: {exc}", flush=True)
         return ""

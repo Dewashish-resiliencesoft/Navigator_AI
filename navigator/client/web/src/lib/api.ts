@@ -48,6 +48,7 @@ export type ExploreFlagged = {
   url: string;
   reason: string;
   source: string;
+  element_key?: string;
 };
 
 export type ExploreFieldDecision = {
@@ -83,6 +84,7 @@ export type ExploreStatus = {
   error?: string;
   flow_id?: string;
   revision?: number | null;
+  stop_reason?: string;
   pending_question?: ExploreQuestion | null;
 };
 
@@ -411,6 +413,12 @@ export const api = {
   getFlows: () => get<{ playlist: Flow[]; site: string }>("/client/api/flows"),
   putFlows: (playlist: Flow[]) =>
     send<{ playlist: Flow[] }>("/client/api/flows", "PUT", { playlist }),
+  deleteFlow: (flow_id: string, page_id?: string | null) =>
+    send<{ playlist: Flow[]; deleted_flow_id: string }>(
+      "/client/api/flows/delete",
+      "POST",
+      { flow_id, page_id: page_id || null },
+    ),
 
   recordStatus: () => get<RecorderStatus>("/client/api/record"),
   recordStart: (start_url: string, flow_name: string) =>
@@ -429,6 +437,8 @@ export const api = {
     }>("/client/api/record/stop", "POST"),
 
   exploreStatus: () => get<ExploreStatus>("/client/api/explore"),
+  exploreFrame: () =>
+    get<{ mime: string; data: string }>("/client/api/explore/frame"),
   exploreStart: (body: {
     base_url?: string | null;
     max_pages?: number;
@@ -441,6 +451,12 @@ export const api = {
   exploreStop: () => send<ExploreStatus>("/client/api/explore/stop", "POST"),
   exploreAnswer: (qid: string, value: string, skip = false) =>
     send<{ ok: boolean }>("/client/api/explore/answer", "POST", { qid, value, skip }),
+  exploreFlagged: (body: {
+    action: "allow" | "dismiss";
+    selector?: string;
+    label?: string;
+    element_key?: string;
+  }) => send<ExploreStatus>("/client/api/explore/flagged", "POST", body),
   exploreTicket: () =>
     send<{ ticket: string; expires_in_s: number }>("/client/api/explore/ticket", "POST"),
 };

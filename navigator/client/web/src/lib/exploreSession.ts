@@ -9,6 +9,7 @@ import {
   type ExploreStatus,
 } from "./api";
 import { errText } from "../store";
+import { useProductData } from "./productData";
 
 let socket: WebSocket | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -30,29 +31,40 @@ function clearTimers() {
   }
 }
 
+type ExploreFrame = { mime: string; data: string };
+
 type ExploreSession = {
   status: ExploreStatus;
   events: ExploreEvent[];
   question: ExploreQuestion | null;
   answer: string;
   baseUrl: string;
+  /** True after Client edits the Flows Product URL field — skip auto-sync. */
+  baseUrlTouched: boolean;
   saveMode: "new" | "update";
   targetFlowId: string;
   targetFlowName: string;
   elapsedLocal: number;
   showMeter: boolean;
+  /** Latest server Chromium viewport (Watch bot). */
+  latestFrame: ExploreFrame | null;
   setBaseUrl: (v: string) => void;
   setAnswer: (v: string) => void;
   setSaveMode: (v: "new" | "update") => void;
   setTargetFlowId: (v: string) => void;
   setTargetFlowName: (v: string) => void;
   setOnFlowDrafted: (cb: (() => void) | null) => void;
+  /** Prefill baseUrl from Product Login URL, else Product Domain (if untouched). */
+  syncProductUrl: () => Promise<string>;
   hydrate: () => Promise<ExploreStatus | null>;
   refresh: () => Promise<ExploreStatus | null>;
   connect: () => Promise<void>;
   start: (opts?: { targetFlowName?: string }) => Promise<void>;
   stop: () => Promise<void>;
   reply: (skip: boolean) => Promise<void>;
+  /** Hide post-run summary / live log leftovers so Flows looks idle again. */
+  dismissResult: () => void;
+  pullFrame: () => Promise<ExploreFrame | null>;
 };
 
 function applyLiveTimers(get: () => ExploreSession, set: (p: Partial<ExploreSession>) => void) {
@@ -77,19 +89,46 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   question: null,
   answer: "",
   baseUrl: "",
+  baseUrlTouched: false,
   saveMode: "new",
   targetFlowId: "",
   targetFlowName: "",
   elapsedLocal: 0,
   showMeter: false,
+  latestFrame: null,
 
-  setBaseUrl: (baseUrl) => set({ baseUrl }),
+  setBaseUrl: (baseUrl) => set({ baseUrl, baseUrlTouched: true }),
   setAnswer: (answer) => set({ answer }),
   setSaveMode: (saveMode) => set({ saveMode }),
   setTargetFlowId: (targetFlowId) => set({ targetFlowId }),
   setTargetFlowName: (targetFlowName) => set({ targetFlowName }),
   setOnFlowDrafted: (cb) => {
     onFlowDrafted = cb;
+  },
+
+  syncProductUrl: async () => {
+    if (get().baseUrlTouched) return get().baseUrl;
+    try {
+      const login = await api.getProductLogin();
+      const loginUrl = (login.login_url || "").trim();
+      if (loginUrl) {
+        set({ baseUrl: loginUrl });
+        return loginUrl;
+      }
+    } catch {
+      /* fall through to domain */
+    }
+    try {
+      const d = await api.getProductDomain();
+      const domain = (d.base_url || "").trim();
+      if (domain && !d.placeholder) {
+        set({ baseUrl: domain });
+        return domain;
+      }
+    } catch {
+      /* keep empty */
+    }
+    return get().baseUrl;
   },
 
   refresh: async () => {
@@ -116,6 +155,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   hydrate: async () => {
     const s = await get().refresh();
     if (s?.active) await get().connect();
+    await get().syncProductUrl();
     return s;
   },
 
@@ -177,6 +217,16 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
             typeof event.elapsed_s === "number" ? event.elapsed_s : prev.elapsedLocal,
         }));
         applyLiveTimers(get, set);
+        return;
+      }
+      if (event.type === "frame" && typeof event.data === "string" && event.data) {
+        set({
+          latestFrame: {
+            mime: typeof event.mime === "string" ? event.mime : "image/jpeg",
+            data: event.data,
+          },
+        });
+        return;
       }
       set((prev) => ({ events: [...prev.events, event] }));
       if (event.type === "question") {
@@ -190,6 +240,17 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
           answer: "",
         });
       }
+      if (event.type === "error") {
+        const msg = String(event.msg ?? "Exploration error").trim();
+        set((prev) => ({
+          status: {
+            ...prev.status,
+            error: msg || prev.status.error,
+            active: false,
+            phase: prev.status.phase === "failed" ? "failed" : prev.status.phase,
+          },
+        }));
+      }
       if (event.type === "done") {
         set((prev) => ({
           question: null,
@@ -198,12 +259,21 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
             active: false,
             phase: typeof event.phase === "string" ? event.phase : "done",
             steps: typeof event.steps === "number" ? event.steps : prev.status.steps,
+            flow_id:
+              typeof event.flow_id === "string" && event.flow_id
+                ? event.flow_id
+                : prev.status.flow_id,
+            revision:
+              typeof event.revision === "number"
+                ? event.revision
+                : prev.status.revision,
             progress_pct: 100,
           },
         }));
         clearTimers();
         void get().refresh();
         onFlowDrafted?.();
+        void useProductData.getState().refreshPlaylist();
       }
     };
     ws.onclose = () => {
@@ -212,7 +282,14 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   },
 
   start: async (opts) => {
-    set({ events: [], elapsedLocal: 0, showMeter: true, question: null, answer: "" });
+    set({
+      events: [],
+      elapsedLocal: 0,
+      showMeter: true,
+      question: null,
+      answer: "",
+      latestFrame: null,
+    });
     const mode = get().saveMode;
     const target = get().targetFlowId.trim();
     if (mode === "update" && !target) {
@@ -261,12 +338,25 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
     try {
       const s = await api.exploreStop();
       set((prev) => ({
-        status: { ...prev.status, ...s, active: false, phase: s.phase || "stopped" },
+        status: {
+          ...prev.status,
+          ...s,
+          active: false,
+          phase: s.phase || "stopped",
+        },
       }));
     } catch (e) {
-      // Keep stopped UI even if the race lost the session; refresh for truth.
       const fresh = await get().refresh();
       if (fresh?.active) throw e;
+    }
+    // Persist still runs after stop — poll until flow_id lands or timeout.
+    for (let i = 0; i < 30; i++) {
+      await new Promise((r) => setTimeout(r, 400));
+      const fresh = await get().refresh();
+      if (!fresh) break;
+      if (fresh.flow_id || fresh.phase === "failed" || fresh.phase === "done") break;
+      // No steps → nothing to draft
+      if ((fresh.steps ?? 0) === 0 && isTerminal(fresh.phase)) break;
     }
   },
 
@@ -276,7 +366,40 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
     await api.exploreAnswer(q.qid, get().answer, skip);
     set({ question: null, answer: "" });
   },
+
+  dismissResult: () => {
+    clearTimers();
+    try {
+      socket?.close();
+    } catch {
+      /* ignore */
+    }
+    socket = null;
+    set({
+      showMeter: false,
+      events: [],
+      question: null,
+      answer: "",
+      elapsedLocal: 0,
+      latestFrame: null,
+      status: { active: false, phase: "idle" },
+    });
+  },
+
+  pullFrame: async () => {
+    try {
+      const frame = await api.exploreFrame();
+      set({ latestFrame: frame });
+      return frame;
+    } catch {
+      return get().latestFrame;
+    }
+  },
 }));
+
+export function exploreIsTerminal(phase?: string): boolean {
+  return isTerminal(phase);
+}
 
 export function exploreIsLive(s: {
   status: ExploreStatus;

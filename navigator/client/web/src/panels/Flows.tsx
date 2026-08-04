@@ -12,9 +12,10 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { api, type Flow, type RecorderStatus } from "../lib/api";
+import { api, type ExploreFlagged, type Flow, type RecorderStatus } from "../lib/api";
 import {
   exploreIsLive,
+  exploreIsTerminal,
   formatExploreElapsed,
   useExploreSession,
 } from "../lib/exploreSession";
@@ -555,11 +556,14 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const setTargetFlowName = useExploreSession((s) => s.setTargetFlowName);
   const setOnFlowDrafted = useExploreSession((s) => s.setOnFlowDrafted);
   const hydrate = useExploreSession((s) => s.hydrate);
+  const syncProductUrl = useExploreSession((s) => s.syncProductUrl);
   const startExplore = useExploreSession((s) => s.start);
   const stopExplore = useExploreSession((s) => s.stop);
   const replyExplore = useExploreSession((s) => s.reply);
+  const dismissResult = useExploreSession((s) => s.dismissResult);
   const logEnd = useRef<HTMLDivElement | null>(null);
   const flows = useProductData((s) => s.playlist).filter((f) => !!f.flow_id?.trim());
+  const epoch = useProductData((s) => s.epoch);
 
   useEffect(() => {
     setOnFlowDrafted(onFinished);
@@ -569,6 +573,10 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   useEffect(() => {
     void hydrate();
   }, [hydrate]);
+
+  useEffect(() => {
+    void syncProductUrl();
+  }, [epoch, syncProductUrl]);
 
   useEffect(() => {
     if (!targetFlowId) return;
@@ -613,6 +621,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   };
 
   const running = exploreIsLive({ status, showMeter });
+  const finished = exploreIsTerminal(status.phase);
   const flagged = status.flagged ?? [];
   const visitedPaths = status.visited_paths ?? [];
   const progressPct = status.progress_pct ?? 0;
@@ -623,6 +632,12 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const planFlowId = status.target_flow_id || targetFlowId;
   const planFlowName =
     status.target_flow_name || targetFlowName || planFlowId;
+  const resultFlowId = status.flow_id || (planMode === "update" ? planFlowId : "");
+  const resultFlowName =
+    status.target_flow_name ||
+    targetFlowName ||
+    flows.find((f) => f.flow_id === resultFlowId)?.name ||
+    resultFlowId;
   const logLines = events.filter(
     (e) =>
       e.type === "log" ||
@@ -630,16 +645,53 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
       e.type === "field" ||
       e.type === "explored",
   );
+  const exploreErrors = (() => {
+    const msgs: string[] = [];
+    if (status.error?.trim()) msgs.push(status.error.trim());
+    for (const e of events) {
+      if (e.type === "error" && e.msg) msgs.push(String(e.msg).trim());
+      if (e.type === "log" && e.level === "warn" && e.msg) {
+        msgs.push(String(e.msg).trim());
+      }
+    }
+    return [...new Set(msgs.filter(Boolean))];
+  })();
+  const hasResult =
+    finished &&
+    (showMeter ||
+      (status.steps ?? 0) > 0 ||
+      !!status.flow_id ||
+      logLines.length > 0 ||
+      visitedPaths.length > 0 ||
+      exploreErrors.length > 0);
+
+  const pillStatus = running
+    ? question
+      ? "starting"
+      : "running"
+    : finished
+      ? status.phase === "failed"
+        ? "failed"
+        : "finished"
+      : "idle";
+  const pillLabel = running
+    ? question
+      ? "Waiting on you"
+      : undefined
+    : finished
+      ? status.phase === "stopped"
+        ? "Stopped"
+        : status.phase === "failed"
+          ? "Failed"
+          : "Completed"
+      : undefined;
 
   return (
     <Card>
       <CardTitle
         hint="Explores your product, maps pages, then drafts a clean demo walkthrough (one step per new page — no backtrack noise). Nothing is activated until you review it."
         right={
-          <StatusPill
-            status={running ? (question ? "starting" : "running") : "idle"}
-            label={question ? "Waiting on you" : undefined}
-          />
+          <StatusPill status={pillStatus} label={pillLabel} />
         }
       >
         Auto-Explore &amp; Generate Flow
@@ -650,7 +702,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
           <Input
             value={baseUrl}
             onChange={setBaseUrl}
-            placeholder="Defaults to your stored Product Login URL"
+            placeholder="Filled from Product Login / Domain — editable"
           />
         </Field>
         <Field label="Credentials">
@@ -737,7 +789,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
         </Button>
       </div>
 
-      {(showMeter || running || logLines.length > 0 || visitedPaths.length > 0) && (
+      {running && (
         <>
           <div className="mt-4">
             <ExplorePlanBanner
@@ -746,7 +798,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
               flowId={planFlowId}
               baseUrl={baseUrl}
               hasCredentials={status.has_credentials}
-              phase={running ? status.phase : undefined}
+              phase={status.phase}
             />
           </div>
           <ExploreMeter
@@ -757,148 +809,311 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
             pages={status.visited ?? 0}
             maxPages={maxPages}
           />
-        </>
-      )}
 
-      {question && (
-        <div
-          className="mt-4 rounded-xl border-2 border-amber-500/60 p-4"
-          style={{ background: "rgb(245 158 11 / 0.06)" }}
-        >
-          <p className="text-[0.78rem] font-medium tracking-tight">Waiting on your input</p>
-          <p className="mt-1 text-[0.8rem]">{question.prompt}</p>
-          <p className="mt-0.5 text-[0.7rem] text-[var(--muted)]">
-            Field <code>{question.alias}</code>
-            {question.context?.url ? ` on ${question.context.url}` : ""}
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Input value={answer} onChange={setAnswer} placeholder="Your answer" />
-            <Button onClick={() => reply(false)} disabled={!answer.trim()}>
-              Answer &amp; resume
-            </Button>
-            <Button variant="secondary" onClick={() => reply(true)}>
-              Skip this field
-            </Button>
-          </div>
-        </div>
-      )}
+          {question && (
+            <div
+              className="mt-4 rounded-xl border-2 border-amber-500/60 p-4"
+              style={{ background: "rgb(245 158 11 / 0.06)" }}
+            >
+              <p className="text-[0.78rem] font-medium tracking-tight">Waiting on your input</p>
+              <p className="mt-1 text-[0.8rem]">{question.prompt}</p>
+              <p className="mt-0.5 text-[0.7rem] text-[var(--muted)]">
+                Field <code>{question.alias}</code>
+                {question.context?.url ? ` on ${question.context.url}` : ""}
+              </p>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Input value={answer} onChange={setAnswer} placeholder="Your answer" />
+                <Button onClick={() => reply(false)} disabled={!answer.trim()}>
+                  Answer &amp; resume
+                </Button>
+                <Button variant="secondary" onClick={() => reply(true)}>
+                  Skip this field
+                </Button>
+              </div>
+            </div>
+          )}
 
-      <ExploreWatch live={running} />
+          <ExploreWatch live={running} />
 
-      {(running || logLines.length > 0 || visitedPaths.length > 0) && (
-        <div
-          className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
-          style={{ borderColor: "var(--line)" }}
-        >
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-[0.78rem] font-medium tracking-tight">Exploration log</p>
-            {running && (
+          <div
+            className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
+            style={{ borderColor: "var(--line)" }}
+          >
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p className="text-[0.78rem] font-medium tracking-tight">Exploration log</p>
               <Button variant="danger" onClick={stop}>
                 <Square size={12} /> Stop
               </Button>
+            </div>
+            <BarLoader
+              label={`${status.phase ?? "exploring"} — ${
+                planMode === "update"
+                  ? `updating “${planFlowName || planFlowId}”`
+                  : "creating new flow"
+              }`}
+            />
+            {visitedPaths.length > 0 && (
+              <div className="mt-3">
+                <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages explored</p>
+                <ul className="mt-1 space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
+                  {visitedPaths.map((p) => (
+                    <li key={p}>• {p}</li>
+                  ))}
+                </ul>
+              </div>
             )}
+            <div className="mt-3 max-h-72 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed">
+              {logLines.length === 0 && (
+                <div className="text-[var(--muted)]">Waiting for explorer events…</div>
+              )}
+              {logLines.map((e, i) => (
+                <div
+                  key={i}
+                  className={
+                    e.type === "flagged"
+                      ? "text-amber-600 dark:text-amber-400"
+                      : e.type === "explored"
+                        ? "text-sky-600 dark:text-sky-400"
+                        : e.level === "warn"
+                          ? "text-red-500"
+                          : "text-[var(--muted)]"
+                  }
+                >
+                  {e.type === "flagged"
+                    ? `skipped "${e.label}" — ${e.reason}`
+                    : e.type === "field"
+                      ? `filled ${e.alias} (${e.classification})`
+                      : e.type === "explored"
+                        ? `page ${String(e.path ?? e.url ?? "")} (${e.elements ?? "?"} controls)`
+                        : String(e.msg ?? "")}
+                </div>
+              ))}
+              <div ref={logEnd} />
+            </div>
           </div>
-          <BarLoader
-            label={
-              running
-                ? `${status.phase ?? "exploring"} — ${
-                    planMode === "update"
-                      ? `updating “${planFlowName || planFlowId}”`
-                      : "creating new flow"
-                  }`
-                : `Finished — ${status.steps ?? 0} step${(status.steps ?? 0) === 1 ? "" : "s"} drafted${status.revision ? ` as revision ${status.revision}` : ""}${status.flow_id ? ` · ${status.flow_id}` : ""}`
-            }
-          />
+
+          {flagged.length > 0 && (
+            <div className="mt-4">
+              <p className="flex items-center gap-1.5 text-[0.78rem] font-medium tracking-tight">
+                <ShieldAlert size={14} className="text-amber-500" />
+                Skipped — needs your review ({flagged.length})
+              </p>
+              <p className="mt-1 text-[0.7rem] text-[var(--muted)]">
+                Safety gate blocked these. <strong>Allow</strong> lets the bot click
+                on this explore; <strong>Dismiss</strong> hides without clicking.
+              </p>
+              <div className="mt-2 space-y-2">
+                {flagged.map((f, i) => (
+                  <FlaggedReviewRow
+                    key={`${f.selector}-${f.label}-${i}`}
+                    item={f}
+                    live={running}
+                    onDone={() => void useExploreSession.getState().refresh()}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {hasResult && !running && (
+        <div
+          className="mt-4 rounded-xl border p-4"
+          style={{
+            borderColor: "var(--line)",
+            background:
+              "linear-gradient(135deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%)",
+          }}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <p className="text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
+                {status.phase === "failed"
+                  ? "Explore failed"
+                  : status.phase === "stopped"
+                    ? "Explore stopped"
+                    : "Explore completed"}
+              </p>
+              <p className="mt-1 text-[0.95rem] font-semibold tracking-tight">
+                {resultFlowId
+                  ? `Draft flow · ${resultFlowName || resultFlowId}`
+                  : (status.steps ?? 0) > 0
+                    ? "Saving draft…"
+                    : "No demo steps captured"}
+              </p>
+            </div>
+            <Button variant="secondary" onClick={() => dismissResult()}>
+              Clear
+            </Button>
+          </div>
+          <ul className="mt-3 space-y-1 text-[0.78rem] leading-snug">
+            {resultFlowId && (
+              <li>
+                <span className="text-[var(--muted)]">Flow id · </span>
+                <span className="font-mono text-[0.72rem]">{resultFlowId}</span>
+                {status.revision != null && (
+                  <span className="text-[var(--muted)]">
+                    {" "}
+                    · draft revision {status.revision}
+                  </span>
+                )}
+              </li>
+            )}
+            <li>
+              <span className="text-[var(--muted)]">Demo steps · </span>
+              <span className="font-medium">{status.steps ?? 0}</span>
+              <span className="text-[var(--muted)]">
+                {" "}
+                · {status.visited ?? visitedPaths.length} pages ·{" "}
+                {formatExploreElapsed(elapsedLocal)} elapsed
+              </span>
+            </li>
+            <li>
+              <span className="text-[var(--muted)]">Save mode · </span>
+              {planMode === "update"
+                ? `updated existing “${planFlowName || planFlowId}”`
+                : "new unpublished draft"}
+            </li>
+            {status.stop_reason && (
+              <li>
+                <span className="text-[var(--muted)]">Ended · </span>
+                <span className="font-medium">{status.stop_reason}</span>
+              </li>
+            )}
+            {flagged.length > 0 && (
+              <li className="text-amber-700 dark:text-amber-400">
+                {flagged.length} control
+                {flagged.length === 1 ? "" : "s"} skipped by safety gate (not in
+                demo)
+              </li>
+            )}
+          </ul>
+          {exploreErrors.length > 0 && (
+            <div
+              className="mt-3 rounded-lg border border-red-500/40 px-3 py-2.5"
+              style={{ background: "rgb(239 68 68 / 0.06)" }}
+            >
+              <p className="text-[0.72rem] font-medium text-red-600 dark:text-red-400">
+                Errors during explore ({exploreErrors.length})
+              </p>
+              <ul className="mt-1.5 max-h-36 space-y-1 overflow-y-auto text-[0.72rem] leading-snug text-red-700 dark:text-red-300">
+                {exploreErrors.map((msg) => (
+                  <li key={msg}>• {msg}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {visitedPaths.length > 0 && (
             <div className="mt-3">
-              <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages explored</p>
-              <ul className="mt-1 space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
+              <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages covered</p>
+              <ul className="mt-1 max-h-28 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
                 {visitedPaths.map((p) => (
                   <li key={p}>• {p}</li>
                 ))}
               </ul>
             </div>
           )}
-          <div className="mt-3 max-h-72 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed">
-            {logLines.length === 0 && running && (
-              <div className="text-[var(--muted)]">Waiting for explorer events…</div>
-            )}
-            {logLines.map((e, i) => (
-              <div
-                key={i}
-                className={
-                  e.type === "flagged"
-                    ? "text-amber-600 dark:text-amber-400"
-                    : e.type === "explored"
-                      ? "text-sky-600 dark:text-sky-400"
-                      : e.level === "warn"
-                        ? "text-red-500"
-                        : "text-[var(--muted)]"
-                }
-              >
-                {e.type === "flagged"
-                  ? `skipped "${e.label}" — ${e.reason}`
-                  : e.type === "field"
-                    ? `filled ${e.alias} (${e.classification})`
-                    : e.type === "explored"
-                      ? `page ${String(e.path ?? e.url ?? "")} (${e.elements ?? "?"} controls)`
-                      : String(e.msg ?? "")}
-              </div>
-            ))}
-            <div ref={logEnd} />
-          </div>
-        </div>
-      )}
-
-      {flagged.length > 0 && (
-        <div className="mt-4">
-          <p className="flex items-center gap-1.5 text-[0.78rem] font-medium tracking-tight">
-            <ShieldAlert size={14} className="text-amber-500" />
-            Skipped — needs your review ({flagged.length})
+          <p className="mt-3 text-[0.7rem] text-[var(--muted)]">
+            Unpublished draft — review in the playlist above, then publish the site
+            graph when ready for visitors.
           </p>
-          <p className="mt-1 text-[0.7rem] text-[var(--muted)]">
-            These looked like they change or send real data, so they were never clicked.
-            Record them manually if you want them in a demo.
-          </p>
-          <div className="mt-2 space-y-1">
-            {flagged.map((f, i) => (
-              <div
-                key={i}
-                className="rounded-lg border px-2 py-1.5 text-[0.72rem]"
-                style={{ borderColor: "var(--line)" }}
-              >
-                <span className="font-medium">{f.label}</span>
-                <span className="text-[var(--muted)]"> — {f.reason}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {status.field_decisions && status.field_decisions.length > 0 && !running && (
-        <div className="mt-4">
-          <p className="text-[0.78rem] font-medium tracking-tight">Form fields</p>
-          <div className="mt-2 space-y-1">
-            {status.field_decisions.map((d, i) => (
-              <div
-                key={i}
-                className="rounded-lg border px-2 py-1.5 text-[0.72rem]"
-                style={{ borderColor: "var(--line)" }}
-              >
-                <span className="font-medium">{d.label || d.alias}</span>
-                <span className="text-[var(--muted)]">
-                  {" — "}
-                  {d.classification === "guessable_safe"
-                    ? `placeholder "${d.value}"`
-                    : d.answered_by === "client"
-                      ? `your answer "${d.value}"`
-                      : "skipped, no answer given"}
-                </span>
-              </div>
-            ))}
-          </div>
         </div>
       )}
     </Card>
+  );
+}
+
+function humanizeFlagReason(reason: string, source: string): string {
+  const r = (reason || "").trim();
+  const m = /^keyword:(.+)$/i.exec(r);
+  if (m) {
+    return `Label/text contains “${m[1]}” — clicking may send, change, or delete real data.`;
+  }
+  if (source === "llm" || /destructive|mutat/i.test(r)) {
+    return r || "Model judged this control may mutate real data.";
+  }
+  if (source === "fail_closed") {
+    return r || "Blocked because safety could not confirm this is read-only.";
+  }
+  return r || "Blocked as potentially unsafe.";
+}
+
+function FlaggedReviewRow({
+  item,
+  live,
+  onDone,
+}: {
+  item: ExploreFlagged;
+  live: boolean;
+  onDone: () => void;
+}) {
+  const { ok, err } = useUi();
+  const [busy, setBusy] = useState(false);
+
+  const act = async (action: "allow" | "dismiss") => {
+    setBusy(true);
+    try {
+      await api.exploreFlagged({
+        action,
+        selector: item.selector,
+        label: item.label,
+        element_key: item.element_key,
+      });
+      ok(
+        action === "allow"
+          ? `Allowed “${item.label}” — bot may click it on this explore.`
+          : `Dismissed “${item.label}”.`,
+      );
+      onDone();
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="rounded-lg border px-3 py-2.5 text-[0.72rem]"
+      style={{ borderColor: "var(--line)" }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium tracking-tight">{item.label || item.selector}</p>
+          <p className="mt-0.5 text-[var(--muted)]">
+            {humanizeFlagReason(item.reason, item.source)}
+          </p>
+          {(item.url || item.selector) && (
+            <p className="mt-1 font-mono text-[0.65rem] text-[var(--muted)] truncate">
+              {item.url ? `${item.url}` : ""}
+              {item.url && item.selector ? " · " : ""}
+              {item.selector || ""}
+            </p>
+          )}
+        </div>
+          <div className="flex shrink-0 flex-wrap gap-1.5">
+          <Button
+            variant="secondary"
+            disabled={busy || !live}
+            onClick={() => void act("allow")}
+          >
+            Allow
+          </Button>
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void act("dismiss")}
+          >
+            Dismiss
+          </Button>
+        </div>
+      </div>
+      {!live && (
+        <p className="mt-1.5 text-[0.65rem] text-[var(--muted)]">
+          Allow needs an active explore — start again to let the bot click this.
+        </p>
+      )}
+    </div>
   );
 }

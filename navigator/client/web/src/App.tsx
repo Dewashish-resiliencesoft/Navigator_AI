@@ -13,8 +13,15 @@ import { errText, useUi } from "./store";
 import { api } from "./lib/api";
 import { demoIsLive, useDemoSession } from "./lib/demoSession";
 import { useExploreSession } from "./lib/exploreSession";
+import { useProductData } from "./lib/productData";
 import { AuthScreen } from "./panels/AuthScreen";
+import { OnboardingWizard } from "./panels/Onboarding";
 import { Button, StatusPill } from "./components/ui";
+import {
+  isSignupPending,
+  markSignupPending,
+  type OnboardingItemId,
+} from "./lib/onboarding";
 
 const PANELS: Record<string, () => React.ReactElement> = {
   overview: Overview,
@@ -87,6 +94,8 @@ function useTheme() {
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [onboardingStartAt, setOnboardingStartAt] = useState<OnboardingItemId | null>(null);
   const { dark, toggle } = useTheme();
   const tab = useUi((s) => s.tab);
   const setTab = useUi((s) => s.setTab);
@@ -115,6 +124,13 @@ export default function App() {
 
   useEffect(() => {
     if (!authed) return;
+    if (isSignupPending()) {
+      setShowOnboarding(true);
+    }
+  }, [authed]);
+
+  useEffect(() => {
+    if (!authed) return;
     let alive = true;
     (async () => {
       await hydrate();
@@ -130,11 +146,26 @@ export default function App() {
     };
   }, [authed, hydrate, hydrateExplore, refreshActive]);
 
-  const enterAuthed = () => {
+  const enterAuthed = (fromSignup = false, company = "") => {
     // Overwrite any leftover "Signed out." from a prior logout (zustand persists across trees).
     clearToast();
+    if (fromSignup) {
+      markSignupPending(company);
+      setShowOnboarding(true);
+      setOnboardingStartAt(null);
+    }
     setAuthed(true);
-    ok("Signed in.");
+    ok(fromSignup ? "Account created." : "Signed in.");
+  };
+
+  const openOnboarding = (startAt: OnboardingItemId | null) => {
+    setOnboardingStartAt(startAt);
+    setShowOnboarding(true);
+  };
+
+  const closeOnboarding = () => {
+    setShowOnboarding(false);
+    setOnboardingStartAt(null);
   };
 
   const signOut = async () => {
@@ -146,6 +177,7 @@ export default function App() {
       }
     }
     await api.logout();
+    useProductData.getState().reset();
     clearToast();
     setAuthed(false);
     ok("Signed out.");
@@ -194,7 +226,7 @@ export default function App() {
   return (
     <>
       <div className="flex min-h-screen">
-        <Sidebar onLogout={signOut} />
+        <Sidebar onLogout={signOut} onContinueSetup={openOnboarding} />
         <div className="min-w-0 flex-1">
           <header
             className="sticky top-0 z-30 border-b backdrop-blur-md"
@@ -282,6 +314,12 @@ export default function App() {
       </div>
       <Toast />
       <ExploreFloat />
+      {showOnboarding && (
+        <OnboardingWizard
+          startAt={onboardingStartAt}
+          onClose={closeOnboarding}
+        />
+      )}
     </>
   );
 }

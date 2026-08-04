@@ -110,16 +110,19 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
     start_path = urlparse(_current_url(deps.page)).path or "/"
     session.flow_paths.add(start_path)
     session.emit({"type": "status", **session.status()})
+    session.publish_frame(deps.page, min_interval_s=0)
 
     while True:
         stop = session.budget_exhausted()
         if stop:
+            session.stop_reason = stop
             session.emit({"type": "log", "level": "info", "msg": f"stopping: {stop}"})
             break
 
         url = _current_url(deps.page)
         elements = perceive.inventory(deps.page)
         fp = fingerprint(url, elements)
+        visited_paths = tuple(dict.fromkeys(p.url_path for p in session.visited))
         if session.mark_visited(fp):
             session.emit(
                 {"type": "log", "level": "info",
@@ -137,19 +140,29 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
 
         untried = session.untried(fp, elements)
         if not untried:
-            session.consecutive_no_new += 1
+            # Exhausted this DOM state's untried set — do NOT tight-loop bumping
+            # consecutive_no_new (that stopped runs at ~40% with pages left).
+            if _try_dead_end_escape(session, deps, graph, fp, elements, url, execute, verify):
+                session.emit({"type": "status", **session.status()})
+                session.publish_frame(deps.page)
+                continue
+            session.stop_reason = f"dead end at {fp.url_path}"
             session.emit(
-                {"type": "log", "level": "info",
-                 "msg": f"no untried elements at {fp.url_path}"}
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": f"stopping: {session.stop_reason}",
+                }
             )
-            continue
+            break
+
         session.consecutive_no_new = 0
 
         choice = reason.choose_next(
             url=url,
             elements=untried,
             corrections=deps.corrections,
-            visited_paths=tuple(dict.fromkeys(fp.url_path for fp in session.visited)),
+            visited_paths=visited_paths,
             ask_text=deps.ask_text,
             ask_vision=deps.ask_vision,
             screenshot=(
@@ -159,10 +172,23 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             ),
         )
         if session.stop_event.is_set():
+            session.stop_reason = "stopped by client"
             session.emit({"type": "log", "level": "info", "msg": "stopping: stopped by client"})
             break
         if choice is None:
+            # Reasoner / heuristic had nothing — try escape before counting a stall.
+            if _try_dead_end_escape(session, deps, graph, fp, elements, url, execute, verify):
+                session.emit({"type": "status", **session.status()})
+                session.publish_frame(deps.page)
+                continue
             session.consecutive_no_new += 1
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": "no usable next action — stalling",
+                }
+            )
             continue
 
         el = untried[choice.index]
@@ -171,6 +197,7 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             _step(session, deps, graph, el, url, choice, execute, verify)
         except RuntimeError as exc:
             if "stopped by client" in str(exc).lower():
+                session.stop_reason = "stopped by client"
                 session.emit(
                     {"type": "log", "level": "info", "msg": "stopping: stopped by client"}
                 )
@@ -180,10 +207,101 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
         # Full status snapshot so the dashboard meter updates without waiting
         # on the HTTP poll (which previously never started when active was false).
         session.emit({"type": "status", **session.status()})
+        session.publish_frame(deps.page)
 
     if session.stop_event.is_set():
         session.phase = "stopped"
+        session.stop_reason = session.stop_reason or "stopped by client"
     return session.steps
+
+
+def _try_dead_end_escape(
+    session: ExplorationSession,
+    deps: ExplorerDeps,
+    graph: _LiveGraph,
+    fp: Any,
+    elements: list[dict[str, Any]],
+    url: str,
+    execute: Callable[..., tuple[ToolResult, str]],
+    verify: Callable[..., Any],
+) -> bool:
+    """Leave an exhausted page: unvisited nav (even if tried) or browser back.
+
+    Returns True if we performed an escape action and the loop should continue.
+    """
+    visited_paths = tuple(dict.fromkeys(p.url_path for p in session.visited))
+    # Prefer nav that still claims an unvisited destination; skip keys we already
+    # used for escape so a no-op click cannot spin forever.
+    for i, el in enumerate(elements):
+        if el.get("fillable"):
+            continue
+        if reason.targets_visited_path(el, visited_paths):
+            continue
+        if not reason.looks_like_nav(el):
+            continue
+        ek = element_key(el)
+        if ek in session.escape_attempts:
+            continue
+        session.escape_attempts.add(ek)
+        choice = reason.Choice(i, "dead-end escape: unvisited destination", "")
+        session.emit(
+            {
+                "type": "log",
+                "level": "info",
+                "msg": f"dead-end escape: retry nav toward new page ({_label(el)})",
+            }
+        )
+        session.mark_tried(fp, el)
+        try:
+            _step(session, deps, graph, el, url, choice, execute, verify)
+        except RuntimeError as exc:
+            if "stopped by client" in str(exc).lower():
+                raise
+            session.emit(
+                {"type": "log", "level": "warn", "msg": f"escape click failed: {exc}"}
+            )
+            return False
+        return True
+
+    if fp in session.dead_ends:
+        return False
+    session.dead_ends.add(fp)
+
+    before = _current_url(deps.page)
+    try:
+        deps.page.go_back(timeout=8000)
+    except Exception as exc:  # noqa: BLE001
+        session.emit(
+            {
+                "type": "log",
+                "level": "info",
+                "msg": f"no untried elements at {fp.url_path}; go_back failed: {exc}",
+            }
+        )
+        session.consecutive_no_new += 1
+        return False
+
+    after = _current_url(deps.page)
+    if after == before:
+        session.emit(
+            {
+                "type": "log",
+                "level": "info",
+                "msg": f"no untried elements at {fp.url_path}; nowhere to go back",
+            }
+        )
+        session.consecutive_no_new += 1
+        return False
+
+    session.consecutive_no_new += 1
+    session.emit(
+        {
+            "type": "log",
+            "level": "info",
+            "msg": f"backed up from exhausted page {fp.url_path}",
+        }
+    )
+    return True
 
 
 def _step(
@@ -210,16 +328,27 @@ def _step(
     # GUARDRAIL. Runs here, in the executor path, on the element actually about
     # to be touched -- deliberately not inside the reasoning prompt. A reasoning
     # step that suggests a destructive action cannot get past this point.
-    verdict = classify_action(el, judge=deps.guard_judge)
+    # Client "Allow" on a flagged item adds to allowed_keys for this run only.
+    if session.is_allowed(el, css):
+        pass  # Client already approved — proceed to act.
+    else:
+        verdict = classify_action(el, judge=deps.guard_judge)
+        if session.stop_event.is_set():
+            return
+        if verdict.flagged:
+            flag = FlaggedAction(
+                label=_label(el),
+                selector=css,
+                url=url,
+                reason=verdict.reason,
+                source=verdict.source,
+                element_key=element_key(el),
+            )
+            if session.note_flagged(flag):
+                session.emit({"type": "flagged", **flag.as_dict()})
+            return
+
     if session.stop_event.is_set():
-        return
-    if verdict.flagged:
-        flag = FlaggedAction(
-            label=_label(el), selector=css, url=url,
-            reason=verdict.reason, source=verdict.source,
-        )
-        session.flagged.append(flag)
-        session.emit({"type": "flagged", **flag.as_dict()})
         return
 
     graph.add(alias, css)
@@ -311,6 +440,7 @@ def _resolve_field_value(
         )
         return plan.value
 
+    session.publish_frame(deps.page, min_interval_s=0)
     question = session.ask(
         alias,
         question_for(el),

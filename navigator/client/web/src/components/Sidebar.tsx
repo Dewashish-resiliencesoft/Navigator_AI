@@ -12,6 +12,8 @@ import {
 import { cn } from "../lib/cn";
 import { soft } from "../lib/motion";
 import { useUi } from "../store";
+import { GetStartedCard } from "./GetStartedCard";
+import type { OnboardingItemId } from "../lib/onboarding";
 
 export const TABS = [
   { id: "overview", label: "Overview", icon: Activity },
@@ -23,7 +25,13 @@ export const TABS = [
   { id: "bio", label: "Company bio", icon: Building2 },
 ] as const;
 
-export function Sidebar({ onLogout }: { onLogout?: () => void }) {
+export function Sidebar({
+  onLogout,
+  onContinueSetup,
+}: {
+  onLogout?: () => void;
+  onContinueSetup?: (startAt: OnboardingItemId | null) => void;
+}) {
   const { tab, setTab } = useUi();
 
   return (
@@ -71,6 +79,9 @@ export function Sidebar({ onLogout }: { onLogout?: () => void }) {
       </nav>
 
       <div className="mt-auto space-y-3 px-1">
+        {onContinueSetup && (
+          <GetStartedCard onContinue={onContinueSetup} />
+        )}
         {onLogout && (
           <button
             type="button"

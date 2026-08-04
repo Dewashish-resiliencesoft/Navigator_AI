@@ -48,6 +48,7 @@ from navigator.client.content import (
     playlist_from_graph,
     recorder_status,
     recording_base_url,
+    remove_flow_from_yaml,
     start_recorder,
     stop_recorder,
 )
@@ -1366,6 +1367,38 @@ def client_put_flows(product: DashboardAuthedProduct, body: FlowsBody, registry:
     }
 
 
+class FlowDeleteBody(BaseModel):
+    flow_id: str = Field(min_length=1)
+    page_id: str | None = None
+
+
+@app.post("/client/api/flows/delete")
+def client_delete_flow(
+    product: DashboardAuthedProduct, body: FlowDeleteBody, registry: Reg
+) -> dict:
+    """Remove a flow from the playlist and site-graph draft (unpublished)."""
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    try:
+        new_yaml = remove_flow_from_yaml(
+            rev.yaml, flow_id=body.flow_id, page_id=body.page_id
+        )
+        rev = registry.put_site_graph(
+            product.product_id, new_yaml, "yaml", publish=False
+        )
+        graph = parse_site_graph(new_yaml)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {
+        "playlist": playlist_from_graph(graph),
+        "revision": rev.revision,
+        "published": False,
+        "deleted_flow_id": body.flow_id.strip(),
+    }
+
+
 @app.get("/client/api/record")
 def client_record_status(product: DashboardAuthedProduct) -> dict:
     return recorder_status()
@@ -1488,6 +1521,15 @@ class ExploreAnswerBody(BaseModel):
     skip: bool = False
 
 
+class ExploreFlaggedBody(BaseModel):
+    """Client reviews a guardrail skip: allow for this run, or dismiss from the list."""
+
+    action: str = Field(pattern="^(allow|dismiss)$")
+    selector: str = ""
+    label: str = ""
+    element_key: str = ""
+
+
 def _explore_base_url(product: Product, registry: Registry, vault: CredentialVault) -> str:
     login_url = (vault.login_url(product.product_id) or "").strip()
     if login_url:
@@ -1514,6 +1556,20 @@ def client_explore_status(product: DashboardAuthedProduct, vault: Vault) -> dict
     # exists, and this route must not decrypt (or fail on an unconfigured key).
     status["has_credentials"] = bool(vault.public(product.product_id)["has_password"])
     return status
+
+
+@app.get("/client/api/explore/frame")
+def client_explore_frame(product: DashboardAuthedProduct) -> dict:
+    """Latest JPEG viewport from the server Chromium running this explore."""
+    from navigator.automation.explore.runner import active_session
+
+    session = active_session()
+    if session is None or session.product_id != product.product_id:
+        raise HTTPException(409, "no active exploration")
+    frame = session.frame_payload()
+    if frame is None:
+        raise HTTPException(404, "no frame yet")
+    return frame
 
 
 @app.post("/client/api/explore/start", status_code=202)
@@ -1584,6 +1640,29 @@ def client_explore_answer(
         # Stale tab: the question it is answering is no longer the open one.
         raise HTTPException(409, "that question is no longer pending")
     return {"ok": True}
+
+
+@app.post("/client/api/explore/flagged")
+def client_explore_flagged(
+    product: DashboardAuthedProduct, body: ExploreFlaggedBody
+) -> dict:
+    """Allow a skipped control for this explore, or dismiss it from the review list."""
+    from navigator.automation.explore.runner import active_session
+
+    session = active_session()
+    if session is None or session.product_id != product.product_id:
+        raise HTTPException(409, "no active exploration")
+    if body.action == "allow":
+        ok = session.allow_flagged(
+            selector=body.selector, label=body.label, key=body.element_key
+        )
+    else:
+        ok = session.dismiss_flagged(
+            selector=body.selector, label=body.label, key=body.element_key
+        )
+    if not ok:
+        raise HTTPException(422, "selector, label, or element_key required")
+    return session.status()
 
 
 @app.post("/client/api/explore/ticket", status_code=201)

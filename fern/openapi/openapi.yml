@@ -1446,6 +1446,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/delete:
+    post:
+      summary: Client Delete Flow
+      description: Remove a flow from the playlist and site-graph draft (unpublished).
+      operationId: client_delete_flow_client_api_flows_delete_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowDeleteBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Delete Flow Client Api Flows Delete Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/record:
     get:
       summary: Client Record Status
@@ -1600,6 +1635,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/explore/frame:
+    get:
+      summary: Client Explore Frame
+      description: Latest JPEG viewport from the server Chromium running this explore.
+      operationId: client_explore_frame_client_api_explore_frame_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Explore Frame Client Api Explore Frame Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/explore/start:
     post:
       summary: Client Explore Start
@@ -1691,6 +1755,41 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Client Explore Answer Client Api Explore Answer Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/explore/flagged:
+    post:
+      summary: Client Explore Flagged
+      description: Allow a skipped control for this explore, or dismiss it from the review list.
+      operationId: client_explore_flagged_client_api_explore_flagged_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExploreFlaggedBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Explore Flagged Client Api Explore Flagged Post
         '422':
           description: Validation Error
           content:
@@ -2217,6 +2316,29 @@ components:
       required:
       - qid
       title: ExploreAnswerBody
+    ExploreFlaggedBody:
+      properties:
+        action:
+          type: string
+          pattern: ^(allow|dismiss)$
+          title: Action
+        selector:
+          type: string
+          title: Selector
+          default: ''
+        label:
+          type: string
+          title: Label
+          default: ''
+        element_key:
+          type: string
+          title: Element Key
+          default: ''
+      type: object
+      required:
+      - action
+      title: ExploreFlaggedBody
+      description: 'Client reviews a guardrail skip: allow for this run, or dismiss from the list.'
     ExploreStartBody:
       properties:
         base_url:
@@ -2303,6 +2425,21 @@ components:
       - selector
       - value
       title: FillField
+    FlowDeleteBody:
+      properties:
+        flow_id:
+          type: string
+          minLength: 1
+          title: Flow Id
+        page_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Page Id
+      type: object
+      required:
+      - flow_id
+      title: FlowDeleteBody
     FlowsBody:
       properties:
         playlist:

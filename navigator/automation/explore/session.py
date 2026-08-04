@@ -37,7 +37,7 @@ class ExplorationBudget:
     max_steps: int = 120
     max_wall_clock_s: float = 600.0
     #: Bounces / no-new-path clicks before early stop (after filtering visited nav).
-    max_consecutive_no_new: int = 8
+    max_consecutive_no_new: int = 24
     #: Unanswered business-specific field → skip the field, keep exploring.
     answer_timeout_s: float = 300.0
 
@@ -126,6 +126,8 @@ class ExplorationSession:
     #: URL paths already represented in the demo flow (one entry click each).
     flow_paths: set[str] = field(default_factory=set)
     flagged: list[FlaggedAction] = field(default_factory=list)
+    #: Client-approved selectors / element_keys — guardrail skips these.
+    allowed_keys: set[str] = field(default_factory=set)
     field_decisions: list[FieldDecision] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
 
@@ -142,6 +144,16 @@ class ExplorationSession:
     target_flow_name: str = ""
     started_at: float = field(default_factory=time.monotonic)
     consecutive_no_new: int = 0
+    #: Why the loop ended (budget / client stop / dead end) — for dashboard summary.
+    stop_reason: str = ""
+    #: Fingerprints with nothing left to try and no escape nav.
+    dead_ends: set[StateFingerprint] = field(default_factory=set)
+    #: element_keys already used for a dead-end escape click (avoid infinite retry).
+    escape_attempts: set[str] = field(default_factory=set)
+    #: Latest JPEG viewport for Client “Watch bot” (server Chromium, no share picker).
+    latest_frame_b64: str = ""
+    latest_frame_mime: str = "image/jpeg"
+    _last_frame_at: float = 0.0
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _listeners: list[Any] = field(default_factory=list)
 
@@ -185,12 +197,139 @@ class ExplorationSession:
     def mark_tried(self, fp: StateFingerprint, el: dict[str, Any]) -> None:
         self.visited.setdefault(fp, set()).add(element_key(el))
 
+    def is_allowed(self, el: dict[str, Any], css: str = "") -> bool:
+        """True if the Client allowed this element for the current explore."""
+        keys = {k for k in (css, element_key(el), str(el.get("text") or "")[:80]) if k}
+        with self._lock:
+            return bool(keys & self.allowed_keys)
+
+    def note_flagged(self, flag: FlaggedAction) -> bool:
+        """Append a flagged action, deduped by selector (or label+url). True if new."""
+        with self._lock:
+            for existing in self.flagged:
+                if flag.selector and existing.selector == flag.selector:
+                    return False
+                if (
+                    not flag.selector
+                    and existing.label == flag.label
+                    and existing.url == flag.url
+                ):
+                    return False
+            self.flagged.append(flag)
+            return True
+
+    def allow_flagged(self, *, selector: str = "", label: str = "", key: str = "") -> bool:
+        """Client permits a previously blocked control for the rest of this run."""
+        selector = (selector or "").strip()
+        label = (label or "").strip()
+        key = (key or "").strip()
+        if not (selector or label or key):
+            return False
+        with self._lock:
+            for k in (selector, label, key):
+                if k:
+                    self.allowed_keys.add(k)
+            # Let the explorer pick it again on the next loop.
+            if key:
+                for tried in self.visited.values():
+                    tried.discard(key)
+            if selector:
+                for tried in self.visited.values():
+                    drop = {t for t in tried if selector in t or t in selector}
+                    tried -= drop
+            self.flagged = [
+                f
+                for f in self.flagged
+                if not (
+                    (selector and f.selector == selector)
+                    or (key and f.element_key == key)
+                    or (label and f.label == label and (not selector or f.selector == selector))
+                )
+            ]
+        self.emit(
+            {
+                "type": "log",
+                "level": "info",
+                "msg": f"Client allowed “{label or selector or key}” — explorer may click it next.",
+            }
+        )
+        return True
+
+    def dismiss_flagged(self, *, selector: str = "", label: str = "", key: str = "") -> bool:
+        """Client reviewed and hides the flag without allowing the click."""
+        selector = (selector or "").strip()
+        label = (label or "").strip()
+        key = (key or "").strip()
+        if not (selector or label or key):
+            return False
+        with self._lock:
+            before = len(self.flagged)
+            self.flagged = [
+                f
+                for f in self.flagged
+                if not (
+                    (selector and f.selector == selector)
+                    or (key and f.element_key == key)
+                    or (label and f.label == label and (not selector or f.selector == selector))
+                )
+            ]
+            changed = len(self.flagged) < before
+        if changed:
+            self.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": f"Client dismissed review item “{label or selector or key}”.",
+                }
+            )
+        return changed
+
     # -- event stream ---------------------------------------------------------
 
-    def emit(self, event: dict[str, Any]) -> None:
-        """Buffer an event and fan it out. Buffer replays to late WS joiners."""
+    def publish_frame(self, page: Any, *, min_interval_s: float = 1.25) -> bool:
+        """Grab a JPEG viewport from the Playwright page and fan out to Watch bot.
+
+        Throttled so explore does not spend the whole budget on screenshots.
+        """
+        from navigator.automation.explore import perceive
+
+        now = time.monotonic()
+        if now - self._last_frame_at < min_interval_s and self.latest_frame_b64:
+            return False
+        b64 = perceive.screenshot_b64(page, image_type="jpeg", quality=48)
+        if not b64:
+            return False
         with self._lock:
-            self.events.append(event)
+            self.latest_frame_b64 = b64
+            self.latest_frame_mime = "image/jpeg"
+            self._last_frame_at = now
+        self.emit(
+            {
+                "type": "frame",
+                "mime": "image/jpeg",
+                "data": b64,
+            }
+        )
+        return True
+
+    def frame_payload(self) -> dict[str, str] | None:
+        with self._lock:
+            if not self.latest_frame_b64:
+                return None
+            return {
+                "mime": self.latest_frame_mime or "image/jpeg",
+                "data": self.latest_frame_b64,
+            }
+
+    def emit(self, event: dict[str, Any]) -> None:
+        """Buffer an event and fan it out. Buffer replays to late WS joiners.
+
+        Frame events are fanned out live but not buffered — base64 blobs would
+        blow the replay log and are available via latest_frame / GET frame.
+        """
+        with self._lock:
+            if event.get("type") != "frame":
+                self.events.append(event)
             listeners = list(self._listeners)
         for q in listeners:
             try:
@@ -226,7 +365,9 @@ class ExplorationSession:
         progress = int(round(100 * pages / max_pages))
         progress = min(100, max(0, progress))
         active = self.phase not in {"done", "failed", "stopped", "idle"}
-        if self.phase == "done" and progress < 100:
+        # Only snap to 100% when the page budget was actually hit — early stops
+        # (dead end / bounce limit) keep honest coverage so the meter matches reality.
+        if self.phase == "done" and progress < 100 and "max_pages" in (self.stop_reason or ""):
             progress = 100
         return {
             "active": active,
@@ -253,6 +394,7 @@ class ExplorationSession:
             "error": self.error,
             "flow_id": self.flow_id,
             "revision": self.revision,
+            "stop_reason": self.stop_reason,
             "pending_question": (
                 {
                     "qid": self.pending_question.qid,
@@ -281,6 +423,8 @@ class ExplorationSession:
             {"type": "question", "qid": q.qid, "alias": alias,
              "prompt": prompt, "context": context}
         )
+        # Keep Watch bot fresh while parked on a field question.
+        # (Caller may not have a page handle here — frames resume on next act.)
 
         answered = self._answer_event.wait(timeout=self.budget.answer_timeout_s)
         if not answered and not q.skipped:
@@ -325,6 +469,7 @@ class ExplorationSession:
         # waiting for the Playwright/LLM thread to notice the event.
         if self.phase not in {"done", "failed", "stopped"}:
             self.phase = "stopped"
+        self.stop_reason = self.stop_reason or "stopped by client"
         self.emit(
             {"type": "log", "level": "info", "msg": "stop requested — winding down"}
         )

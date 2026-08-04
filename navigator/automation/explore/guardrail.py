@@ -75,6 +75,8 @@ class FlaggedAction:
     url: str
     reason: str
     source: str
+    #: Same key `ExplorationSession.mark_tried` uses — for Allow → un-try.
+    element_key: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +85,7 @@ class FlaggedAction:
             "url": self.url,
             "reason": self.reason,
             "source": self.source,
+            "element_key": self.element_key,
         }
 
 

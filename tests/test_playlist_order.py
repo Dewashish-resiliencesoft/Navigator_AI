@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from navigator.client.content import apply_playlist_to_yaml, playlist_from_graph
+from navigator.client.content import (
+    apply_playlist_to_yaml,
+    playlist_from_graph,
+    remove_flow_from_yaml,
+)
 from navigator.knowledge.site_graph import parse_site_graph
 
 _GRAPH = """
@@ -52,3 +56,11 @@ def test_reorder_playlist_swaps_primary_flow():
     assert updated.primary_flow() == ("main", "second")
     pl = playlist_from_graph(updated)
     assert [p["flow_id"] for p in pl] == ["second", "first"]
+
+
+def test_remove_flow_drops_playlist_and_definition():
+    out = remove_flow_from_yaml(_GRAPH, flow_id="first", page_id="main")
+    g = parse_site_graph(out)
+    assert [p.flow_id for p in g.demo_playlist] == ["second"]
+    assert "first" not in g.pages["main"].flows
+    assert "second" in g.pages["main"].flows

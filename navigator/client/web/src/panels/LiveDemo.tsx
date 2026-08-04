@@ -3,6 +3,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { Check, Copy, PhoneOff, Play, Mic } from "lucide-react";
 import { api, ApiError, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
+import { useExploreSession } from "../lib/exploreSession";
+import { useProductData } from "../lib/productData";
 import { rise, soft, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -22,6 +24,7 @@ const LINK_PENDING = "Creating meeting link…";
 
 export function LiveDemo() {
   const { ok, err, setTab, setLogsSessionId } = useUi();
+  const invalidate = useProductData((s) => s.invalidate);
   const demo = useDemoSession((s) => s.demo);
   const starting = useDemoSession((s) => s.starting);
   const ending = useDemoSession((s) => s.ending);
@@ -138,6 +141,8 @@ export function LiveDemo() {
       const d = await api.putProductDomain(domain.trim());
       setDomain(d.base_url);
       setDomainPlaceholder(false);
+      invalidate();
+      void useExploreSession.getState().syncProductUrl();
       ok("Product domain saved.");
     } catch (e) {
       err(errText(e));
@@ -151,6 +156,7 @@ export function LiveDemo() {
     try {
       const d = await api.putTier2(enabled);
       setTier2Enabled(!!d.enabled);
+      invalidate();
       ok(
         d.enabled
           ? "Live fallback ON — only when no trained flow or knowledge matches."
@@ -188,6 +194,9 @@ export function LiveDemo() {
       setIncludeLogin(!!saved.include_login_in_default_flow);
       setChangingPass(!saved.has_password);
       setLoginPass("");
+      invalidate();
+      void useExploreSession.getState().refresh();
+      void useExploreSession.getState().syncProductUrl();
       ok("Product login saved.");
     } catch (e) {
       err(errText(e));

@@ -79,6 +79,51 @@ def apply_playlist_to_yaml(yaml_text: str, playlist: list[dict[str, Any]]) -> st
     return yaml.safe_dump(raw, sort_keys=False)
 
 
+def remove_flow_from_yaml(
+    yaml_text: str, *, flow_id: str, page_id: str | None = None
+) -> str:
+    """Drop a flow from the playlist and from page flow maps (unpublished draft)."""
+    fid = (flow_id or "").strip()
+    if not fid:
+        raise SiteGraphError("flow_id required")
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        raise SiteGraphError("site graph must be a mapping")
+
+    playlist = [
+        p
+        for p in (raw.get("demo_playlist") or [])
+        if isinstance(p, dict) and str(p.get("flow_id") or "").strip() != fid
+    ]
+    for i, row in enumerate(playlist, start=1):
+        row["order"] = i
+    raw["demo_playlist"] = playlist
+
+    pages = raw.get("pages") or {}
+    if not isinstance(pages, dict):
+        pages = {}
+    pid = (page_id or "").strip()
+    targets = [pid] if pid and pid in pages else list(pages.keys())
+    for key in targets:
+        page = pages.get(key)
+        if not isinstance(page, dict):
+            continue
+        flows = page.get("flows")
+        if isinstance(flows, dict) and fid in flows:
+            del flows[fid]
+    # If page_id was wrong/empty, still scrub every page for this flow_id.
+    if pid:
+        for key, page in pages.items():
+            if key == pid or not isinstance(page, dict):
+                continue
+            flows = page.get("flows")
+            if isinstance(flows, dict) and fid in flows:
+                del flows[fid]
+
+    parse_site_graph(yaml.safe_dump(raw), origin="<ops-flow-delete>")
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
 def _slug_flow(name: str) -> str:
     s = re.sub(r"[^a-zA-Z0-9]+", "_", (name or "").strip().lower()).strip("_")
     return (s[:40] or "recorded_flow")

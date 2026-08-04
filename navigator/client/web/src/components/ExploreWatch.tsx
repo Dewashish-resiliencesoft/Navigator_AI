@@ -1,70 +1,30 @@
-import { useEffect, useRef, useState } from "react";
-import { Expand, Eye, EyeOff, Minimize2, X } from "lucide-react";
-import {
-  bindVideoStream,
-  displayShareSupported,
-  startDisplayShare,
-  stopMediaStream,
-} from "../lib/displayShare";
+import { useEffect, useState } from "react";
+import { Expand, Eye, EyeOff, Minimize2 } from "lucide-react";
+import { useExploreSession } from "../lib/exploreSession";
 import { Button } from "./ui";
-import { useUi } from "../store";
 
+/** Live viewport of the server Chromium running explore — no screen-share picker. */
 export function ExploreWatch({ live }: { live: boolean }) {
-  const { err, ok } = useUi();
-  const [stream, setStream] = useState<MediaStream | null>(null);
+  const latestFrame = useExploreSession((s) => s.latestFrame);
+  const pullFrame = useExploreSession((s) => s.pullFrame);
+  const [watching, setWatching] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const streamRef = useRef<MediaStream | null>(null);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const modalVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  const watching = !!stream;
-
-  const teardown = () => {
-    stopMediaStream(streamRef.current);
-    streamRef.current = null;
-    setStream(null);
-    setExpanded(false);
-  };
-
-  // Keep ref in sync for unmount / live-end cleanup without stale closures.
   useEffect(() => {
-    streamRef.current = stream;
-  }, [stream]);
-
-  // Explore ended → drop capture.
-  useEffect(() => {
-    if (!live && streamRef.current) teardown();
-    // ponytail: only react to live edge; teardown reads streamRef
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (!live) {
+      setWatching(false);
+      setExpanded(false);
+    }
   }, [live]);
 
-  // Unmount cleanup.
   useEffect(() => {
-    return () => {
-      stopMediaStream(streamRef.current);
-      streamRef.current = null;
-    };
-  }, []);
-
-  // If the user stops share from the browser chrome UI, clear state.
-  useEffect(() => {
-    if (!stream) return;
-    const tracks = stream.getVideoTracks();
-    const onEnded = () => teardown();
-    for (const t of tracks) t.addEventListener("ended", onEnded);
-    return () => {
-      for (const t of tracks) t.removeEventListener("ended", onEnded);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stream]);
-
-  useEffect(() => {
-    return bindVideoStream(videoRef.current, expanded ? null : stream);
-  }, [stream, expanded]);
-
-  useEffect(() => {
-    return bindVideoStream(modalVideoRef.current, expanded ? stream : null);
-  }, [stream, expanded]);
+    if (!watching || !live) return;
+    void pullFrame();
+    const t = setInterval(() => {
+      void pullFrame();
+    }, 1500);
+    return () => clearInterval(t);
+  }, [watching, live, pullFrame]);
 
   useEffect(() => {
     if (!expanded) return;
@@ -75,18 +35,11 @@ export function ExploreWatch({ live }: { live: boolean }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [expanded]);
 
-  const start = async () => {
-    const result = await startDisplayShare();
-    if (!result.ok) {
-      err(result.message);
-      return;
-    }
-    streamRef.current = result.stream;
-    setStream(result.stream);
-    ok("Watching bot window — pick the Chrome window Navigator opened.");
-  };
-
   if (!live && !watching) return null;
+
+  const src = latestFrame
+    ? `data:${latestFrame.mime};base64,${latestFrame.data}`
+    : null;
 
   return (
     <div className="mt-4 space-y-2">
@@ -94,38 +47,52 @@ export function ExploreWatch({ live }: { live: boolean }) {
         {!watching ? (
           <Button
             variant="secondary"
-            onClick={() => void start()}
-            disabled={!live || !displayShareSupported()}
+            onClick={() => setWatching(true)}
+            disabled={!live}
           >
             <Eye size={13} /> Watch bot
           </Button>
         ) : (
           <>
-            <Button variant="secondary" onClick={teardown}>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                setWatching(false);
+                setExpanded(false);
+              }}
+            >
               <EyeOff size={13} /> Stop watching
             </Button>
-            <Button variant="ghost" onClick={() => setExpanded(true)}>
+            <Button
+              variant="ghost"
+              onClick={() => setExpanded(true)}
+              disabled={!src}
+            >
               <Expand size={13} /> Expand
             </Button>
           </>
         )}
       </div>
       <p className="text-[0.68rem] text-[var(--muted)]">
-        Choose the Chrome window Navigator opened for this explore. Video only —
-        no audio.
+        Live view of Chromium on this Navigator host (same window the bot
+        drives). No screen-share permission — works the same on a VPS.
       </p>
       {watching && !expanded && (
         <div
           className="overflow-hidden rounded-xl border bg-black/80"
           style={{ borderColor: "var(--line)" }}
         >
-          <video
-            ref={videoRef}
-            className="aspect-video w-full object-contain"
-            autoPlay
-            playsInline
-            muted
-          />
+          {src ? (
+            <img
+              src={src}
+              alt="Bot Chromium viewport"
+              className="aspect-video w-full object-contain"
+            />
+          ) : (
+            <p className="px-3 py-8 text-center text-[0.72rem] text-[var(--muted)]">
+              Waiting for first frame from the explore browser…
+            </p>
+          )}
         </div>
       )}
       {expanded && watching && (
@@ -144,17 +111,18 @@ export function ExploreWatch({ live }: { live: boolean }) {
               <Button variant="ghost" onClick={() => setExpanded(false)}>
                 <Minimize2 size={13} /> Collapse
               </Button>
-              <Button variant="ghost" onClick={teardown}>
-                <X size={13} /> Stop
-              </Button>
             </div>
-            <video
-              ref={modalVideoRef}
-              className="aspect-video w-full object-contain"
-              autoPlay
-              playsInline
-              muted
-            />
+            {src ? (
+              <img
+                src={src}
+                alt="Bot Chromium viewport"
+                className="aspect-video w-full object-contain"
+              />
+            ) : (
+              <p className="px-3 py-16 text-center text-[0.72rem] text-[var(--muted)]">
+                Waiting for frame…
+              </p>
+            )}
           </div>
         </div>
       )}

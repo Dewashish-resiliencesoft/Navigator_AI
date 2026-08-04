@@ -29,25 +29,41 @@
 - Create: `navigator/client/web/src/lib/displayShare.ts`
 - Create: `navigator/client/web/src/lib/displayShare.selfcheck.mjs` (node assert, no new deps)
 
-- [ ] **Step 1: Write the failing self-check**
+- [ ] **Step 1: Write self-check for `stopMediaStream` (fails until helper exists in sync)**
 
 Create `navigator/client/web/src/lib/displayShare.selfcheck.mjs`:
 
 ```js
 import assert from "node:assert/strict";
 
-// Will import the built helpers after we add a tiny CJS-free re-export.
-// For step 1, assert the module path we expect does not exist yet.
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+/** Mirrors stopMediaStream — keep in sync with displayShare.ts */
+function stopMediaStream(stream) {
+  if (!stream) return;
+  for (const track of stream.getTracks()) {
+    try {
+      track.stop();
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
-const dir = dirname(fileURLToPath(import.meta.url));
-assert.equal(existsSync(join(dir, "displayShare.ts")), false, "displayShare.ts should not exist yet");
-console.log("selfcheck step1 ok (file missing)");
+let stopped = 0;
+const fake = {
+  getTracks: () => [
+    { stop: () => { stopped += 1; } },
+    { stop: () => { stopped += 1; } },
+  ],
+};
+
+stopMediaStream(null);
+assert.equal(stopped, 0);
+stopMediaStream(fake);
+assert.equal(stopped, 2);
+console.log("displayShare.selfcheck ok");
 ```
 
-- [ ] **Step 2: Run self-check — expect fail on assert**
+- [ ] **Step 2: Run self-check**
 
 Run:
 
@@ -55,11 +71,9 @@ Run:
 node navigator/client/web/src/lib/displayShare.selfcheck.mjs
 ```
 
-Expected: AssertionError — `displayShare.ts should not exist yet` fails once file exists; for step 1 the assert is `false` expected so it **passes** only while missing. After Step 3, rewrite selfcheck to test `stopMediaStream` behavior via dynamic import of a `.mjs` twin — simpler: implement helpers and replace selfcheck as below in Step 4.
+Expected: `displayShare.selfcheck ok`
 
-Rewrite plan steps cleanly:
-
-- [ ] **Step 1b: Implement helpers**
+- [ ] **Step 3: Implement TypeScript helpers**
 
 Create `navigator/client/web/src/lib/displayShare.ts`:
 
@@ -138,50 +152,6 @@ export function bindVideoStream(
   };
 }
 ```
-
-- [ ] **Step 2: Replace selfcheck with stopMediaStream unit check**
-
-Replace `navigator/client/web/src/lib/displayShare.selfcheck.mjs` with:
-
-```js
-import assert from "node:assert/strict";
-
-/** Mirrors stopMediaStream — keep in sync with displayShare.ts */
-function stopMediaStream(stream) {
-  if (!stream) return;
-  for (const track of stream.getTracks()) {
-    try {
-      track.stop();
-    } catch {
-      /* ignore */
-    }
-  }
-}
-
-let stopped = 0;
-const fake = {
-  getTracks: () => [
-    { stop: () => { stopped += 1; } },
-    { stop: () => { stopped += 1; } },
-  ],
-};
-
-stopMediaStream(null);
-assert.equal(stopped, 0);
-stopMediaStream(fake);
-assert.equal(stopped, 2);
-console.log("displayShare.selfcheck ok");
-```
-
-- [ ] **Step 3: Run self-check**
-
-Run:
-
-```bash
-node navigator/client/web/src/lib/displayShare.selfcheck.mjs
-```
-
-Expected: `displayShare.selfcheck ok`
 
 - [ ] **Step 4: Commit**
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, ArrowDownRight, ArrowRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
 import { api, type DemoRun, type Metrics } from "../lib/api";
+import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import { AreaChart, Sparkbars } from "../components/Chart";
 import { BarLoader, Card, CardTitle, Empty, StatusPill } from "../components/ui";
@@ -63,6 +64,7 @@ function calcTrend(series: Metrics["series"], key: "sessions" | "actions" | "fai
 
 export function Overview() {
   const { err, setTab, setLogsSessionId } = useUi();
+  const epoch = useProductData((s) => s.epoch);
   const [m, setM] = useState<Metrics | null>(null);
   const [runs, setRuns] = useState<DemoRun[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
@@ -101,7 +103,7 @@ export function Overview() {
       alive = false;
       clearInterval(t);
     };
-  }, [err]);
+  }, [err, epoch]);
 
   if (!m) {
     return (

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Plus, Save, Trash2, Maximize2, Minimize2 } from "lucide-react";
 import { api, slugKey, type BioField } from "../lib/api";
+import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -41,6 +42,8 @@ const CONTACT_KEYS = new Set(["support_email", "social_links", "linkedin", "twit
 
 export function SiteGraph() {
   const { ok, err } = useUi();
+  const epoch = useProductData((s) => s.epoch);
+  const invalidate = useProductData((s) => s.invalidate);
   const [yaml, setYaml] = useState<string | null>(null);
   const [revision, setRevision] = useState<number | null>(null);
   const [liveRevision, setLiveRevision] = useState<number | null>(null);
@@ -59,14 +62,15 @@ export function SiteGraph() {
   }, [err]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void load();
+  }, [load, epoch]);
 
   const save = async () => {
     if (yaml === null) return;
     try {
       const d = await api.putSiteGraph(yaml);
       setRevision(d.revision);
+      invalidate();
       ok(`Draft saved — revision ${d.revision}. Publish to make it live.`);
     } catch (e) {
       err(errText(e));
@@ -77,6 +81,7 @@ export function SiteGraph() {
     try {
       const d = await api.publishSiteGraph();
       setLiveRevision(d.published_revision);
+      invalidate();
       ok(`Revision ${d.published_revision} is live for visitors.`);
       setConfirmPublish(false);
     } catch (e) {
@@ -140,6 +145,8 @@ export function SiteGraph() {
 
 export function Knowledge() {
   const { ok, err } = useUi();
+  const epoch = useProductData((s) => s.epoch);
+  const invalidate = useProductData((s) => s.invalidate);
   const [md, setMd] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -152,13 +159,14 @@ export function Knowledge() {
   }, [err]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void load();
+  }, [load, epoch]);
 
   const save = async () => {
     if (md === null) return;
     try {
       await api.putKnowledge(md);
+      invalidate();
       ok("Knowledge saved and indexed.");
     } catch (e) {
       err(errText(e));
@@ -190,6 +198,8 @@ export function Knowledge() {
 
 export function Bio() {
   const { ok, err } = useUi();
+  const epoch = useProductData((s) => s.epoch);
+  const invalidate = useProductData((s) => s.invalidate);
   const [fields, setFields] = useState<BioField[] | null>(null);
 
   const load = useCallback(async () => {
@@ -212,8 +222,8 @@ export function Bio() {
   }, [err]);
 
   useEffect(() => {
-    load();
-  }, [load]);
+    void load();
+  }, [load, epoch]);
 
   const save = async () => {
     if (!fields) return;
@@ -221,6 +231,7 @@ export function Bio() {
       await api.putBio(
         fields.map((f) => ({ ...f, key: f.key || slugKey(f.label) })),
       );
+      invalidate();
       await load();
       ok("Company bio saved.");
     } catch (e) {

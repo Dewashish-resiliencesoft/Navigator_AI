@@ -532,3 +532,70 @@ def test_groq_retry_wait_parses_tpm_message():
     assert _groq_retry_wait_s("try again in 1m0.48s", 0) == pytest.approx(61.48, abs=0.01)
     assert _groq_retry_wait_s("try again in 12.5s", 0) == pytest.approx(13.5, abs=0.01)
     assert _groq_retry_wait_s("rate_limit_exceeded", 0) == 15.0
+
+
+def test_flagged_dedupe_and_client_allow():
+    from navigator.automation.explore.guardrail import FlaggedAction
+    from navigator.automation.explore.session import StateFingerprint, element_key
+
+    session = _session(phase="exploring")
+    el = _el(testid="send-campaign", text="Send Campaign")
+    key = element_key(el)
+    flag = FlaggedAction(
+        label="Send Campaign",
+        selector="#send",
+        url="https://app.example.com/campaigns",
+        reason="keyword:send",
+        source="keyword",
+        element_key=key,
+    )
+    assert session.note_flagged(flag) is True
+    assert session.note_flagged(flag) is False  # same selector
+    assert len(session.flagged) == 1
+
+    fp = StateFingerprint("/campaigns/", "dom")
+    session.visited[fp] = {key}
+    assert session.allow_flagged(selector="#send", label="Send Campaign", key=key)
+    assert session.flagged == []
+    assert session.is_allowed(el, "#send")
+    assert key not in session.visited[fp]
+
+
+def test_dismiss_flagged_removes_without_allowing():
+    from navigator.automation.explore.guardrail import FlaggedAction
+
+    session = _session(phase="exploring")
+    flag = FlaggedAction(
+        label="Cancel",
+        selector="#cancel",
+        url="https://app.example.com/x",
+        reason="keyword:cancel",
+        source="keyword",
+        element_key="id=cancel",
+    )
+    session.note_flagged(flag)
+    assert session.dismiss_flagged(selector="#cancel", label="Cancel")
+    assert session.flagged == []
+    assert not session.is_allowed(_el(id="cancel", text="Cancel"), "#cancel")
+
+
+def test_exhausted_page_escapes_via_unvisited_nav_instead_of_spinning():
+    """When every control is already tried, still click nav toward a new path."""
+    from navigator.automation.explore.session import element_key, fingerprint
+
+    settings = _el(testid="settings", text="Settings", tag="a", href="/settings/")
+    page = FakePage("https://app.example.com/dashboard/", [settings])
+    executed: list = []
+    session = _session(
+        budget=ExplorationBudget(max_steps=4, max_pages=10, max_consecutive_no_new=3)
+    )
+    fp = fingerprint(page.url, [settings])
+    session.visited[fp] = {element_key(settings)}  # untried empty on entry
+
+    explore(
+        session,
+        _deps(page, executed=executed, guard_judge=lambda _p: '{"destructive": false}'),
+    )
+
+    assert executed, "dead-end escape should still click unvisited Settings nav"
+    assert "no new interactive elements found" not in (session.stop_reason or "")

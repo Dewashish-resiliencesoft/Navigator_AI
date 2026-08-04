@@ -110,6 +110,42 @@ def _guide_page_id(state: CallState) -> str:
     )
 
 
+def _section_knowledge_for_step(
+    deps: CallDeps,
+    *,
+    page_id: str,
+    flow_id: str,
+    step_action: str,
+) -> str:
+    """Pull knowledge that matches this page/flow so narration can explain it."""
+    try:
+        page_name = deps.graph.page(page_id).name
+    except Exception:  # noqa: BLE001
+        page_name = page_id
+    query = " ".join(
+        part for part in (page_name, flow_id.replace("_", " "), step_action) if part
+    ).strip()
+    if not query:
+        return ""
+    chroma_path = (
+        deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
+    )
+    try:
+        chunks = retrieve_product_knowledge(
+            deps.product_id, query, k=3, path=chroma_path
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] section knowledge skipped: {exc}", flush=True)
+        return ""
+    # Soft prefer chunks that mention the page/section name.
+    needle = page_name.lower()
+    ranked = sorted(
+        chunks,
+        key=lambda c: (0 if needle and needle in c.lower() else 1, -len(c)),
+    )
+    return "\n".join(ranked[:3])
+
+
 def _ensure_browser_on_page(deps: CallDeps, page_id: str) -> None:
     """After a Topic detour, put the browser back where the Default step expects.
 
@@ -577,12 +613,21 @@ def _decide_live_turn(
 
     if band == "high" and band_source is not None:
         flow_id, conf = band_source
+        knowledge_bits = " ".join(
+            (chunk.summary or chunk.text)[:240]
+            for chunk, score in result.knowledge_chunks[:2]
+            if score >= 0.25
+        )
         spoken = _say(
             deps,
             intent="flow_intro",
             fallback=_describe(deps.graph.page(page_id).name, flow_id),
             utterance=utterance,
-            context=f"Matched flow {flow_id} at confidence {conf:.2f}",
+            context=(
+                f"Matched flow {flow_id} at confidence {conf:.2f}. "
+                f"Explain briefly using this product knowledge if relevant: "
+                f"{knowledge_bits or '(none)'}"
+            ),
             pacing=pacing,
         )
         mem.note_flow(flow_id)
@@ -934,6 +979,13 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
             alias = getattr(nxt, "alias", "") or getattr(nxt, "page_id", "")
             step_action = f"{tool} {alias}".strip()
 
+            section_knowledge = _section_knowledge_for_step(
+                deps,
+                page_id=page_id,
+                flow_id=flow_id,
+                step_action=step_action,
+            )
+
             spoken = generate_narration(
                 screenshot_png=png,
                 screen_text=screen,
@@ -941,6 +993,7 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
                 intake_summary=intake_summary,
                 product_brief=deps.product_brief or "",
                 step_action=step_action,
+                section_knowledge=section_knowledge,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[plan] vision narration skipped: {exc}", flush=True)

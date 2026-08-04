@@ -327,9 +327,26 @@ def test_explored_steps_merge_through_the_recorder_path():
 
     page = FakePage("https://app.example.com/", [_el(testid="reports", text="Reports")])
     executed: list = []
-    session = _session(budget=ExplorationBudget(max_steps=1, max_pages=1))
-    explore(session, _deps(page, executed=executed, guard_judge=lambda _p: '{"destructive": false}'))
+
+    def _execute(_page, _graph, _page_id, call):
+        executed.append(call)
+        # Navigation to a new path — only first landing enters the demo flow.
+        page.url = "https://app.example.com/reports"
+        page.elements = [_el(testid="body", text="Reports page")]
+        return ToolResult(ok=True, tool=call.tool, detail="ok", duration_ms=1), "main"
+
+    session = _session(budget=ExplorationBudget(max_steps=2, max_pages=2))
+    explore(
+        session,
+        _deps(
+            page,
+            executed=executed,
+            execute=_execute,
+            guard_judge=lambda _p: '{"destructive": false}',
+        ),
+    )
     assert session.steps
+    assert session.actions_taken >= 1
 
     base = (
         "version: 1\nsite: acme\nbase_url: https://app.example.com\n"
@@ -347,3 +364,171 @@ def test_explored_steps_merge_through_the_recorder_path():
     )
     graph = parse_site_graph(merged)
     assert any(f.name.startswith("Explored") for f in graph.demo_playlist)
+
+
+def test_merge_update_existing_replaces_flow_without_dup_playlist():
+    from navigator.client.content import merge_recorded_flow
+    from navigator.knowledge.site_graph import parse_site_graph
+    from navigator.automation.record import RecordedStep
+
+    base = (
+        "version: 1\nsite: acme\nbase_url: https://app.example.com\n"
+        "pages:\n  explore:\n    name: Explore\n    url: /\n"
+        "    selectors:\n      body: body\n      inbox: '#inbox'\n"
+        "    flows:\n      tour:\n        - tool: click_element\n"
+        "          selector: inbox\n"
+        "demo_playlist:\n  - order: 1\n    name: Old Tour\n"
+        "    page_id: explore\n    flow_id: tour\n"
+    )
+    steps = [RecordedStep(tool="click_element", alias="inbox", selector="#inbox")]
+    once = merge_recorded_flow(
+        base,
+        flow_name="Updated Tour",
+        flow_id="tour",
+        page_id="explore",
+        steps=steps,
+        product_name="Acme",
+        base_url="https://app.example.com",
+        update_existing=True,
+    )
+    graph = parse_site_graph(once)
+    assert len([p for p in graph.demo_playlist if p.flow_id == "tour"]) == 1
+    assert next(p for p in graph.demo_playlist if p.flow_id == "tour").name == "Updated Tour"
+
+
+def test_backtrack_to_same_path_not_added_to_demo_flow(monkeypatch):
+    """Explore may revisit a page; demo keeps only the first landing."""
+    page = FakePage(
+        "https://app.example.com/a",
+        [_el(testid="go-b", text="Go B")],
+    )
+    executed: list = []
+    hops = {"n": 0}
+
+    def _execute(_page, _graph, _page_id, call):
+        executed.append(call)
+        hops["n"] += 1
+        if hops["n"] == 1:
+            page.url = "https://app.example.com/b"
+            page.elements = [_el(testid="go-a", text="Go A")]
+        else:
+            page.url = "https://app.example.com/a"
+            page.elements = [_el(testid="go-b", text="Go B")]
+        return ToolResult(ok=True, tool=call.tool, detail="ok", duration_ms=1), "main"
+
+    monkeypatch.setattr(
+        "navigator.automation.explore.reason.choose_next",
+        lambda **kw: __import__(
+            "navigator.automation.explore.reason", fromlist=["Choice"]
+        ).Choice(0, "nav", ""),
+    )
+    session = _session(budget=ExplorationBudget(max_steps=3, max_pages=4))
+    explore(
+        session,
+        _deps(
+            page,
+            executed=executed,
+            execute=_execute,
+            guard_judge=lambda _p: '{"destructive": false}',
+        ),
+    )
+    assert session.actions_taken >= 2
+    # First hop /a→/b is a demo step; return /b→/a is explored only.
+    assert len(session.steps) == 1
+    assert session.steps[0].alias.replace("-", "_") == "go_b"
+
+
+# -- disabled controls are never inventoried ---------------------------------
+
+
+def test_inventory_skips_disabled_and_aria_disabled_elements():
+    from navigator.automation.explore.perceive import inventory
+
+    page = FakePage(
+        "https://app.example.com/",
+        [
+            _el(testid="ok", text="Open"),
+            _el(testid="nope", text="Save", disabled=True),
+            _el(testid="aria", text="Publish", aria_disabled=True),
+            _el(testid="css", text="Send", **{"class": "btn disabled"}),
+        ],
+    )
+    # FakePage returns the list as-is from evaluate; inventory post-filters.
+    got = inventory(page)
+    assert [e["testid"] for e in got] == ["ok"]
+
+
+def test_session_status_exposes_visited_paths_and_recent_events():
+    session = _session()
+    session.emit({"type": "log", "level": "info", "msg": "hello"})
+    session.emit({"type": "explored", "path": "/inbox", "elements": 3})
+    from navigator.automation.explore.session import StateFingerprint
+
+    fp = StateFingerprint(url_path="/inbox", dom_hash="abc")
+    session.visited[fp] = set()
+    status = session.status()
+    assert status["visited_paths"] == ["/inbox"]
+    assert any(e.get("msg") == "hello" for e in status["recent_events"])
+    assert "progress_pct" in status
+    assert "elapsed_s" in status
+    assert "budget" in status
+
+
+def test_starting_phase_reports_active_true():
+    """Start response must be active so the dashboard meter/poll can run."""
+    session = _session(phase="starting")
+    status = session.status()
+    assert status["active"] is True
+    assert status["phase"] == "starting"
+    assert 0 <= status["progress_pct"] <= 100
+
+
+def test_request_stop_marks_inactive_immediately():
+    session = _session(phase="exploring")
+    assert session.status()["active"] is True
+    session.request_stop()
+    status = session.status()
+    assert status["active"] is False
+    assert status["phase"] == "stopped"
+    assert session.stop_event.is_set()
+
+
+def test_progress_pct_tracks_unique_pages_not_time_floor():
+    from navigator.automation.explore.session import StateFingerprint
+
+    session = _session(budget=ExplorationBudget(max_pages=25, max_wall_clock_s=600))
+    session.visited[StateFingerprint("/dashboard/", "a")] = set()
+    session.visited[StateFingerprint("/inbox/", "b")] = set()
+    # 2/25 → 8%, must not freeze at the old 20% soft time floor.
+    assert session.status()["progress_pct"] == 8
+
+
+def test_heuristic_skips_visited_nav_and_guardrail_fast_path():
+    from navigator.automation.explore.guardrail import classify_action, looks_like_safe_nav
+    from navigator.automation.explore.reason import heuristic_pick
+
+    inbox = _el(testid="inbox", text="Inbox", tag="a", href="/inbox/")
+    kanban = _el(testid="kanban", text="Kanban", tag="a", href="/kanban/")
+    assert looks_like_safe_nav(inbox)
+    assert classify_action(inbox, judge=None).flagged is False
+    pick = heuristic_pick([inbox, kanban], visited_paths=["/dashboard/", "/inbox/"])
+    assert pick is not None
+    assert pick.index == 1  # kanban, not inbox
+
+
+def test_visited_paths_dedupe_same_url_different_dom():
+    from navigator.automation.explore.session import StateFingerprint
+
+    session = _session()
+    session.visited[StateFingerprint("/dashboard/", "aaa")] = set()
+    session.visited[StateFingerprint("/kanban/", "bbb")] = set()
+    session.visited[StateFingerprint("/dashboard/", "ccc")] = set()
+    assert session.status()["visited_paths"] == ["/dashboard/", "/kanban/"]
+
+
+def test_groq_retry_wait_parses_tpm_message():
+    from navigator.automation.explore.runner import _groq_retry_wait_s
+
+    assert _groq_retry_wait_s("try again in 1m0.48s", 0) == pytest.approx(61.48, abs=0.01)
+    assert _groq_retry_wait_s("try again in 12.5s", 0) == pytest.approx(13.5, abs=0.01)
+    assert _groq_retry_wait_s("rate_limit_exceeded", 0) == 15.0

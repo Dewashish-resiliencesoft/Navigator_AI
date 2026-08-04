@@ -54,6 +54,7 @@ docs/**/*.html
 !CLAUDE.md
 !AGENTS.md
 !docs/PRODUCT_MODEL.md
+!docs/ONBOARDING.md
 !navigator/client/embed/README.md
 
 # Test fixtures may use HTML/MD

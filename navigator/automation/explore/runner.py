@@ -155,24 +155,86 @@ def draft_narration(
 # -- providers ----------------------------------------------------------------
 
 
-def groq_asker(api_key: str) -> Callable[[str], str] | None:
-    """Text reasoning via Groq — same model the live planner uses."""
+def groq_asker(
+    api_key: str,
+    stop_event: threading.Event | None = None,
+) -> Callable[[str], str] | None:
+    """Text reasoning via Groq — same model the live planner uses.
+
+    Rate-limit (429 / TPD) gets a short backoff retry instead of instantly
+    fail-closing every guardrail / reason call for the rest of the run.
+    Sleep is interruptible so Stop exploring does not wait out the backoff.
+    """
     if not api_key.strip():
         return None
 
     def ask(prompt: str) -> str:
+        import time
+
         from groq import Groq
 
         from navigator.automation.explore.reason import MODEL
 
-        resp = Groq(api_key=api_key).chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        return resp.choices[0].message.content or ""
+        client = Groq(api_key=api_key)
+        last: Exception | None = None
+        for attempt in range(4):
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("stopped by client")
+            try:
+                resp = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                )
+                return resp.choices[0].message.content or ""
+            except Exception as exc:  # noqa: BLE001
+                if stop_event is not None and stop_event.is_set():
+                    raise RuntimeError("stopped by client") from exc
+                last = exc
+                msg = str(exc).lower()
+                if "429" not in msg and "rate_limit" not in msg:
+                    raise
+                # Groq often says "try again in XmYs" — parse lightly, else exponential.
+                wait_s = _groq_retry_wait_s(str(exc), attempt)
+                print(
+                    f"[explore] groq rate-limited; retry in {wait_s:.0f}s "
+                    f"(attempt {attempt + 1}/4)",
+                    flush=True,
+                )
+                _sleep_interruptible(wait_s, stop_event)
+        assert last is not None
+        raise last
 
     return ask
+
+
+def _sleep_interruptible(
+    seconds: float, stop_event: threading.Event | None
+) -> None:
+    """Sleep in short slices so a client Stop can cut the wait short."""
+    import time
+
+    deadline = time.monotonic() + max(0.0, seconds)
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            raise RuntimeError("stopped by client")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(0.4, left))
+
+
+def _groq_retry_wait_s(message: str, attempt: int) -> float:
+    """Seconds to sleep before the next Groq attempt."""
+    import re
+
+    m = re.search(r"try again in (\d+)m([\d.]+)s", message, re.I)
+    if m:
+        return min(90.0, int(m.group(1)) * 60 + float(m.group(2)) + 1.0)
+    m = re.search(r"try again in ([\d.]+)s", message, re.I)
+    if m:
+        return min(90.0, float(m.group(1)) + 1.0)
+    return min(90.0, 15.0 * (2**attempt))
 
 
 _VISION_SYSTEM = (
@@ -211,10 +273,19 @@ def start_exploration(
     product_name: str,
     budget: ExplorationBudget | None = None,
     headful: bool | None = None,
+    save_mode: str = "new",
+    target_flow_id: str = "",
+    target_flow_name: str = "",
     on_complete: Callable[[ExplorationSession], None] | None = None,
 ) -> ExplorationSession:
     """Launch a run on a daemon thread. Raises if one is already active."""
     global _active
+    mode = (save_mode or "new").strip().lower()
+    if mode not in {"new", "update"}:
+        raise RuntimeError("save_mode must be 'new' or 'update'")
+    flow_target = (target_flow_id or "").strip()
+    if mode == "update" and not flow_target:
+        raise RuntimeError("target_flow_id required when save_mode is update")
     with _lock:
         if _active is not None and _active.phase not in {"done", "failed", "stopped"}:
             raise RuntimeError("an exploration session is already running")
@@ -222,7 +293,31 @@ def start_exploration(
             product_id=product_id,
             base_url=base_url,
             budget=budget or ExplorationBudget(),
+            phase="starting",
+            save_mode=mode,
+            target_flow_id=flow_target,
+            target_flow_name=(target_flow_name or "").strip(),
         )
+        if mode == "update":
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        f"plan: update existing flow "
+                        f"“{session.target_flow_name or flow_target}” "
+                        f"({flow_target})"
+                    ),
+                }
+            )
+        else:
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": "plan: create new flow (unpublished draft)",
+                }
+            )
         _active = session
 
     def _run() -> None:
@@ -259,7 +354,7 @@ def _run_exploration(
     from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
     from navigator.automation.browser.product_login import login_product
 
-    ask_text = groq_asker(settings.groq_api_key)
+    ask_text = groq_asker(settings.groq_api_key, stop_event=session.stop_event)
     ask_vision = vision_asker()
     corrections = prior_corrections(session.product_id)
     if corrections:
@@ -276,8 +371,11 @@ def _run_exploration(
         context = browser.new_context()
         page = context.new_page()
         try:
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                return
             session.phase = "logging_in"
-            session.emit({"type": "state", "phase": "logging_in"})
+            session.emit({"type": "status", **session.status()})
             try:
                 with CredentialVault(settings.credential_db_path) as vault:
                     creds = vault.credentials_for(session.product_id)
@@ -288,6 +386,9 @@ def _run_exploration(
                     {"type": "log", "level": "warn", "msg": f"vault unavailable: {exc}"}
                 )
                 creds = None
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                return
             if creds:
                 login_url, email, password = creds
                 result = run_login_gate(
@@ -296,6 +397,9 @@ def _run_exploration(
                     email=email,
                     password=password,
                 )
+                if session.stop_event.is_set():
+                    session.phase = "stopped"
+                    return
                 if result is LoginGateResult.failed:
                     raise RuntimeError("product login failed — check stored credentials")
                 session.emit(
@@ -307,6 +411,10 @@ def _run_exploration(
                      "msg": "no stored credentials — exploring signed-out surface only"}
                 )
                 page.goto(session.base_url, wait_until="domcontentloaded", timeout=60_000)
+
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                return
 
             def _on_action(step: RecordedStep, result: ToolResult, verify_result: Any) -> None:
                 failed = not result.ok or (
@@ -331,10 +439,18 @@ def _run_exploration(
                 ),
             )
 
-            session.phase = "drafting"
-            session.emit({"type": "state", "phase": "drafting"})
-            narration = draft_narration(
-                session.steps, product_name=product_name, ask_text=ask_text
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                # Still draft what we have so Stop does not discard progress.
+            session.phase = "drafting" if not session.stop_event.is_set() else "stopped"
+            if session.phase == "drafting":
+                session.emit({"type": "status", **session.status()})
+            narration = (
+                []
+                if session.stop_event.is_set()
+                else draft_narration(
+                    session.steps, product_name=product_name, ask_text=ask_text
+                )
             )
             _persist(session, product_name=product_name, narration=narration)
         finally:
@@ -363,17 +479,24 @@ def _persist(
         )
         return
 
-    flow_id = f"explored_{uuid4().hex[:8]}"
+    update = session.save_mode == "update" and bool(session.target_flow_id)
+    flow_id = session.target_flow_id if update else f"explored_{uuid4().hex[:8]}"
+    flow_name = (
+        session.target_flow_name
+        if update and session.target_flow_name
+        else f"Explored — {product_name}"
+    )
     registry = get_registry()
     current = registry.latest_revision(session.product_id)
     new_yaml = merge_recorded_flow(
         current.yaml,
-        flow_name=f"Explored — {product_name}",
+        flow_name=flow_name,
         flow_id=flow_id,
         page_id=EXPLORE_PAGE_ID,
         steps=session.steps,
         product_name=product_name,
         base_url=session.base_url,
+        update_existing=update,
     )
     if narration:
         new_yaml = _attach_narration(new_yaml, flow_id, narration)
@@ -382,6 +505,17 @@ def _persist(
     )
     session.flow_id = flow_id
     session.revision = rev.revision
+    session.emit(
+        {
+            "type": "log",
+            "level": "info",
+            "msg": (
+                f"{'updated' if update else 'created'} flow {flow_id} "
+                f"({len(session.steps)} demo step(s), "
+                f"{session.actions_taken} actions explored)"
+            ),
+        }
+    )
 
 
 def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:

@@ -107,6 +107,34 @@ def keyword_hit(el: dict[str, Any]) -> str | None:
     return None
 
 
+def looks_like_safe_nav(el: dict[str, Any]) -> bool:
+    """True for obvious read-only navigation — skip the LLM judge (speed).
+
+    Still fail-closed via keyword_hit before this is consulted.
+    """
+    if keyword_hit(el):
+        return False
+    tag = str(el.get("tag") or "").lower()
+    role = str(el.get("role") or "").lower()
+    href = str(el.get("href") or "").strip()
+    if href.lower().startswith(("mailto:", "tel:", "javascript:")):
+        return False
+    if tag == "a" and href and href != "#":
+        return True
+    if role in {"link", "tab", "menuitem", "treeitem", "navigation"}:
+        return True
+    # Sidebar buttons often lack href but are labeled nav targets.
+    blob = element_text_blob(el).lower()
+    if not blob:
+        return False
+    navish = (
+        "dashboard", "inbox", "kanban", "calendar", "settings", "reports",
+        "home", "overview", "contacts", "chat", "pipeline", "board",
+        "projects", "tasks", "messages", "profile", "billing", "team",
+    )
+    return any(w in blob for w in navish) and tag in {"button", "a", "div", "span", "li"}
+
+
 def classify_action(
     el: dict[str, Any],
     *,
@@ -123,12 +151,18 @@ def classify_action(
     if hit:
         return GuardrailVerdict(True, f"keyword:{hit}", "keyword")
 
+    # Fast path: clear navigation does not need a TPD-burning LLM round-trip.
+    if looks_like_safe_nav(el):
+        return GuardrailVerdict(False, "safe navigation heuristic", "nav_heuristic")
+
     if judge is None:
         return GuardrailVerdict(True, "no LLM judge configured", "fail_closed")
 
     try:
         raw = judge(_JUDGE_PROMPT.format(element=json.dumps(el, sort_keys=True)))
     except Exception as exc:  # noqa: BLE001
+        if "stopped by client" in str(exc).lower():
+            raise
         return GuardrailVerdict(True, f"judge unavailable: {exc}", "fail_closed")
 
     verdict = _parse_judge(raw)

@@ -22,11 +22,13 @@ MODEL = "llama-3.3-70b-versatile"
 
 _PROMPT = """You are exploring a product's web UI to build a guided demo.
 
-Goal: find the interesting, user-facing capabilities a salesperson would show a
-prospect. Prefer navigation and views that reveal core functionality. Avoid
-settings/admin trivia, logout, and anything that looks like it changes data.
+Goal: map the product surface, then leave a CLEAN sales walkthrough — primary
+nav, tabs, and feature pages a prospect would see. Prefer navigation that opens
+a NEW page or view. Avoid bouncing back to pages already visited, logo/home
+loops, settings trivia, logout, and anything that mutates data.
 
 Current page: {url}
+Already visited (prefer NEW destinations): {visited}
 {corrections}
 Elements you have NOT tried yet (choose one by index):
 {elements}
@@ -70,11 +72,77 @@ def needs_vision(elements: Sequence[dict[str, Any]]) -> bool:
     return unlabeled / len(elements) >= 0.6
 
 
+def _path_slugs(visited_paths: Sequence[str]) -> set[str]:
+    slugs: set[str] = set()
+    for path in visited_paths:
+        parts = [p for p in str(path).strip("/").lower().split("/") if p]
+        slugs.update(parts)
+        if parts:
+            slugs.add(parts[-1])
+    return slugs
+
+
+def _el_blob(el: dict[str, Any]) -> str:
+    parts = [
+        str(el.get(k) or "")
+        for k in ("text", "label", "aria_label", "title", "name", "testid", "href")
+    ]
+    return " ".join(p for p in parts if p).lower()
+
+
+def targets_visited_path(el: dict[str, Any], visited_paths: Sequence[str]) -> bool:
+    """True when the control clearly points at a path we already mapped."""
+    slugs = _path_slugs(visited_paths)
+    if not slugs:
+        return False
+    blob = _el_blob(el)
+    href = str(el.get("href") or "").lower()
+    for slug in slugs:
+        if len(slug) < 2:
+            continue
+        if slug in blob.split() or f"/{slug}" in href or href.endswith(slug):
+            return True
+        # Word-boundary-ish: "inbox" in "Go to Inbox"
+        if re.search(rf"\b{re.escape(slug)}\b", blob):
+            return True
+    return False
+
+
+def looks_like_nav(el: dict[str, Any]) -> bool:
+    tag = str(el.get("tag") or "").lower()
+    role = str(el.get("role") or "").lower()
+    href = str(el.get("href") or "").strip()
+    if tag == "a" and href and href != "#":
+        return True
+    return role in {"link", "tab", "menuitem", "treeitem"}
+
+
+def heuristic_pick(
+    elements: Sequence[dict[str, Any]],
+    visited_paths: Sequence[str],
+) -> Choice | None:
+    """Pick clear unvisited navigation without an LLM call."""
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for i, el in enumerate(elements):
+        if el.get("fillable"):
+            continue
+        if targets_visited_path(el, visited_paths):
+            continue
+        ranked.append((i, el))
+    if not ranked:
+        return None
+    nav = [(i, e) for i, e in ranked if looks_like_nav(e)]
+    pool = nav or ranked
+    idx, _el = pool[0]
+    return Choice(idx, "heuristic: unvisited destination", "")
+
+
 def choose_next(
     *,
     url: str,
     elements: Sequence[dict[str, Any]],
     corrections: Sequence[str] = (),
+    visited_paths: Sequence[str] = (),
     ask_text: Callable[[str], str] | None = None,
     ask_vision: Callable[[str, str], str] | None = None,
     screenshot: str = "",
@@ -83,6 +151,12 @@ def choose_next(
     if not elements:
         return None
 
+    # Prefer unlabeled-free nav heuristics — avoids Groq TPD + multi-second waits.
+    if not needs_vision(elements):
+        fast = heuristic_pick(elements, visited_paths)
+        if fast is not None:
+            return fast
+
     corr_block = ""
     if corrections:
         corr_block = (
@@ -90,12 +164,26 @@ def choose_next(
             + "\n".join(f"- {c}" for c in corrections)
             + "\n"
         )
+    visited = ", ".join(visited_paths) if visited_paths else "(none yet)"
+    # Drop obvious backtrack targets from the LLM menu when alternatives exist.
+    filtered = [
+        (i, e)
+        for i, e in enumerate(elements)
+        if not targets_visited_path(e, visited_paths)
+    ]
+    menu = filtered if filtered else list(enumerate(elements))
+    index_map = [i for i, _ in menu]
+    menu_els = [e for _, e in menu]
+
     prompt = _PROMPT.format(
-        url=url, corrections=corr_block, elements=format_elements(elements)
+        url=url,
+        visited=visited,
+        corrections=corr_block,
+        elements=format_elements(menu_els),
     )
 
     raw = ""
-    if needs_vision(elements) and ask_vision is not None and screenshot:
+    if needs_vision(menu_els) and ask_vision is not None and screenshot:
         try:
             raw = ask_vision(prompt, screenshot)
         except Exception as exc:  # noqa: BLE001
@@ -105,15 +193,19 @@ def choose_next(
         try:
             raw = ask_text(prompt)
         except Exception as exc:  # noqa: BLE001
+            if "stopped by client" in str(exc).lower():
+                return None
             print(f"[explore] text reason failed: {exc}", flush=True)
             raw = ""
 
-    choice = _parse(raw, len(elements))
+    choice = _parse(raw, len(menu_els))
     if choice is not None:
-        return choice
-    # No model, or an unusable reply: fall back to the first untried element so
-    # exploration still makes progress instead of stalling on a bad LLM day.
-    return Choice(0, "fallback: first untried element", "")
+        return Choice(index_map[choice.index], choice.why, choice.narration)
+    # Fallback: first non-visited target, else first untried.
+    fast = heuristic_pick(elements, visited_paths)
+    if fast is not None:
+        return fast
+    return Choice(index_map[0], "fallback: first untried element", "")
 
 
 def _parse(raw: str, count: int) -> Choice | None:

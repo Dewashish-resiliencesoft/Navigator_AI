@@ -133,9 +133,10 @@ export function Button({
 }
 
 const fieldBase =
-  "w-full rounded-lg border bg-white/50 dark:bg-black/20 px-3 py-2 text-[0.85rem] " +
+  "w-full rounded-lg border bg-[var(--panel)] px-3 py-2 text-[0.85rem] text-[var(--text)] " +
   "placeholder:text-[var(--muted)]/70 outline-none " +
-  "focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20";
+  "focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20 " +
+  "disabled:cursor-not-allowed disabled:opacity-50";
 
 export function Field({
   label,
@@ -222,20 +223,34 @@ export function Select({
   value,
   onChange,
   options,
+  disabled,
+  className,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
+  disabled?: boolean;
+  className?: string;
 }) {
   return (
     <select
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className={cn(fieldBase, "appearance-none pr-8")}
-      style={{ borderColor: "var(--line)" }}
+      className={cn(fieldBase, "appearance-none pr-8", className)}
+      style={{
+        borderColor: "var(--line)",
+        backgroundColor: "var(--panel)",
+        color: "var(--text)",
+        colorScheme: "inherit",
+      }}
     >
       {options.map((o) => (
-        <option key={o.value} value={o.value}>
+        <option
+          key={o.value}
+          value={o.value}
+          style={{ backgroundColor: "var(--panel)", color: "var(--text)" }}
+        >
           {o.label}
         </option>
       ))}

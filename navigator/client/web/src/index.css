@@ -32,7 +32,11 @@
 
   html {
     background: var(--bg);
-    color-scheme: light dark;
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
   }
 
   body {
@@ -52,6 +56,19 @@
   button {
     font: inherit;
     color: inherit;
+  }
+
+  /* Native <select>/<option> ignore most CSS; solid panel + color-scheme
+     keep dark-mode menus readable (no white popup + light text). */
+  select {
+    background-color: var(--panel);
+    color: var(--text);
+  }
+
+  select option,
+  select optgroup {
+    background-color: var(--panel);
+    color: var(--text);
   }
 
   ::selection {

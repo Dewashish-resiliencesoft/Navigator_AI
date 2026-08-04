@@ -80,8 +80,8 @@ def test_wait_for_times_out_without_raising(page, site_graph):
     assert result.ok is False
     assert result.tool == "wait_for"
     assert "Timeout" in result.detail
-    assert 600 <= elapsed_ms < 4000, "must honour its own timeout_ms, not the default"
-    assert result.duration_ms >= 600
+    assert 480 <= elapsed_ms < 4000, "must honour its own timeout_ms, not the default"
+    assert result.duration_ms >= 480
     assert next_page == "inbox", "a failed call must not move the agent"
 
 

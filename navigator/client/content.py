@@ -93,6 +93,7 @@ def merge_recorded_flow(
     steps: list[RecordedStep],
     product_name: str,
     base_url: str,
+    update_existing: bool = False,
 ) -> str:
     raw = yaml.safe_load(yaml_text)
     if not isinstance(raw, dict):
@@ -139,15 +140,34 @@ def merge_recorded_flow(
     flows[flow_id] = calls
 
     playlist = list(raw.get("demo_playlist") or [])
-    next_order = max([int(p.get("order") or 0) for p in playlist] + [0]) + 1
-    playlist.append(
-        {
-            "order": next_order,
-            "name": flow_name,
-            "page_id": page_id,
-            "flow_id": flow_id,
-        }
-    )
+    if update_existing:
+        updated = False
+        for entry in playlist:
+            if entry.get("flow_id") == flow_id:
+                entry["name"] = flow_name
+                entry["page_id"] = page_id
+                updated = True
+                break
+        if not updated:
+            next_order = max([int(p.get("order") or 0) for p in playlist] + [0]) + 1
+            playlist.append(
+                {
+                    "order": next_order,
+                    "name": flow_name,
+                    "page_id": page_id,
+                    "flow_id": flow_id,
+                }
+            )
+    else:
+        next_order = max([int(p.get("order") or 0) for p in playlist] + [0]) + 1
+        playlist.append(
+            {
+                "order": next_order,
+                "name": flow_name,
+                "page_id": page_id,
+                "flow_id": flow_id,
+            }
+        )
     raw["demo_playlist"] = playlist
     parse_site_graph(yaml.safe_dump(raw), origin="<ops-record-merge>")
     return yaml.safe_dump(raw, sort_keys=False)

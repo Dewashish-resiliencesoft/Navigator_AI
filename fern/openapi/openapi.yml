@@ -765,6 +765,7 @@ paths:
   /:
     get:
       summary: Root
+      description: "Landing URL when the API starts \u2014 Client dashboard, not OpenAPI docs."
       operationId: root__get
       responses:
         '200':
@@ -2247,6 +2248,21 @@ components:
           minimum: 10.0
           title: Answer Timeout S
           default: 300.0
+        save_mode:
+          type: string
+          pattern: ^(new|update)$
+          title: Save Mode
+          default: new
+        target_flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Flow Id
+        target_flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Flow Name
       type: object
       title: ExploreStartBody
     FillField:

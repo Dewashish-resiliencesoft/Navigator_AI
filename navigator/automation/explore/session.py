@@ -21,8 +21,10 @@ from navigator.automation.explore.guardrail import FlaggedAction
 from navigator.automation.record import RecordedStep
 
 #: Session phases. `awaiting_input` genuinely blocks the explorer thread.
+#: `starting` is set the moment the run is accepted so status.active is true
+#: before the Playwright thread reaches logging_in / exploring.
 PHASES = (
-    "idle", "logging_in", "exploring", "awaiting_input",
+    "idle", "starting", "logging_in", "exploring", "awaiting_input",
     "drafting", "done", "failed", "stopped",
 )
 
@@ -34,8 +36,8 @@ class ExplorationBudget:
     max_pages: int = 25
     max_steps: int = 120
     max_wall_clock_s: float = 600.0
-    #: Full passes yielding no unvisited element before stopping early.
-    max_consecutive_no_new: int = 1
+    #: Bounces / no-new-path clicks before early stop (after filtering visited nav).
+    max_consecutive_no_new: int = 8
     #: Unanswered business-specific field → skip the field, keep exploring.
     answer_timeout_s: float = 300.0
 
@@ -119,6 +121,10 @@ class ExplorationSession:
 
     visited: dict[StateFingerprint, set[str]] = field(default_factory=dict)
     steps: list[RecordedStep] = field(default_factory=list)
+    #: Every interaction attempted (budget). `steps` is the curated demo only.
+    actions_taken: int = 0
+    #: URL paths already represented in the demo flow (one entry click each).
+    flow_paths: set[str] = field(default_factory=set)
     flagged: list[FlaggedAction] = field(default_factory=list)
     field_decisions: list[FieldDecision] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -130,6 +136,10 @@ class ExplorationSession:
     error: str = ""
     flow_id: str = ""
     revision: int | None = None
+    #: "new" → mint explored_* flow; "update" → overwrite target_flow_id.
+    save_mode: str = "new"
+    target_flow_id: str = ""
+    target_flow_name: str = ""
     started_at: float = field(default_factory=time.monotonic)
     consecutive_no_new: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -144,9 +154,12 @@ class ExplorationSession:
         """Reason the run must stop, or None to keep going."""
         if self.stop_event.is_set():
             return "stopped by client"
-        if len(self.visited) >= self.budget.max_pages:
+        # Unique URL paths — SPA re-renders of the same path do not burn budget.
+        unique_paths = len({fp.url_path for fp in self.visited})
+        if unique_paths >= self.budget.max_pages:
             return f"max_pages ({self.budget.max_pages}) reached"
-        if len(self.steps) >= self.budget.max_steps:
+        # Budget against discovery actions, not curated demo length.
+        if self.actions_taken >= self.budget.max_steps:
             return f"max_steps ({self.budget.max_steps}) reached"
         if self.elapsed_s() >= self.budget.max_wall_clock_s:
             return f"time budget ({self.budget.max_wall_clock_s:.0f}s) reached"
@@ -196,16 +209,47 @@ class ExplorationSession:
                 self._listeners.remove(q)
 
     def status(self) -> dict[str, Any]:
+        # Same URL path can appear under multiple DOM hashes (SPA re-renders);
+        # dashboard list should show unique paths, order preserved.
+        visited_paths = list(dict.fromkeys(fp.url_path for fp in self.visited))
+        # Last log-ish events for dashboard pollers that missed the WS stream.
+        recent = [
+            e
+            for e in self.events
+            if e.get("type") in {"log", "flagged", "field", "explored"}
+        ][-80:]
+        steps = len(self.steps)
+        pages = len({fp.url_path for fp in self.visited})
+        max_pages = max(1, self.budget.max_pages)
+        # Progress = unique pages covered / budget. No soft time floor that
+        # freezes the meter at 20% while the explorer is still crawling.
+        progress = int(round(100 * pages / max_pages))
+        progress = min(100, max(0, progress))
+        active = self.phase not in {"done", "failed", "stopped", "idle"}
+        if self.phase == "done" and progress < 100:
+            progress = 100
         return {
-            "active": self.phase not in {"done", "failed", "stopped", "idle"},
+            "active": active,
             "job_id": self.job_id,
             "session_id": str(self.session_id),
             "phase": self.phase,
-            "visited": len(self.visited),
-            "steps": len(self.steps),
+            "visited": pages,
+            "visited_paths": visited_paths,
+            "steps": steps,
+            "actions_taken": self.actions_taken,
             "flagged": [f.as_dict() for f in self.flagged],
             "field_decisions": [d.as_dict() for d in self.field_decisions],
+            "recent_events": recent,
             "elapsed_s": round(self.elapsed_s(), 1),
+            "progress_pct": progress,
+            "budget": {
+                "max_pages": self.budget.max_pages,
+                "max_steps": self.budget.max_steps,
+                "max_wall_clock_s": self.budget.max_wall_clock_s,
+            },
+            "save_mode": self.save_mode,
+            "target_flow_id": self.target_flow_id or None,
+            "target_flow_name": self.target_flow_name or None,
             "error": self.error,
             "flow_id": self.flow_id,
             "revision": self.revision,
@@ -277,3 +321,11 @@ class ExplorationSession:
     def request_stop(self) -> None:
         self.stop_event.set()
         self._answer_event.set()  # unblock a parked ask()
+        # Flip phase immediately so dashboard status.active goes false without
+        # waiting for the Playwright/LLM thread to notice the event.
+        if self.phase not in {"done", "failed", "stopped"}:
+            self.phase = "stopped"
+        self.emit(
+            {"type": "log", "level": "info", "msg": "stop requested — winding down"}
+        )
+        self.emit({"type": "status", **self.status()})

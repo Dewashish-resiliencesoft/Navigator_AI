@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from navigator.automation.explore import perceive, reason
@@ -98,8 +99,17 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
     verify = deps.verify or browser_verify.check
 
     graph = _LiveGraph(session.base_url)
+    # Do not clobber a Stop that landed during login / before the loop starts.
+    if session.stop_event.is_set():
+        session.phase = "stopped"
+        session.emit({"type": "log", "level": "info", "msg": "stopping: stopped by client"})
+        return session.steps
     session.phase = "exploring"
     session.emit({"type": "log", "level": "info", "msg": "exploration started"})
+    # Starting page is already "seen" for the demo — first NEW path becomes step 1.
+    start_path = urlparse(_current_url(deps.page)).path or "/"
+    session.flow_paths.add(start_path)
+    session.emit({"type": "status", **session.status()})
 
     while True:
         stop = session.budget_exhausted()
@@ -114,6 +124,15 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             session.emit(
                 {"type": "log", "level": "info",
                  "msg": f"new state {fp.url_path} ({len(elements)} elements)"}
+            )
+            session.emit(
+                {
+                    "type": "explored",
+                    "url": url,
+                    "path": fp.url_path,
+                    "elements": len(elements),
+                    "msg": f"opened {fp.url_path}",
+                }
             )
 
         untried = session.untried(fp, elements)
@@ -130,6 +149,7 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             url=url,
             elements=untried,
             corrections=deps.corrections,
+            visited_paths=tuple(dict.fromkeys(fp.url_path for fp in session.visited)),
             ask_text=deps.ask_text,
             ask_vision=deps.ask_vision,
             screenshot=(
@@ -138,19 +158,31 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
                 else ""
             ),
         )
+        if session.stop_event.is_set():
+            session.emit({"type": "log", "level": "info", "msg": "stopping: stopped by client"})
+            break
         if choice is None:
             session.consecutive_no_new += 1
             continue
 
         el = untried[choice.index]
         session.mark_tried(fp, el)
-        _step(session, deps, graph, el, url, choice, execute, verify)
+        try:
+            _step(session, deps, graph, el, url, choice, execute, verify)
+        except RuntimeError as exc:
+            if "stopped by client" in str(exc).lower():
+                session.emit(
+                    {"type": "log", "level": "info", "msg": "stopping: stopped by client"}
+                )
+                break
+            raise
 
-        session.emit(
-            {"type": "state", "phase": session.phase, "visited": len(session.visited),
-             "steps": len(session.steps), "elapsed_s": round(session.elapsed_s(), 1)}
-        )
+        # Full status snapshot so the dashboard meter updates without waiting
+        # on the HTTP poll (which previously never started when active was false).
+        session.emit({"type": "status", **session.status()})
 
+    if session.stop_event.is_set():
+        session.phase = "stopped"
     return session.steps
 
 
@@ -164,6 +196,9 @@ def _step(
     execute: Callable[..., tuple[ToolResult, str]],
     verify: Callable[..., Any],
 ) -> None:
+    if session.stop_event.is_set():
+        return
+
     alias, css = prefer_selector(el)
     junk = junk_record_reason(el, alias=alias, selector=css)
     if junk:
@@ -176,6 +211,8 @@ def _step(
     # to be touched -- deliberately not inside the reasoning prompt. A reasoning
     # step that suggests a destructive action cannot get past this point.
     verdict = classify_action(el, judge=deps.guard_judge)
+    if session.stop_event.is_set():
+        return
     if verdict.flagged:
         flag = FlaggedAction(
             label=_label(el), selector=css, url=url,
@@ -212,13 +249,38 @@ def _step(
         except Exception as exc:  # noqa: BLE001
             session.emit({"type": "log", "level": "warn", "msg": f"verify error: {exc}"})
 
+    session.actions_taken += 1
     passed = bool(result.ok and (verify_result is None or verify_result.passed))
     if passed:
-        session.steps.append(step)
-        session.emit(
-            {"type": "log", "level": "info",
-             "msg": f"{step.tool} {alias} — {choice.why or 'ok'}"}
-        )
+        after_path = urlparse(_current_url(deps.page)).path or "/"
+        # Demo flow = first landing on each URL path only. Revisits / backtracks
+        # still explore the site but do not clutter the walkthrough.
+        if after_path not in session.flow_paths:
+            session.flow_paths.add(after_path)
+            session.steps.append(step)
+            session.consecutive_no_new = 0
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        f"demo step +{alias} → {after_path} — "
+                        f"{choice.why or 'ok'}"
+                    ),
+                }
+            )
+        else:
+            session.consecutive_no_new += 1
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        f"explored {alias} on {url} → {after_path} "
+                        f"(already in demo — not added)"
+                    ),
+                }
+            )
     else:
         detail = result.detail if not result.ok else getattr(verify_result, "actual", "")
         session.emit(

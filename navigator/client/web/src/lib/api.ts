@@ -64,10 +64,22 @@ export type ExploreStatus = {
   job_id?: string;
   phase?: string;
   visited?: number;
+  visited_paths?: string[];
   steps?: number;
   flagged?: ExploreFlagged[];
   field_decisions?: ExploreFieldDecision[];
+  recent_events?: ExploreEvent[];
   elapsed_s?: number;
+  progress_pct?: number;
+  actions_taken?: number;
+  save_mode?: string;
+  target_flow_id?: string | null;
+  target_flow_name?: string | null;
+  budget?: {
+    max_pages: number;
+    max_steps: number;
+    max_wall_clock_s: number;
+  };
   error?: string;
   flow_id?: string;
   revision?: number | null;
@@ -422,6 +434,9 @@ export const api = {
     max_pages?: number;
     max_steps?: number;
     max_wall_clock_s?: number;
+    save_mode?: "new" | "update";
+    target_flow_id?: string | null;
+    target_flow_name?: string | null;
   }) => send<ExploreStatus>("/client/api/explore/start", "POST", body),
   exploreStop: () => send<ExploreStatus>("/client/api/explore/stop", "POST"),
   exploreAnswer: (qid: string, value: string, skip = false) =>

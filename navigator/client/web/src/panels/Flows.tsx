@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowUp,
   Circle,
+  Clock,
   Compass,
   Plus,
   Save,
@@ -11,15 +12,12 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
+import { api, type Flow, type RecorderStatus } from "../lib/api";
 import {
-  api,
-  exploreSocketUrl,
-  type ExploreEvent,
-  type ExploreQuestion,
-  type ExploreStatus,
-  type Flow,
-  type RecorderStatus,
-} from "../lib/api";
+  exploreIsLive,
+  formatExploreElapsed,
+  useExploreSession,
+} from "../lib/exploreSession";
 import { soft, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -29,6 +27,7 @@ import {
   Empty,
   Field,
   Input,
+  Select,
   StatusPill,
   ConfirmDialog,
 } from "../components/ui";
@@ -324,76 +323,230 @@ export function Flows() {
 }
 
 /** The second flow-creation path. Same review gate, no human walkthrough. */
+function ExploreMeter({
+  running,
+  elapsedS,
+  progressPct,
+  steps,
+  pages,
+  maxPages,
+}: {
+  running: boolean;
+  elapsedS: number;
+  progressPct: number;
+  steps: number;
+  maxSteps?: number;
+  pages: number;
+  maxPages: number;
+}) {
+  const pct = Math.min(100, Math.max(0, Math.round(progressPct)));
+  const radius = 34;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference * (1 - pct / 100);
+
+  return (
+    <div
+      className="mt-4 grid gap-3 rounded-xl border p-4 sm:grid-cols-[auto_1fr]"
+      style={{
+        borderColor: "var(--line)",
+        background:
+          "linear-gradient(135deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%)",
+      }}
+    >
+      <div className="relative mx-auto flex h-[88px] w-[88px] items-center justify-center">
+        <svg width="88" height="88" viewBox="0 0 88 88" className="-rotate-90">
+          <circle
+            cx="44"
+            cy="44"
+            r={radius}
+            fill="none"
+            stroke="var(--line)"
+            strokeWidth="7"
+          />
+          <motion.circle
+            cx="44"
+            cy="44"
+            r={radius}
+            fill="none"
+            stroke="var(--accent)"
+            strokeWidth="7"
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            animate={{ strokeDashoffset: offset }}
+            transition={{ type: "spring", stiffness: 90, damping: 18 }}
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className="text-[1.15rem] font-semibold tracking-tight tabular-nums">
+            {pct}%
+          </span>
+          <span className="text-[0.62rem] uppercase tracking-[0.08em] text-[var(--muted)]">
+            explored
+          </span>
+        </div>
+      </div>
+
+      <div className="flex min-w-0 flex-col justify-center gap-3">
+        <div className="flex flex-wrap items-end justify-between gap-2">
+          <div>
+            <p className="flex items-center gap-1.5 text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
+              <Clock size={12} />
+              Time elapsed
+            </p>
+            <p className="mt-0.5 font-mono text-[1.35rem] font-semibold tracking-tight tabular-nums">
+              {formatExploreElapsed(elapsedS)}
+              {running && (
+                <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] align-middle" />
+              )}
+            </p>
+          </div>
+          <p className="text-[0.7rem] text-[var(--muted)]">
+            {running ? "Live budget progress" : "Final coverage"}
+          </p>
+        </div>
+
+        <div>
+          <div className="mb-1 flex justify-between text-[0.68rem] text-[var(--muted)]">
+            <span>
+              {pages}/{maxPages} pages in demo
+            </span>
+            <span>
+              {steps} demo step{steps === 1 ? "" : "s"}
+            </span>
+          </div>
+          <div
+            className="h-2 overflow-hidden rounded-full"
+            style={{ background: "color-mix(in oklab, var(--line) 80%, transparent)" }}
+          >
+            <motion.div
+              className="h-full rounded-full bg-[var(--accent)]"
+              initial={false}
+              animate={{ width: `${pct}%` }}
+              transition={{ type: "spring", stiffness: 90, damping: 18 }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ExplorePlanBanner({
+  saveMode,
+  flowName,
+  flowId,
+  baseUrl,
+  hasCredentials,
+  phase,
+}: {
+  saveMode: "new" | "update";
+  flowName: string;
+  flowId: string;
+  baseUrl: string;
+  hasCredentials?: boolean;
+  phase?: string;
+}) {
+  const modeLabel =
+    saveMode === "update"
+      ? `Update existing · ${flowName || flowId || "selected flow"}`
+      : "Create new flow · unpublished draft";
+
+  return (
+    <div
+      className="mb-3 rounded-lg border px-3 py-2.5"
+      style={{
+        borderColor: "var(--line)",
+        background: "color-mix(in oklab, var(--accent) 6%, transparent)",
+      }}
+    >
+      <p className="text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
+        Explore options
+      </p>
+      <ul className="mt-1.5 space-y-1 text-[0.78rem] leading-snug">
+        <li>
+          <span className="text-[var(--muted)]">Save as · </span>
+          <span className="font-medium">{modeLabel}</span>
+          {saveMode === "update" && flowId && (
+            <span className="ml-1 font-mono text-[0.68rem] text-[var(--muted)]">
+              ({flowId})
+            </span>
+          )}
+        </li>
+        <li>
+          <span className="text-[var(--muted)]">URL · </span>
+          <span className="break-all font-mono text-[0.72rem]">
+            {baseUrl.trim() || "Product Login URL (default)"}
+          </span>
+        </li>
+        <li>
+          <span className="text-[var(--muted)]">Login · </span>
+          {hasCredentials ? "stored Product Login" : "signed-out pages only"}
+        </li>
+        {phase && (
+          <li>
+            <span className="text-[var(--muted)]">Phase · </span>
+            <span className="font-medium">{phase}</span>
+          </li>
+        )}
+      </ul>
+    </div>
+  );
+}
+
 function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const { ok, err } = useUi();
-  const [status, setStatus] = useState<ExploreStatus>({ active: false });
-  const [baseUrl, setBaseUrl] = useState("");
-  const [events, setEvents] = useState<ExploreEvent[]>([]);
-  const [question, setQuestion] = useState<ExploreQuestion | null>(null);
-  const [answer, setAnswer] = useState("");
-  const socket = useRef<WebSocket | null>(null);
+  const status = useExploreSession((s) => s.status);
+  const events = useExploreSession((s) => s.events);
+  const question = useExploreSession((s) => s.question);
+  const answer = useExploreSession((s) => s.answer);
+  const baseUrl = useExploreSession((s) => s.baseUrl);
+  const saveMode = useExploreSession((s) => s.saveMode);
+  const targetFlowId = useExploreSession((s) => s.targetFlowId);
+  const targetFlowName = useExploreSession((s) => s.targetFlowName);
+  const elapsedLocal = useExploreSession((s) => s.elapsedLocal);
+  const showMeter = useExploreSession((s) => s.showMeter);
+  const setBaseUrl = useExploreSession((s) => s.setBaseUrl);
+  const setAnswer = useExploreSession((s) => s.setAnswer);
+  const setSaveMode = useExploreSession((s) => s.setSaveMode);
+  const setTargetFlowId = useExploreSession((s) => s.setTargetFlowId);
+  const setTargetFlowName = useExploreSession((s) => s.setTargetFlowName);
+  const setOnFlowDrafted = useExploreSession((s) => s.setOnFlowDrafted);
+  const hydrate = useExploreSession((s) => s.hydrate);
+  const startExplore = useExploreSession((s) => s.start);
+  const stopExplore = useExploreSession((s) => s.stop);
+  const replyExplore = useExploreSession((s) => s.reply);
   const logEnd = useRef<HTMLDivElement | null>(null);
-
-  const refresh = useCallback(async () => {
-    try {
-      const s = await api.exploreStatus();
-      setStatus(s);
-      setQuestion(s.pending_question ?? null);
-      return s;
-    } catch (e) {
-      err(errText(e));
-      return null;
-    }
-  }, [err]);
+  const [flows, setFlows] = useState<Flow[]>([]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    setOnFlowDrafted(onFinished);
+    return () => setOnFlowDrafted(null);
+  }, [onFinished, setOnFlowDrafted]);
+
+  useEffect(() => {
+    void hydrate();
+  }, [hydrate]);
+
+  useEffect(() => {
+    void api
+      .getFlows()
+      .then((r) => setFlows(r.playlist ?? []))
+      .catch(() => setFlows([]));
+  }, []);
 
   useEffect(() => {
     logEnd.current?.scrollIntoView({ block: "nearest" });
   }, [events.length]);
 
-  const connect = useCallback(async () => {
-    socket.current?.close();
-    const ws = new WebSocket(await exploreSocketUrl());
-    socket.current = ws;
-    ws.onmessage = (m) => {
-      const event: ExploreEvent = JSON.parse(m.data);
-      if (event.type === "status") {
-        setStatus(event as unknown as ExploreStatus);
-        return;
-      }
-      setEvents((prev) => [...prev, event]);
-      if (event.type === "question") {
-        setQuestion({
-          qid: String(event.qid),
-          alias: String(event.alias),
-          prompt: String(event.prompt),
-          context: (event.context ?? {}) as Record<string, string>,
-        });
-        setAnswer("");
-      }
-      if (event.type === "done") {
-        setQuestion(null);
-        refresh();
-        onFinished();
-      }
-    };
-    ws.onclose = () => {
-      socket.current = null;
-    };
-  }, [onFinished, refresh]);
-
-  useEffect(() => () => socket.current?.close(), []);
-
   const start = async () => {
     try {
-      setEvents([]);
-      const s = await api.exploreStart({ base_url: baseUrl.trim() || null });
-      setStatus(s);
-      await connect();
-      ok("Exploring — nothing is activated until you review it.");
+      const picked = flows.find((f) => f.flow_id === targetFlowId);
+      await startExplore({ targetFlowName: picked?.name });
+      ok(
+        saveMode === "update"
+          ? "Exploring — will overwrite the selected flow draft when done."
+          : "Exploring — will create a new flow draft when done.",
+      );
     } catch (e) {
       err(errText(e));
     }
@@ -401,7 +554,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
 
   const stop = async () => {
     try {
-      setStatus(await api.exploreStop());
+      await stopExplore();
       ok("Stopping — the steps found so far are saved as a draft.");
     } catch (e) {
       err(errText(e));
@@ -409,23 +562,36 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   };
 
   const reply = async (skip: boolean) => {
-    if (!question) return;
     try {
-      await api.exploreAnswer(question.qid, answer, skip);
-      setQuestion(null);
-      setAnswer("");
+      await replyExplore(skip);
     } catch (e) {
       err(errText(e));
     }
   };
 
-  const running = status.active;
+  const running = exploreIsLive({ status, showMeter });
   const flagged = status.flagged ?? [];
+  const visitedPaths = status.visited_paths ?? [];
+  const progressPct = status.progress_pct ?? 0;
+  const maxPages = status.budget?.max_pages ?? 25;
+  const planMode = (status.save_mode === "update" ? "update" : saveMode) as
+    | "new"
+    | "update";
+  const planFlowId = status.target_flow_id || targetFlowId;
+  const planFlowName =
+    status.target_flow_name || targetFlowName || planFlowId;
+  const logLines = events.filter(
+    (e) =>
+      e.type === "log" ||
+      e.type === "flagged" ||
+      e.type === "field" ||
+      e.type === "explored",
+  );
 
   return (
     <Card>
       <CardTitle
-        hint="Explores your product on its own and drafts a flow. Uses your stored Product Login. Nothing is activated until you review it."
+        hint="Explores your product, maps pages, then drafts a clean demo walkthrough (one step per new page — no backtrack noise). Nothing is activated until you review it."
         right={
           <StatusPill
             status={running ? (question ? "starting" : "running") : "idle"}
@@ -453,14 +619,103 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
         </Field>
       </div>
 
+      <div className="mt-1 grid gap-3 sm:grid-cols-2">
+        <Field label="Save result as">
+          <div
+            className="flex rounded-lg border p-0.5"
+            style={{ borderColor: "var(--line)" }}
+          >
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => setSaveMode("new")}
+              className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
+                saveMode === "new"
+                  ? "bg-[var(--text)] text-[var(--bg)]"
+                  : "text-[var(--muted)] hover:text-[var(--text)]"
+              }`}
+            >
+              Create new flow
+            </button>
+            <button
+              type="button"
+              disabled={running}
+              onClick={() => setSaveMode("update")}
+              className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
+                saveMode === "update"
+                  ? "bg-[var(--text)] text-[var(--bg)]"
+                  : "text-[var(--muted)] hover:text-[var(--text)]"
+              }`}
+            >
+              Update existing
+            </button>
+          </div>
+        </Field>
+        {saveMode === "update" ? (
+          <Field label="Flow to overwrite">
+            <Select
+              disabled={running || flows.length === 0}
+              value={targetFlowId}
+              onChange={(id) => {
+                setTargetFlowId(id);
+                const hit = flows.find((f) => f.flow_id === id);
+                setTargetFlowName(hit?.name || "");
+              }}
+              options={[
+                { value: "", label: "Select a flow…" },
+                ...flows.map((f) => ({
+                  value: f.flow_id,
+                  label: f.name || f.flow_id,
+                })),
+              ]}
+            />
+            {flows.length === 0 && (
+              <p className="mt-1 text-[0.68rem] text-[var(--muted)]">
+                No flows yet — create new first.
+              </p>
+            )}
+          </Field>
+        ) : (
+          <Field label="Demo draft">
+            <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
+              Saves a new unpublished flow. Only first visit per page becomes a
+              demo step — extra clicks still explore, not the walkthrough.
+            </p>
+          </Field>
+        )}
+      </div>
+
       <div className="flex flex-wrap gap-2">
         <Button onClick={start} disabled={running}>
           <Compass size={13} /> Start exploring
         </Button>
         <Button variant="danger" onClick={stop} disabled={!running}>
-          <Square size={13} /> Stop
+          <Square size={13} /> Stop exploring
         </Button>
       </div>
+
+      {(showMeter || running || logLines.length > 0 || visitedPaths.length > 0) && (
+        <>
+          <div className="mt-4">
+            <ExplorePlanBanner
+              saveMode={planMode}
+              flowName={planFlowName}
+              flowId={planFlowId}
+              baseUrl={baseUrl}
+              hasCredentials={status.has_credentials}
+              phase={running ? status.phase : undefined}
+            />
+          </div>
+          <ExploreMeter
+            running={running}
+            elapsedS={elapsedLocal}
+            progressPct={progressPct}
+            steps={status.steps ?? 0}
+            pages={status.visited ?? 0}
+            maxPages={maxPages}
+          />
+        </>
+      )}
 
       {question && (
         <div
@@ -485,39 +740,66 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
         </div>
       )}
 
-      {(running || events.length > 0) && (
+      {(running || logLines.length > 0 || visitedPaths.length > 0) && (
         <div
           className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
           style={{ borderColor: "var(--line)" }}
         >
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[0.78rem] font-medium tracking-tight">Exploration log</p>
+            {running && (
+              <Button variant="danger" onClick={stop}>
+                <Square size={12} /> Stop
+              </Button>
+            )}
+          </div>
           <BarLoader
             label={
               running
-                ? `${status.phase ?? "exploring"} — ${status.steps ?? 0} step${(status.steps ?? 0) === 1 ? "" : "s"}, ${status.visited ?? 0} page${(status.visited ?? 0) === 1 ? "" : "s"}`
-                : `Finished — ${status.steps ?? 0} step${(status.steps ?? 0) === 1 ? "" : "s"} drafted${status.revision ? ` as revision ${status.revision}` : ""}`
+                ? `${status.phase ?? "exploring"} — ${
+                    planMode === "update"
+                      ? `updating “${planFlowName || planFlowId}”`
+                      : "creating new flow"
+                  }`
+                : `Finished — ${status.steps ?? 0} step${(status.steps ?? 0) === 1 ? "" : "s"} drafted${status.revision ? ` as revision ${status.revision}` : ""}${status.flow_id ? ` · ${status.flow_id}` : ""}`
             }
           />
-          <div className="mt-3 max-h-56 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed">
-            {events
-              .filter((e) => e.type === "log" || e.type === "flagged" || e.type === "field")
-              .map((e, i) => (
-                <div
-                  key={i}
-                  className={
-                    e.type === "flagged"
-                      ? "text-amber-600 dark:text-amber-400"
+          {visitedPaths.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages explored</p>
+              <ul className="mt-1 space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
+                {visitedPaths.map((p) => (
+                  <li key={p}>• {p}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="mt-3 max-h-72 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed">
+            {logLines.length === 0 && running && (
+              <div className="text-[var(--muted)]">Waiting for explorer events…</div>
+            )}
+            {logLines.map((e, i) => (
+              <div
+                key={i}
+                className={
+                  e.type === "flagged"
+                    ? "text-amber-600 dark:text-amber-400"
+                    : e.type === "explored"
+                      ? "text-sky-600 dark:text-sky-400"
                       : e.level === "warn"
                         ? "text-red-500"
                         : "text-[var(--muted)]"
-                  }
-                >
-                  {e.type === "flagged"
-                    ? `skipped "${e.label}" — ${e.reason}`
-                    : e.type === "field"
-                      ? `filled ${e.alias} (${e.classification})`
+                }
+              >
+                {e.type === "flagged"
+                  ? `skipped "${e.label}" — ${e.reason}`
+                  : e.type === "field"
+                    ? `filled ${e.alias} (${e.classification})`
+                    : e.type === "explored"
+                      ? `page ${String(e.path ?? e.url ?? "")} (${e.elements ?? "?"} controls)`
                       : String(e.msg ?? "")}
-                </div>
-              ))}
+              </div>
+            ))}
             <div ref={logEnd} />
           </div>
         </div>

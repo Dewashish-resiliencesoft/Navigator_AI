@@ -7,10 +7,12 @@ import { LiveDemo } from "./panels/LiveDemo";
 import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
+import { ExploreFloat } from "./components/ExploreFloat";
 import { soft } from "./lib/motion";
 import { errText, useUi } from "./store";
 import { api } from "./lib/api";
 import { demoIsLive, useDemoSession } from "./lib/demoSession";
+import { useExploreSession } from "./lib/exploreSession";
 import { AuthScreen } from "./panels/AuthScreen";
 import { Button, StatusPill } from "./components/ui";
 
@@ -99,6 +101,8 @@ export default function App() {
   const endSession = useDemoSession((s) => s.end);
   const live = demoIsLive(demo);
 
+  const hydrateExplore = useExploreSession((s) => s.hydrate);
+
   useEffect(() => {
     let alive = true;
     api.checkAuth().then((pass) => {
@@ -115,6 +119,7 @@ export default function App() {
     (async () => {
       await hydrate();
       if (!alive) return;
+      await hydrateExplore();
     })();
     const t = setInterval(() => {
       void refreshActive();
@@ -123,7 +128,7 @@ export default function App() {
       alive = false;
       clearInterval(t);
     };
-  }, [authed, hydrate, refreshActive]);
+  }, [authed, hydrate, hydrateExplore, refreshActive]);
 
   const enterAuthed = () => {
     // Overwrite any leftover "Signed out." from a prior logout (zustand persists across trees).
@@ -276,6 +281,7 @@ export default function App() {
         </div>
       </div>
       <Toast />
+      <ExploreFloat />
     </>
   );
 }

@@ -1476,6 +1476,10 @@ class ExploreStartBody(BaseModel):
     max_steps: int = Field(default=120, ge=1, le=1000)
     max_wall_clock_s: float = Field(default=600.0, ge=30.0, le=7200.0)
     answer_timeout_s: float = Field(default=300.0, ge=10.0, le=3600.0)
+    save_mode: str = Field(default="new", pattern="^(new|update)$")
+    """`new` mints explored_*; `update` overwrites target_flow_id in place."""
+    target_flow_id: str | None = None
+    target_flow_name: str | None = None
 
 
 class ExploreAnswerBody(BaseModel):
@@ -1541,6 +1545,9 @@ def client_explore_start(
                 max_wall_clock_s=body.max_wall_clock_s,
                 answer_timeout_s=body.answer_timeout_s,
             ),
+            save_mode=body.save_mode,
+            target_flow_id=(body.target_flow_id or "").strip(),
+            target_flow_name=(body.target_flow_name or "").strip(),
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None

@@ -13,14 +13,19 @@ review-before-activate gate.
 
 from __future__ import annotations
 
+import base64
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from navigator.automation.explore import perceive, reason
+from navigator.automation.explore.diagnose import classify, looks_nav_stalled
+from navigator.automation.explore.episode import EpisodeStore, StepAttempt
 from navigator.automation.explore.fields import classify_field, question_for
 from navigator.automation.explore.guardrail import FlaggedAction, classify_action
+from navigator.automation.explore.repair import RepairCtx, run_ladder
 from navigator.automation.explore.session import (
     ExplorationSession,
     FieldDecision,
@@ -61,6 +66,7 @@ class ExplorerDeps:
     on_action: Callable[[RecordedStep, ToolResult, Any], None] | None = None
     execute: Callable[..., tuple[ToolResult, str]] | None = None
     verify: Callable[..., Any] | None = None
+    episode: EpisodeStore | None = None
 
 
 class _LiveGraph:
@@ -278,6 +284,17 @@ def _try_dead_end_escape(
                 "msg": f"no untried elements at {fp.url_path}; go_back failed: {exc}",
             }
         )
+        _record_escape(
+            deps,
+            element_key_s="go_back",
+            alias="go_back",
+            selector="",
+            tool="navigate",
+            ok=False,
+            detail=str(exc),
+            url_before=before,
+            url_after=before,
+        )
         session.consecutive_no_new += 1
         return False
 
@@ -290,6 +307,17 @@ def _try_dead_end_escape(
                 "msg": f"no untried elements at {fp.url_path}; nowhere to go back",
             }
         )
+        _record_escape(
+            deps,
+            element_key_s="go_back",
+            alias="go_back",
+            selector="",
+            tool="navigate",
+            ok=False,
+            detail="nowhere to go back",
+            url_before=before,
+            url_after=after,
+        )
         session.consecutive_no_new += 1
         return False
 
@@ -301,7 +329,50 @@ def _try_dead_end_escape(
             "msg": f"backed up from exhausted page {fp.url_path}",
         }
     )
+    _record_escape(
+        deps,
+        element_key_s="go_back",
+        alias="go_back",
+        selector="",
+        tool="navigate",
+        ok=True,
+        detail=f"backed up from {fp.url_path}",
+        url_before=before,
+        url_after=after,
+    )
     return True
+
+
+def _record_escape(
+    deps: ExplorerDeps,
+    *,
+    element_key_s: str,
+    alias: str,
+    selector: str,
+    tool: str,
+    ok: bool,
+    detail: str,
+    url_before: str,
+    url_after: str,
+) -> None:
+    if deps.episode is None:
+        return
+    deps.episode.record(
+        StepAttempt(
+            element_key=element_key_s,
+            alias=alias,
+            selector=selector,
+            tool=tool,
+            attempt=0,
+            tactic="dead_end_escape",
+            kind="" if ok else "unknown",
+            ok=ok,
+            detail=detail,
+            duration_ms=0,
+            url_before=url_before,
+            url_after=url_after,
+        )
+    )
 
 
 def _step(
@@ -324,6 +395,7 @@ def _step(
         return
 
     fillable = perceive.is_fillable(el)
+    ek = element_key(el)
 
     # GUARDRAIL. Runs here, in the executor path, on the element actually about
     # to be touched -- deliberately not inside the reasoning prompt. A reasoning
@@ -342,7 +414,7 @@ def _step(
                 url=url,
                 reason=verdict.reason,
                 source=verdict.source,
-                element_key=element_key(el),
+                element_key=ek,
             )
             if session.note_flagged(flag):
                 session.emit({"type": "flagged", **flag.as_dict()})
@@ -352,16 +424,17 @@ def _step(
         return
 
     graph.add(alias, css)
+    field_value: str | None = None
 
     if fillable:
-        value = _resolve_field_value(session, deps, el, alias)
-        if value is None:
+        field_value = _resolve_field_value(session, deps, el, alias)
+        if field_value is None:
             return
         call: Any = FillField(
-            selector=alias, value=value,
-            expects=Postcondition(check="value_equals", selector=alias, expected=value),
+            selector=alias, value=field_value,
+            expects=Postcondition(check="value_equals", selector=alias, expected=field_value),
         )
-        step = RecordedStep(tool="fill_field", alias=alias, selector=css, value=value)
+        step = RecordedStep(tool="fill_field", alias=alias, selector=css, value=field_value)
     else:
         call = ClickElement(
             selector=alias, expects=Postcondition(check="visible", selector=alias)
@@ -369,7 +442,13 @@ def _step(
         step = RecordedStep(tool="click_element", alias=alias, selector=css)
 
     step.postcondition = guess_postcondition(step)
+    url_before = url
+    elements_before = perceive.inventory(deps.page)
+    fp_before = fingerprint(url_before, elements_before)
+
+    started = time.perf_counter()
     result, _next_page = execute(deps.page, graph, EXPLORE_PAGE_ID, call)
+    duration_ms = int((time.perf_counter() - started) * 1000)
 
     verify_result = None
     if result.ok:
@@ -378,8 +457,138 @@ def _step(
         except Exception as exc:  # noqa: BLE001
             session.emit({"type": "log", "level": "warn", "msg": f"verify error: {exc}"})
 
+    url_after = _current_url(deps.page)
+    elements_after = perceive.inventory(deps.page)
+    fp_after = fingerprint(url_after, elements_after)
+
+    stalled = looks_nav_stalled(
+        fillable=fillable,
+        result_ok=result.ok,
+        url_before=url_before,
+        url_after=url_after,
+        fp_before=fp_before,
+        fp_after=fp_after,
+    ) and (
+        bool(el.get("href"))
+        or reason.looks_like_nav(el)
+    )
+    verify_ok = verify_result is None or verify_result.passed
+    passed = bool(result.ok and verify_ok and not stalled)
+
+    kind = ""
+    if not passed:
+        kind = classify(
+            result,
+            verify_passed=False if verify_result is not None and not verify_result.passed else None,
+            verify_actual=getattr(verify_result, "actual", "") if verify_result else "",
+            nav_stalled=stalled,
+        )
+
+    _record_attempt(
+        deps,
+        ek=ek,
+        alias=alias,
+        selector=css,
+        tool=step.tool,
+        attempt=0,
+        tactic="",
+        kind=kind,
+        ok=passed,
+        detail=result.detail if not result.ok else (
+            getattr(verify_result, "actual", "") if verify_result and not verify_ok
+            else ("nav_stalled" if stalled else result.detail)
+        ),
+        duration_ms=duration_ms,
+        url_before=url_before,
+        url_after=url_after,
+    )
+
     session.actions_taken += 1
-    passed = bool(result.ok and (verify_result is None or verify_result.passed))
+
+    if not passed:
+        remaining = session.budget.max_repairs_total - session.repairs_used
+        per_step = min(session.budget.max_repairs_per_step, max(0, remaining))
+        if per_step > 0 and kind not in ("disabled", "unknown"):
+            session.emit(
+                {
+                    "type": "repair",
+                    "kind": kind,
+                    "alias": alias,
+                    "element_key": ek,
+                    "msg": f"repairing {alias} ({kind})",
+                }
+            )
+            rctx = RepairCtx(
+                page=deps.page,
+                graph=graph,
+                page_id=EXPLORE_PAGE_ID,
+                el=el,
+                alias=alias,
+                css=css,
+                fillable=fillable,
+                value=field_value,
+                execute=execute,
+                verify=verify,
+                guard_judge=deps.guard_judge,
+                is_allowed=session.is_allowed,
+                max_repairs=per_step,
+                inventory=perceive.inventory,
+            )
+            outcome = run_ladder(rctx, kind)  # type: ignore[arg-type]
+            for i, att in enumerate(outcome.attempts, start=1):
+                session.repairs_used += 1
+                _record_attempt(
+                    deps,
+                    ek=ek,
+                    alias=att.alias,
+                    selector=att.css,
+                    tool=step.tool,
+                    attempt=i,
+                    tactic=att.tactic,
+                    kind="" if att.ok else kind,
+                    ok=att.ok,
+                    detail=att.result.detail if att.result else att.tactic,
+                    duration_ms=att.result.duration_ms if att.result else 0,
+                    url_before=url_before,
+                    url_after=_current_url(deps.page),
+                )
+            if outcome.ok and outcome.result is not None:
+                passed = True
+                result = outcome.result
+                verify_result = outcome.verify_result
+                alias = outcome.alias or alias
+                css = outcome.css or css
+                step.alias = alias
+                step.selector = css
+                session.emit(
+                    {
+                        "type": "repair",
+                        "kind": kind,
+                        "alias": alias,
+                        "ok": True,
+                        "tactics": outcome.tactics_tried,
+                        "msg": f"repaired {alias} via {outcome.tactics_tried}",
+                    }
+                )
+            else:
+                session.emit(
+                    {
+                        "type": "log",
+                        "level": "warn",
+                        "msg": f"{step.tool} {alias} failed: {kind} — repairs exhausted",
+                    }
+                )
+                _maybe_shot(deps)
+        else:
+            detail = (
+                result.detail if not result.ok
+                else getattr(verify_result, "actual", "") if verify_result else kind
+            )
+            session.emit(
+                {"type": "log", "level": "warn", "msg": f"{step.tool} {alias} failed: {detail}"}
+            )
+            _maybe_shot(deps)
+
     if passed:
         after_path = urlparse(_current_url(deps.page)).path or "/"
         # Demo flow = first landing on each URL path only. Revisits / backtracks
@@ -410,14 +619,58 @@ def _step(
                     ),
                 }
             )
-    else:
-        detail = result.detail if not result.ok else getattr(verify_result, "actual", "")
-        session.emit(
-            {"type": "log", "level": "warn", "msg": f"{step.tool} {alias} failed: {detail}"}
-        )
 
     if deps.on_action is not None:
         deps.on_action(step, result, verify_result)
+
+
+def _record_attempt(
+    deps: ExplorerDeps,
+    *,
+    ek: str,
+    alias: str,
+    selector: str,
+    tool: str,
+    attempt: int,
+    tactic: str,
+    kind: str,
+    ok: bool,
+    detail: str,
+    duration_ms: int,
+    url_before: str,
+    url_after: str,
+) -> None:
+    if deps.episode is None:
+        return
+    deps.episode.record(
+        StepAttempt(
+            element_key=ek,
+            alias=alias,
+            selector=selector,
+            tool=tool,
+            attempt=attempt,
+            tactic=tactic,
+            kind=kind,
+            ok=ok,
+            detail=detail or "",
+            duration_ms=duration_ms,
+            url_before=url_before,
+            url_after=url_after,
+        )
+    )
+
+
+def _maybe_shot(deps: ExplorerDeps) -> None:
+    """Screenshot unrepaired failures only (capped inside EpisodeStore)."""
+    if deps.episode is None:
+        return
+    b64 = perceive.screenshot_b64(deps.page, image_type="jpeg", quality=40)
+    if not b64:
+        return
+    try:
+        deps.episode.save_shot(base64.b64decode(b64))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _resolve_field_value(

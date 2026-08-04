@@ -40,6 +40,10 @@ class ExplorationBudget:
     max_consecutive_no_new: int = 24
     #: Unanswered business-specific field → skip the field, keep exploring.
     answer_timeout_s: float = 300.0
+    #: Self-heal: repairs tried for one element before giving up.
+    max_repairs_per_step: int = 3
+    #: Self-heal: repairs across the whole run.
+    max_repairs_total: int = 30
 
 
 @dataclass(frozen=True)
@@ -146,6 +150,8 @@ class ExplorationSession:
     consecutive_no_new: int = 0
     #: Why the loop ended (budget / client stop / dead end) — for dashboard summary.
     stop_reason: str = ""
+    #: Self-heal repairs spent this run (capped by budget.max_repairs_total).
+    repairs_used: int = 0
     #: Fingerprints with nothing left to try and no escape nav.
     dead_ends: set[StateFingerprint] = field(default_factory=set)
     #: element_keys already used for a dead-end escape click (avoid infinite retry).
@@ -355,7 +361,7 @@ class ExplorationSession:
         recent = [
             e
             for e in self.events
-            if e.get("type") in {"log", "flagged", "field", "explored"}
+            if e.get("type") in {"log", "flagged", "field", "explored", "repair"}
         ][-80:]
         steps = len(self.steps)
         pages = len({fp.url_path for fp in self.visited})

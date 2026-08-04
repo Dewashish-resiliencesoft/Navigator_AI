@@ -136,11 +136,34 @@ def share_media_join_opts(*, is_zoom: bool) -> tuple[bool, str | None]:
     return True, None
 
 
+def _attendee_reachable(base_url: str) -> bool:
+    """True when something is listening at ``base_url``.
+
+    A self-hosted Attendee answers ``/bots`` with 401 when the token is absent,
+    so any HTTP status proves the instance is up. Only a transport failure means
+    it is not running.
+    """
+    from urllib.error import HTTPError, URLError
+    from urllib.request import urlopen
+
+    try:
+        urlopen(base_url, timeout=3)
+    except HTTPError:  # 401/404 still means Attendee answered — must precede URLError
+        return True
+    except (URLError, OSError):
+        return False
+    return True
+
+
 def _require_live_settings(meeting_url: str) -> None:
-    if "localhost" in settings.attendee_base_url:
+    # Self-hosted Attendee on localhost is the free path, so localhost is valid —
+    # but an unconfigured default looks identical, so require it to answer.
+    local = any(h in settings.attendee_base_url for h in ("localhost", "127.0.0.1"))
+    if local and not _attendee_reachable(settings.attendee_base_url):
         raise RuntimeError(
-            "NAVIGATOR_ATTENDEE_BASE_URL still points at localhost; "
-            "use https://app.attendee.dev/api/v1 (or your self-hosted host)"
+            f"Attendee unreachable at {settings.attendee_base_url}; start your "
+            "self-hosted instance (docker compose -f dev.docker-compose.yaml up) "
+            "or point NAVIGATOR_ATTENDEE_BASE_URL at https://app.attendee.dev/api/v1"
         )
     missing = [
         name

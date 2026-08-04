@@ -35,7 +35,9 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     openai_api_key: str = ""
     chroma_path: Path = Path("chroma")
-    attendee_base_url: str = "http://localhost:8000/api/v1"
+    #: Self-hosted Attendee. Not 8000 (Navigator's own API) and not 8001
+    #: (Attendee's webpage-streamer already publishes there).
+    attendee_base_url: str = "http://localhost:8002/api/v1"
     attendee_api_key: str = ""
 
     # Phase 3: Meet + email notify + product login

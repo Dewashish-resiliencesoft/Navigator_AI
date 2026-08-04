@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from navigator.meeting import live_demo
 from navigator.meeting.live_demo import (
     _require_live_settings,
     assert_live_site_graph,
@@ -68,10 +69,36 @@ def test_no_url_from_either_source_is_refused(monkeypatch):
         _require_live_settings("")
 
 
-def test_localhost_attendee_is_still_refused(monkeypatch):
-    monkeypatch.setattr(settings, "attendee_base_url", "http://localhost:8000/api/v1")
-    with pytest.raises(RuntimeError, match="localhost"):
+def test_self_hosted_localhost_attendee_is_accepted(monkeypatch):
+    """Self-hosting is the free path, so a *live* localhost instance is valid."""
+    monkeypatch.setattr(settings, "attendee_base_url", "http://localhost:8002/api/v1")
+    monkeypatch.setattr(live_demo, "_attendee_reachable", lambda url: True)
+    _require_live_settings("https://meet.google.com/x")
+
+
+def test_unreachable_attendee_is_refused(monkeypatch):
+    """An unconfigured default looks like localhost too — refuse when it's dead."""
+    monkeypatch.setattr(settings, "attendee_base_url", "http://localhost:8002/api/v1")
+    monkeypatch.setattr(live_demo, "_attendee_reachable", lambda url: False)
+    with pytest.raises(RuntimeError, match="unreachable"):
         _require_live_settings("https://meet.google.com/x")
+
+
+def test_reachability_probe_treats_an_http_error_as_alive(monkeypatch):
+    """Attendee answers /bots with 401 when unauthenticated — that means it's up."""
+    from urllib.error import HTTPError, URLError
+
+    def raise_401(url, timeout=None):
+        raise HTTPError(url, 401, "Unauthorized", {}, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_401)
+    assert live_demo._attendee_reachable("http://localhost:8002/api/v1") is True
+
+    def raise_refused(url, timeout=None):
+        raise URLError("Connection refused")
+
+    monkeypatch.setattr("urllib.request.urlopen", raise_refused)
+    assert live_demo._attendee_reachable("http://localhost:8002/api/v1") is False
 
 
 def test_missing_attendee_key_is_still_refused(monkeypatch):

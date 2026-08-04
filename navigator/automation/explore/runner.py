@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from navigator.automation.explore.episode import EpisodeStore, StopReason
 from navigator.automation.explore.explorer import EXPLORE_PAGE_ID, ExplorerDeps, explore
 from navigator.automation.explore.session import ExplorationBudget, ExplorationSession
 from navigator.automation.record import RecordedStep
@@ -426,6 +427,11 @@ def _run_exploration(
                         result=result, verify_result=verify_result,
                     )
 
+            episode = EpisodeStore(
+                root=settings.explore_episodes_path,
+                product_id=session.product_id,
+                job_id=session.job_id,
+            )
             explore(
                 session,
                 ExplorerDeps(
@@ -436,6 +442,7 @@ def _run_exploration(
                     field_judge=ask_text,
                     corrections=corrections,
                     on_action=_on_action,
+                    episode=episode,
                 ),
             )
 
@@ -453,6 +460,32 @@ def _run_exploration(
                 )
             )
             _persist(session, product_name=product_name, narration=narration)
+            try:
+                episode.finalize(
+                    stop_reason=StopReason.from_budget_text(session.stop_reason or "done"),
+                    budget={
+                        "max_pages": session.budget.max_pages,
+                        "max_steps": session.budget.max_steps,
+                        "max_repairs_per_step": session.budget.max_repairs_per_step,
+                        "max_repairs_total": session.budget.max_repairs_total,
+                    },
+                    steps=len(session.steps),
+                    actions_taken=session.actions_taken,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[explore] episode finalize failed: {exc}", flush=True)
+            try:
+                from navigator.automation.explore import learn as explore_learn
+
+                explore_learn.draft_rules(
+                    episode,
+                    product_id=session.product_id,
+                    session_id=str(session.session_id),
+                    pending_db_path=settings.db_path,
+                    ask_text=ask_text,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[explore] learn draft failed: {exc}", flush=True)
         finally:
             try:
                 context.close()

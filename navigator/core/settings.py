@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     #: an absent key must fail the save, never silently store plaintext.
     credential_key: str = ""
     credential_db_path: str = "data/credentials.db"
+    #: Explore self-heal episodes (JSONL + shots). Auto-purged after 7 days.
+    explore_episodes_path: Path = Path("data/explore_episodes")
     #: Inbox that receives the Meet link (Resend auto-send or mailto fallback).
     notify_email: str = ""
     #: Resend API key — https://resend.com (free). When set, email is auto-sent.

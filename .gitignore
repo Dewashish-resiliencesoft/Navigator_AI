@@ -10,6 +10,7 @@ voices/
 chroma/
 registry.db
 data/credentials.db
+data/explore_episodes/
 # SQLite WAL mode leaves these beside every .db; they are runtime state.
 *.db-wal
 *.db-shm

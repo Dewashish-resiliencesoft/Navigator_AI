@@ -10,6 +10,11 @@ from __future__ import annotations
 from navigator.agent.live_input import needs_live_input, resolve_live_fill
 from navigator.agent.state import CallDeps, CallState
 from navigator.automation.browser.tools import execute as run_tool
+from navigator.automation.external_links import (
+    EXTERNAL_LINK_SPOKEN,
+    is_external_url,
+    revert_external_navigation,
+)
 from navigator.automation.login_match import VAULT_PASSWORD_SENTINEL
 from navigator.core.schemas import FillField
 from navigator.core.settings import settings
@@ -72,6 +77,19 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
 
     ran_on = state["page_id"]
     result, next_page_id = run_tool(deps.page, deps.graph, ran_on, call)
+    if is_external_url(deps.page.url, deps.graph.base_url):
+        revert_external_navigation(deps.page, product_base=deps.graph.base_url)
+        try:
+            deps.speaker.say(EXTERNAL_LINK_SPOKEN)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[demo] external link disclaimer failed: {exc}", flush=True)
+        result = result.model_copy(
+            update={
+                "ok": False,
+                "detail": "external link skipped — not part of demo",
+            }
+        )
+        next_page_id = ran_on
     if from_vault:
         result = result.model_copy(
             update={"detail": f"filled {call.selector} from vault"}

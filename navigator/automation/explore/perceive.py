@@ -64,6 +64,7 @@ _INVENTORY_JS = """
       type: t.getAttribute('type') || t.type || '',
       autocomplete: t.getAttribute('autocomplete') || '',
       href: t.getAttribute('href') || '',
+      target: t.getAttribute('target') || '',
       value: tag === 'input' && t.type === 'submit' ? (t.value || '') : '',
       fillable: ['input', 'textarea', 'select'].includes(tag),
       disabled: !!(t.disabled || t.getAttribute('aria-disabled') === 'true'),

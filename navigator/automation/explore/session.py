@@ -303,8 +303,18 @@ class ExplorationSession:
         """Grab a JPEG viewport from the Playwright page and fan out to Watch bot.
 
         Throttled so explore does not spend the whole budget on screenshots.
+        Off-product pages are never streamed — external links are skipped, not
+        shown in the dashboard.
         """
         from navigator.automation.explore import perceive
+        from navigator.automation.external_links import is_external_url
+
+        try:
+            current = getattr(page, "url", "") or ""
+        except Exception:  # noqa: BLE001
+            current = ""
+        if is_external_url(current, self.base_url):
+            return False
 
         now = time.monotonic()
         if now - self._last_frame_at < min_interval_s and self.latest_frame_b64:

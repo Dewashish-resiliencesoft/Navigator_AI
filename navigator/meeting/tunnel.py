@@ -97,6 +97,56 @@ def start_tunnel(
     return handle
 
 
+def _attendee_webpage_streamer_container() -> str | None:
+    try:
+        out = subprocess.check_output(
+            [
+                "docker",
+                "ps",
+                "--filter",
+                "name=webpage-streamer",
+                "--format",
+                "{{.Names}}",
+            ],
+            text=True,
+            timeout=5,
+        ).strip()
+        if not out:
+            return None
+        return out.splitlines()[0]
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return None
+
+
+def verify_attendee_docker_dns(hostname: str) -> None:
+    """Fail fast when Attendee's webpage-streamer Chromium cannot resolve the host.
+
+    ``wait_until_public`` may pass via dig@1.1.1.1 while Docker's stub resolver
+    still NXDOMAINs fresh ``*.trycloudflare.com`` names.
+    """
+    container = _attendee_webpage_streamer_container()
+    if not container:
+        return
+    script = f"import socket\nsocket.getaddrinfo({hostname!r}, 443)\n"
+    try:
+        subprocess.run(
+            ["docker", "exec", container, "python", "-c", script],
+            check=True,
+            timeout=15,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Attendee container {container!r} cannot resolve {hostname!r} — "
+            "Meet screenshare will show DNS_PROBE_FINISHED_NXDOMAIN. "
+            "In ~/projects/attendee/local.docker-compose.yaml set "
+            "dns: [1.1.1.1, 8.8.8.8] on attendee-webpage-streamer-local, then "
+            "recreate: docker compose -f dev.docker-compose.yaml "
+            "-f local.docker-compose.yaml --profile webpage-streamer up -d "
+            "--force-recreate attendee-webpage-streamer-local"
+        ) from exc
+
+
 def _socket_resolve(host: str) -> list[str]:
     """Fallback: resolve via Python socket when dig is unavailable."""
     import socket as _socket

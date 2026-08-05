@@ -12,6 +12,7 @@ import {
 import { api } from "../lib/api";
 import {
   clearSignupPending,
+  loadOnboardingProgress,
   patchBioFields,
   signupCompanyPrefill,
   type OnboardingItemId,
@@ -83,6 +84,16 @@ export function OnboardingWizard({
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
   const [knowledge, setKnowledge] = useState("");
+  const [progressPct, setProgressPct] = useState(0);
+
+  const refreshProgress = async () => {
+    try {
+      const p = await loadOnboardingProgress();
+      setProgressPct(p.percent);
+    } catch {
+      /* keep last value */
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -131,6 +142,7 @@ export function OnboardingWizard({
           };
           setStep(map[startAt] || "product_url");
         }
+        if (alive) await refreshProgress();
       } catch {
         /* empty form ok */
       }
@@ -215,6 +227,7 @@ export function OnboardingWizard({
         if (md) await api.putKnowledge(md);
       }
       invalidate();
+      await refreshProgress();
       goNext();
     } catch (e) {
       err(errText(e));
@@ -235,10 +248,6 @@ export function OnboardingWizard({
     }
     goNext();
   };
-
-  const progressPct = Math.round(
-    (100 * (stepIndex(step) + 1)) / STEPS.length,
-  );
 
   return (
     <div

@@ -21,11 +21,21 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from navigator.automation.explore import history, perceive, reason, semantics
+from navigator.automation.external_links import (
+    element_is_external,
+    is_external_url,
+    revert_external_navigation,
+)
 from navigator.automation.explore.diagnose import classify, looks_nav_stalled
 from navigator.automation.explore.episode import EpisodeStore, StepAttempt
 from navigator.automation.explore.fields import classify_field, question_for
 from navigator.automation.explore.guardrail import FlaggedAction, classify_action
-from navigator.automation.explore.repair import RepairCtx, run_ladder
+from navigator.automation.explore.repair import (
+    RepairCtx,
+    click_postcondition,
+    click_verify_passed,
+    run_ladder,
+)
 from navigator.automation.explore.session import (
     ExplorationSession,
     FieldDecision,
@@ -199,6 +209,7 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             corrections=deps.corrections,
             visited_paths=visited_paths,
             known_bad=deps.known_bad or None,
+            product_base=session.base_url,
             ask_text=deps.ask_text,
             ask_vision=deps.ask_vision,
             screenshot=(
@@ -272,6 +283,8 @@ def _try_dead_end_escape(
         if el.get("fillable"):
             continue
         if reason.targets_visited_path(el, visited_paths):
+            continue
+        if element_is_external(el, session.base_url, page_url=url):
             continue
         if not reason.looks_like_nav(el):
             continue
@@ -427,6 +440,17 @@ def _step(
     fillable = perceive.is_fillable(el)
     ek = element_key(el)
 
+    ext_reason = element_is_external(el, session.base_url, page_url=url)
+    if ext_reason and not fillable:
+        session.emit(
+            {
+                "type": "log",
+                "level": "info",
+                "msg": f"skip external link {_label(el)!r} — {ext_reason}",
+            }
+        )
+        return
+
     # GUARDRAIL. Runs here, in the executor path, on the element actually about
     # to be touched -- deliberately not inside the reasoning prompt. A reasoning
     # step that suggests a destructive action cannot get past this point.
@@ -466,9 +490,8 @@ def _step(
         )
         step = RecordedStep(tool="fill_field", alias=alias, selector=css, value=field_value)
     else:
-        call = ClickElement(
-            selector=alias, expects=Postcondition(check="visible", selector=alias)
-        )
+        expects = click_postcondition(alias, el)
+        call = ClickElement(selector=alias, expects=expects)
         step = RecordedStep(tool="click_element", alias=alias, selector=css)
 
     step.postcondition = guess_postcondition(step)
@@ -493,6 +516,17 @@ def _step(
             session.emit({"type": "log", "level": "warn", "msg": f"verify error: {exc}"})
 
     url_after = _current_url(deps.page)
+    if is_external_url(url_after, session.base_url):
+        revert_external_navigation(deps.page, product_base=session.base_url)
+        session.emit(
+            {
+                "type": "log",
+                "level": "info",
+                "msg": f"left off-product page after {_label(el)!r} — not shown in Watch bot",
+            }
+        )
+        return
+
     elements_after = perceive.inventory(deps.page)
     fp_after = fingerprint(url_after, elements_after)
 
@@ -507,7 +541,7 @@ def _step(
         bool(el.get("href"))
         or reason.looks_like_nav(el)
     )
-    verify_ok = verify_result is None or verify_result.passed
+    verify_ok = click_verify_passed(result, verify_result, call.expects)
     passed = bool(result.ok and verify_ok and not stalled)
 
     kind = ""

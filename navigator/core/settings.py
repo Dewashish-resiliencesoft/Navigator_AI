@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     #: (Attendee's webpage-streamer already publishes there).
     attendee_base_url: str = "http://localhost:8002/api/v1"
     attendee_api_key: str = ""
+    #: ``docker compose up -d`` local Attendee on Navigator startup when base URL
+    #: is localhost and nothing answers yet. Off for cloud Attendee or pytest.
+    attendee_autostart: bool = True
+    #: Attendee clone (separate repo). Override with NAVIGATOR_ATTENDEE_COMPOSE_DIR.
+    attendee_compose_dir: Path = Path.home() / "projects" / "attendee"
 
     # Phase 3: Meet + email notify + product login
     #: Fallback only: the CLI path (`python -m navigator.meeting.live_demo`) uses

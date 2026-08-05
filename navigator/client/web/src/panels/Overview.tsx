@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, ArrowDownRight, ArrowRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
 import { api, type DemoRun, type Metrics } from "../lib/api";
+import { formatRunDuration } from "../lib/elapsed";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import { AreaChart, Sparkbars } from "../components/Chart";
@@ -60,15 +61,6 @@ function calcTrend(series: Metrics["series"], key: "sessions" | "actions" | "fai
   if (secondHalf > firstHalf) return "up";
   if (secondHalf < firstHalf) return "down";
   return "flat";
-}
-
-function formatRunDuration(seconds: number): string {
-  if (seconds <= 120) return `${seconds}s`;
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = seconds % 60;
-  if (h > 0) return `${h}h ${m}m ${s}s`;
-  return `${m}m ${s}s`;
 }
 
 export function Overview() {

@@ -21,6 +21,61 @@ export type Demo = {
 };
 
 export type BioField = { key: string; label: string; value: string };
+export type SystemMetrics = {
+  host_label: string;
+  uptime_s: number;
+  cpu_percent: number;
+  cpu_count: number;
+  memory_percent: number;
+  memory_used_mb: number;
+  memory_total_mb: number;
+  net_sent_bytes: number;
+  net_recv_bytes: number;
+  gpu: {
+    active: boolean;
+    name: string;
+    utilization_percent: number | null;
+    memory_used_mb: number | null;
+    memory_total_mb: number | null;
+  };
+  services: { name: string; status: string; detail: string }[];
+  processes: { name: string; status: string; cpu: string; mem: string }[];
+  health: { name: string; ok: boolean; detail?: string }[];
+};
+export type DemoScriptBeat = {
+  id: string;
+  kind: string;
+  spoken?: string;
+  spoken_source?: string;
+  asks_visitor?: boolean;
+  on_screen?: string;
+  flow_id?: string;
+  page_id?: string;
+  step_index?: number;
+  flow_title?: string;
+  phase?: string;
+  field?: string;
+  field_alias?: string;
+  live_question?: string;
+  example_value?: string;
+  knowledge_refs?: string[];
+  uses_intake_tokens?: boolean;
+};
+
+export type DemoScriptResponse = {
+  revision: number;
+  published_revision: number | null;
+  playlist: Flow[];
+  beats: DemoScriptBeat[];
+  context?: string;
+  sources_used?: string[];
+  stats?: {
+    beat_count: number;
+    asks_visitor_count: number;
+    spoken_count: number;
+  };
+};
+
 export type Flow = {
   name: string;
   page_id: string;
@@ -361,6 +416,7 @@ export const api = {
   endDemo: (id: string) => send<Demo>(`/client/api/demos/${id}/end`, "POST"),
 
   metrics: (days = 14) => get<Metrics>(`/client/api/metrics?days=${days}`),
+  getSystemMetrics: () => get<SystemMetrics>("/client/api/system/health"),
 
   listRuns: (days = 7) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
   getRun: (sessionId: string) => get<DemoRun>(`/client/api/runs/${sessionId}`),
@@ -424,6 +480,26 @@ export const api = {
       "/client/api/site-graph/publish",
       "POST",
       { revision: revision ?? null },
+    ),
+
+  getDemoScript: (flowId?: string) =>
+    get<DemoScriptResponse>(
+      flowId
+        ? `/client/api/site-graph/demo-script?flow_id=${encodeURIComponent(flowId)}`
+        : "/client/api/site-graph/demo-script",
+    ),
+  patchDemoScript: (beats: DemoScriptBeat[]) =>
+    send<DemoScriptResponse & { ok: boolean }>(
+      "/client/api/site-graph/demo-script",
+      "PATCH",
+      { beats },
+    ),
+  regenerateDemoScript: (flowId?: string) =>
+    send<DemoScriptResponse & { ok: boolean }>(
+      flowId
+        ? `/client/api/site-graph/demo-script/regenerate?flow_id=${encodeURIComponent(flowId)}`
+        : "/client/api/site-graph/demo-script/regenerate",
+      "POST",
     ),
 
   getFlows: () => get<{ playlist: Flow[]; site: string }>("/client/api/flows"),

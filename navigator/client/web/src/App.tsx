@@ -7,6 +7,7 @@ import { LiveDemo } from "./panels/LiveDemo";
 import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
+import { ResourceMonitor } from "./panels/ResourceMonitor";
 import { ExploreFloat } from "./components/ExploreFloat";
 import { soft } from "./lib/motion";
 import { errText, useUi } from "./store";
@@ -17,6 +18,7 @@ import { useProductData } from "./lib/productData";
 import { AuthScreen } from "./panels/AuthScreen";
 import { OnboardingWizard } from "./panels/Onboarding";
 import { Button, StatusPill } from "./components/ui";
+import { DISPLAY_TICK_MS } from "./lib/elapsed";
 import {
   isSignupPending,
   markSignupPending,
@@ -37,6 +39,7 @@ const PANELS: Record<string, () => React.ReactElement> = {
   graph: SiteGraph,
   knowledge: Knowledge,
   bio: Bio,
+  monitor: ResourceMonitor,
 };
 
 function Toast() {
@@ -151,7 +154,7 @@ export default function App() {
     })();
     const t = setInterval(() => {
       void refreshActive();
-    }, 1500);
+    }, DISPLAY_TICK_MS * 2);
     return () => {
       alive = false;
       clearInterval(t);
@@ -223,7 +226,10 @@ export default function App() {
   }
 
   const Panel = PANELS[tab] ?? Overview;
-  const title = TABS.find((t) => t.id === tab)?.label ?? "Overview";
+  const title =
+    tab === "monitor"
+      ? "Resource Monitor & Health Check"
+      : (TABS.find((t) => t.id === tab)?.label ?? "Overview");
   const subtitles: Record<string, string> = {
     overview: "High-level metrics and recent demo activity.",
     demo: "Start and monitor headful browser sessions in real-time.",
@@ -232,6 +238,7 @@ export default function App() {
     graph: "Edit the site graph and page topology.",
     knowledge: "Manage knowledge snippets available to the agent.",
     bio: "Define company identity and product details.",
+    monitor: "Real-time CPU, memory, network, GPU, and service health on this host.",
   };
   const subtitle = subtitles[tab] ?? "Configure your product settings.";
 

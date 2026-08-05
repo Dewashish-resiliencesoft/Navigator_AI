@@ -567,6 +567,7 @@ def _persist(
             ]
 
     flow_ids: list[str] = []
+    narr_offset = 0
     for i, seg in enumerate(segments):
         if update:
             flow_id = session.target_flow_id
@@ -587,9 +588,14 @@ def _persist(
             base_url=session.base_url,
             update_existing=update,
         )
-        # Narration is whole-run today; attach only to the first segment.
-        if narration and i == 0:
-            new_yaml = _attach_narration(new_yaml, flow_id, narration)
+        seg_narr: list[str] = []
+        if narration:
+            seg_narr = narration[narr_offset : narr_offset + len(seg.steps)]
+        elif seg.labels:
+            seg_narr = [str(x).strip() for x in seg.labels[: len(seg.steps)]]
+        if seg_narr:
+            new_yaml = _attach_narration(new_yaml, flow_id, seg_narr)
+        narr_offset += len(seg.steps)
         if seg.semantics.purpose or seg.labels:
             payload = seg.semantics.as_dict()
             payload["steps"] = [

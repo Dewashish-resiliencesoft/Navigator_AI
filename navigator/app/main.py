@@ -1979,8 +1979,7 @@ def client_metrics(
 ) -> dict:
     """KPIs for the console. Durable counters from the action log, live state
     from the in-process runner (which is empty after a restart)."""
-    metrics = log.product_metrics(product.product_id, days=days)
-    run_metrics = log.demo_run_metrics(product.product_id, days=days)
+    metrics = log.dashboard_metrics(product.product_id, days=days)
     in_memory = runner.list(product.product_id)
     im_running = sum(1 for d in in_memory if d.status in ("starting", "running"))
     im_live_running = sum(
@@ -1993,20 +1992,10 @@ def client_metrics(
         for d in in_memory
         if d.status in ("starting", "running") and d.origin == "dashboard_test"
     )
-    metrics["run_series"] = run_metrics["series"]
-    metrics["demos"] = {
-        "total": run_metrics["total"],
-        "running": max(run_metrics["running"], im_running),
-        "failed": run_metrics["failed"],
-    }
-    metrics["live"] = {
-        **run_metrics["live"],
-        "running": max(run_metrics["live"]["running"], im_live_running),
-    }
-    metrics["test"] = {
-        **run_metrics["test"],
-        "running": max(run_metrics["test"]["running"], im_test_running),
-    }
+    metrics["demos"]["running"] = max(metrics["demos"]["running"], im_running)
+    metrics["live"]["running"] = max(metrics["live"]["running"], im_live_running)
+    metrics["test"]["running"] = max(metrics["test"]["running"], im_test_running)
+    metrics["run_series"] = metrics["series"]
     return metrics
 
 
@@ -2015,7 +2004,7 @@ def client_list_runs(
     product: DashboardAuthedProduct,
     log: Log,
     runner: Runner,
-    days: Annotated[int, Query(ge=1, le=7)] = 7,
+    days: Annotated[int, Query(ge=1, le=90)] = 14,
 ) -> list[DemoRunView]:
     """Last N days of demo runs; reconcile stale running rows with the live runner."""
     from navigator.logs.store import utcnow

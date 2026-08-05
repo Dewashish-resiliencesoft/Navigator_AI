@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { ChevronDown, ChevronRight, PhoneOff } from "lucide-react";
-import { api, ApiError, type DemoRun, type RunEvent } from "../lib/api";
+import { api, DASHBOARD_DAYS, ApiError, type DemoRun, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { soft, stagger } from "../lib/motion";
 import { BarLoader, Button, Card, CardTitle, Empty, StatusPill } from "../components/ui";
@@ -43,7 +43,7 @@ export function Logs() {
     let alive = true;
     const load = async () => {
       try {
-        const list = await api.listRuns(7);
+        const list = await api.listRuns(DASHBOARD_DAYS);
         if (!alive) return;
         setRuns(list);
       } catch (e) {
@@ -126,10 +126,10 @@ export function Logs() {
       className="grid gap-4"
     >
       <Card span="lg:col-span-2">
-        <CardTitle hint="Last 7 days. Expand for ActionLog. End stops a live session from here too.">
+        <CardTitle hint={`Last ${DASHBOARD_DAYS} days. Expand for ActionLog. End stops a live session from here too.`}>
           Demo runs
         </CardTitle>
-        {!runs.length && <Empty>No runs in the last 7 days.</Empty>}
+        {!runs.length && <Empty>No runs in the last {DASHBOARD_DAYS} days.</Empty>}
         <ul className="space-y-2">
           {runs.map((r) => {
             const expanded = open === r.session_id;

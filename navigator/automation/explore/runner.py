@@ -535,6 +535,9 @@ def _persist(
         )
         return
 
+    session.phase = "saving"
+    session.emit({"type": "status", **session.status()})
+
     update = session.save_mode == "update" and bool(session.target_flow_id)
     registry = get_registry()
     current = registry.latest_revision(session.product_id)
@@ -602,6 +605,9 @@ def _persist(
     )
     session.flow_id = flow_ids[0] if flow_ids else ""
     session.revision = rev.revision
+    if session.flow_id and session.phase == "saving":
+        session.phase = "done"
+    session.emit({"type": "status", **session.status()})
     session.emit(
         {
             "type": "log",

@@ -6,6 +6,7 @@ import {
   Circle,
   Clock,
   Compass,
+  Loader2,
   Plus,
   Save,
   ShieldAlert,
@@ -14,7 +15,9 @@ import {
 } from "lucide-react";
 import { api, type ExploreFlagged, type Flow, type RecorderStatus } from "../lib/api";
 import {
+  exploreDraftProgressPct,
   exploreIsLive,
+  exploreIsPersisting,
   exploreIsTerminal,
   formatExploreElapsed,
   useExploreSession,
@@ -39,6 +42,21 @@ import { errText, useUi } from "../store";
 const isRecording = (s: RecorderStatus) =>
   !!(s.recording || s.active || s.status === "recording");
 
+function FlowDraftLoader({ pct, label }: { pct: number; label?: string }) {
+  const n = Math.min(100, Math.max(0, Math.round(pct)));
+  return (
+    <div
+      className="flex min-w-[4.5rem] flex-col items-end gap-0.5 px-1"
+      title={label}
+    >
+      <Loader2 size={16} className="animate-spin text-[var(--accent)]" />
+      <span className="font-mono text-[0.68rem] tabular-nums text-[var(--muted)]">
+        {n}%
+      </span>
+    </div>
+  );
+}
+
 export function Flows() {
   const { ok, err } = useUi();
   const epoch = useProductData((s) => s.epoch);
@@ -54,6 +72,30 @@ export function Flows() {
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const timer = useRef<number | null>(null);
+
+  const exploreStatus = useExploreSession((s) => s.status);
+  const exploreSaveMode = useExploreSession((s) => s.saveMode);
+  const exploreTargetFlowId = useExploreSession((s) => s.targetFlowId);
+  const exploreTargetFlowName = useExploreSession((s) => s.targetFlowName);
+  const exploreShowMeter = useExploreSession((s) => s.showMeter);
+  const exploreDraftPct = exploreDraftProgressPct(exploreStatus);
+  const exploreDrafting =
+    exploreStatus.active ||
+    exploreIsPersisting(exploreStatus) ||
+    (exploreShowMeter && !exploreIsTerminal(exploreStatus.phase) && !exploreStatus.flow_id);
+  const exploreUpdatingFlowId =
+    exploreDrafting && exploreSaveMode === "update" ? exploreTargetFlowId.trim() : "";
+  const pendingNewFlowName =
+    exploreStatus.target_flow_name?.trim() ||
+    exploreTargetFlowName.trim() ||
+    "New explored flow";
+  const showPendingNewRow =
+    exploreDrafting &&
+    exploreSaveMode === "new" &&
+    !(
+      exploreStatus.flow_id &&
+      rows?.some((r) => r.flow_id === exploreStatus.flow_id)
+    );
 
   const load = useCallback(async () => {
     try {
@@ -249,14 +291,20 @@ export function Flows() {
 
         <div className="space-y-1.5">
           <AnimatePresence initial={false}>
-            {rows?.map((f, i) => (
+            {rows?.map((f, i) => {
+              const flowId = f.flow_id?.trim() ?? "";
+              const isUpdating = !!exploreUpdatingFlowId && flowId === exploreUpdatingFlowId;
+              const rowDisabled = isUpdating;
+              return (
               <motion.div
                 key={`${f.flow_id || "row"}-${i}`}
                 layout
                 layoutId={`flow-${f.flow_id || i}`}
                 transition={soft}
                 exit={{ opacity: 0, x: -10 }}
-                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-center gap-2 rounded-lg border px-2 py-1.5"
+                className={`grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-center gap-2 rounded-lg border px-2 py-1.5 ${
+                  rowDisabled ? "opacity-45 pointer-events-none" : ""
+                }`}
                 style={{ borderColor: "var(--line)" }}
               >
                 <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] flex flex-col justify-center">
@@ -266,23 +314,35 @@ export function Flows() {
                   )}
                 </span>
                 <span className="flex flex-col">
-                  <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0} className="h-5 px-1 py-0">
+                  <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0 || rowDisabled} className="h-5 px-1 py-0">
                     <ArrowUp size={11} />
                   </Button>
-                  <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === rows.length - 1} className="h-5 px-1 py-0">
+                  <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === rows.length - 1 || rowDisabled} className="h-5 px-1 py-0">
                     <ArrowDown size={11} />
                   </Button>
                 </span>
-                <Input value={f.name ?? ""} onChange={(v) => patch(i, "name", v)} placeholder="name" />
-                <Input value={f.page_id ?? ""} onChange={(v) => patch(i, "page_id", v)} placeholder="page_id" />
-                <Input value={f.flow_id ?? ""} onChange={(v) => patch(i, "flow_id", v)} placeholder="flow_id" />
+                <Input value={f.name ?? ""} onChange={(v) => patch(i, "name", v)} placeholder="name" disabled={rowDisabled} />
+                <Input value={f.page_id ?? ""} onChange={(v) => patch(i, "page_id", v)} placeholder="page_id" disabled={rowDisabled} />
+                <Input value={f.flow_id ?? ""} onChange={(v) => patch(i, "flow_id", v)} placeholder="flow_id" disabled={rowDisabled} />
+                {isUpdating ? (
+                  <FlowDraftLoader
+                    pct={exploreDraftPct}
+                    label={
+                      exploreIsPersisting(exploreStatus)
+                        ? "Saving explored steps…"
+                        : "Exploring…"
+                    }
+                  />
+                ) : (
                 <Button
                   variant="ghost"
                   onClick={() => setConfirmDelete(i)}
                   className="px-1.5 hover:text-red-500"
+                  disabled={rowDisabled}
                 >
                   <Trash2 size={13} />
                 </Button>
+                )}
                 {(f.verdict || f.purpose || (f.tags && f.tags.length > 0)) && (
                   <div className="col-span-6 flex flex-wrap items-center gap-2 px-1 pb-1 text-[0.68rem]">
                     {f.verdict && (
@@ -315,7 +375,48 @@ export function Flows() {
                   </div>
                 )}
               </motion.div>
-            ))}
+            );
+            })}
+            {showPendingNewRow && (
+              <motion.div
+                key="explore-pending-new-flow"
+                layout
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-center gap-2 rounded-lg border border-dashed px-2 py-1.5 opacity-45"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <span className="text-center font-mono text-[0.72rem] text-[var(--muted)]">
+                  …
+                </span>
+                <span />
+                <Input
+                  value={pendingNewFlowName}
+                  onChange={() => {}}
+                  placeholder="name"
+                  disabled
+                />
+                <Input value="main" onChange={() => {}} placeholder="page_id" disabled />
+                <Input
+                  value={
+                    exploreIsPersisting(exploreStatus)
+                      ? "assigning…"
+                      : "exploring…"
+                  }
+                  onChange={() => {}}
+                  placeholder="flow_id"
+                  disabled
+                />
+                <FlowDraftLoader
+                  pct={exploreDraftPct}
+                  label={
+                    exploreIsPersisting(exploreStatus)
+                      ? "Creating flow draft…"
+                      : "Exploring product…"
+                  }
+                />
+              </motion.div>
+            )}
           </AnimatePresence>
         </div>
         {confirmDelete !== null && (
@@ -593,6 +694,8 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const replyExplore = useExploreSession((s) => s.reply);
   const dismissResult = useExploreSession((s) => s.dismissResult);
   const logEnd = useRef<HTMLDivElement | null>(null);
+  const logScrollRef = useRef<HTMLDivElement | null>(null);
+  const pinnedToBottom = useRef(true);
   const flows = useProductData((s) => s.playlist).filter((f) => !!f.flow_id?.trim());
   const epoch = useProductData((s) => s.epoch);
 
@@ -617,11 +720,22 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   }, [flows, targetFlowId, setTargetFlowId, setTargetFlowName]);
 
   useEffect(() => {
-    logEnd.current?.scrollIntoView({ block: "nearest" });
+    if (!pinnedToBottom.current) return;
+    const el = logScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
   }, [events.length]);
+
+  const onLogScroll = () => {
+    const el = logScrollRef.current;
+    if (!el) return;
+    pinnedToBottom.current =
+      el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
+  };
 
   const start = async () => {
     try {
+      pinnedToBottom.current = true;
       const picked = flows.find((f) => f.flow_id === targetFlowId);
       await startExplore({ targetFlowName: picked?.name });
       ok(
@@ -655,7 +769,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const finished = exploreIsTerminal(status.phase);
   const flagged = status.flagged ?? [];
   const visitedPaths = status.visited_paths ?? [];
-  const progressPct = status.progress_pct ?? 0;
+  const progressPct = exploreDraftProgressPct(status);
   const maxPages = status.budget?.max_pages ?? 25;
   const planMode = (status.save_mode === "update" ? "update" : saveMode) as
     | "new"
@@ -894,7 +1008,11 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
                 </ul>
               </div>
             )}
-            <div className="mt-3 max-h-72 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed">
+            <div
+              ref={logScrollRef}
+              onScroll={onLogScroll}
+              className="mt-3 max-h-72 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed"
+            >
               {logLines.length === 0 && (
                 <div className="text-[var(--muted)]">Waiting for explorer events…</div>
               )}

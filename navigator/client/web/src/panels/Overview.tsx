@@ -62,6 +62,15 @@ function calcTrend(series: Metrics["series"], key: "sessions" | "actions" | "fai
   return "flat";
 }
 
+function formatRunDuration(seconds: number): string {
+  if (seconds <= 120) return `${seconds}s`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  if (h > 0) return `${h}h ${m}m ${s}s`;
+  return `${m}m ${s}s`;
+}
+
 export function Overview() {
   const { err, setTab, setLogsSessionId } = useUi();
   const epoch = useProductData((s) => s.epoch);
@@ -92,7 +101,10 @@ export function Overview() {
           passed: 0,
           last_seen: null,
           series: [],
+          run_series: [],
+          demos: { total: 0, running: 0, failed: 0 },
           live: { total: 0, running: 0, failed: 0 },
+          test: { total: 0, running: 0, failed: 0 },
         });
         setRuns([]);
       }
@@ -168,19 +180,24 @@ export function Overview() {
       </Card>
 
       <Card span="sm:col-span-2 xl:col-span-1">
-        <CardTitle hint="Sessions per day.">Sessions</CardTitle>
-        <Sparkbars series={m.series} />
+        <CardTitle hint="Demo runs per day (test + live). Visitor KPIs above count live only.">
+          Sessions
+        </CardTitle>
+        <Sparkbars series={m.run_series?.length ? m.run_series : m.series} />
         <div className="mt-4 space-y-2 border-t pt-3" style={{ borderColor: "var(--line)" }}>
           {[
-            ["Live total", m.live.total],
-            ["Running", m.live.running],
-            ["Failed", m.live.failed],
+            ["Total demos", m.demos?.total ?? 0],
+            ["Running", m.demos?.running ?? 0],
+            ["Failed", m.demos?.failed ?? 0],
           ].map(([k, v]) => (
             <div key={String(k)} className="flex justify-between text-[0.78rem]">
               <span className="text-[var(--muted)]">{k}</span>
               <span className="font-mono">{v}</span>
             </div>
           ))}
+          <p className="pt-1 text-[0.68rem] text-[var(--muted)]">
+            Live visitors: {m.live.total} · Test: {m.test?.total ?? m.test_sessions}
+          </p>
         </div>
       </Card>
 
@@ -237,7 +254,7 @@ export function Overview() {
                         {run.started_at ? new Date(run.started_at).toLocaleString() : "—"}
                       </td>
                       <td className="px-3 py-2.5 text-[var(--muted)]">
-                        {duration !== null ? `${duration}s` : "—"}
+                        {duration !== null ? formatRunDuration(duration) : "—"}
                       </td>
                       <td className="px-3 py-2.5">
                         {run.fail_count > 0 ? (

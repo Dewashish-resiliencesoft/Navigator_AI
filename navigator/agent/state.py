@@ -123,6 +123,8 @@ class CallDeps:
     retrieve: Callable[..., object] | None = None
     #: Injected phrasing for tests. Signature matches agent.phrasing.phrase_turn.
     phrase: Callable[..., str] | None = None
+    #: Spoken language for TTS + phrasing: "en" (default) or "hi".
+    spoken_language: Literal["en", "hi"] = "en"
     #: Mid-step STT for requires_live_input fills. Signature (prompt: str) -> heard.
     listen_once: Callable[[str], str] | None = None
     #: Entity extraction for live fills. Signature (key, question, heard) -> str.

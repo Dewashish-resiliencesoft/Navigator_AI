@@ -38,6 +38,33 @@ class TunnelHandle:
 _URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
 
 
+def resolve_tunnel_bin(binary: str = "cloudflared") -> str:
+    """Return an executable path for cloudflared (or the configured tunnel binary)."""
+    from shutil import which
+
+    raw = (binary or "cloudflared").strip() or "cloudflared"
+    if raw != "cloudflared":
+        path = Path(raw)
+        if path.is_file():
+            return str(path)
+        found = which(raw)
+        return found or raw
+    found = which("cloudflared")
+    if found:
+        return found
+    default = Path("/usr/local/bin/cloudflared")
+    if default.is_file():
+        return str(default)
+    return "cloudflared"
+
+
+def tunnel_binary_available(binary: str = "cloudflared") -> bool:
+    resolved = resolve_tunnel_bin(binary)
+    from shutil import which
+
+    return Path(resolved).is_file() or which(resolved) is not None
+
+
 def _drain_stdout(proc: subprocess.Popen[str]) -> None:
     """Prevent stdout pipe backpressure from killing the tunnel."""
     assert proc.stdout is not None
@@ -55,8 +82,8 @@ def start_tunnel(
     *,
     ready_path: str | None = "/view",
 ) -> TunnelHandle:
-    path = Path(binary)
-    if binary != "cloudflared" and not path.is_file():
+    binary = resolve_tunnel_bin(binary)
+    if not tunnel_binary_available(binary):
         raise RuntimeError(f"tunnel binary not found: {binary}")
 
     proc = subprocess.Popen(

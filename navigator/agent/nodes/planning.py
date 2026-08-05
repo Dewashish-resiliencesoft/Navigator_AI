@@ -40,6 +40,11 @@ from navigator.meeting.intake import format_with_intake
 from navigator.knowledge.memory.retrieval import retrieve_corrections, retrieve_product_knowledge
 from navigator.core.schemas import Plan
 from navigator.core.settings import settings
+from navigator.voice.language import (
+    SpokenLanguage,
+    apply_language_switch,
+    sync_call_language,
+)
 
 _CONTINUE = frozenset({"ok", "continue", "go on", "yes", "sure"})
 _AFFIRM = frozenset(
@@ -77,6 +82,42 @@ def _trace(deps: CallDeps, state: CallState, **kw) -> None:
         print(f"[trace] skipped: {exc}", flush=True)
 
 
+def _set_spoken_language(deps: CallDeps, lang: SpokenLanguage) -> None:
+    deps.spoken_language = lang
+    speaker = deps.speaker
+    synth = getattr(speaker, "synthesizer", None)
+    local = getattr(speaker, "local", None)
+    from navigator.voice.language import apply_to_speakers
+
+    apply_to_speakers(lang, speaker, synth, local)
+
+
+def _maybe_language_switch_ack(
+    state: CallState,
+    deps: CallDeps,
+    *,
+    utterance: str,
+    phase: str,
+) -> CallState | None:
+    if not utterance.strip():
+        return None
+    _, ack = apply_language_switch(
+        utterance=utterance,
+        current=deps.spoken_language,
+        on_switch=lambda lang: _set_spoken_language(deps, lang),
+    )
+    if not ack:
+        return None
+    return CallState(
+        plan=Plan(spoken_response=ack, tool_calls=[]),
+        pending_calls=[],
+        narration=[ack],
+        transcript=[f"agent: {ack}"],
+        phase=phase,
+        walkthrough_step=state.get("walkthrough_step"),
+    )
+
+
 def _say(
     deps: CallDeps,
     *,
@@ -98,6 +139,7 @@ def _say(
             pacing=pacing,
             persona_name=deps.graph.effective_persona().product_name,
             product_brief=deps.product_brief or "",
+            spoken_language=deps.spoken_language,
             fallback=fallback,
             api_key=api_key or None,
         )
@@ -251,6 +293,12 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
     phase = state.get("phase") or "walkthrough"
     transcript = list(state.get("transcript") or [])
     utterance = _query_from_transcript(transcript)
+
+    switched = _maybe_language_switch_ack(
+        state, deps, utterance=utterance, phase=phase
+    )
+    if switched is not None:
+        return switched
 
     if utterance and is_goodbye(utterance):
         return CallState(
@@ -992,6 +1040,7 @@ def _try_turn_brain(
                 product_brief=deps.product_brief or "",
                 intake_summary=intake_summary,
                 nav_labels=nav_labels,
+                spoken_language=deps.spoken_language,
             )
     except Exception as exc:  # noqa: BLE001
         print(f"[plan] turn brain failed ({exc}); falling back", flush=True)

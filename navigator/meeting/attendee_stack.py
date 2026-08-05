@@ -22,7 +22,10 @@ _COMPOSE_PROFILE = "webpage-streamer"
 
 
 def is_local_attendee_url(base_url: str) -> bool:
-    return any(h in base_url for h in ("localhost", "127.0.0.1"))
+    return any(
+        h in base_url
+        for h in ("localhost", "127.0.0.1", "host.docker.internal")
+    )
 
 
 def attendee_reachable(base_url: str, *, timeout_s: float = 3.0) -> bool:

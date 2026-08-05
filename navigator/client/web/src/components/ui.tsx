@@ -155,6 +155,59 @@ export function Field({
   );
 }
 
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+  description,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  label: string;
+  description?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "mb-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5",
+        disabled && "opacity-50",
+      )}
+      style={{ borderColor: "var(--line)" }}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="text-[0.78rem] font-medium tracking-tight">{label}</p>
+        {description && (
+          <p className="mt-0.5 text-[0.68rem] leading-snug text-[var(--muted)]">
+            {description}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={cn(
+          "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+          "disabled:cursor-not-allowed",
+          checked ? "bg-[var(--accent)]" : "bg-black/15 dark:bg-white/20",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
+            checked && "translate-x-5",
+          )}
+        />
+      </button>
+    </div>
+  );
+}
+
 export function Input({
   value,
   onChange,

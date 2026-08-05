@@ -68,6 +68,8 @@ _INVENTORY_JS = """
       fillable: ['input', 'textarea', 'select'].includes(tag),
       disabled: !!(t.disabled || t.getAttribute('aria-disabled') === 'true'),
       class: cls,
+      // Viewport box for VLM locate → element mapping (visual_target.py).
+      box: { x: r.x, y: r.y, w: r.width, h: r.height },
     });
   }
   return out;

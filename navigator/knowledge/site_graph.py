@@ -9,6 +9,7 @@ and page reference before returning.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin
 
 import yaml
@@ -51,7 +52,9 @@ class DemoPlaylistItem(BaseModel):
 
 
 class SiteGraph(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    # populate_by_name so `SiteGraph(meta=...)` works in code while YAML keeps
+    # using the `_meta` key it already writes.
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     version: int
     site: str
@@ -62,9 +65,33 @@ class SiteGraph(BaseModel):
     """How the agent introduces this product. Defaults from `site` when absent."""
     demo_playlist: tuple[DemoPlaylistItem, ...] = ()
     """Ordered demo flows for ops console / default walkthrough pick."""
+    meta: dict[str, Any] = Field(default_factory=dict, alias="_meta")
+    """Generated, Client-editable side data: narration suggestions, semantics.
+
+    Deliberately untyped and never cross-checked. Everything in here is a
+    suggestion produced by a model, so a malformed or stale entry must degrade to
+    "no suggestion" rather than fail a graph that is otherwise valid and could
+    still run a demo.
+    """
 
     def effective_persona(self) -> Persona:
         return self.persona or Persona(product_name=self.site.replace("-", " "))
+
+    def flow_semantics(self, flow_id: str) -> dict[str, Any]:
+        """Generated purpose / tags / step labels for one flow, or empty."""
+        section = self.meta.get("semantics")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        return entry if isinstance(entry, dict) else {}
+
+    def flow_validation(self, flow_id: str) -> dict[str, Any]:
+        """Health-check verdict for one flow, or empty when never validated."""
+        section = self.meta.get("validation")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        return entry if isinstance(entry, dict) else {}
 
     def primary_flow(self) -> tuple[str, str] | None:
         """First playlist entry, else None."""

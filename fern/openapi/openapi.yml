@@ -1481,6 +1481,41 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/semantics:
+    patch:
+      summary: Client Patch Flow Semantics
+      description: Client edits generated purpose / tags / name under `_meta.semantics`.
+      operationId: client_patch_flow_semantics_client_api_flows_semantics_patch
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowSemanticsBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Patch Flow Semantics Client Api Flows Semantics Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/record:
     get:
       summary: Client Record Status
@@ -2440,6 +2475,33 @@ components:
       required:
       - flow_id
       title: FlowDeleteBody
+    FlowSemanticsBody:
+      properties:
+        flow_id:
+          type: string
+          minLength: 1
+          title: Flow Id
+        purpose:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purpose
+        tags:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Tags
+        auto_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Auto Name
+      type: object
+      required:
+      - flow_id
+      title: FlowSemanticsBody
     FlowsBody:
       properties:
         playlist:

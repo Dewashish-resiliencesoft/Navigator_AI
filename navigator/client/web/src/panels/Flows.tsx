@@ -283,6 +283,37 @@ export function Flows() {
                 >
                   <Trash2 size={13} />
                 </Button>
+                {(f.verdict || f.purpose || (f.tags && f.tags.length > 0)) && (
+                  <div className="col-span-6 flex flex-wrap items-center gap-2 px-1 pb-1 text-[0.68rem]">
+                    {f.verdict && (
+                      <span
+                        className={
+                          f.verdict === "ready"
+                            ? "rounded px-1.5 py-0.5 font-medium text-emerald-700 bg-emerald-500/15"
+                            : f.verdict === "broken"
+                              ? "rounded px-1.5 py-0.5 font-medium text-red-700 bg-red-500/15"
+                              : "rounded px-1.5 py-0.5 font-medium text-amber-700 bg-amber-500/15"
+                        }
+                      >
+                        {f.verdict}
+                      </span>
+                    )}
+                    {f.purpose && (
+                      <span className="text-[var(--muted)] truncate max-w-[28rem]">
+                        {f.purpose}
+                      </span>
+                    )}
+                    {f.tags?.map((t) => (
+                      <span
+                        key={t}
+                        className="rounded border px-1 py-0.5 text-[var(--muted)]"
+                        style={{ borderColor: "var(--line)" }}
+                      >
+                        {t}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </motion.div>
             ))}
           </AnimatePresence>
@@ -643,7 +674,8 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
       e.type === "log" ||
       e.type === "flagged" ||
       e.type === "field" ||
-      e.type === "explored",
+      e.type === "explored" ||
+      e.type === "repair",
   );
   const exploreErrors = (() => {
     const msgs: string[] = [];
@@ -872,20 +904,30 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
                   className={
                     e.type === "flagged"
                       ? "text-amber-600 dark:text-amber-400"
-                      : e.type === "explored"
-                        ? "text-sky-600 dark:text-sky-400"
-                        : e.level === "warn"
-                          ? "text-red-500"
-                          : "text-[var(--muted)]"
+                      : e.type === "repair"
+                        ? e.ok
+                          ? "text-emerald-600 dark:text-emerald-400"
+                          : "text-violet-600 dark:text-violet-400"
+                        : e.type === "explored"
+                          ? "text-sky-600 dark:text-sky-400"
+                          : e.level === "warn"
+                            ? "text-red-500"
+                            : "text-[var(--muted)]"
                   }
                 >
                   {e.type === "flagged"
                     ? `skipped "${e.label}" — ${e.reason}`
                     : e.type === "field"
                       ? `filled ${e.alias} (${e.classification})`
-                      : e.type === "explored"
-                        ? `page ${String(e.path ?? e.url ?? "")} (${e.elements ?? "?"} controls)`
-                        : String(e.msg ?? "")}
+                      : e.type === "repair"
+                        ? e.ok
+                          ? `repaired ${String(e.alias ?? "")} via ${
+                              Array.isArray(e.tactics) ? e.tactics.join(" → ") : "ladder"
+                            }`
+                          : `repairing ${String(e.alias ?? "")} (${String(e.kind ?? "?")})`
+                        : e.type === "explored"
+                          ? `page ${String(e.path ?? e.url ?? "")} (${e.elements ?? "?"} controls)`
+                          : String(e.msg ?? "")}
                 </div>
               ))}
               <div ref={logEnd} />

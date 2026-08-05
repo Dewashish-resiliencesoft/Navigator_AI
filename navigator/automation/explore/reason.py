@@ -120,8 +120,15 @@ def looks_like_nav(el: dict[str, Any]) -> bool:
 def heuristic_pick(
     elements: Sequence[dict[str, Any]],
     visited_paths: Sequence[str],
+    *,
+    known_bad: dict[str, int] | None = None,
 ) -> Choice | None:
-    """Pick clear unvisited navigation without an LLM call."""
+    """Pick clear unvisited navigation without an LLM call.
+
+    Keys that already failed unrepaired twice+ sink below everything else, so
+    the explorer burns budget on fresh surface first. They are still eligible
+    when they are the only option left.
+    """
     ranked: list[tuple[int, dict[str, Any]]] = []
     for i, el in enumerate(elements):
         if el.get("fillable"):
@@ -133,6 +140,10 @@ def heuristic_pick(
         return None
     nav = [(i, e) for i, e in ranked if looks_like_nav(e)]
     pool = nav or ranked
+    if known_bad:
+        fresh = [(i, e) for i, e in pool if known_bad.get(element_key(e), 0) < 2]
+        if fresh:
+            pool = fresh
     idx, _el = pool[0]
     return Choice(idx, "heuristic: unvisited destination", "")
 
@@ -143,6 +154,7 @@ def choose_next(
     elements: Sequence[dict[str, Any]],
     corrections: Sequence[str] = (),
     visited_paths: Sequence[str] = (),
+    known_bad: dict[str, int] | None = None,
     ask_text: Callable[[str], str] | None = None,
     ask_vision: Callable[[str, str], str] | None = None,
     screenshot: str = "",
@@ -153,7 +165,7 @@ def choose_next(
 
     # Prefer unlabeled-free nav heuristics — avoids Groq TPD + multi-second waits.
     if not needs_vision(elements):
-        fast = heuristic_pick(elements, visited_paths)
+        fast = heuristic_pick(elements, visited_paths, known_bad=known_bad)
         if fast is not None:
             return fast
 
@@ -171,6 +183,12 @@ def choose_next(
         for i, e in enumerate(elements)
         if not targets_visited_path(e, visited_paths)
     ]
+    # Deprioritize twice-failed keys in the LLM menu too, without removing them
+    # entirely — an empty menu would force a stall when only known-bad remains.
+    if known_bad:
+        fresh = [(i, e) for i, e in filtered if known_bad.get(element_key(e), 0) < 2]
+        if fresh:
+            filtered = fresh
     menu = filtered if filtered else list(enumerate(elements))
     index_map = [i for i, _ in menu]
     menu_els = [e for _, e in menu]
@@ -202,7 +220,7 @@ def choose_next(
     if choice is not None:
         return Choice(index_map[choice.index], choice.why, choice.narration)
     # Fallback: first non-visited target, else first untried.
-    fast = heuristic_pick(elements, visited_paths)
+    fast = heuristic_pick(elements, visited_paths, known_bad=known_bad)
     if fast is not None:
         return fast
     return Choice(index_map[0], "fallback: first untried element", "")

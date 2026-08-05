@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
 
+from navigator.automation.explore import semantics
 from navigator.automation.explore.episode import EpisodeStore, StopReason
 from navigator.automation.explore.explorer import EXPLORE_PAGE_ID, ExplorerDeps, explore
 from navigator.automation.explore.session import ExplorationBudget, ExplorationSession
@@ -443,6 +444,7 @@ def _run_exploration(
                     corrections=corrections,
                     on_action=_on_action,
                     episode=episode,
+                    label_ask=ask_text,
                 ),
             )
 
@@ -459,7 +461,18 @@ def _run_exploration(
                     session.steps, product_name=product_name, ask_text=ask_text
                 )
             )
-            _persist(session, product_name=product_name, narration=narration)
+            flow_semantics = (
+                None
+                if session.stop_event.is_set()
+                else semantics.label_flow(session.step_labels, ask_text=ask_text)
+            )
+            _persist(
+                session,
+                product_name=product_name,
+                narration=narration,
+                flow_semantics=flow_semantics,
+                ask_text=ask_text,
+            )
             try:
                 episode.finalize(
                     stop_reason=StopReason.from_budget_text(session.stop_reason or "done"),
@@ -495,15 +508,25 @@ def _run_exploration(
 
 
 def _persist(
-    session: ExplorationSession, *, product_name: str, narration: list[str]
+    session: ExplorationSession,
+    *,
+    product_name: str,
+    narration: list[str],
+    flow_semantics: semantics.FlowSemantics | None = None,
+    ask_text: Callable[[str], str] | None = None,
 ) -> None:
-    """Merge the drafted flow into the site graph as an UNPUBLISHED revision.
+    """Merge drafted flow(s) into the site graph as an UNPUBLISHED revision.
 
-    Reuses `merge_recorded_flow` and `save_revision(publish=False)` so an
-    explored flow lands in exactly the same review-before-activate gate as a
-    manually recorded one. Nothing here activates anything.
+    A long crawl is split into coherent segments (see `segment.segment_steps`)
+    so the Client reviews several named demos instead of one blob. Update-mode
+    stays single-flow: overwriting a target must not invent siblings.
+
+    Reuses `merge_recorded_flow` and `put_site_graph(publish=False)` so explored
+    flows land in the same review-before-activate gate as a manual recording.
+    Nothing here activates anything.
     """
     from navigator.app.main import get_registry
+    from navigator.automation.explore.segment import Segment, segment_steps
     from navigator.client.content import merge_recorded_flow
 
     if not session.steps:
@@ -513,49 +536,101 @@ def _persist(
         return
 
     update = session.save_mode == "update" and bool(session.target_flow_id)
-    flow_id = session.target_flow_id if update else f"explored_{uuid4().hex[:8]}"
-    flow_name = (
-        session.target_flow_name
-        if update and session.target_flow_name
-        else f"Explored — {product_name}"
-    )
     registry = get_registry()
     current = registry.latest_revision(session.product_id)
-    new_yaml = merge_recorded_flow(
-        current.yaml,
-        flow_name=flow_name,
-        flow_id=flow_id,
-        page_id=EXPLORE_PAGE_ID,
-        steps=session.steps,
-        product_name=product_name,
-        base_url=session.base_url,
-        update_existing=update,
-    )
-    if narration:
-        new_yaml = _attach_narration(new_yaml, flow_id, narration)
+    new_yaml = current.yaml
+
+    if update:
+        segments = [
+            Segment(
+                steps=tuple(session.steps),
+                labels=tuple(session.step_labels[: len(session.steps)]),
+                semantics=flow_semantics or semantics.FlowSemantics(),
+            )
+        ]
+    else:
+        segments = segment_steps(
+            session.steps, session.step_labels, ask_text=ask_text
+        )
+        # Fall back to the precomputed whole-run semantics when segmentation
+        # produced a single flow and the caller already labelled it.
+        if len(segments) == 1 and flow_semantics is not None and not segments[0].semantics.purpose:
+            segments = [
+                Segment(
+                    steps=segments[0].steps,
+                    labels=segments[0].labels,
+                    semantics=flow_semantics,
+                )
+            ]
+
+    flow_ids: list[str] = []
+    for i, seg in enumerate(segments):
+        if update:
+            flow_id = session.target_flow_id
+            flow_name = session.target_flow_name or f"Explored — {product_name}"
+        else:
+            flow_id = f"explored_{uuid4().hex[:8]}"
+            flow_name = (
+                seg.semantics.auto_name
+                or (f"Explored — {product_name}" if len(segments) == 1 else f"Explored {i + 1} — {product_name}")
+            )
+        new_yaml = merge_recorded_flow(
+            new_yaml,
+            flow_name=flow_name,
+            flow_id=flow_id,
+            page_id=EXPLORE_PAGE_ID,
+            steps=list(seg.steps),
+            product_name=product_name,
+            base_url=session.base_url,
+            update_existing=update,
+        )
+        # Narration is whole-run today; attach only to the first segment.
+        if narration and i == 0:
+            new_yaml = _attach_narration(new_yaml, flow_id, narration)
+        if seg.semantics.purpose or seg.labels:
+            payload = seg.semantics.as_dict()
+            payload["steps"] = [
+                {"idx": j, "description": label}
+                for j, label in enumerate(seg.labels)
+                if label
+            ]
+            new_yaml = _attach_meta(new_yaml, "semantics", flow_id, payload)
+        flow_ids.append(flow_id)
+
     rev = registry.put_site_graph(
         session.product_id, new_yaml, "explored", publish=False
     )
-    session.flow_id = flow_id
+    session.flow_id = flow_ids[0] if flow_ids else ""
     session.revision = rev.revision
     session.emit(
         {
             "type": "log",
             "level": "info",
             "msg": (
-                f"{'updated' if update else 'created'} flow {flow_id} "
-                f"({len(session.steps)} demo step(s), "
-                f"{session.actions_taken} actions explored)"
+                f"{'updated' if update else 'created'} "
+                f"{len(flow_ids)} flow(s) ({', '.join(flow_ids)}) — "
+                f"{len(session.steps)} demo step(s), "
+                f"{session.actions_taken} actions explored"
             ),
         }
     )
+    try:
+        from navigator.automation.explore import product_areas
+
+        product_areas.sync_from_yaml(
+            registry, session.product_id, new_yaml, product_name=product_name
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[explore] product map sync failed: {exc}", flush=True)
 
 
-def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:
-    """Park narration suggestions under `_meta` for the review UI.
+def _attach_meta(yaml_text: str, section: str, flow_id: str, value: Any) -> str:
+    """Park per-flow generated data under `_meta.<section>[flow_id]`.
 
-    Deliberately not inlined into the flow steps: narration is a suggestion the
-    Client edits, and the flow schema validates strictly.
+    Deliberately not inlined into the flow steps. Narration and semantics are
+    suggestions the Client edits, while the flow schema validates strictly --
+    and extra keys on a ToolCall are silently DROPPED rather than rejected, so
+    inlining them would lose data without any error.
     """
     import yaml as _yaml
 
@@ -565,8 +640,16 @@ def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str
     meta = raw.setdefault("_meta", {})
     if not isinstance(meta, dict):
         return yaml_text
-    meta.setdefault("narration_suggestions", {})[flow_id] = narration
+    bucket = meta.setdefault(section, {})
+    if not isinstance(bucket, dict):
+        return yaml_text
+    bucket[flow_id] = value
     return _yaml.safe_dump(raw, sort_keys=False)
+
+
+def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:
+    """Narration suggestions for one flow, for the review UI."""
+    return _attach_meta(yaml_text, "narration_suggestions", flow_id, narration)
 
 
 def stop_exploration() -> dict[str, Any]:

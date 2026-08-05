@@ -115,7 +115,9 @@ def test_high_confidence_flow_match_switches_execution(
         transcript=["user: how do I search for a contact?"],
     )
     out = planning(state, deps)
-    assert [c.tool for c in out["pending_calls"]] == ["fill_field", "click_element"]
+    assert [c.tool for c in out["pending_calls"]] == ["fill_field"]
+    assert out.get("phase") == "detour"
+    assert out.get("detour_flow_id") == "search_contact"
     assert out["walkthrough_step"] == 2
     assert out.get("resume_step") == 2
     assert out.get("resume_page_id") == "inbox"
@@ -157,9 +159,41 @@ def test_knowledge_only_answer_has_zero_tool_calls(site_graph, page, log, tmp_pa
     assert rows[0].chosen_flow_id is None
 
 
-def test_medium_confidence_asks_then_runs_on_yes(site_graph, page, log, tmp_path):
+def test_medium_confidence_offerable_starts_seamless_detour(
+    site_graph, page, log, tmp_path
+):
     def retrieve(query, product_id, **kw):
         return _result(query, product_id, flows=[("search_contact", 0.42)])
+
+    deps = _deps(
+        site_graph,
+        page,
+        log,
+        tmp_path,
+        retrieve=retrieve,
+        phrase=lambda **kw: kw["fallback"],
+    )
+    state = _walk_state(transcript=["user: something about finding people?"])
+    out = planning(state, deps)
+    assert out.get("phase") == "detour"
+    assert out.get("detour_flow_id") == "search_contact"
+    assert len(out["pending_calls"]) == 1
+    assert out.get("awaiting_confirm_flow_id") in (None, "")
+
+    with DecisionTraceStore(tmp_path / "decisions.db") as store:
+        assert store.for_session(state["session_id"], "acme")[0].branch == "flow_executed"
+
+
+def test_medium_confidence_not_offerable_asks_then_runs_on_yes(
+    site_graph, page, log, tmp_path, monkeypatch
+):
+    def retrieve(query, product_id, **kw):
+        return _result(query, product_id, flows=[("search_contact", 0.42)])
+
+    monkeypatch.setattr(
+        "navigator.agent.nodes.planning._flow_offerable",
+        lambda deps, page_id, flow_id: False,
+    )
 
     deps = _deps(
         site_graph,
@@ -186,8 +220,15 @@ def test_medium_confidence_asks_then_runs_on_yes(site_graph, page, log, tmp_path
         "walkthrough_step": out["walkthrough_step"],
     }
     out2 = planning(state2, deps)
-    assert [c.tool for c in out2["pending_calls"]] == ["fill_field", "click_element"]
+    assert out2.get("phase") == "detour"
+    assert len(out2["pending_calls"]) == 1
     assert out2.get("awaiting_confirm_flow_id") in (None, "")
+
+
+def test_medium_confidence_asks_then_runs_on_yes(site_graph, page, log, tmp_path):
+    test_medium_confidence_offerable_starts_seamless_detour(
+        site_graph, page, log, tmp_path
+    )
 
 
 def test_default_flow_resumes_after_detour(site_graph, page, log, tmp_path):
@@ -205,19 +246,30 @@ def test_default_flow_resumes_after_detour(site_graph, page, log, tmp_path):
     state = _walk_state(transcript=["user: show me contact search"])
     detour = planning(state, deps)
     assert detour.get("resume_step") == 2
+    assert detour.get("phase") == "detour"
 
-    # Silence → walkthrough continues from remembered step
-    resume_state = {
+    flow_len = len(site_graph.flow("inbox", "search_contact"))
+    mid = {
         **state,
-        "walkthrough_step": detour["walkthrough_step"],
-        "resume_step": detour.get("resume_step"),
-        "resume_page_id": detour.get("resume_page_id"),
-        "transcript": [],  # silence / continuation
+        **{k: detour[k] for k in detour if k != "transcript"},
+        "phase": "detour",
+        "detour_step": flow_len,
+        "transcript": [],
+        "pending_calls": [],
+    }
+    checkin = planning(mid, deps)
+    assert checkin.get("phase") == "awaiting_resume"
+    assert checkin["pending_calls"] == []
+
+    resume_state = {
+        **mid,
+        **{k: checkin[k] for k in checkin if k != "transcript"},
+        "transcript": ["user: yeah that helps"],
         "pending_calls": [],
     }
     cont = planning(resume_state, deps)
     assert cont.get("phase") == "walkthrough"
-    assert cont["walkthrough_step"] == 3  # advanced one from resume 2
+    assert cont["walkthrough_step"] == 3
     assert cont.get("resume_step") is None
     assert len(cont["pending_calls"]) == 1
 

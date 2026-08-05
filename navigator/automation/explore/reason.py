@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from navigator.automation.explore.session import element_key
+from navigator.automation.external_links import element_is_external
 
 MODEL = "llama-3.3-70b-versatile"
 
@@ -122,6 +123,8 @@ def heuristic_pick(
     visited_paths: Sequence[str],
     *,
     known_bad: dict[str, int] | None = None,
+    product_base: str = "",
+    page_url: str = "",
 ) -> Choice | None:
     """Pick clear unvisited navigation without an LLM call.
 
@@ -132,6 +135,8 @@ def heuristic_pick(
     ranked: list[tuple[int, dict[str, Any]]] = []
     for i, el in enumerate(elements):
         if el.get("fillable"):
+            continue
+        if product_base and element_is_external(el, product_base, page_url=page_url):
             continue
         if targets_visited_path(el, visited_paths):
             continue
@@ -155,6 +160,7 @@ def choose_next(
     corrections: Sequence[str] = (),
     visited_paths: Sequence[str] = (),
     known_bad: dict[str, int] | None = None,
+    product_base: str = "",
     ask_text: Callable[[str], str] | None = None,
     ask_vision: Callable[[str, str], str] | None = None,
     screenshot: str = "",
@@ -165,7 +171,13 @@ def choose_next(
 
     # Prefer unlabeled-free nav heuristics — avoids Groq TPD + multi-second waits.
     if not needs_vision(elements):
-        fast = heuristic_pick(elements, visited_paths, known_bad=known_bad)
+        fast = heuristic_pick(
+            elements,
+            visited_paths,
+            known_bad=known_bad,
+            product_base=product_base,
+            page_url=url,
+        )
         if fast is not None:
             return fast
 
@@ -182,6 +194,9 @@ def choose_next(
         (i, e)
         for i, e in enumerate(elements)
         if not targets_visited_path(e, visited_paths)
+        and not (
+            product_base and element_is_external(e, product_base, page_url=url)
+        )
     ]
     # Deprioritize twice-failed keys in the LLM menu too, without removing them
     # entirely — an empty menu would force a stall when only known-bad remains.
@@ -220,7 +235,13 @@ def choose_next(
     if choice is not None:
         return Choice(index_map[choice.index], choice.why, choice.narration)
     # Fallback: first non-visited target, else first untried.
-    fast = heuristic_pick(elements, visited_paths, known_bad=known_bad)
+    fast = heuristic_pick(
+        elements,
+        visited_paths,
+        known_bad=known_bad,
+        product_base=product_base,
+        page_url=url,
+    )
     if fast is not None:
         return fast
     return Choice(index_map[0], "fallback: first untried element", "")

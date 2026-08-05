@@ -77,6 +77,9 @@ def guess_postcondition(step: RecordedStep) -> dict[str, Any]:
             "expected": step.value or "",
         }
     if step.tool == "click_element":
+        alias = (step.alias or "").lower()
+        if any(w in alias for w in ("close", "dismiss", "accept", "got_it", "ok")):
+            return {"check": "hidden", "selector": step.alias}
         return {"check": "visible", "selector": step.alias}
     if step.tool == "navigate":
         return {"check": "url_matches", "expected": step.value or "/"}

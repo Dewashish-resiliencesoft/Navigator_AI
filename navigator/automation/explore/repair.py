@@ -27,7 +27,46 @@ _DISMISS_HINTS = (
     "i understand",
     "accept all",
     "accept cookies",
+    "close",
 )
+
+
+def looks_like_dismiss(el: dict[str, Any]) -> bool:
+    """True for overlay/modal dismiss controls that should leave the DOM after click."""
+    label = " ".join(
+        str(el.get(k) or "")
+        for k in ("text", "label", "aria_label", "title", "value", "name")
+    ).lower()
+    if not label.strip():
+        alias = str(el.get("testid") or el.get("id") or "").lower()
+        label = alias
+    return any(h in label for h in _DISMISS_HINTS)
+
+
+def click_postcondition(alias: str, el: dict[str, Any]) -> Postcondition:
+    """Dismiss controls vanish on success; everything else expects still visible."""
+    check = "hidden" if looks_like_dismiss(el) else "visible"
+    return Postcondition(check=check, selector=alias)
+
+
+def click_verify_passed(result: ToolResult, verify_result: Any, expects: Postcondition) -> bool:
+    """Click OK + verify OK, or click OK and the target left the page (close/dismiss)."""
+    if not result.ok:
+        return False
+    if verify_result is None or verify_result.passed:
+        return True
+    if expects.check != "visible":
+        return False
+    actual = (getattr(verify_result, "actual", None) or "").lower()
+    return any(
+        phrase in actual
+        for phrase in (
+            "not found",
+            "disappeared",
+            "never became visible",
+            "is hidden",
+        )
+    )
 
 
 @dataclass
@@ -316,18 +355,20 @@ def _try_act(
     *,
     relax: bool = False,
 ) -> RepairAttempt:
-    result, verify_result = _act(ctx, alias, css, relax=relax)
+    result, verify_result, expects = _act(ctx, alias, css, relax=relax)
     return RepairAttempt(
         tactic=tactic,
         alias=alias,
         css=css,
         result=result,
         verify_result=verify_result,
-        ok=_passed(result, verify_result),
+        ok=_passed(result, verify_result, expects),
     )
 
 
-def _passed(result: ToolResult, verify_result: Any) -> bool:
+def _passed(result: ToolResult, verify_result: Any, expects: Postcondition | None = None) -> bool:
+    if expects is not None and expects.check in ("visible", "hidden"):
+        return click_verify_passed(result, verify_result, expects)
     return bool(result.ok and (verify_result is None or verify_result.passed))
 
 
@@ -337,7 +378,7 @@ def _act(
     css: str,
     *,
     relax: bool,
-) -> tuple[ToolResult, Any]:
+) -> tuple[ToolResult, Any, Postcondition]:
     ctx.graph.add(alias, css)
     if ctx.fillable:
         value = ctx.value or ""
@@ -348,7 +389,9 @@ def _act(
         )
         call: Any = FillField(selector=alias, value=value, expects=expects)
     else:
-        expects = Postcondition(check="visible", selector=alias)
+        expects = click_postcondition(alias, ctx.el)
+        if relax and expects.check == "visible":
+            expects = Postcondition(check="hidden", selector=alias)
         call = ClickElement(selector=alias, expects=expects)
     result, _ = ctx.execute(ctx.page, ctx.graph, ctx.page_id, call)
     verify_result = None
@@ -357,7 +400,7 @@ def _act(
             verify_result = ctx.verify(ctx.page, ctx.graph, ctx.page_id, call.expects)
         except Exception:  # noqa: BLE001
             verify_result = None
-    return result, verify_result
+    return result, verify_result, expects
 
 
 def _scroll(page: Any, css: str) -> None:

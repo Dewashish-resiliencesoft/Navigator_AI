@@ -10,7 +10,9 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
-from navigator.meeting.tunnel import wait_until_public as _default_wait
+from urllib.parse import urlparse
+
+from navigator.meeting.tunnel import verify_attendee_docker_dns, wait_until_public as _default_wait
 
 
 class _Attendee(Protocol):
@@ -41,6 +43,9 @@ def arm_screenshare(
         try:
             wait(public_view, timeout_s=timeout_s)
             print(f"[live] tunnel_ready=ok url={public_view}", flush=True)
+            host = urlparse(public_view).hostname or ""
+            if host:
+                verify_attendee_docker_dns(host)
             break
         except Exception as exc:
             last_err = exc

@@ -82,6 +82,19 @@ export function Sidebar({
         {onContinueSetup && (
           <GetStartedCard onContinue={onContinueSetup} />
         )}
+        <button
+          type="button"
+          onClick={() => setTab("monitor")}
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[0.8rem] font-medium transition-colors",
+            tab === "monitor"
+              ? "bg-black/[0.06] text-[var(--text)] dark:bg-white/[0.08]"
+              : "text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--text)] dark:hover:bg-white/[0.06]",
+          )}
+        >
+          <Activity size={14} strokeWidth={1.9} />
+          Resource Monitor & Health Check
+        </button>
         {onLogout && (
           <button
             type="button"
@@ -102,12 +115,13 @@ export function Sidebar({
 
 export function MobileTabs() {
   const { tab, setTab } = useUi();
+  const items = [...TABS, { id: "monitor" as const, label: "Monitor" }];
   return (
     <div
       className="flex gap-1 overflow-x-auto border-b px-4 py-2 md:hidden"
       style={{ borderColor: "var(--line)" }}
     >
-      {TABS.map(({ id, label }) => (
+      {items.map(({ id, label }) => (
         <button
           key={id}
           type="button"

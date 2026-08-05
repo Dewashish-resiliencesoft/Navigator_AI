@@ -91,13 +91,13 @@ def test_reachability_probe_treats_an_http_error_as_alive(monkeypatch):
     def raise_401(url, timeout=None):
         raise HTTPError(url, 401, "Unauthorized", {}, None)  # type: ignore[arg-type]
 
-    monkeypatch.setattr("urllib.request.urlopen", raise_401)
+    monkeypatch.setattr("navigator.meeting.attendee_stack.urlopen", raise_401)
     assert live_demo._attendee_reachable("http://localhost:8002/api/v1") is True
 
     def raise_refused(url, timeout=None):
         raise URLError("Connection refused")
 
-    monkeypatch.setattr("urllib.request.urlopen", raise_refused)
+    monkeypatch.setattr("navigator.meeting.attendee_stack.urlopen", raise_refused)
     assert live_demo._attendee_reachable("http://localhost:8002/api/v1") is False
 
 

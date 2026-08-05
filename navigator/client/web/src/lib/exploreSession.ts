@@ -10,24 +10,56 @@ import {
 } from "./api";
 import { errText } from "../store";
 import { useProductData } from "./productData";
+import {
+  DISPLAY_TICK_MS,
+  syncElapsedAnchor,
+  useElapsedSeconds,
+} from "./elapsed";
 
 let socket: WebSocket | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let tickTimer: ReturnType<typeof setInterval> | null = null;
 let onFlowDrafted: (() => void) | null = null;
 
 function isTerminal(phase?: string): boolean {
-  return phase === "done" || phase === "failed" || phase === "stopped";
+  return phase === "done" || phase === "failed" || phase === "stopped" || phase === "idle";
+}
+
+/** Explore stopped but server still drafting the flow into the site graph. */
+export function exploreIsPersisting(status: ExploreStatus): boolean {
+  if (status.active) return false;
+  if (status.flow_id) return false;
+  if ((status.steps ?? 0) === 0) return false;
+  const phase = status.phase ?? "idle";
+  return phase === "stopped" || phase === "drafting" || phase === "saving";
+}
+
+export function exploreDraftProgressPct(status: ExploreStatus): number {
+  const raw = status.progress_pct ?? 0;
+  if (status.flow_id) return 100;
+  if (exploreIsPersisting(status)) return Math.max(raw, 92);
+  return raw;
+}
+
+async function waitForFlowDraft(
+  refresh: () => Promise<ExploreStatus | null>,
+  maxMs = 120_000,
+): Promise<ExploreStatus | null> {
+  const deadline = Date.now() + maxMs;
+  let last: ExploreStatus | null = null;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 400));
+    last = await refresh();
+    if (!last) break;
+    if (last.flow_id || last.phase === "failed" || last.phase === "done") break;
+    if ((last.steps ?? 0) === 0 && isTerminal(last.phase)) break;
+  }
+  return last;
 }
 
 function clearTimers() {
   if (pollTimer != null) {
     clearInterval(pollTimer);
     pollTimer = null;
-  }
-  if (tickTimer != null) {
-    clearInterval(tickTimer);
-    tickTimer = null;
   }
 }
 
@@ -44,7 +76,8 @@ type ExploreSession = {
   saveMode: "new" | "update";
   targetFlowId: string;
   targetFlowName: string;
-  elapsedLocal: number;
+  /** Wall-clock anchor for elapsed display — not overwritten every poll. */
+  elapsedAnchorMs: number | null;
   showMeter: boolean;
   /** Latest server Chromium viewport (Watch bot). */
   latestFrame: ExploreFrame | null;
@@ -67,20 +100,20 @@ type ExploreSession = {
   pullFrame: () => Promise<ExploreFrame | null>;
 };
 
-function applyLiveTimers(get: () => ExploreSession, set: (p: Partial<ExploreSession>) => void) {
+function applyLiveTimers(get: () => ExploreSession) {
   clearTimers();
   const live = () => {
     const s = get();
-    return Boolean(s.status.active) || (s.showMeter && !isTerminal(s.status.phase));
+    return (
+      Boolean(s.status.active) ||
+      exploreIsPersisting(s.status) ||
+      (s.showMeter && !isTerminal(s.status.phase))
+    );
   };
   if (!live()) return;
   pollTimer = setInterval(() => {
     void get().refresh();
-  }, 1500);
-  tickTimer = setInterval(() => {
-    if (!live()) return;
-    set({ elapsedLocal: get().elapsedLocal + 1 });
-  }, 1000);
+  }, DISPLAY_TICK_MS * 2);
 }
 
 export const useExploreSession = create<ExploreSession>((set, get) => ({
@@ -93,7 +126,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   saveMode: "new",
   targetFlowId: "",
   targetFlowName: "",
-  elapsedLocal: 0,
+  elapsedAnchorMs: null,
   showMeter: false,
   latestFrame: null,
 
@@ -134,18 +167,24 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   refresh: async () => {
     try {
       const s = await api.exploreStatus();
-      set((prev) => ({
-        status: { ...prev.status, ...s },
-        question: s.pending_question ?? null,
-        showMeter: prev.showMeter || Boolean(s.active) || (s.steps ?? 0) > 0,
-        elapsedLocal:
-          typeof s.elapsed_s === "number" ? s.elapsed_s : prev.elapsedLocal,
-        events:
-          prev.events.length === 0 && (s.recent_events?.length ?? 0) > 0
-            ? (s.recent_events ?? [])
-            : prev.events,
-      }));
-      applyLiveTimers(get, set);
+      set((prev) => {
+        const merged = { ...prev.status, ...s };
+        const persisting = exploreIsPersisting(merged);
+        return {
+          status: merged,
+          question: s.pending_question ?? null,
+          showMeter: Boolean(s.active) || persisting,
+          elapsedAnchorMs: syncElapsedAnchor(
+            prev.elapsedAnchorMs,
+            s.elapsed_s,
+          ),
+          events:
+            prev.events.length === 0 && (s.recent_events?.length ?? 0) > 0
+              ? (s.recent_events ?? [])
+              : prev.events,
+        };
+      });
+      applyLiveTimers(get);
       return s;
     } catch {
       return null;
@@ -154,7 +193,30 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
 
   hydrate: async () => {
     const s = await get().refresh();
-    if (s?.active) await get().connect();
+    if (s?.active) {
+      await get().connect();
+    } else if (s && isTerminal(s.phase)) {
+      if (exploreIsPersisting(s)) {
+        void waitForFlowDraft(() => get().refresh()).then((final) => {
+          if (final?.flow_id) {
+            onFlowDrafted?.();
+            void useProductData.getState().refreshPlaylist();
+          }
+          set((prev) => ({
+            showMeter: final ? exploreIsPersisting({ ...prev.status, ...final }) : false,
+          }));
+        });
+      } else {
+        set({
+          showMeter: false,
+          events: [],
+          question: null,
+          elapsedAnchorMs: null,
+          latestFrame: null,
+          status: { active: false, phase: "idle" },
+        });
+      }
+    }
     await get().syncProductUrl();
     return s;
   },
@@ -181,17 +243,24 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
       const event: ExploreEvent = JSON.parse(m.data);
       if (event.type === "status") {
         const next = event as unknown as ExploreStatus;
-        set((prev) => ({
-          status: {
-            ...prev.status,
-            ...next,
-            has_credentials: prev.status.has_credentials ?? next.has_credentials,
-          },
-          showMeter: prev.showMeter || Boolean(next.active),
-          elapsedLocal:
-            typeof next.elapsed_s === "number" ? next.elapsed_s : prev.elapsedLocal,
-        }));
-        applyLiveTimers(get, set);
+        set((prev) => {
+          const merged = { ...prev.status, ...next };
+          return {
+            status: {
+              ...merged,
+              has_credentials: prev.status.has_credentials ?? next.has_credentials,
+            },
+            showMeter:
+              prev.showMeter ||
+              Boolean(next.active) ||
+              exploreIsPersisting(merged),
+            elapsedAnchorMs: syncElapsedAnchor(
+              prev.elapsedAnchorMs,
+              next.elapsed_s,
+            ),
+          };
+        });
+        applyLiveTimers(get);
         return;
       }
       if (event.type === "state") {
@@ -213,10 +282,12 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
                 : prev.status.progress_pct,
           },
           showMeter: true,
-          elapsedLocal:
-            typeof event.elapsed_s === "number" ? event.elapsed_s : prev.elapsedLocal,
+          elapsedAnchorMs: syncElapsedAnchor(
+            prev.elapsedAnchorMs,
+            typeof event.elapsed_s === "number" ? event.elapsed_s : undefined,
+          ),
         }));
-        applyLiveTimers(get, set);
+        applyLiveTimers(get);
         return;
       }
       if (event.type === "frame" && typeof event.data === "string" && event.data) {
@@ -273,7 +344,9 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
         clearTimers();
         void get().refresh();
         onFlowDrafted?.();
-        void useProductData.getState().refreshPlaylist();
+        void useProductData.getState().refreshPlaylist().then(() => {
+          set({ showMeter: false, events: [] });
+        });
       }
     };
     ws.onclose = () => {
@@ -284,7 +357,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   start: async (opts) => {
     set({
       events: [],
-      elapsedLocal: 0,
+      elapsedAnchorMs: Date.now(),
       showMeter: true,
       question: null,
       answer: "",
@@ -319,7 +392,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
         status: { ...prev.status, ...s, active: true },
         showMeter: true,
       }));
-      applyLiveTimers(get, set);
+      applyLiveTimers(get);
       await get().connect();
     } catch (e) {
       set({ showMeter: false, status: { active: false } });
@@ -329,10 +402,10 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   },
 
   stop: async () => {
-    // Optimistic: meter/buttons flip off before the explorer thread wakes.
     set((prev) => ({
       status: { ...prev.status, active: false, phase: "stopped" },
       question: null,
+      showMeter: true,
     }));
     clearTimers();
     try {
@@ -344,20 +417,23 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
           active: false,
           phase: s.phase || "stopped",
         },
+        showMeter: true,
       }));
     } catch (e) {
       const fresh = await get().refresh();
       if (fresh?.active) throw e;
     }
-    // Persist still runs after stop — poll until flow_id lands or timeout.
-    for (let i = 0; i < 30; i++) {
-      await new Promise((r) => setTimeout(r, 400));
-      const fresh = await get().refresh();
-      if (!fresh) break;
-      if (fresh.flow_id || fresh.phase === "failed" || fresh.phase === "done") break;
-      // No steps → nothing to draft
-      if ((fresh.steps ?? 0) === 0 && isTerminal(fresh.phase)) break;
+    const final = await waitForFlowDraft(() => get().refresh());
+    if (final?.flow_id) {
+      onFlowDrafted?.();
+      await useProductData.getState().refreshPlaylist();
     }
+    set((prev) => ({
+      showMeter: final
+        ? exploreIsPersisting({ ...prev.status, ...final })
+        : false,
+      events: final?.flow_id ? [] : prev.events,
+    }));
   },
 
   reply: async (skip: boolean) => {
@@ -380,7 +456,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
       events: [],
       question: null,
       answer: "",
-      elapsedLocal: 0,
+      elapsedAnchorMs: null,
       latestFrame: null,
       status: { active: false, phase: "idle" },
     });
@@ -405,17 +481,25 @@ export function exploreIsLive(s: {
   status: ExploreStatus;
   showMeter: boolean;
 }): boolean {
-  return Boolean(s.status.active) || (s.showMeter && !isTerminal(s.status.phase));
+  return (
+    Boolean(s.status.active) ||
+    exploreIsPersisting(s.status) ||
+    (s.showMeter && !isTerminal(s.status.phase))
+  );
 }
 
-export function formatExploreElapsed(totalSeconds: number): string {
-  const sec = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const r = sec % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-  return `${m}:${String(r).padStart(2, "0")}`;
+export function useExploreElapsed(): number {
+  const anchor = useExploreSession((s) => s.elapsedAnchorMs);
+  const status = useExploreSession((s) => s.status);
+  const showMeter = useExploreSession((s) => s.showMeter);
+  const ticking =
+    Boolean(status.active) ||
+    exploreIsPersisting(status) ||
+    (showMeter && !isTerminal(status.phase));
+  return useElapsedSeconds(anchor, ticking);
 }
+
+export { formatElapsedClock as formatExploreElapsed } from "./elapsed";
 
 /** Soft error helper for callers that toast. */
 export { errText as exploreErrText };

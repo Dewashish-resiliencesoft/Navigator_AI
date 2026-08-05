@@ -244,6 +244,59 @@ class ActionLog:
             ],
         }
 
+    def demo_run_metrics(self, product_id: str, days: int = 14) -> dict:
+        """Durable demo_runs rollups for the Overview Sessions card.
+
+        Unlike ``product_metrics`` (billable action_log only), this counts every
+        persisted demo run — test and live — so the dashboard reflects what the
+        Client actually ran.
+        """
+        when = utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+
+        def _totals(origin: str | None) -> dict[str, int]:
+            where = "product_id = ? AND started_at >= ?"
+            params: list[str] = [product_id, cutoff]
+            if origin is not None:
+                where += " AND origin = ?"
+                params.append(origin)
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "COALESCE(SUM(status = 'failed'), 0) AS failed, "
+                "COALESCE(SUM(status IN ('starting', 'running')), 0) AS running "
+                f"FROM demo_runs WHERE {where}",
+                params,
+            ).fetchone()
+            return {
+                "total": int(row["total"] or 0),
+                "failed": int(row["failed"] or 0),
+                "running": int(row["running"] or 0),
+            }
+
+        rows = self._conn.execute(
+            "SELECT substr(started_at, 1, 10) AS day, COUNT(*) AS sessions "
+            "FROM demo_runs WHERE product_id = ? AND started_at >= ? "
+            "GROUP BY day ORDER BY day DESC LIMIT ?",
+            (product_id, cutoff, max(1, days)),
+        ).fetchall()
+        all_totals = _totals(None)
+        return {
+            "series": [
+                {
+                    "day": r["day"],
+                    "sessions": int(r["sessions"]),
+                    "actions": 0,
+                    "failures": 0,
+                }
+                for r in reversed(rows)
+            ],
+            "total": all_totals["total"],
+            "running": all_totals["running"],
+            "failed": all_totals["failed"],
+            "live": _totals("public_embed"),
+            "test": _totals("dashboard_test"),
+        }
+
     def sessions(self) -> list[UUID]:
         rows = self._conn.execute(
             "SELECT session_id, MIN(timestamp) AS started FROM action_log "

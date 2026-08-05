@@ -185,8 +185,9 @@ def test_interrupt_keeps_walkthrough_step(site_graph, page, log, tmp_path, state
     deps = _walkthrough_deps(site_graph, page, log, tmp_path, fake)
     out = planning(state, deps)
     assert out["walkthrough_step"] == saved_step
-    assert out.get("phase") == "walkthrough"
-    assert [c.tool for c in out["pending_calls"]] == ["fill_field", "click_element"]
+    assert out.get("phase") == "detour"
+    assert out.get("detour_flow_id") == "search_contact"
+    assert len(out["pending_calls"]) == 1
 
 
 def test_anything_else_goodbye_ends(site_graph, page, log, tmp_path, state):

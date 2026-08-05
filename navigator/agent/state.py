@@ -193,6 +193,14 @@ class CallState(TypedDict, total=False):
     resume_page_id: str
     #: Flow the pending clarifying question would run on a yes.
     awaiting_confirm_flow_id: str | None
+    #: Step-by-step detour flow answering a prospect question mid-demo.
+    detour_flow_id: str
+    detour_page_id: str
+    detour_step: int
+    #: Single-action detour (tier-2 / turn-brain); awaiting_resume after it runs.
+    detour_one_shot: bool
+    #: Knowledge answer spoken; next turn asks if the question is answered.
+    resume_checkin_pending: bool
 
 
 def initial_state(
@@ -228,4 +236,9 @@ def initial_state(
         resume_step=None,
         resume_page_id="",
         awaiting_confirm_flow_id=None,
+        detour_flow_id="",
+        detour_page_id="",
+        detour_step=0,
+        detour_one_shot=False,
+        resume_checkin_pending=False,
     )

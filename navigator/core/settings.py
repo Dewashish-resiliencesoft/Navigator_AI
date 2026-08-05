@@ -26,8 +26,12 @@ class Settings(BaseSettings):
     fish_model: str = "s2.1-pro-free"
     #: Default: warm conversational Sarah (fish.audio/m/3a7a3d3df82948c6bd756761d6b139b5)
     fish_reference_id: str = "3a7a3d3df82948c6bd756761d6b139b5"
-    #: "fish" | "piper" | "auto" (Fish if key set, else Piper)
-    tts_provider: Literal["auto", "fish", "piper"] = "auto"
+    #: "auto" | "gemini" | "fish" | "piper" (auto: Gemini → Fish → Piper)
+    tts_provider: Literal["auto", "gemini", "fish", "piper"] = "auto"
+    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    #: Warm female voice for English + Hindi (Gemini Live prebuilt).
+    gemini_live_voice: str = "Sulafat"
+    default_spoken_language: Literal["en", "hi"] = "en"
 
     # Phase 2+
     groq_api_key: str = ""

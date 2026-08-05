@@ -80,6 +80,7 @@ def decide_turn(
     product_brief: str = "",
     intake_summary: str = "",
     nav_labels: Sequence[str] | None = None,
+    spoken_language: str = "en",
     complete_with_image: CompleteWithImage | None = None,
 ) -> TurnDecision:
     if complete_with_image is None:
@@ -88,9 +89,16 @@ def decide_turn(
         complete_with_image = get_provider().complete_with_image
 
     labels = list(nav_labels or [])
+    lang_rule = (
+        "Respond in natural Hindi (spoken_response in Devanagari). "
+        "Keep product/UI terms in English when natural for Indian users."
+        if (spoken_language or "en").strip().lower() == "hi"
+        else "Respond in natural Indian English."
+    )
     user = "\n".join(
         [
             f"Utterance: {utterance}",
+            f"Language: {lang_rule}",
             f"Allowed page_ids: {', '.join(sorted(allowed_pages))}",
             f"Known nav labels: {', '.join(labels) if labels else '(none)'}",
             f"Intake: {intake_summary or '(none)'}",

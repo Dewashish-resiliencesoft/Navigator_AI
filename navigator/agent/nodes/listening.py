@@ -19,6 +19,7 @@ from navigator.agent.nodes.reflecting import classify_correction
 from navigator.agent.state import CallDeps, CallState
 from navigator.core.settings import settings
 from navigator.voice.stt import VoiceSegmenter, transcribe
+from navigator.voice.language import sync_call_language
 
 SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"
 
@@ -41,6 +42,7 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
         utterance = pending.pop(0).strip()
         if utterance:
             print(f"[listen] barge-in utterance: {utterance!r}", flush=True)
+            sync_call_language(deps, utterance)
             last = _last_entry(state, deps)
             is_correction = False
             if last is not None:
@@ -61,6 +63,7 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
 
     utterance = _capture_utterance(state, deps)
     if utterance:
+        sync_call_language(deps, utterance)
         print(f"[listen] heard: {utterance!r}", flush=True)
     last = _last_entry(state, deps)
     is_correction = False

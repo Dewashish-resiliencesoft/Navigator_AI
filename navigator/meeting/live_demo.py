@@ -164,13 +164,9 @@ def _require_live_settings(meeting_url: str) -> None:
         if not val
     ]
     if is_zoom_meeting(meeting_url) and not settings.public_base_url:
-        # Empty is OK locally — zoom_zak_callback_url() auto-tunnels :8000.
-        # Still flag it when cloudflared is missing so the error is early.
-        from shutil import which
-        from pathlib import Path
+        from navigator.meeting.tunnel import tunnel_binary_available
 
-        tunnel = settings.tunnel_bin
-        if tunnel != "cloudflared" and not Path(tunnel).is_file() and not which(tunnel):
+        if not tunnel_binary_available(settings.tunnel_bin):
             missing.append("NAVIGATOR_PUBLIC_BASE_URL (or a working tunnel_bin)")
     if missing:
         raise RuntimeError(f"missing config for live Meet demo: {', '.join(missing)}")
@@ -295,28 +291,37 @@ def _share_meet_link(*, meeting_url: str, bot_ready: bool) -> None:
     print("=" * 60, flush=True)
 
 
-def _speaker(*, mute: bool):
+def _make_live_speaker(
+    *,
+    mute: bool,
+    spoken_language: str = "en",
+    require_audio: bool = False,
+):
     return make_speaker(
         mute=mute,
+        gemini_api_key=settings.gemini_api_key,
+        gemini_live_model=settings.gemini_live_model,
+        gemini_live_voice=settings.gemini_live_voice,
+        spoken_language=spoken_language,  # type: ignore[arg-type]
         fish_api_key=settings.fish_api_key,
         fish_model=settings.fish_model,
         fish_reference_id=settings.fish_reference_id,
         tts_provider=settings.tts_provider,
         piper_voice=settings.piper_voice,
         piper_data_dir=settings.piper_data_dir,
+        require_audio=require_audio,
     )
 
 
-def _require_tts_for_meet(*, mute: bool):
-    """Live Meet needs Fish (preferred) or Piper WAV → Attendee speak."""
-    return make_speaker(
+def _speaker(*, mute: bool, spoken_language: str = "en"):
+    return _make_live_speaker(mute=mute, spoken_language=spoken_language)
+
+
+def _require_tts_for_meet(*, mute: bool, spoken_language: str = "en"):
+    """Live Meet needs Gemini Live (preferred), Fish, or Piper WAV → Attendee speak."""
+    return _make_live_speaker(
         mute=mute,
-        fish_api_key=settings.fish_api_key,
-        fish_model=settings.fish_model,
-        fish_reference_id=settings.fish_reference_id,
-        tts_provider=settings.tts_provider,
-        piper_voice=settings.piper_voice,
-        piper_data_dir=settings.piper_data_dir,
+        spoken_language=spoken_language,
         require_audio=True,
     )
 
@@ -407,7 +412,8 @@ def run_live_meet_demo(
 
     client = AttendeeClient(settings.attendee_base_url, settings.attendee_api_key)
     _leave_stale_bots(client, meeting_url)
-    speaker = _require_tts_for_meet(mute=mute)
+    spoken_language: str = settings.default_spoken_language
+    speaker = _require_tts_for_meet(mute=mute, spoken_language=spoken_language)
     # Warm synthesizer so first Meet utterance isn't cold.
     if hasattr(speaker, "synthesize_wav"):
         try:
@@ -661,15 +667,24 @@ def run_live_meet_demo(
         intake_listen = None
         if audio_bridge is not None and settings.groq_api_key:
             print("[live] intake will wait for your voice answers", flush=True)
+            from navigator.voice.language import sync_speaker_language
 
             def intake_listen(prompt: str) -> str:
-                return _wait_meet_utterance(
+                nonlocal spoken_language
+                heard = _wait_meet_utterance(
                     audio_bridge.inbound,
                     prompt=prompt,
                     api_key=settings.groq_api_key,
                     timeout_s=60.0,
                     audio_bridge=audio_bridge,
                 )
+                if heard.strip():
+                    spoken_language = sync_speaker_language(
+                        speaker,
+                        heard,
+                        current=spoken_language,  # type: ignore[arg-type]
+                    )
+                return heard
 
         merged_prefill = dict(intake_prefill or {})
         if human_name and "name" not in merged_prefill:
@@ -945,6 +960,7 @@ def run_live_meet_demo(
                 stop_event=stop_event,
                 listen_once=_listen_once,
                 tier2_enabled=tier2_enabled,
+                spoken_language=spoken_language,  # type: ignore[arg-type]
             )
 
             mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"
@@ -985,6 +1001,11 @@ def run_live_meet_demo(
         if tunnel is not None:
             tunnel.stop()
         relay.stop()
+        if hasattr(speaker, "close"):
+            try:
+                speaker.close()  # type: ignore[union-attr]
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] TTS close skipped: {exc}", flush=True)
 
     return bot_id or ""
 

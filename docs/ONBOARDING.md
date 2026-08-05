@@ -3,6 +3,11 @@
 Read [`PRODUCT_MODEL.md`](PRODUCT_MODEL.md) for *what* Navigator is. This doc is
 only *how to get it running*.
 
+For Google Meet (create link → auto-join → screenshare), see
+[`GOOGLE_MEET_SETUP.md`](GOOGLE_MEET_SETUP.md).
+
+For clear start/stop commands (daily use), see [`START_APP.md`](START_APP.md).
+
 ## What the stack is
 
 Navigator is an AI agent that joins a video meeting and gives a live, interactive

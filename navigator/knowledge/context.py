@@ -156,7 +156,7 @@ class RetrievalResult:
     candidate_flows: list[tuple[str, float]]
     """(flow_id, cosine similarity to the query), best first."""
     relevant_areas: list[tuple[ProductMapArea, float]]
-    """(area, relevance). Not populated in v1; reserved for future synthesis."""
+    """(area, relevance). Populated from ProductMapStore when areas exist."""
     knowledge_based_on_revision: int | None
     """Active revision when knowledge was ingested. None if unknown."""
     current_published_revision: int | None
@@ -274,12 +274,32 @@ def retrieve_context(
 
     candidate_flows = score_flows(query, flow_texts, embedder=embedder)[:k_flows]
 
+    relevant_areas: list[tuple[ProductMapArea, float]] = []
+    if registry is not None and query.strip():
+        try:
+            from navigator.knowledge.product_map import ProductMapStore
+
+            areas = ProductMapStore(registry._conn).list_product(product_id)
+            if areas:
+                area_texts = {
+                    a.area_id: f"{a.name} — {a.purpose} — {' '.join(sorted(a.categories))}"
+                    for a in areas
+                }
+                ranked = score_flows(query, area_texts, embedder=embedder)
+                by_id = {a.area_id: a for a in areas}
+                for area_id, score in ranked[:3]:
+                    area = by_id.get(area_id)
+                    if area is not None and score >= MEDIUM_CONFIDENCE:
+                        relevant_areas.append((area, score))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[retrieve] product map unavailable ({exc})", flush=True)
+
     return RetrievalResult(
         product_id=product_id,
         query=query,
         knowledge_chunks=knowledge_chunks,
         candidate_flows=candidate_flows,
-        relevant_areas=[],
+        relevant_areas=relevant_areas,
         knowledge_based_on_revision=revision_tied_to,
         current_published_revision=current_revision,
         is_stale=is_stale,

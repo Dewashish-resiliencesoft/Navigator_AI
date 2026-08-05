@@ -32,6 +32,7 @@ def playlist_from_graph(graph: SiteGraph) -> list[dict[str, Any]]:
                 "name": it.name or it.flow_id,
                 "page_id": it.page_id,
                 "flow_id": it.flow_id,
+                **_flow_meta(graph, it.flow_id),
             }
             for it in items
         ]
@@ -45,9 +46,34 @@ def playlist_from_graph(graph: SiteGraph) -> list[dict[str, Any]]:
                     "name": flow_id.replace("_", " ").title(),
                     "page_id": page_id,
                     "flow_id": flow_id,
+                    **_flow_meta(graph, flow_id),
                 }
             )
             n += 1
+    return out
+
+
+def _flow_meta(graph: SiteGraph, flow_id: str) -> dict[str, Any]:
+    """Semantics + validation badges for the Flows panel. Empty keys omitted."""
+    sem = graph.flow_semantics(flow_id)
+    val = graph.flow_validation(flow_id)
+    out: dict[str, Any] = {}
+    purpose = str(sem.get("purpose") or "").strip()
+    if purpose:
+        out["purpose"] = purpose
+    tags = sem.get("tags")
+    if isinstance(tags, list) and tags:
+        out["tags"] = [str(t) for t in tags if str(t).strip()]
+    auto_name = str(sem.get("auto_name") or "").strip()
+    if auto_name:
+        out["auto_name"] = auto_name
+    verdict = str(val.get("verdict") or "").strip()
+    if verdict:
+        out["verdict"] = verdict
+        if "risk_score" in val:
+            out["risk_score"] = val["risk_score"]
+        if "pass_rate" in val:
+            out["pass_rate"] = val["pass_rate"]
     return out
 
 

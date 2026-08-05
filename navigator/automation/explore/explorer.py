@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import base64
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from navigator.automation.explore import perceive, reason
+from navigator.automation.explore import history, perceive, reason, semantics
 from navigator.automation.explore.diagnose import classify, looks_nav_stalled
 from navigator.automation.explore.episode import EpisodeStore, StepAttempt
 from navigator.automation.explore.fields import classify_field, question_for
@@ -67,6 +67,13 @@ class ExplorerDeps:
     execute: Callable[..., tuple[ToolResult, str]] | None = None
     verify: Callable[..., Any] | None = None
     episode: EpisodeStore | None = None
+    #: Text model for semantic step labels. None disables labelling entirely --
+    #: separate from `ask_text` so the cost is opted into, not inherited.
+    label_ask: Callable[[str], str] | None = None
+    #: Prior-run unrepaired failures: element_key → count. Empty = no history.
+    known_bad: dict[str, int] = field(default_factory=dict)
+    #: Prior-run successful repairs: (url_path, kind) → tactic name.
+    proven_tactics: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
 class _LiveGraph:
@@ -112,6 +119,28 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
         return session.steps
     session.phase = "exploring"
     session.emit({"type": "log", "level": "info", "msg": "exploration started"})
+    # Seed from prior runs when the caller did not inject history (production
+    # path). Tests pass empty dicts / explicit fixtures and skip disk.
+    if not deps.known_bad and not deps.proven_tactics and deps.episode is not None:
+        try:
+            bad = history.known_bad(deps.episode.root, session.product_id)
+            deps.known_bad = {k: count for k, (_kind, count) in bad.items()}
+            deps.proven_tactics = history.proven_tactics(
+                deps.episode.root, session.product_id
+            )
+            if deps.proven_tactics:
+                session.emit(
+                    {
+                        "type": "log",
+                        "level": "info",
+                        "msg": (
+                            f"history: {len(deps.proven_tactics)} proven tactic(s), "
+                            f"{len(deps.known_bad)} known-bad key(s)"
+                        ),
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[explore] history load failed: {exc}", flush=True)
     # Starting page is already "seen" for the demo — first NEW path becomes step 1.
     start_path = urlparse(_current_url(deps.page)).path or "/"
     session.flow_paths.add(start_path)
@@ -169,6 +198,7 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             elements=untried,
             corrections=deps.corrections,
             visited_paths=visited_paths,
+            known_bad=deps.known_bad or None,
             ask_text=deps.ask_text,
             ask_vision=deps.ask_vision,
             screenshot=(
@@ -445,6 +475,11 @@ def _step(
     url_before = url
     elements_before = perceive.inventory(deps.page)
     fp_before = fingerprint(url_before, elements_before)
+    snap_before = (
+        semantics.state_snapshot(deps.page)
+        if deps.label_ask is not None
+        else semantics.StateSnapshot()
+    )
 
     started = time.perf_counter()
     result, _next_page = execute(deps.page, graph, EXPLORE_PAGE_ID, call)
@@ -518,6 +553,7 @@ def _step(
                     "msg": f"repairing {alias} ({kind})",
                 }
             )
+            path_now = urlparse(url_before).path or "/"
             rctx = RepairCtx(
                 page=deps.page,
                 graph=graph,
@@ -533,6 +569,14 @@ def _step(
                 is_allowed=session.is_allowed,
                 max_repairs=per_step,
                 inventory=perceive.inventory,
+                proven_tactic=deps.proven_tactics.get((path_now, kind or "")),
+                ask_vision=deps.ask_vision,
+                vlm_locates_left=max(
+                    0, session.budget.max_vlm_locates_per_run - session.vlm_locates_used
+                ),
+                on_vlm_locate=lambda: setattr(
+                    session, "vlm_locates_used", session.vlm_locates_used + 1
+                ),
             )
             outcome = run_ladder(rctx, kind)  # type: ignore[arg-type]
             for i, att in enumerate(outcome.attempts, start=1):
@@ -597,6 +641,17 @@ def _step(
             session.flow_paths.add(after_path)
             session.steps.append(step)
             session.consecutive_no_new = 0
+            # Label only steps that made it into the demo. Labelling every
+            # attempted action would multiply the cost by ~5x for text nobody
+            # ever hears. Re-inventory: a repair may have moved the page on.
+            _label_step(
+                session,
+                deps,
+                tool=step.tool,
+                element=_label(el),
+                snap_before=snap_before,
+                elements_before=elements_before,
+            )
             session.emit(
                 {
                     "type": "log",
@@ -622,6 +677,41 @@ def _step(
 
     if deps.on_action is not None:
         deps.on_action(step, result, verify_result)
+
+
+def _label_step(
+    session: ExplorationSession,
+    deps: ExplorerDeps,
+    *,
+    tool: str,
+    element: str,
+    snap_before: semantics.StateSnapshot,
+    elements_before: list[dict[str, Any]],
+) -> None:
+    """Describe what the step just accomplished, into `session.step_labels`.
+
+    Parallel to `session.steps` by index, so a missing label is an empty string
+    rather than a hole. Re-perceives after the fact because a repair may have
+    changed the page between the original attempt and this point.
+    """
+    if deps.label_ask is None:
+        session.step_labels.append("")
+        return
+
+    snap_after = semantics.state_snapshot(deps.page)
+    diff = semantics.diff_summary(
+        snap_before, snap_after, elements_before, perceive.inventory(deps.page)
+    )
+    session.step_labels.append(
+        semantics.label_step(
+            tool=tool,
+            element=element,
+            before=snap_before,
+            after=snap_after,
+            diff=diff,
+            ask_text=deps.label_ask,
+        )
+    )
 
 
 def _record_attempt(

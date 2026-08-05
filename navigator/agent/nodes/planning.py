@@ -465,16 +465,44 @@ def _is_negate(utterance: str) -> bool:
 
 
 def _flow_texts_for_page(deps: CallDeps, page_id: str) -> dict[str, str]:
-    """Match text per flow: id + playlist name when present."""
+    """Match text per flow: id, playlist name, and generated purpose + tags.
+
+    The purpose is what makes retrieval work on a machine-explored product. A
+    flow id like `explored_a1b2c3d4` carries no meaning, so ranking against the id
+    alone can only ever match by luck; "Create and send an invoice" matches "how
+    do I bill someone".
+
+    Flows with an explicit `broken` / `needs_review` validation verdict are
+    excluded so a rotten explored flow cannot reach a live End User. Flows with
+    no validation entry (manually authored) stay offerable.
+    """
+    from navigator.automation.explore.validate import is_offerable
+
     page = deps.graph.page(page_id)
     names: dict[str, str] = {}
     for item in deps.graph.demo_playlist:
         if item.page_id == page_id and item.name.strip():
             names[item.flow_id] = item.name.strip()
     return {
-        fid: flow_text(fid, name=names.get(fid, ""))
+        fid: flow_text(
+            fid,
+            name=names.get(fid, ""),
+            trigger_intent=_flow_intent(deps, fid),
+        )
         for fid in page.flows
+        if is_offerable(deps.graph.flow_validation(fid))
     }
+
+
+def _flow_intent(deps: CallDeps, flow_id: str) -> str:
+    """Generated purpose + tags for a flow, as one string. Empty when absent."""
+    sem = deps.graph.flow_semantics(flow_id)
+    if not sem:
+        return ""
+    purpose = str(sem.get("purpose") or "").strip()
+    tags = sem.get("tags")
+    tag_text = " ".join(str(t).strip() for t in tags if str(t).strip()) if isinstance(tags, list) else ""
+    return " — ".join(p for p in (purpose, tag_text) if p)
 
 
 def _knowledge_hits(

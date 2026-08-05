@@ -21,7 +21,18 @@ export type Demo = {
 };
 
 export type BioField = { key: string; label: string; value: string };
-export type Flow = { name: string; page_id: string; flow_id: string; order?: number };
+export type Flow = {
+  name: string;
+  page_id: string;
+  flow_id: string;
+  order?: number;
+  purpose?: string;
+  tags?: string[];
+  auto_name?: string;
+  verdict?: "ready" | "needs_review" | "broken" | string;
+  risk_score?: number;
+  pass_rate?: number;
+};
 
 export type RecorderStatus = {
   active?: boolean;
@@ -418,6 +429,17 @@ export const api = {
       "/client/api/flows/delete",
       "POST",
       { flow_id, page_id: page_id || null },
+    ),
+  patchFlowSemantics: (body: {
+    flow_id: string;
+    purpose?: string;
+    tags?: string[];
+    auto_name?: string;
+  }) =>
+    send<{ playlist: Flow[]; semantics: Record<string, unknown> }>(
+      "/client/api/flows/semantics",
+      "PATCH",
+      body,
     ),
 
   recordStatus: () => get<RecorderStatus>("/client/api/record"),

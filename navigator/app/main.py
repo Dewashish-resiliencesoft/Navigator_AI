@@ -1399,6 +1399,60 @@ def client_delete_flow(
     }
 
 
+class FlowSemanticsBody(BaseModel):
+    flow_id: str = Field(min_length=1)
+    purpose: str | None = None
+    tags: list[str] | None = None
+    auto_name: str | None = None
+
+
+@app.patch("/client/api/flows/semantics")
+def client_patch_flow_semantics(
+    product: DashboardAuthedProduct, body: FlowSemanticsBody, registry: Reg
+) -> dict:
+    """Client edits generated purpose / tags / name under `_meta.semantics`."""
+    import yaml as _yaml
+
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    raw = _yaml.safe_load(rev.yaml)
+    if not isinstance(raw, dict):
+        raise HTTPException(422, "site graph must be a mapping")
+    meta = raw.setdefault("_meta", {})
+    if not isinstance(meta, dict):
+        raise HTTPException(422, "_meta must be a mapping")
+    bucket = meta.setdefault("semantics", {})
+    if not isinstance(bucket, dict):
+        raise HTTPException(422, "_meta.semantics must be a mapping")
+    fid = body.flow_id.strip()
+    entry = bucket.get(fid) if isinstance(bucket.get(fid), dict) else {}
+    entry = dict(entry)
+    if body.purpose is not None:
+        entry["purpose"] = body.purpose.strip()
+    if body.tags is not None:
+        entry["tags"] = [t.strip() for t in body.tags if t and t.strip()]
+    if body.auto_name is not None:
+        entry["auto_name"] = body.auto_name.strip()
+    bucket[fid] = entry
+    new_yaml = _yaml.safe_dump(raw, sort_keys=False)
+    try:
+        rev = registry.put_site_graph(
+            product.product_id, new_yaml, "yaml", publish=False
+        )
+        graph = parse_site_graph(new_yaml)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {
+        "playlist": playlist_from_graph(graph),
+        "revision": rev.revision,
+        "published": False,
+        "flow_id": fid,
+        "semantics": entry,
+    }
+
+
 @app.get("/client/api/record")
 def client_record_status(product: DashboardAuthedProduct) -> dict:
     return recorder_status()

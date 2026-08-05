@@ -44,6 +44,8 @@ class ExplorationBudget:
     max_repairs_per_step: int = 3
     #: Self-heal: repairs across the whole run.
     max_repairs_total: int = 30
+    #: Vision locates are the most expensive tactic — hard cap per run.
+    max_vlm_locates_per_run: int = 5
 
 
 @dataclass(frozen=True)
@@ -125,6 +127,9 @@ class ExplorationSession:
 
     visited: dict[StateFingerprint, set[str]] = field(default_factory=dict)
     steps: list[RecordedStep] = field(default_factory=list)
+    #: Semantic description per entry in `steps`, same index. "" when unlabelled,
+    #: so the two lists never fall out of alignment.
+    step_labels: list[str] = field(default_factory=list)
     #: Every interaction attempted (budget). `steps` is the curated demo only.
     actions_taken: int = 0
     #: URL paths already represented in the demo flow (one entry click each).
@@ -152,6 +157,8 @@ class ExplorationSession:
     stop_reason: str = ""
     #: Self-heal repairs spent this run (capped by budget.max_repairs_total).
     repairs_used: int = 0
+    #: Vision locates spent this run (capped by budget.max_vlm_locates_per_run).
+    vlm_locates_used: int = 0
     #: Fingerprints with nothing left to try and no escape nav.
     dead_ends: set[StateFingerprint] = field(default_factory=set)
     #: element_keys already used for a dead-end escape click (avoid infinite retry).

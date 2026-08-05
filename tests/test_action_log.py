@@ -135,3 +135,37 @@ def test_expected_postcondition_is_queryable_without_the_tool_call(log):
     (loaded,) = log.failures(sid)
     assert loaded.expected_postcondition.check == "visible"
     assert loaded.expected_postcondition.selector == "sent_bubble"
+
+
+def test_demo_run_metrics_counts_test_and_live_runs(log):
+    live_sid, test_sid = uuid4(), uuid4()
+    day_two = TS + timedelta(days=1)
+    log.upsert_run(
+        session_id=live_sid,
+        demo_id=uuid4(),
+        product_id="acme",
+        platform="google_meet",
+        status="finished",
+        origin="public_embed",
+        started_at=TS,
+    )
+    log.upsert_run(
+        session_id=test_sid,
+        demo_id=uuid4(),
+        product_id="acme",
+        platform="static",
+        status="failed",
+        origin="dashboard_test",
+        started_at=day_two,
+    )
+
+    m = log.demo_run_metrics("acme", days=14)
+
+    assert m["total"] == 2
+    assert m["failed"] == 1
+    assert m["live"]["total"] == 1
+    assert m["test"]["total"] == 1
+    assert m["test"]["failed"] == 1
+    assert [d["day"] for d in m["series"]] == ["2026-07-31", "2026-08-01"]
+    assert m["series"][0]["sessions"] == 1
+    assert m["series"][1]["sessions"] == 1

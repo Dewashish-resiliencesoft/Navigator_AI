@@ -387,7 +387,14 @@ class ExplorationSession:
         # freezes the meter at 20% while the explorer is still crawling.
         progress = int(round(100 * pages / max_pages))
         progress = min(100, max(0, progress))
-        active = self.phase not in {"done", "failed", "stopped", "idle"}
+        active = self.phase not in {
+            "done",
+            "failed",
+            "stopped",
+            "idle",
+            "drafting",
+            "saving",
+        }
         # Only snap to 100% when the page budget was actually hit — early stops
         # (dead end / bounce limit) keep honest coverage so the meter matches reality.
         if self.phase == "done" and progress < 100 and "max_pages" in (self.stop_reason or ""):

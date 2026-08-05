@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertCircle, CheckCircle2, LogOut, Moon, PhoneOff, PlayCircle, Sun, X } from "lucide-react";
 import { MobileTabs, Sidebar, TABS } from "./components/Sidebar";
@@ -22,6 +22,12 @@ import {
   markSignupPending,
   type OnboardingItemId,
 } from "./lib/onboarding";
+
+const ConfettiCelebration = lazy(() =>
+  import("./components/ConfettiCelebration").then((m) => ({
+    default: m.ConfettiCelebration,
+  })),
+);
 
 const PANELS: Record<string, () => React.ReactElement> = {
   overview: Overview,
@@ -95,6 +101,7 @@ function useTheme() {
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showConfetti, setShowConfetti] = useState(false);
   const [onboardingStartAt, setOnboardingStartAt] = useState<OnboardingItemId | null>(null);
   const { dark, toggle } = useTheme();
   const tab = useUi((s) => s.tab);
@@ -111,6 +118,11 @@ export default function App() {
   const live = demoIsLive(demo);
 
   const hydrateExplore = useExploreSession((s) => s.hydrate);
+
+  const celebrateOnboardingComplete = () => {
+    setShowConfetti(true);
+    ok("Onboarding completed");
+  };
 
   useEffect(() => {
     let alive = true;
@@ -314,10 +326,19 @@ export default function App() {
       </div>
       <Toast />
       <ExploreFloat />
+      {authed && showConfetti && (
+        <Suspense fallback={null}>
+          <ConfettiCelebration
+            show={showConfetti}
+            onDone={() => setShowConfetti(false)}
+          />
+        </Suspense>
+      )}
       {showOnboarding && (
         <OnboardingWizard
           startAt={onboardingStartAt}
           onClose={closeOnboarding}
+          onFullyComplete={celebrateOnboardingComplete}
         />
       )}
     </>

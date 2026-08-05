@@ -1791,11 +1791,32 @@ def client_metrics(
     """KPIs for the console. Durable counters from the action log, live state
     from the in-process runner (which is empty after a restart)."""
     metrics = log.product_metrics(product.product_id, days=days)
-    demos = runner.list(product.product_id)
+    run_metrics = log.demo_run_metrics(product.product_id, days=days)
+    in_memory = runner.list(product.product_id)
+    im_running = sum(1 for d in in_memory if d.status in ("starting", "running"))
+    im_live_running = sum(
+        1
+        for d in in_memory
+        if d.status in ("starting", "running") and d.origin == "public_embed"
+    )
+    im_test_running = sum(
+        1
+        for d in in_memory
+        if d.status in ("starting", "running") and d.origin == "dashboard_test"
+    )
+    metrics["run_series"] = run_metrics["series"]
+    metrics["demos"] = {
+        "total": run_metrics["total"],
+        "running": max(run_metrics["running"], im_running),
+        "failed": run_metrics["failed"],
+    }
     metrics["live"] = {
-        "total": len(demos),
-        "running": sum(1 for d in demos if d.status in ("starting", "running")),
-        "failed": sum(1 for d in demos if d.status == "failed"),
+        **run_metrics["live"],
+        "running": max(run_metrics["live"]["running"], im_live_running),
+    }
+    metrics["test"] = {
+        **run_metrics["test"],
+        "running": max(run_metrics["test"]["running"], im_test_running),
     }
     return metrics
 

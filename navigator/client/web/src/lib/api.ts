@@ -129,7 +129,12 @@ export type Metrics = {
   passed: number;
   last_seen: string | null;
   series: MetricPoint[];
+  /** Daily demo run counts (test + live) from demo_runs. */
+  run_series?: MetricPoint[];
+  /** All persisted demo runs in the metrics window. */
+  demos?: { total: number; running: number; failed: number };
   live: { total: number; running: number; failed: number };
+  test?: { total: number; running: number; failed: number };
 };
 
 export type DemoRun = {

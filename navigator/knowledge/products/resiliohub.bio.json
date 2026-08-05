@@ -42,8 +42,8 @@
     },
     {
       "key": "about",
-      "label": "What the company is about",
-      "value": ""
+      "label": "About",
+      "value": "ResilienceSoft builds intelligent automation and AI-powered solutions for businesses. We create custom Flutter apps, WhatsApp integration platforms, and internal workflow automation to help companies streamline operations, improve customer engagement, and scale effortlessly."
     },
     {
       "key": "target_market",
@@ -84,6 +84,11 @@
       "key": "twitter",
       "label": "Twitter / X",
       "value": ""
+    },
+    {
+      "key": "referral_source",
+      "label": "How you heard about us",
+      "value": "Google"
     }
   ]
 }

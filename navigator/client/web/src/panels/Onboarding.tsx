@@ -15,6 +15,7 @@ import {
   patchBioFields,
   signupCompanyPrefill,
   type OnboardingItemId,
+  type OnboardingProgress,
 } from "../lib/onboarding";
 import { useOnboardingProgress } from "../lib/useOnboardingProgress";
 import { useExploreSession } from "../lib/exploreSession";
@@ -62,10 +63,13 @@ function stepIndex(id: StepId): number {
 export function OnboardingWizard({
   onClose,
   startAt,
+  onFullyComplete,
 }: {
   onClose: () => void;
   /** Jump to first incomplete checklist item when resuming. */
   startAt?: OnboardingItemId | null;
+  /** Checklist 100% after the user finishes the wizard (last Continue / Finish). */
+  onFullyComplete?: () => void;
 }) {
   const { ok, err } = useUi();
   const invalidate = useProductData((s) => s.invalidate);
@@ -144,12 +148,17 @@ export function OnboardingWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startAt]);
 
-  const finish = () => {
+  const finish = (latest?: OnboardingProgress | null) => {
     clearSignupPending();
     invalidate();
     void syncProductUrl();
-    ok("Setup saved — you can finish anything left from Get started.");
     onClose();
+    const p = latest ?? progress;
+    if (p?.complete) {
+      onFullyComplete?.();
+    } else {
+      ok("Setup saved — you can finish anything left from Get started.");
+    }
   };
 
   const skipAll = () => {
@@ -158,14 +167,14 @@ export function OnboardingWizard({
     onClose();
   };
 
-  const goNext = () => {
+  const goNext = (latest?: OnboardingProgress | null) => {
     const i = stepIndex(step);
     if (step === "login_choice" && wantLogin === false) {
       setStep("knowledge");
       return;
     }
     if (i >= STEPS.length - 1) {
-      finish();
+      finish(latest);
       return;
     }
     setStep(STEPS[i + 1]);
@@ -218,8 +227,8 @@ export function OnboardingWizard({
         if (md) await api.putKnowledge(md);
       }
       invalidate();
-      await refresh();
-      goNext();
+      const updated = await refresh();
+      goNext(updated);
     } catch (e) {
       err(errText(e));
     } finally {
@@ -233,7 +242,11 @@ export function OnboardingWizard({
       setStep("knowledge");
       return;
     }
-    if (step === "knowledge" || step === "referral") {
+    if (step === "knowledge") {
+      void refresh().then((updated) => goNext(updated));
+      return;
+    }
+    if (step === "referral") {
       goNext();
       return;
     }

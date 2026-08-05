@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { Rocket } from "lucide-react";
 import {
   hideOnboardingCard,
   isOnboardingCardHidden,
-  loadOnboardingProgress,
   type OnboardingItemId,
-  type OnboardingProgress,
 } from "../lib/onboarding";
-import { useProductData } from "../lib/productData";
+import { useOnboardingProgress } from "../lib/useOnboardingProgress";
 import { Button } from "./ui";
 
 export function GetStartedCard({
@@ -15,23 +13,12 @@ export function GetStartedCard({
 }: {
   onContinue: (startAt: OnboardingItemId | null) => void;
 }) {
-  const epoch = useProductData((s) => s.epoch);
-  const [progress, setProgress] = useState<OnboardingProgress | null>(null);
+  const { progress } = useOnboardingProgress();
   const [hidden, setHidden] = useState(() => isOnboardingCardHidden());
 
-  const refresh = useCallback(async () => {
-    try {
-      const p = await loadOnboardingProgress();
-      setProgress(p);
-      if (p.complete) setHidden(true);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
   useEffect(() => {
-    void refresh();
-  }, [refresh, epoch]);
+    if (progress?.complete) setHidden(true);
+  }, [progress?.complete]);
 
   if (hidden || !progress || progress.complete) return null;
 

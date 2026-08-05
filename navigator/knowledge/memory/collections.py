@@ -55,10 +55,17 @@ def collection_name(product_id: str, kind: Kind) -> str:
     return name
 
 
+_CLIENTS: dict[str, object] = {}
+
+
 def get_client(path: str | Path):
     import chromadb
 
-    return chromadb.PersistentClient(path=str(path))
+    key = str(path)
+    # ponytail: reuse one PersistentClient per path — compose was opening 140+ clients
+    if key not in _CLIENTS:
+        _CLIENTS[key] = chromadb.PersistentClient(path=key)
+    return _CLIENTS[key]
 
 
 def get_collection(path: str | Path, product_id: str, kind: Kind):

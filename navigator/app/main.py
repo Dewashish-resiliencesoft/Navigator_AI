@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import os
 import secrets
+from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Callable
+from typing import Annotated, Any, Callable
 from uuid import UUID
 from datetime import datetime, timezone
 
@@ -54,6 +55,12 @@ from navigator.client.content import (
 )
 from navigator.knowledge.company_bio import load_bio, save_bio
 from navigator.knowledge.product_brief import load_product_brief, save_product_brief
+from navigator.knowledge.demo_script import (
+    apply_script_patch,
+    compose_full_demo_script,
+    merge_manual_overrides,
+    regenerate_demo_script,
+)
 from navigator.app.registry import (
     NewProduct,
     Product,
@@ -89,10 +96,20 @@ from navigator.logs.store import ActionLog
 from navigator.core.schemas import ActionLogEntry
 from navigator.core.settings import settings
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    from navigator.meeting.attendee_stack import ensure_attendee_stack
+
+    ensure_attendee_stack()
+    yield
+
+
 app = FastAPI(
     title="Navigator AI",
     version="0.1.0",
     description="Live interactive demo agent for any web product.",
+    lifespan=_lifespan,
 )
 
 
@@ -499,6 +516,38 @@ def register_product(spec: NewProduct, registry: Reg) -> RegisteredProduct:
 def whoami(product: AuthedProduct) -> Product:
     return product
 
+class SystemMetrics(BaseModel):
+    host_label: str
+    uptime_s: float
+    cpu_percent: float
+    cpu_count: int
+    memory_percent: float
+    memory_used_mb: float
+    memory_total_mb: float
+    net_sent_bytes: int
+    net_recv_bytes: int
+    gpu: dict[str, Any]
+    services: list[dict[str, str]]
+    processes: list[dict[str, str]]
+    health: list[dict[str, Any]]
+
+
+@app.get("/client/api/system/health", response_model=SystemMetrics)
+def client_system_health(
+    product: DashboardAuthedProduct,
+    registry: Reg,
+    runner: Runner,
+) -> SystemMetrics:
+    """Real host metrics + Navigator service status for the Client dashboard."""
+    from navigator.app.system_health import collect_system_health
+
+    payload = collect_system_health(
+        product_id=product.product_id,
+        registry=registry,
+        runner=runner,
+        db_path=str(settings.db_path),
+    )
+    return SystemMetrics(**payload)
 
 # -- site graph ---------------------------------------------------------------
 
@@ -1267,6 +1316,146 @@ def client_put_site_graph(
     }
 
 
+def _demo_script_inputs(
+    product: DashboardAuthedProduct, registry: Reg, vault: Vault
+) -> tuple[Any, Any, dict[str, str], str, bool, dict[str, Any]]:
+    """Draft revision graph + bio/knowledge/login context for script composer."""
+    rev = registry.latest_revision(product.product_id)
+    graph = parse_site_graph(rev.yaml)
+    bio_raw = load_bio(product.product_id)
+    bio_fields: dict[str, str] = {}
+    for f in bio_raw.get("fields") or []:
+        if isinstance(f, dict) and f.get("key"):
+            bio_fields[str(f["key"])] = str(f.get("value") or "")
+    knowledge = load_product_brief(product.product_id)
+    if not knowledge.strip():
+        try:
+            knowledge = load_product_brief(graph.site)
+        except Exception:  # noqa: BLE001
+            knowledge = ""
+    include_login = vault.include_login_in_default_flow(product.product_id)
+    stored = graph.demo_script_meta()
+    return rev, graph, bio_fields, knowledge, include_login, stored
+
+
+@app.get("/client/api/site-graph/demo-script")
+def client_get_demo_script(
+    product: DashboardAuthedProduct,
+    registry: Reg,
+    vault: Vault,
+    flow_id: str | None = None,
+) -> dict:
+    """Compose full-demo script beats for the current draft revision."""
+    try:
+        rev, graph, bio_fields, knowledge, include_login, stored = _demo_script_inputs(
+            product, registry, vault
+        )
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    fid = (flow_id or "").strip() or None
+    script = compose_full_demo_script(
+        graph,
+        product_id=product.product_id,
+        knowledge_md=knowledge,
+        bio_fields=bio_fields,
+        include_login=include_login,
+        stored_script=stored,
+        flow_id_filter=fid,
+    )
+    script = merge_manual_overrides(script, stored)
+    return {
+        "revision": rev.revision,
+        "published_revision": product.active_revision,
+        "playlist": playlist_from_graph(graph),
+        "flow_id": fid,
+        **script,
+    }
+
+
+class DemoScriptPatchBody(BaseModel):
+    beats: list[dict[str, Any]] = Field(default_factory=list)
+
+
+@app.patch("/client/api/site-graph/demo-script")
+def client_patch_demo_script(
+    product: DashboardAuthedProduct,
+    body: DemoScriptPatchBody,
+    registry: Reg,
+    vault: Vault,
+) -> dict:
+    """Save demo script beat edits to draft `_meta.demo_script` (+ sync flow steps)."""
+    try:
+        rev, graph, bio_fields, knowledge, include_login, _stored = _demo_script_inputs(
+            product, registry, vault
+        )
+        new_yaml = apply_script_patch(rev.yaml, beats=body.beats, sync_flow_steps=True)
+        updated = registry.put_site_graph(
+            product.product_id, new_yaml, "yaml", publish=False
+        )
+        graph = parse_site_graph(new_yaml)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    script = compose_full_demo_script(
+        graph,
+        product_id=product.product_id,
+        knowledge_md=knowledge,
+        bio_fields=bio_fields,
+        include_login=include_login,
+        stored_script=graph.demo_script_meta(),
+    )
+    return {
+        "ok": True,
+        "revision": updated.revision,
+        "published_revision": product.active_revision,
+        "playlist": playlist_from_graph(graph),
+        **script,
+    }
+
+
+@app.post("/client/api/site-graph/demo-script/regenerate")
+def client_regenerate_demo_script(
+    product: DashboardAuthedProduct,
+    registry: Reg,
+    vault: Vault,
+    flow_id: str | None = None,
+) -> dict:
+    """Re-compose demo script; preserve beats with spoken_source=manual."""
+    try:
+        rev, graph, bio_fields, knowledge, include_login, stored = _demo_script_inputs(
+            product, registry, vault
+        )
+        fid = (flow_id or "").strip() or None
+        script = regenerate_demo_script(
+            graph,
+            product_id=product.product_id,
+            knowledge_md=knowledge,
+            bio_fields=bio_fields,
+            include_login=include_login,
+            stored_script=stored,
+            flow_id_filter=fid,
+        )
+        new_yaml = apply_script_patch(
+            rev.yaml, beats=script.get("beats") or [], sync_flow_steps=False
+        )
+        updated = registry.put_site_graph(
+            product.product_id, new_yaml, "yaml", publish=False
+        )
+        graph = parse_site_graph(new_yaml)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {
+        "ok": True,
+        "revision": updated.revision,
+        "published_revision": product.active_revision,
+        "playlist": playlist_from_graph(graph),
+        **script,
+    }
+
+
 @app.post("/client/api/site-graph/publish")
 def client_publish_site_graph(
     product: DashboardAuthedProduct,
@@ -1790,8 +1979,7 @@ def client_metrics(
 ) -> dict:
     """KPIs for the console. Durable counters from the action log, live state
     from the in-process runner (which is empty after a restart)."""
-    metrics = log.product_metrics(product.product_id, days=days)
-    run_metrics = log.demo_run_metrics(product.product_id, days=days)
+    metrics = log.dashboard_metrics(product.product_id, days=days)
     in_memory = runner.list(product.product_id)
     im_running = sum(1 for d in in_memory if d.status in ("starting", "running"))
     im_live_running = sum(
@@ -1804,20 +1992,10 @@ def client_metrics(
         for d in in_memory
         if d.status in ("starting", "running") and d.origin == "dashboard_test"
     )
-    metrics["run_series"] = run_metrics["series"]
-    metrics["demos"] = {
-        "total": run_metrics["total"],
-        "running": max(run_metrics["running"], im_running),
-        "failed": run_metrics["failed"],
-    }
-    metrics["live"] = {
-        **run_metrics["live"],
-        "running": max(run_metrics["live"]["running"], im_live_running),
-    }
-    metrics["test"] = {
-        **run_metrics["test"],
-        "running": max(run_metrics["test"]["running"], im_test_running),
-    }
+    metrics["demos"]["running"] = max(metrics["demos"]["running"], im_running)
+    metrics["live"]["running"] = max(metrics["live"]["running"], im_live_running)
+    metrics["test"]["running"] = max(metrics["test"]["running"], im_test_running)
+    metrics["run_series"] = metrics["series"]
     return metrics
 
 
@@ -1826,7 +2004,7 @@ def client_list_runs(
     product: DashboardAuthedProduct,
     log: Log,
     runner: Runner,
-    days: Annotated[int, Query(ge=1, le=7)] = 7,
+    days: Annotated[int, Query(ge=1, le=90)] = 14,
 ) -> list[DemoRunView]:
     """Last N days of demo runs; reconcile stale running rows with the live runner."""
     from navigator.logs.store import utcnow

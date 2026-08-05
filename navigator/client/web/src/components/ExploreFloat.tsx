@@ -7,6 +7,7 @@ import { useUi, errText } from "../store";
 import {
   exploreIsLive,
   formatExploreElapsed,
+  useExploreElapsed,
   useExploreSession,
 } from "../lib/exploreSession";
 
@@ -18,7 +19,7 @@ export function ExploreFloat() {
 
   const status = useExploreSession((s) => s.status);
   const showMeter = useExploreSession((s) => s.showMeter);
-  const elapsedLocal = useExploreSession((s) => s.elapsedLocal);
+  const exploreElapsed = useExploreElapsed();
   const question = useExploreSession((s) => s.question);
   const saveMode = useExploreSession((s) => s.saveMode);
   const targetFlowId = useExploreSession((s) => s.targetFlowId);
@@ -74,7 +75,7 @@ export function ExploreFloat() {
           {question ? " · waiting on you" : ""}
         </p>
         <span className="font-mono text-[0.85rem] font-semibold tabular-nums">
-          {formatExploreElapsed(elapsedLocal)}
+          {formatExploreElapsed(exploreElapsed)}
         </span>
       </div>
 

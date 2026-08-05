@@ -20,6 +20,7 @@ import {
   exploreIsPersisting,
   exploreIsTerminal,
   formatExploreElapsed,
+  useExploreElapsed,
   useExploreSession,
 } from "../lib/exploreSession";
 import { useProductData } from "../lib/productData";
@@ -679,7 +680,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const saveMode = useExploreSession((s) => s.saveMode);
   const targetFlowId = useExploreSession((s) => s.targetFlowId);
   const targetFlowName = useExploreSession((s) => s.targetFlowName);
-  const elapsedLocal = useExploreSession((s) => s.elapsedLocal);
+  const exploreElapsed = useExploreElapsed();
   const showMeter = useExploreSession((s) => s.showMeter);
   const setBaseUrl = useExploreSession((s) => s.setBaseUrl);
   const setAnswer = useExploreSession((s) => s.setAnswer);
@@ -949,7 +950,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
           </div>
           <ExploreMeter
             running={running}
-            elapsedS={elapsedLocal}
+            elapsedS={exploreElapsed}
             progressPct={progressPct}
             steps={status.steps ?? 0}
             pages={status.visited ?? 0}
@@ -1126,7 +1127,7 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
               <span className="text-[var(--muted)]">
                 {" "}
                 · {status.visited ?? visitedPaths.length} pages ·{" "}
-                {formatExploreElapsed(elapsedLocal)} elapsed
+                {formatExploreElapsed(exploreElapsed)} elapsed
               </span>
             </li>
             <li>

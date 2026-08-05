@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Copy, PhoneOff, Play, Mic } from "lucide-react";
+import { Check, Copy, ExternalLink, PhoneOff, Play, Mic } from "lucide-react";
 import { api, ApiError, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { useExploreSession } from "../lib/exploreSession";
@@ -16,6 +16,7 @@ import {
   Input,
   Select,
   StatusPill,
+  Switch,
   Textarea,
 } from "../components/ui";
 import { errText, useUi } from "../store";
@@ -50,6 +51,7 @@ export function LiveDemo() {
   const [changingPass, setChangingPass] = useState(false);
   const [includeLogin, setIncludeLogin] = useState(false);
   const [savingLogin, setSavingLogin] = useState(false);
+  const [savingIncludeLogin, setSavingIncludeLogin] = useState(false);
   const [copied, setCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const listRef = useRef<HTMLUListElement>(null);
@@ -157,15 +159,38 @@ export function LiveDemo() {
       const d = await api.putTier2(enabled);
       setTier2Enabled(!!d.enabled);
       invalidate();
-      ok(
-        d.enabled
-          ? "Live fallback ON — only when no trained flow or knowledge matches."
-          : "Live fallback OFF.",
-      );
+      ok(d.enabled ? "Live fallback on." : "Live fallback off.");
     } catch (e) {
       err(errText(e));
     } finally {
       setSavingTier2(false);
+    }
+  };
+
+  const saveIncludeLogin = async (enabled: boolean) => {
+    if (!loginUser.trim()) {
+      err("Save username first.");
+      return;
+    }
+    setSavingIncludeLogin(true);
+    try {
+      const saved = await api.putProductLogin({
+        login_url: loginUrl.trim(),
+        username: loginUser.trim(),
+        password: null,
+        include_login_in_default_flow: enabled,
+      });
+      setIncludeLogin(!!saved.include_login_in_default_flow);
+      invalidate();
+      ok(
+        saved.include_login_in_default_flow
+          ? "Default demo will include login."
+          : "Default demo skips login.",
+      );
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setSavingIncludeLogin(false);
     }
   };
 
@@ -253,6 +278,12 @@ export function LiveDemo() {
     }
   };
 
+  const openLogs = () => {
+    if (!sessionId) return;
+    setLogsSessionId(sessionId);
+    setTab("logs");
+  };
+
   return (
     <motion.div
       variants={stagger()}
@@ -282,27 +313,7 @@ export function LiveDemo() {
       </Card>
 
       <Card span="lg:col-span-2">
-        <CardTitle hint="When no trained flow or knowledge matches, optionally try one read-only on-screen click. Destructive actions are always refused. Default off.">
-          Live fallback (Tier 2)
-        </CardTitle>
-        <label className="mb-3 flex cursor-pointer items-start gap-2 text-[0.78rem] leading-snug text-[var(--muted)]">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={tier2Enabled}
-            disabled={savingTier2}
-            onChange={(e) => saveTier2(e.target.checked)}
-          />
-          <span>
-            Allow a constrained live click when the agent has no flow or
-            knowledge hit. Successful attempts go to the corrections queue for
-            review — never auto-promoted.
-          </span>
-        </label>
-      </Card>
-
-      <Card span="lg:col-span-2">
-        <CardTitle hint="Credentials Playwright uses to sign into your product before a demo. Never stored in the site graph.">
+        <CardTitle hint="Playwright sign-in for demos. Credentials stay out of the site graph.">
           Product Login
         </CardTitle>
         <div className="grid gap-x-3 sm:grid-cols-2">
@@ -346,18 +357,27 @@ export function LiveDemo() {
             />
           )}
         </Field>
-        <label className="mb-3 flex cursor-pointer items-start gap-2 text-[0.78rem] leading-snug text-[var(--muted)]">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={includeLogin}
-            onChange={(e) => setIncludeLogin(e.target.checked)}
+
+        <div
+          className="mb-3 border-t pt-3"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <Switch
+            label="Live fallback"
+            description="One safe click when no flow or knowledge matches. Goes to corrections — never auto-promoted."
+            checked={tier2Enabled}
+            disabled={savingTier2}
+            onChange={(v) => void saveTier2(v)}
           />
-          <span>
-            Include login as part of the Default flow&apos;s demo (off by
-            default). Topic flows never include login steps.
-          </span>
-        </label>
+          <Switch
+            label="Login in default demo"
+            description="Run saved login before the default walkthrough. Topic flows skip login."
+            checked={includeLogin}
+            disabled={savingIncludeLogin || !loginUser.trim()}
+            onChange={(v) => void saveIncludeLogin(v)}
+          />
+        </div>
+
         <Button
           onClick={saveLogin}
           disabled={
@@ -492,17 +512,6 @@ export function LiveDemo() {
             <PhoneOff size={14} />
             {ending ? "Ending…" : "End"}
           </Button>
-          {sessionId && (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setLogsSessionId(sessionId);
-                setTab("logs");
-              }}
-            >
-              Open in Logs
-            </Button>
-          )}
         </div>
 
         {demo?.error && (
@@ -526,70 +535,90 @@ export function LiveDemo() {
             ))}
           </div>
         )}
-      </Card>
 
-      <Card span="lg:col-span-2">
-        <CardTitle hint="Last ~20 ActionLog events for this run (technical — client only).">
-          Live log
-        </CardTitle>
-        {!events.length && <Empty>{live ? "Waiting for actions…" : "Nothing yet."}</Empty>}
-        {events.length > 0 && (
-          <div className="terminal-log flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg bg-[#0d1117] p-4 font-mono text-[0.72rem] leading-relaxed shadow-inner">
-            {live && (
-              <div className="mb-2 flex items-center gap-2 text-emerald-400">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                </span>
-                Streaming — {events.length} events
-              </div>
+        <div
+          className="mt-4 border-t pt-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <div className="mb-2 flex items-start justify-between gap-2">
+            <div>
+              <p className="text-[0.78rem] font-medium tracking-tight">Live log</p>
+              <p className="mt-0.5 text-[0.68rem] text-[var(--muted)]">
+                Last ~20 ActionLog events (client only)
+              </p>
+            </div>
+            {sessionId && (
+              <button
+                type="button"
+                onClick={openLogs}
+                title="Open full log in Logs"
+                aria-label="Open full log in Logs"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-[var(--muted)] transition hover:bg-black/[0.04] hover:text-[var(--text)] dark:hover:bg-white/[0.06]"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <ExternalLink size={15} strokeWidth={2} />
+              </button>
             )}
-            {events.map((ev) => {
-              const fail = !ev.actual_result?.ok || (ev.verify && !ev.verify.passed);
-              const sel = typeof ev.tool_call?.selector === "string" ? ev.tool_call.selector : "";
-              const time = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString([], { hour12: false }) : "";
-              return (
-                <div key={ev.call_id} className="py-0.5 opacity-90 transition-opacity hover:opacity-100">
-                  <span className="text-slate-500 mr-2">{time}</span>
-                  <span className="text-cyan-400 font-medium">{ev.tool_call?.tool ?? "?"}</span>
-                  <span className="text-slate-400 mx-2">·</span>
-                  <span className="text-slate-200">{ev.page}</span>
-                  <span className="text-slate-400 mx-2">·</span>
-                  <span className={fail ? "text-red-400 font-semibold" : "text-emerald-400 font-semibold"}>
-                    {fail ? "FAIL" : "OK"}
-                  </span>
-                  {sel && (
-                    <>
-                      <span className="text-slate-500 mx-2">→</span>
-                      <span className="text-slate-300">{sel}</span>
-                    </>
-                  )}
-                  {ev.actual_result?.detail && (
-                    <div className="mt-0.5 pl-[4.5rem] text-[0.68rem] text-slate-400">
-                      {ev.actual_result.detail}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {!live && events.length > 0 && (
-              <div className="mt-2 border-t border-white/10 pt-2 text-emerald-500">
-                Demo completed — {events.length} actions, {demo?.failures ?? 0} failures.
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLogsSessionId(sessionId);
-                    setTab("logs");
-                  }}
-                  className="ml-3 underline decoration-emerald-500/30 underline-offset-4 hover:decoration-emerald-500"
-                >
-                  View full session log
-                </button>
-              </div>
-            )}
-            <div ref={(el) => { if (el) el.scrollIntoView({ behavior: "smooth" }) }} />
           </div>
-        )}
+          {!events.length && (
+            <Empty>{live ? "Waiting for actions…" : "Nothing yet."}</Empty>
+          )}
+          {events.length > 0 && (
+            <div className="terminal-log flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg bg-[#0d1117] p-4 font-mono text-[0.72rem] leading-relaxed shadow-inner">
+              {live && (
+                <div className="mb-2 flex items-center gap-2 text-emerald-400">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  </span>
+                  Streaming — {events.length} events
+                </div>
+              )}
+              {events.map((ev) => {
+                const fail = !ev.actual_result?.ok || (ev.verify && !ev.verify.passed);
+                const sel = typeof ev.tool_call?.selector === "string" ? ev.tool_call.selector : "";
+                const time = ev.timestamp
+                  ? new Date(ev.timestamp).toLocaleTimeString([], { hour12: false })
+                  : "";
+                return (
+                  <div
+                    key={ev.call_id}
+                    className="py-0.5 opacity-90 transition-opacity hover:opacity-100"
+                  >
+                    <span className="text-slate-500 mr-2">{time}</span>
+                    <span className="text-cyan-400 font-medium">{ev.tool_call?.tool ?? "?"}</span>
+                    <span className="text-slate-400 mx-2">·</span>
+                    <span className="text-slate-200">{ev.page}</span>
+                    <span className="text-slate-400 mx-2">·</span>
+                    <span
+                      className={
+                        fail ? "text-red-400 font-semibold" : "text-emerald-400 font-semibold"
+                      }
+                    >
+                      {fail ? "FAIL" : "OK"}
+                    </span>
+                    {sel && (
+                      <>
+                        <span className="text-slate-500 mx-2">→</span>
+                        <span className="text-slate-300">{sel}</span>
+                      </>
+                    )}
+                    {ev.actual_result?.detail && (
+                      <div className="mt-0.5 pl-[4.5rem] text-[0.68rem] text-slate-400">
+                        {ev.actual_result.detail}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {!live && events.length > 0 && (
+                <div className="mt-2 border-t border-white/10 pt-2 text-emerald-500">
+                  Demo completed — {events.length} actions, {demo?.failures ?? 0} failures.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </Card>
 
       <Card span="lg:col-span-2">

@@ -157,6 +157,33 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/system/health:
+    get:
+      summary: Client System Health
+      description: Real host metrics + Navigator service status for the Client dashboard.
+      operationId: client_system_health_client_api_system_health_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemMetrics'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/products/site-graph:
     put:
       summary: Upload Site Graph
@@ -1229,6 +1256,115 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/site-graph/demo-script:
+    get:
+      summary: Client Get Demo Script
+      description: Compose full-demo script beats for the current draft revision.
+      operationId: client_get_demo_script_client_api_site_graph_demo_script_get
+      parameters:
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Get Demo Script Client Api Site Graph Demo Script Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Client Patch Demo Script
+      description: Save demo script beat edits to draft `_meta.demo_script` (+ sync flow steps).
+      operationId: client_patch_demo_script_client_api_site_graph_demo_script_patch
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DemoScriptPatchBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Patch Demo Script Client Api Site Graph Demo Script Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/site-graph/demo-script/regenerate:
+    post:
+      summary: Client Regenerate Demo Script
+      description: Re-compose demo script; preserve beats with spoken_source=manual.
+      operationId: client_regenerate_demo_script_client_api_site_graph_demo_script_regenerate_post
+      parameters:
+      - name: flow_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Regenerate Demo Script Client Api Site Graph Demo Script Regenerate
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/site-graph/publish:
     post:
       summary: Client Publish Site Graph
@@ -1920,9 +2056,9 @@ paths:
         required: false
         schema:
           type: integer
-          maximum: 7
+          maximum: 90
           minimum: 1
-          default: 7
+          default: 14
           title: Days
       - name: authorization
         in: header
@@ -2263,6 +2399,16 @@ components:
       - started_at
       title: DemoRunView
       description: Persisted demo run meta for the client Logs panel (7-day window).
+    DemoScriptPatchBody:
+      properties:
+        beats:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Beats
+      type: object
+      title: DemoScriptPatchBody
     DemoView:
       properties:
         demo_id:
@@ -3034,6 +3180,75 @@ components:
           default: true
       type: object
       title: StartLiveDemo
+    SystemMetrics:
+      properties:
+        host_label:
+          type: string
+          title: Host Label
+        uptime_s:
+          type: number
+          title: Uptime S
+        cpu_percent:
+          type: number
+          title: Cpu Percent
+        cpu_count:
+          type: integer
+          title: Cpu Count
+        memory_percent:
+          type: number
+          title: Memory Percent
+        memory_used_mb:
+          type: number
+          title: Memory Used Mb
+        memory_total_mb:
+          type: number
+          title: Memory Total Mb
+        net_sent_bytes:
+          type: integer
+          title: Net Sent Bytes
+        net_recv_bytes:
+          type: integer
+          title: Net Recv Bytes
+        gpu:
+          additionalProperties: true
+          type: object
+          title: Gpu
+        services:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          title: Services
+        processes:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          title: Processes
+        health:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Health
+      type: object
+      required:
+      - host_label
+      - uptime_s
+      - cpu_percent
+      - cpu_count
+      - memory_percent
+      - memory_used_mb
+      - memory_total_mb
+      - net_sent_bytes
+      - net_recv_bytes
+      - gpu
+      - services
+      - processes
+      - health
+      title: SystemMetrics
     Tier2Body:
       properties:
         enabled:

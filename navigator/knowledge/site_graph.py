@@ -93,6 +93,45 @@ class SiteGraph(BaseModel):
         entry = section.get(flow_id)
         return entry if isinstance(entry, dict) else {}
 
+    def flow_narration_suggestions(self, flow_id: str) -> list[str]:
+        """Explore-generated narration lines per step, or empty."""
+        section = self.meta.get("narration_suggestions")
+        if not isinstance(section, dict):
+            return []
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return []
+        return [str(x).strip() for x in entry if str(x).strip()]
+
+    def demo_script_meta(self) -> dict[str, Any]:
+        """Client-edited demo script beats under `_meta.demo_script`."""
+        section = self.meta.get("demo_script")
+        return section if isinstance(section, dict) else {}
+
+    def script_spoken_override(
+        self, *, flow_id: str, step_index: int
+    ) -> str | None:
+        """Manual spoken line for one flow step, if set in `_meta.demo_script`."""
+        beats = self.demo_script_meta().get("full_demo", {})
+        if not isinstance(beats, dict):
+            return None
+        raw_beats = beats.get("beats")
+        if not isinstance(raw_beats, list):
+            return None
+        for beat in raw_beats:
+            if not isinstance(beat, dict):
+                continue
+            if beat.get("spoken_source") != "manual":
+                continue
+            if (
+                beat.get("kind") in {"flow_step", "live_input"}
+                and beat.get("flow_id") == flow_id
+                and beat.get("step_index") == step_index
+            ):
+                spoken = str(beat.get("spoken") or "").strip()
+                return spoken or None
+        return None
+
     def primary_flow(self) -> tuple[str, str] | None:
         """First playlist entry, else None."""
         if not self.demo_playlist:

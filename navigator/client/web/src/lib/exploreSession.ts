@@ -10,10 +10,14 @@ import {
 } from "./api";
 import { errText } from "../store";
 import { useProductData } from "./productData";
+import {
+  DISPLAY_TICK_MS,
+  syncElapsedAnchor,
+  useElapsedSeconds,
+} from "./elapsed";
 
 let socket: WebSocket | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let tickTimer: ReturnType<typeof setInterval> | null = null;
 let onFlowDrafted: (() => void) | null = null;
 
 function isTerminal(phase?: string): boolean {
@@ -57,10 +61,6 @@ function clearTimers() {
     clearInterval(pollTimer);
     pollTimer = null;
   }
-  if (tickTimer != null) {
-    clearInterval(tickTimer);
-    tickTimer = null;
-  }
 }
 
 type ExploreFrame = { mime: string; data: string };
@@ -76,7 +76,8 @@ type ExploreSession = {
   saveMode: "new" | "update";
   targetFlowId: string;
   targetFlowName: string;
-  elapsedLocal: number;
+  /** Wall-clock anchor for elapsed display — not overwritten every poll. */
+  elapsedAnchorMs: number | null;
   showMeter: boolean;
   /** Latest server Chromium viewport (Watch bot). */
   latestFrame: ExploreFrame | null;
@@ -99,7 +100,7 @@ type ExploreSession = {
   pullFrame: () => Promise<ExploreFrame | null>;
 };
 
-function applyLiveTimers(get: () => ExploreSession, set: (p: Partial<ExploreSession>) => void) {
+function applyLiveTimers(get: () => ExploreSession) {
   clearTimers();
   const live = () => {
     const s = get();
@@ -112,11 +113,7 @@ function applyLiveTimers(get: () => ExploreSession, set: (p: Partial<ExploreSess
   if (!live()) return;
   pollTimer = setInterval(() => {
     void get().refresh();
-  }, 1500);
-  tickTimer = setInterval(() => {
-    if (!live()) return;
-    set({ elapsedLocal: get().elapsedLocal + 1 });
-  }, 1000);
+  }, DISPLAY_TICK_MS * 2);
 }
 
 export const useExploreSession = create<ExploreSession>((set, get) => ({
@@ -129,7 +126,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   saveMode: "new",
   targetFlowId: "",
   targetFlowName: "",
-  elapsedLocal: 0,
+  elapsedAnchorMs: null,
   showMeter: false,
   latestFrame: null,
 
@@ -177,15 +174,17 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
           status: merged,
           question: s.pending_question ?? null,
           showMeter: Boolean(s.active) || persisting,
-          elapsedLocal:
-            typeof s.elapsed_s === "number" ? s.elapsed_s : prev.elapsedLocal,
+          elapsedAnchorMs: syncElapsedAnchor(
+            prev.elapsedAnchorMs,
+            s.elapsed_s,
+          ),
           events:
             prev.events.length === 0 && (s.recent_events?.length ?? 0) > 0
               ? (s.recent_events ?? [])
               : prev.events,
         };
       });
-      applyLiveTimers(get, set);
+      applyLiveTimers(get);
       return s;
     } catch {
       return null;
@@ -212,7 +211,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
           showMeter: false,
           events: [],
           question: null,
-          elapsedLocal: 0,
+          elapsedAnchorMs: null,
           latestFrame: null,
           status: { active: false, phase: "idle" },
         });
@@ -255,11 +254,13 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
               prev.showMeter ||
               Boolean(next.active) ||
               exploreIsPersisting(merged),
-            elapsedLocal:
-              typeof next.elapsed_s === "number" ? next.elapsed_s : prev.elapsedLocal,
+            elapsedAnchorMs: syncElapsedAnchor(
+              prev.elapsedAnchorMs,
+              next.elapsed_s,
+            ),
           };
         });
-        applyLiveTimers(get, set);
+        applyLiveTimers(get);
         return;
       }
       if (event.type === "state") {
@@ -281,10 +282,12 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
                 : prev.status.progress_pct,
           },
           showMeter: true,
-          elapsedLocal:
-            typeof event.elapsed_s === "number" ? event.elapsed_s : prev.elapsedLocal,
+          elapsedAnchorMs: syncElapsedAnchor(
+            prev.elapsedAnchorMs,
+            typeof event.elapsed_s === "number" ? event.elapsed_s : undefined,
+          ),
         }));
-        applyLiveTimers(get, set);
+        applyLiveTimers(get);
         return;
       }
       if (event.type === "frame" && typeof event.data === "string" && event.data) {
@@ -354,7 +357,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   start: async (opts) => {
     set({
       events: [],
-      elapsedLocal: 0,
+      elapsedAnchorMs: Date.now(),
       showMeter: true,
       question: null,
       answer: "",
@@ -389,7 +392,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
         status: { ...prev.status, ...s, active: true },
         showMeter: true,
       }));
-      applyLiveTimers(get, set);
+      applyLiveTimers(get);
       await get().connect();
     } catch (e) {
       set({ showMeter: false, status: { active: false } });
@@ -453,7 +456,7 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
       events: [],
       question: null,
       answer: "",
-      elapsedLocal: 0,
+      elapsedAnchorMs: null,
       latestFrame: null,
       status: { active: false, phase: "idle" },
     });
@@ -485,14 +488,18 @@ export function exploreIsLive(s: {
   );
 }
 
-export function formatExploreElapsed(totalSeconds: number): string {
-  const sec = Math.max(0, Math.floor(totalSeconds));
-  const h = Math.floor(sec / 3600);
-  const m = Math.floor((sec % 3600) / 60);
-  const r = sec % 60;
-  if (h > 0) return `${h}:${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}`;
-  return `${m}:${String(r).padStart(2, "0")}`;
+export function useExploreElapsed(): number {
+  const anchor = useExploreSession((s) => s.elapsedAnchorMs);
+  const status = useExploreSession((s) => s.status);
+  const showMeter = useExploreSession((s) => s.showMeter);
+  const ticking =
+    Boolean(status.active) ||
+    exploreIsPersisting(status) ||
+    (showMeter && !isTerminal(status.phase));
+  return useElapsedSeconds(anchor, ticking);
 }
+
+export { formatElapsedClock as formatExploreElapsed } from "./elapsed";
 
 /** Soft error helper for callers that toast. */
 export { errText as exploreErrText };

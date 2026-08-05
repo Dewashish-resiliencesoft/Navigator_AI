@@ -175,6 +175,47 @@ def _ensure_browser_on_page(deps: CallDeps, page_id: str) -> None:
         print(f"[plan] resume re-nav failed: {exc}", flush=True)
 
 
+def _step_narration_hint(
+    deps: CallDeps,
+    *,
+    page_id: str,
+    flow_id: str,
+    step: int,
+    call: object,
+) -> str:
+    """Spoken hint priority: demo_script manual → YAML → semantics → explore → action."""
+    from navigator.core.schemas import ClickElement, FillField, Navigate, WaitFor
+    from navigator.knowledge.demo_script import resolve_flow_step_spoken
+    from navigator.knowledge.site_graph import SiteGraphError
+
+    if not isinstance(call, (ClickElement, FillField, Navigate, WaitFor)):
+        return "Continuing."
+
+    try:
+        calls = deps.graph.flow(page_id, flow_id)
+        step_count = len(calls)
+    except SiteGraphError:
+        step_count = step + 1
+
+    try:
+        page_name = deps.graph.page(page_id).name
+    except SiteGraphError:
+        page_name = page_id
+
+    beat_id = f"flow_{flow_id}_{step}"
+    spoken, _source = resolve_flow_step_spoken(
+        graph=deps.graph,
+        flow_id=flow_id,
+        step_index=step,
+        step_count=step_count,
+        page_id=page_id,
+        page_name=page_name,
+        call=call,
+        beat_id=beat_id,
+    )
+    return spoken or "Continuing."
+
+
 def planning(state: CallState, deps: CallDeps) -> CallState:
     if deps.set_status is not None:
         deps.set_status("tailoring", "Tailoring…")
@@ -963,13 +1004,9 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
             )
     nxt = calls[step]
     # YAML spoken as hint — vision generates the real narration.
-    yaml_hint = (getattr(nxt, "spoken", None) or "").strip()
-    if not yaml_hint:
-        yaml_hint = (
-            _describe(deps.graph.page(page_id).name, flow_id)
-            if step == 0
-            else "Next step."
-        )
+    yaml_hint = _step_narration_hint(
+        deps, page_id=page_id, flow_id=flow_id, step=step, call=nxt
+    )
     yaml_hint = format_with_intake(yaml_hint, deps.intake)
     if step == 0 and deps.intake and deps.intake.name:
         need = deps.intake.looking_for or "what you asked about"

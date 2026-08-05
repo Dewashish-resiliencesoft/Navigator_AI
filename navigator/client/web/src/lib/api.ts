@@ -21,6 +21,61 @@ export type Demo = {
 };
 
 export type BioField = { key: string; label: string; value: string };
+export type SystemMetrics = {
+  host_label: string;
+  uptime_s: number;
+  cpu_percent: number;
+  cpu_count: number;
+  memory_percent: number;
+  memory_used_mb: number;
+  memory_total_mb: number;
+  net_sent_bytes: number;
+  net_recv_bytes: number;
+  gpu: {
+    active: boolean;
+    name: string;
+    utilization_percent: number | null;
+    memory_used_mb: number | null;
+    memory_total_mb: number | null;
+  };
+  services: { name: string; status: string; detail: string }[];
+  processes: { name: string; status: string; cpu: string; mem: string }[];
+  health: { name: string; ok: boolean; detail?: string }[];
+};
+export type DemoScriptBeat = {
+  id: string;
+  kind: string;
+  spoken?: string;
+  spoken_source?: string;
+  asks_visitor?: boolean;
+  on_screen?: string;
+  flow_id?: string;
+  page_id?: string;
+  step_index?: number;
+  flow_title?: string;
+  phase?: string;
+  field?: string;
+  field_alias?: string;
+  live_question?: string;
+  example_value?: string;
+  knowledge_refs?: string[];
+  uses_intake_tokens?: boolean;
+};
+
+export type DemoScriptResponse = {
+  revision: number;
+  published_revision: number | null;
+  playlist: Flow[];
+  beats: DemoScriptBeat[];
+  context?: string;
+  sources_used?: string[];
+  stats?: {
+    beat_count: number;
+    asks_visitor_count: number;
+    spoken_count: number;
+  };
+};
+
 export type Flow = {
   name: string;
   page_id: string;
@@ -120,22 +175,34 @@ export type MetricPoint = {
 };
 
 export type Metrics = {
-  /** Test demos the Client ran from this dashboard. Excluded from the counters below. */
+  /** Rolling window length (days) for every counter below. */
+  days?: number;
+  /** Test demos the Client ran from this dashboard in the window. */
   test_sessions: number;
+  /** Demo runs started in the window (test + live). Matches Logs + Sessions chart. */
   actions: number;
   sessions: number;
+  /** Failed tool / verification steps in the window. Sum matches run fail_count column. */
   failures: number;
+  /** Demo runs whose status is ``failed`` (crash / join error). */
+  failed_runs?: number;
+  /** Demo runs with at least one failed tool step. */
+  runs_with_step_failures?: number;
   verified: number;
   passed: number;
   last_seen: string | null;
   series: MetricPoint[];
-  /** Daily demo run counts (test + live) from demo_runs. */
+  /** Same as ``series`` — kept for older clients. */
   run_series?: MetricPoint[];
-  /** All persisted demo runs in the metrics window. */
   demos?: { total: number; running: number; failed: number };
   live: { total: number; running: number; failed: number };
   test?: { total: number; running: number; failed: number };
+  /** Billable End User traffic only (excludes dashboard test demos). */
+  visitor?: { sessions: number; actions: number; failures: number };
 };
+
+/** Shared metrics + runs window for Overview and Logs. */
+export const DASHBOARD_DAYS = 14;
 
 export type DemoRun = {
   session_id: string;
@@ -360,9 +427,10 @@ export const api = {
   },
   endDemo: (id: string) => send<Demo>(`/client/api/demos/${id}/end`, "POST"),
 
-  metrics: (days = 14) => get<Metrics>(`/client/api/metrics?days=${days}`),
+  metrics: (days = DASHBOARD_DAYS) => get<Metrics>(`/client/api/metrics?days=${days}`),
+  getSystemMetrics: () => get<SystemMetrics>("/client/api/system/health"),
 
-  listRuns: (days = 7) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
+  listRuns: (days = DASHBOARD_DAYS) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
   getRun: (sessionId: string) => get<DemoRun>(`/client/api/runs/${sessionId}`),
   runEvents: (sessionId: string) =>
     get<RunEvent[]>(`/client/api/runs/${sessionId}/events`),
@@ -424,6 +492,26 @@ export const api = {
       "/client/api/site-graph/publish",
       "POST",
       { revision: revision ?? null },
+    ),
+
+  getDemoScript: (flowId?: string) =>
+    get<DemoScriptResponse>(
+      flowId
+        ? `/client/api/site-graph/demo-script?flow_id=${encodeURIComponent(flowId)}`
+        : "/client/api/site-graph/demo-script",
+    ),
+  patchDemoScript: (beats: DemoScriptBeat[]) =>
+    send<DemoScriptResponse & { ok: boolean }>(
+      "/client/api/site-graph/demo-script",
+      "PATCH",
+      { beats },
+    ),
+  regenerateDemoScript: (flowId?: string) =>
+    send<DemoScriptResponse & { ok: boolean }>(
+      flowId
+        ? `/client/api/site-graph/demo-script/regenerate?flow_id=${encodeURIComponent(flowId)}`
+        : "/client/api/site-graph/demo-script/regenerate",
+      "POST",
     ),
 
   getFlows: () => get<{ playlist: Flow[]; site: string }>("/client/api/flows"),

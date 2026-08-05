@@ -14,6 +14,7 @@ import {
   Input,
   Textarea,
 } from "../components/ui";
+import { DemoScriptPanel } from "../components/DemoScriptPanel";
 import { errText, useUi } from "../store";
 
 const EXTENDED_DEFAULT_FIELDS: BioField[] = [
@@ -131,6 +132,12 @@ export function SiteGraph() {
           </div>
         )}
       </Card>
+      <DemoScriptPanel
+        revision={revision}
+        liveRevision={liveRevision}
+        epoch={epoch}
+        onSaved={invalidate}
+      />
       {confirmPublish && (
         <ConfirmDialog
           title="Publish revision?"

@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS demo_runs (
 );
 CREATE INDEX IF NOT EXISTS demo_runs_product_started
     ON demo_runs (product_id, started_at);
+
+CREATE TABLE IF NOT EXISTS llm_token_usage (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id      TEXT NOT NULL,
+    session_id      TEXT,
+    provider        TEXT NOT NULL,
+    purpose         TEXT NOT NULL DEFAULT '',
+    model           TEXT NOT NULL DEFAULT '',
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    billed_to       TEXT NOT NULL,
+    timestamp       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS llm_token_usage_product
+    ON llm_token_usage (product_id, timestamp);
 """
 
 
@@ -248,6 +263,123 @@ class ActionLog:
                 for r in reversed(rows)
             ],
         }
+
+    def record_llm_usage(
+        self,
+        *,
+        product_id: str,
+        provider: str,
+        purpose: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        billed_to: str,
+        session_id: str | None = None,
+        when: datetime | None = None,
+    ) -> None:
+        ts = (when or utcnow()).isoformat()
+        self._conn.execute(
+            "INSERT INTO llm_token_usage "
+            "(product_id, session_id, provider, purpose, model, "
+            "input_tokens, output_tokens, billed_to, timestamp) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                product_id,
+                session_id,
+                provider,
+                purpose,
+                model,
+                max(0, int(input_tokens)),
+                max(0, int(output_tokens)),
+                billed_to,
+                ts,
+            ),
+        )
+        self._conn.commit()
+
+    def llm_token_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
+        """Roll up LLM tokens by provider and billing source for the dashboard."""
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        rows = self._conn.execute(
+            "SELECT provider, billed_to, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COUNT(*) AS calls "
+            "FROM llm_token_usage "
+            "WHERE product_id = ? AND timestamp >= ? "
+            "GROUP BY provider, billed_to "
+            "ORDER BY provider, billed_to",
+            (product_id, cutoff),
+        ).fetchall()
+        providers: list[dict] = []
+        total_in = 0
+        total_out = 0
+        total_calls = 0
+        for r in rows:
+            inp = int(r["input_tokens"] or 0)
+            out = int(r["output_tokens"] or 0)
+            calls = int(r["calls"] or 0)
+            total_in += inp
+            total_out += out
+            total_calls += calls
+            providers.append(
+                {
+                    "provider": r["provider"],
+                    "billed_to": r["billed_to"],
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "total_tokens": inp + out,
+                    "calls": calls,
+                }
+            )
+        return {
+            "days": days,
+            "providers": providers,
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "total_tokens": total_in + total_out,
+            "calls": total_calls,
+        }
+
+    def llm_token_metrics_by_model(
+        self,
+        product_id: str,
+        days: int = 14,
+        *,
+        billed_to: str = "client",
+        now: datetime | None = None,
+    ) -> list[dict]:
+        """Per-model rollups for Client BYOK usage on the dashboard."""
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        rows = self._conn.execute(
+            "SELECT model, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COUNT(*) AS calls "
+            "FROM llm_token_usage "
+            "WHERE product_id = ? AND timestamp >= ? AND billed_to = ? "
+            "AND TRIM(model) != '' "
+            "GROUP BY model "
+            "ORDER BY (input_tokens + output_tokens) DESC, model",
+            (product_id, cutoff, billed_to),
+        ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            inp = int(r["input_tokens"] or 0)
+            out.append(
+                {
+                    "model": r["model"],
+                    "input_tokens": inp,
+                    "output_tokens": int(r["output_tokens"] or 0),
+                    "total_tokens": inp + int(r["output_tokens"] or 0),
+                    "calls": int(r["calls"] or 0),
+                }
+            )
+        return out
 
     def demo_run_metrics(
         self, product_id: str, days: int = 14, *, now: datetime | None = None

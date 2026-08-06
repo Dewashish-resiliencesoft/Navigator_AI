@@ -3807,6 +3807,12 @@ components:
             type: object
           type: array
           title: Health
+        token_usage:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Token Usage
       type: object
       required:
       - host_label

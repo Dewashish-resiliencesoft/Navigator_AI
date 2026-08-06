@@ -162,9 +162,11 @@ def _clean(line: str) -> str:
 
 
 def _groq_complete(api_key: str, prompt: str) -> str:
-    from navigator.core.groq_client import groq_client
+    from navigator.core.groq_client import chat_completions_create
 
-    resp = groq_client(api_key).chat.completions.create(
+    resp = chat_completions_create(
+        api_key,
+        purpose="phrasing",
         model=_phrasing_model(),
         messages=[{"role": "user", "content": prompt}],
         # Non-zero on purpose: identical consecutive narration is the bug this

@@ -192,11 +192,23 @@ def collect_system_health(
     registry: Any,
     runner: Any,
     db_path: str,
+    vault: Any | None = None,
 ) -> dict[str, Any]:
     """Snapshot for GET /client/api/system/health."""
     net = psutil.net_io_counters()
     mem = psutil.virtual_memory()
     cpu = psutil.cpu_percent(interval=None)
+
+    token_usage: dict[str, Any] | None = None
+    if vault is not None:
+        from navigator.app.token_usage import collect_token_usage_summary
+
+        token_usage = collect_token_usage_summary(
+            product_id=product_id,
+            vault=vault,
+            db_path=db_path,
+            days=14,
+        )
 
     return {
         "host_label": os.environ.get("NAVIGATOR_HOST_LABEL") or socket.gethostname(),
@@ -212,4 +224,5 @@ def collect_system_health(
         "services": _services(product_id=product_id, runner=runner),
         "processes": _host_processes(),
         "health": _health_checks(registry=registry, product_id=product_id, db_path=db_path),
+        "token_usage": token_usage,
     }

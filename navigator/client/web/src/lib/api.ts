@@ -98,6 +98,44 @@ export type SystemMetrics = {
   services: { name: string; status: string; detail: string }[];
   processes: { name: string; status: string; cpu: string; mem: string }[];
   health: { name: string; ok: boolean; detail?: string }[];
+  token_usage?: {
+    days: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    calls: number;
+    has_usage: boolean;
+    uses_byok: boolean;
+    billing_label: string;
+    byok: {
+      has_groq_api_key: boolean;
+      has_gemini_api_key: boolean;
+      has_fish_api_key: boolean;
+      updated_at: string | null;
+    };
+    platform: { input_tokens: number; output_tokens: number; total_tokens: number; calls: number };
+    client: { input_tokens: number; output_tokens: number; total_tokens: number; calls: number };
+    providers: {
+      provider: string;
+      billed_to: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    }[];
+    client_models: {
+      model: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    }[];
+    typical_platform_per_demo: {
+      input_tokens: number;
+      output_tokens: number;
+      calls: number;
+    };
+  } | null;
 };
 export type DemoScriptBeat = {
   id: string;

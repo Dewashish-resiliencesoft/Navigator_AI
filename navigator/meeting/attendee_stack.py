@@ -19,7 +19,7 @@ from navigator.core.settings import settings
 
 _COMPOSE_FILES = ("dev.docker-compose.yaml", "local.docker-compose.yaml")
 _COMPOSE_PROFILE = "webpage-streamer"
-_COMPOSE_ID = "voice-agents-v2-streamer-restart"
+_COMPOSE_ID = "voice-agents-v3-worker-dns"
 _STREAMER_SERVICE = "attendee-webpage-streamer-local"
 
 

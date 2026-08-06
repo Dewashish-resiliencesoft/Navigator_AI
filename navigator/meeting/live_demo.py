@@ -48,6 +48,7 @@ from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshar
 from navigator.meeting.tunnel import start_tunnel
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
 from navigator.core.settings import settings
+from navigator.core.usage_context import bind_demo_usage, clear_demo_usage
 from navigator.voice.stt import VoiceSegmenter, transcribe
 from navigator.voice.fish_tts import FishSpeaker
 from navigator.voice.tts import PiperSpeaker, PrintSpeaker, make_speaker
@@ -249,7 +250,8 @@ def _start_human_leave_watcher(
                     except Exception:  # noqa: BLE001
                         pass
                 try:
-                    client.leave(bot_id)
+                    if client.leave_if_active(bot_id):
+                        print(f"[live] bot {bot_id} leave sent (human exited)", flush=True)
                 except Exception as exc:  # noqa: BLE001
                     print(f"[live] leave-on-human-exit failed: {exc}", flush=True)
                 return
@@ -279,7 +281,13 @@ def wait_until_joined(
         if bot.state == "joined":
             return
         if bot.state == "fatal_error":
-            raise RuntimeError(f"Attendee bot fatal_error (last state={last})")
+            raise RuntimeError(
+                f"Attendee bot fatal_error (last state={last}). "
+                "Common Zoom causes: Attendee worker cannot resolve the ZAK tunnel "
+                "hostname (check attendee-worker-local DNS), ZAK callback 401/502, "
+                "or Zoom SDK 'Invalid signature' when ZAK never arrived. "
+                "See Attendee worker logs: docker compose logs attendee-worker-local"
+            )
         if "waiting" in last.lower() and not warned_waiting:
             warned_waiting = True
             print(
@@ -361,6 +369,23 @@ def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
     return out
 
 
+def _provider_byok_flags(product_id: str | None) -> tuple[bool, bool, bool]:
+    if not product_id:
+        return False, False, False
+    try:
+        from navigator.app.credential_vault import CredentialVault
+
+        with CredentialVault(settings.credential_db_path) as vault:
+            pub = vault.provider_keys_public(product_id)
+            return (
+                bool(pub.get("has_groq_api_key")),
+                bool(pub.get("has_gemini_api_key")),
+                bool(pub.get("has_fish_api_key")),
+            )
+    except Exception:  # noqa: BLE001
+        return False, False, False
+
+
 def _speaker(*, mute: bool, spoken_language: str = "en"):
     return _make_live_speaker(mute=mute, spoken_language=spoken_language)
 
@@ -419,7 +444,7 @@ def _leave_stale_bots(client: AttendeeClient, meeting_url: str) -> None:
             continue
         try:
             print(f"[live] leaving stale bot {bot_id} ({state})", flush=True)
-            client.leave(bot_id)
+            client.leave_if_active(bot_id)
         except Exception as exc:  # noqa: BLE001
             print(f"[live] stale leave failed {bot_id}: {exc}", flush=True)
 
@@ -495,6 +520,15 @@ def run_live_meet_demo(
         agent_settings = merge_agent_settings(None)
 
     provider_keys = _resolve_provider_keys(product_id)
+    if product_id:
+        groq_byok, gemini_byok, fish_byok = _provider_byok_flags(product_id)
+        bind_demo_usage(
+            product_id=product_id,
+            session_id=str(session_id) if session_id else None,
+            groq_client=groq_byok,
+            gemini_client=gemini_byok,
+            fish_client=fish_byok,
+        )
     spoken_language: str = agent_settings.default_language or settings.default_spoken_language
     speaker = _require_tts_for_meet(
         mute=mute,
@@ -1136,10 +1170,16 @@ def run_live_meet_demo(
             context.close()
             browser.close()
     finally:
+        clear_demo_usage()
         if bot_id is not None:
             try:
-                print(f"[live] leaving Meet (bot {bot_id})", flush=True)
-                client.leave(bot_id)
+                if client.leave_if_active(bot_id):
+                    print(f"[live] leaving Meet (bot {bot_id})", flush=True)
+                else:
+                    print(
+                        f"[live] bot {bot_id} already left or shutting down — skip leave",
+                        flush=True,
+                    )
             except Exception as exc:  # noqa: BLE001
                 print(f"[live] leave failed: {exc}", flush=True)
         if audio_tunnel is not None:

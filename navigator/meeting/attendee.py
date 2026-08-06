@@ -175,6 +175,25 @@ class AttendeeClient:
     def leave(self, bot_id: str) -> None:
         self._request("POST", f"/bots/{bot_id}/leave", {})
 
+    _LEAVE_SKIP_RAW = frozenset(
+        {"ended", "leaving", "fatal_error", "post_processing", "post_processing_complete"}
+    )
+
+    def leave_if_active(self, bot_id: str) -> bool:
+        """POST /leave only when Attendee accepts it (skip ended/leaving/post_processing)."""
+        bot = self.get(bot_id)
+        raw = (bot.raw_state or bot.state or "").lower()
+        if raw in self._LEAVE_SKIP_RAW or bot.state in {"ended", "leaving", "fatal_error"}:
+            return False
+        try:
+            self.leave(bot_id)
+            return True
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "leave_requested not allowed" in msg or "post_processing" in msg:
+                return False
+            raise
+
     def enable_screenshare(self, bot_id: str, screenshare_url: str, voice_agent_url: str | None = None) -> None:
         """Start screen share mid-call (requires reserve_resources at join).
 

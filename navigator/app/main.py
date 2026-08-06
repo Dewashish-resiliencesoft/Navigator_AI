@@ -389,6 +389,7 @@ class SystemMetrics(BaseModel):
     services: list[dict[str, str]]
     processes: list[dict[str, str]]
     health: list[dict[str, Any]]
+    token_usage: dict[str, Any] | None = None
 
 
 @app.get("/client/api/system/health", response_model=SystemMetrics)
@@ -396,6 +397,7 @@ def client_system_health(
     product: DashboardAuthedProduct,
     registry: Reg,
     runner: Runner,
+    vault: Vault,
 ) -> SystemMetrics:
     """Real host metrics + Navigator service status for the Client dashboard."""
     from navigator.app.system_health import collect_system_health
@@ -405,6 +407,7 @@ def client_system_health(
         registry=registry,
         runner=runner,
         db_path=str(settings.db_path),
+        vault=vault,
     )
     return SystemMetrics(**payload)
 

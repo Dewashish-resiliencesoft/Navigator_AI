@@ -125,6 +125,10 @@ class CallDeps:
     listen_once: Callable[[str], str] | None = None
     #: Entity extraction for live fills. Signature (key, question, heard) -> str.
     extract_entity: Callable[..., str] | None = None
+    #: Unified brain settings (models, autonomy, listen/resume timeouts).
+    brain_config: object | None = None
+    #: Client webhook when agent hands off to a human.
+    handoff_webhook_url: str = ""
     #: Per-product Tier 2 live fallback. Default OFF — must be explicitly enabled.
     tier2_enabled: bool = False
     #: Injected Tier 2 proposer for tests / live reasoner. Returns dict|None.

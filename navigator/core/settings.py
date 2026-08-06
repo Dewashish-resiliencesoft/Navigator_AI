@@ -90,6 +90,15 @@ class Settings(BaseSettings):
     meet_live: bool = False
     live_walkthrough_flow: str = "default_walkthrough"
     live_max_turns: int = 50
+    #: Brain model pins (override provider defaults).
+    brain_planning_model: str = "llama-3.3-70b-versatile"
+    brain_phrasing_model: str = "llama-3.3-70b-versatile"
+    brain_classify_model: str = "llama-3.1-8b-instant"
+    brain_stt_model: str = "whisper-large-v3-turbo"
+    brain_vision_text_model: str = "gemini-2.0-flash"
+    brain_vision_image_model: str = "gemini-2.0-flash"
+    brain_listen_timeout_s: float = 12.0
+    brain_resume_silence_s: float = 10.0
     #: Bot joins Meet first; link shared only after Navigator is inside.
     live_bot_first: bool = True
     #: Attendee signed-in Google Meet bot (needs Bot Logins in Attendee dashboard).

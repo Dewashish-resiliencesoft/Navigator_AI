@@ -20,7 +20,10 @@ from navigator.core.schemas import ClickElement, Postcondition
 from navigator.core.settings import settings
 from navigator.knowledge.site_graph import SiteGraph
 
-MODEL = "llama-3.3-70b-versatile"
+def _tier2_model() -> str:
+    from navigator.core.settings import settings
+
+    return settings.brain_planning_model
 
 _PROMPT = """You are on a LIVE product demo call. The prospect just asked:
 {utterance}
@@ -156,7 +159,7 @@ def _default_ask_text() -> Callable[[str], str] | None:
         from groq import Groq
 
         resp = Groq(api_key=key).chat.completions.create(
-            model=MODEL,
+            model=_tier2_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=200,

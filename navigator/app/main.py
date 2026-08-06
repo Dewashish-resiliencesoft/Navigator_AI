@@ -737,6 +737,30 @@ def _run_live_demo(
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
 
+    autonomy_mode = getattr(product, "autonomy_mode", None) or "guided"
+    if origin == "public_embed" and autonomy_mode == "explorer":
+        raise HTTPException(
+            400,
+            "Explorer mode is only for dashboard test demos, not the public embed.",
+        )
+
+    try:
+        rev_yaml = registry.get_revision(product.product_id, revision).yaml
+        from navigator.agent.readiness import assert_live_graph_yaml, assess_demo_readiness
+
+        assert_live_graph_yaml(rev_yaml)
+        readiness = assess_demo_readiness(
+            registry,
+            product.product_id,
+            origin=origin,
+            autonomy_mode=autonomy_mode,
+        )
+        blocking = [c for c in readiness.checks if c.blocking and not c.ok]
+        if blocking:
+            raise HTTPException(422, f"Demo not ready: {blocking[0].message}")
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
     page_id = spec.page_id
     flow_id = spec.flow_id
     if not page_id or not flow_id:
@@ -1161,6 +1185,14 @@ class Tier2Body(BaseModel):
     enabled: bool
 
 
+class AutonomyModeBody(BaseModel):
+    mode: str = Field(pattern="^(guided|adaptive|explorer)$")
+
+
+class HandoffWebhookBody(BaseModel):
+    url: str = ""
+
+
 class ProductLoginBody(BaseModel):
     login_url: str = ""
     username: str = ""
@@ -1226,6 +1258,101 @@ def client_put_tier2(
 ) -> dict:
     updated = registry.set_tier2_enabled(product.product_id, body.enabled)
     return {"ok": True, "enabled": bool(updated.tier2_enabled)}
+
+
+@app.get("/client/api/autonomy-mode")
+def client_get_autonomy_mode(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    fresh = registry.get(product.product_id)
+    mode = getattr(fresh, "autonomy_mode", None) or "guided"
+    return {
+        "mode": mode,
+        "tier2_enabled": bool(fresh.tier2_enabled),
+        "handoff_webhook_url": getattr(fresh, "handoff_webhook_url", "") or "",
+    }
+
+
+@app.put("/client/api/autonomy-mode")
+def client_put_autonomy_mode(
+    product: DashboardAuthedProduct, body: AutonomyModeBody, registry: Reg
+) -> dict:
+    updated = registry.set_autonomy_mode(product.product_id, body.mode)
+    return {
+        "ok": True,
+        "mode": updated.autonomy_mode,
+        "tier2_enabled": bool(updated.tier2_enabled),
+    }
+
+
+@app.put("/client/api/handoff-webhook")
+def client_put_handoff_webhook(
+    product: DashboardAuthedProduct, body: HandoffWebhookBody, registry: Reg
+) -> dict:
+    updated = registry.set_handoff_webhook(product.product_id, body.url)
+    return {"ok": True, "url": updated.handoff_webhook_url}
+
+
+@app.get("/client/api/demo-readiness")
+def client_demo_readiness(
+    product: DashboardAuthedProduct,
+    registry: Reg,
+    origin: Annotated[str, Query()] = "dashboard_test",
+) -> dict:
+    from navigator.agent.readiness import assess_demo_readiness
+
+    demo_origin = "public_embed" if origin == "public_embed" else "dashboard_test"
+    fresh = registry.get(product.product_id)
+    mode = getattr(fresh, "autonomy_mode", None) or "guided"
+    return assess_demo_readiness(
+        registry,
+        product.product_id,
+        origin=demo_origin,
+        autonomy_mode=mode,
+    ).as_dict()
+
+
+@app.get("/client/api/publish-checklist")
+def client_publish_checklist(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    from navigator.agent.readiness import assess_demo_readiness
+
+    fresh = registry.get(product.product_id)
+    mode = getattr(fresh, "autonomy_mode", None) or "guided"
+    readiness = assess_demo_readiness(
+        registry, product.product_id, origin="public_embed", autonomy_mode=mode
+    )
+    eval_score: float | None = None
+    eval_path = Path(f"tests/eval/demo_brain/{product.product_id}.yaml")
+    if eval_path.is_file():
+        try:
+            from navigator.agent.eval.runner import load_cases, run_eval
+            from navigator.agent.nodes.planning import _flow_texts_for_page
+            from navigator.knowledge.context import retrieve_context
+
+            pub_rev = registry.published_revision(product.product_id)
+            graph = registry.load_graph(product.product_id, pub_rev)
+            page_id = next(iter(graph.pages), "")
+            flow_texts = _flow_texts_for_page(
+                type("D", (), {"graph": graph, "product_id": product.product_id})(),
+                page_id,
+            )
+            report = run_eval(
+                load_cases(eval_path),
+                graph=graph,
+                page_id=page_id,
+                product_id=product.product_id,
+                retrieve=retrieve_context,
+                flow_texts=flow_texts,
+            )
+            eval_score = report.score_pct
+        except Exception:  # noqa: BLE001
+            eval_score = None
+    rec = "Guided is safest for visitors."
+    if mode == "adaptive":
+        rec = "Adaptive needs published flows + indexed knowledge."
+    return {
+        "readiness": readiness.as_dict(),
+        "eval_score_pct": eval_score,
+        "autonomy_recommendation": rec,
+    }
 
 @app.put("/client/api/product-domain")
 def client_put_product_domain(
@@ -1473,7 +1600,24 @@ def client_publish_site_graph(
         raise HTTPException(404, str(exc)) from None
     except SiteGraphError as exc:
         raise HTTPException(422, str(exc)) from None
-    return {"ok": True, "published_revision": updated.active_revision}
+    index_summary: dict | None = None
+    try:
+        graph = registry.load_graph(product.product_id, updated.active_revision)
+        from navigator.knowledge.publish_index import index_on_publish
+
+        index_summary = index_on_publish(
+            product_id=product.product_id,
+            graph=graph,
+            revision=updated.active_revision,
+            chroma_path=settings.chroma_path,
+        ).as_dict()
+    except Exception:  # noqa: BLE001
+        index_summary = None
+    return {
+        "ok": True,
+        "published_revision": updated.active_revision,
+        "index": index_summary,
+    }
 
 
 @app.get("/client/api/bio")
@@ -1516,10 +1660,14 @@ def client_put_knowledge(product: DashboardAuthedProduct, body: KnowledgeBody, r
     chroma_id = None
     if saved.strip():
         try:
-            from navigator.knowledge.memory.seed import seed_knowledge
+            from navigator.knowledge.publish_index import index_knowledge_draft
 
-            chroma_id = seed_knowledge(
-                settings.chroma_path, product_id=product.product_id, text=saved
+            rev = registry.latest_revision(product.product_id).revision
+            chroma_id = index_knowledge_draft(
+                product_id=product.product_id,
+                text=saved,
+                revision=rev,
+                chroma_path=settings.chroma_path,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[client] chroma ingest skipped: {exc}", flush=True)
@@ -1592,6 +1740,7 @@ class FlowSemanticsBody(BaseModel):
     flow_id: str = Field(min_length=1)
     purpose: str | None = None
     tags: list[str] | None = None
+    triggers: list[str] | None = None
     auto_name: str | None = None
 
 
@@ -1622,6 +1771,8 @@ def client_patch_flow_semantics(
         entry["purpose"] = body.purpose.strip()
     if body.tags is not None:
         entry["tags"] = [t.strip() for t in body.tags if t and t.strip()]
+    if body.triggers is not None:
+        entry["triggers"] = [t.strip() for t in body.triggers if t and t.strip()]
     if body.auto_name is not None:
         entry["auto_name"] = body.auto_name.strip()
     bucket[fid] = entry
@@ -2050,6 +2201,48 @@ def client_run_events(
     if row is None and not entries:
         raise HTTPException(404, "no such run")
     return entries
+
+
+class DecisionTraceView(BaseModel):
+    id: str
+    session_id: str
+    utterance: str
+    branch: str
+    chosen_flow_id: str | None = None
+    spoken: str
+    flow_candidates: list[list[float | str]] = Field(default_factory=list)
+    knowledge_hits: list[list[float | str]] = Field(default_factory=list)
+    detail: str = ""
+    created_at: str
+
+
+@app.get("/client/api/runs/{session_id}/decisions", response_model=list[DecisionTraceView])
+def client_run_decisions(
+    session_id: UUID, product: DashboardAuthedProduct, log: Log
+) -> list[DecisionTraceView]:
+    from navigator.logs.decisions import DecisionTraceStore
+
+    with DecisionTraceStore(settings.db_path) as store:
+        rows = store.for_session(session_id, product_id=product.product_id)
+    if not rows:
+        row = log.get_run(session_id, product.product_id)
+        if row is None:
+            raise HTTPException(404, "no such run")
+    return [
+        DecisionTraceView(
+            id=r.id,
+            session_id=r.session_id,
+            utterance=r.utterance,
+            branch=r.branch,
+            chosen_flow_id=r.chosen_flow_id,
+            spoken=r.spoken,
+            flow_candidates=[[f, c] for f, c in r.flow_candidates],
+            knowledge_hits=[[k, s] for k, s in r.knowledge_hits],
+            detail=r.detail,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
 
 
 @app.post("/v1/zoom/zak")

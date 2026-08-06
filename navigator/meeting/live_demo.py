@@ -380,6 +380,9 @@ def run_live_meet_demo(
     stop_event: threading.Event | None = None,
     on_bot_joined: Callable[[str], None] | None = None,
     tier2_enabled: bool = False,
+    brain_config=None,
+    use_turn_brain: bool | None = None,
+    handoff_webhook_url: str = "",
 ) -> str:
     """Join Meet, qualify prospect, then share screen and run demo. Returns bot id.
 
@@ -945,6 +948,10 @@ def run_live_meet_demo(
                 stop_event=stop_event,
                 listen_once=_listen_once,
                 tier2_enabled=tier2_enabled,
+                brain_config=brain_config,
+                use_turn_brain=use_turn_brain,
+                handoff_webhook_url=handoff_webhook_url,
+                decision_db_path=settings.db_path,
             )
 
             mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"

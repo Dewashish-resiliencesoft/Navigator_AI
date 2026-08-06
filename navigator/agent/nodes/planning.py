@@ -349,6 +349,7 @@ def _plan_anything_else(
             query=utterance,
             spoken=HANDOFF_SPOKEN,
             phase="anything_else",
+            session_id=str(state["session_id"]),
         )
     page_id = _guide_page_id(state)
     page = deps.graph.page(page_id)
@@ -414,6 +415,7 @@ def _plan_interrupt(
         phase="walkthrough",
         walkthrough_step=walkthrough_step,
         awaiting_confirm_flow_id=None,
+        session_id=str(state["session_id"]),
     )
 
 
@@ -565,7 +567,9 @@ def _flow_intent(deps: CallDeps, flow_id: str) -> str:
     purpose = str(sem.get("purpose") or "").strip()
     tags = sem.get("tags")
     tag_text = " ".join(str(t).strip() for t in tags if str(t).strip()) if isinstance(tags, list) else ""
-    return " — ".join(p for p in (purpose, tag_text) if p)
+    triggers = sem.get("triggers")
+    trig_text = " ".join(str(t).strip() for t in triggers if str(t).strip()) if isinstance(triggers, list) else ""
+    return " — ".join(p for p in (purpose, tag_text, trig_text) if p)
 
 
 def _knowledge_hits(
@@ -660,20 +664,92 @@ def _decide_live_turn(
     utterance: str,
 ) -> CallState | None:
     """Retrieve + confidence bands. None → caller may try turn-brain / handoff."""
+    from navigator.agent.brain_router import route_turn
+
     page_id = _guide_page_id(state)
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     walkthrough_page = state.get("walkthrough_page_id") or page_id
     mem = _memory(deps)
     pacing = mem.note_turn(utterance)
+    phase = state.get("phase") or "walkthrough"
 
     flow_texts = _flow_texts_for_page(deps, page_id)
     retrieve = deps.retrieve or retrieve_context
     chroma_path = (
         deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
     )
+
+    enriched = utterance
+    if deps.screen_context is not None:
+        try:
+            screen = (deps.screen_context() or "")[:400]
+            if screen.strip():
+                enriched = f"{utterance} {screen}"
+        except Exception:  # noqa: BLE001
+            pass
+
     try:
-        result = retrieve(
-            utterance,
+        ruled = route_turn(
+            utterance=utterance,
+            phase=phase,
+            graph=deps.graph,
+            page_id=page_id,
+            product_id=deps.product_id,
+            flow_texts=flow_texts,
+            chroma_path=chroma_path,
+            retrieve=lambda q, *a, **kw: retrieve(
+                enriched if q == utterance else q,
+                deps.product_id,
+                flow_texts=flow_texts,
+                available_flow_ids=list(flow_texts),
+                chroma_path=chroma_path,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] route_turn failed ({exc}); falling back to retrieve", flush=True)
+        ruled = None
+
+    if ruled is not None and ruled.intent == "continue":
+        return None
+    if ruled is not None and ruled.intent in {"goodbye", "end"}:
+        spoken = _say(deps, intent="handoff", fallback=WRAP_UP, utterance=utterance, pacing=pacing)
+        _trace(deps, state, utterance=utterance, branch="ended", spoken=spoken, detail="goodbye")
+        return _plan_handoff(deps, query=utterance, spoken=spoken, phase="ended", session_id=str(state["session_id"]))
+
+    if ruled is not None and ruled.intent == "run_flow" and ruled.flow_id:
+        flow_id = ruled.flow_id
+        if _flow_offerable(deps, page_id, flow_id):
+            spoken = _seamless_detour_spoken(
+                deps,
+                page_id=page_id,
+                flow_id=flow_id,
+                utterance=utterance,
+                pacing=pacing,
+                context=ruled.detail or f"trigger/intent match {flow_id}",
+            )
+            mem.note_flow(flow_id)
+            _trace(
+                deps,
+                state,
+                utterance=utterance,
+                branch="flow_executed",
+                spoken=spoken,
+                chosen_flow_id=flow_id,
+                flow_candidates=[(flow_id, ruled.confidence or 1.0)],
+                knowledge_hits=[],
+                detail=ruled.detail or "router run_flow",
+            )
+            return _start_detour(
+                deps,
+                state,
+                page_id,
+                flow_id,
+                spoken=spoken,
+                walkthrough_step=walkthrough_step,
+                walkthrough_page=walkthrough_page,
+            )
+
+    try:
             deps.product_id,
             flow_texts=flow_texts,
             available_flow_ids=list(flow_texts),
@@ -1408,6 +1484,11 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
                 resume_page_id="",
             )
     nxt = calls[step]
+    batch_calls, next_step = _batch_walkthrough_steps(
+        calls, step, deps.graph, flow_id
+    )
+    if len(batch_calls) > 1:
+        print(f"[plan] batch_safe: steps {step}..{next_step - 1}", flush=True)
     # YAML spoken as hint — vision generates the real narration.
     yaml_hint = _step_narration_hint(
         deps, page_id=page_id, flow_id=flow_id, step=step, call=nxt
@@ -1476,21 +1557,42 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
         branch="continuation",
         spoken=spoken,
         chosen_flow_id=flow_id,
-        detail=f"walkthrough step {step} → {step + 1}",
+        detail=f"walkthrough step {step} → {next_step}",
     )
     return CallState(
         phase="walkthrough",
         page_id=page_id,
         walkthrough_page_id=page_id,
         walkthrough_flow_id=flow_id,
-        walkthrough_step=step + 1,
+        walkthrough_step=next_step,
         resume_step=None,
         resume_page_id="",
-        plan=Plan(spoken_response=spoken, tool_calls=[nxt]),
-        pending_calls=[nxt],
+        plan=Plan(spoken_response=spoken, tool_calls=[batch_calls[0]]),
+        pending_calls=list(batch_calls),
         narration=[spoken],
         transcript=[f"agent: {spoken}"],
     )
+
+
+def _batch_walkthrough_steps(calls, step: int, graph, flow_id: str):
+    """Emit consecutive safe Navigate steps when flow is batch_safe."""
+    if step >= len(calls):
+        return [calls[step]], step + 1
+    validation = graph.flow_validation(flow_id)
+    if not validation.get("batch_safe"):
+        return [calls[step]], step + 1
+    batch = [calls[step]]
+    i = step + 1
+    while i < len(calls):
+        prev, curr = batch[-1], calls[i]
+        prev_tool = getattr(prev, "tool", "") or type(prev).__name__
+        curr_tool = getattr(curr, "tool", "") or type(curr).__name__
+        if prev_tool == "navigate" and curr_tool == "navigate":
+            batch.append(curr)
+            i += 1
+            continue
+        break
+    return batch, i
 
 
 def _resolve_flow_choice(
@@ -1554,14 +1656,10 @@ def _resolve_flow_choice(
 
 
 def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
-    """Log prospect correction as pending rule; no Playwright."""
+    """Log prospect correction; retry last step when possible."""
     from navigator.knowledge.memory.pending import PendingCorrectionStore
 
     query = _query_from_transcript(list(state.get("transcript") or []))
-    spoken = (
-        "Thanks — I've noted that correction. A human will review it before it "
-        "changes how I demo."
-    )
     entries = list(state.get("entries") or [])
     last = entries[-1] if entries else None
     store_path = deps.pending_db_path or settings.db_path
@@ -1578,6 +1676,21 @@ def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
     finally:
         store.close()
     print(f"[correction] pending from user: {query!r}", flush=True)
+    if last is not None and last.tool_call is not None:
+        spoken = "Got it — let me try that again with your correction in mind."
+        plan = Plan(spoken_response=spoken, tool_calls=[last.tool_call])
+        return CallState(
+            plan=plan,
+            pending_calls=[last.tool_call],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
+            user_correction=False,
+            phase=state.get("phase") or "walkthrough",
+        )
+    spoken = (
+        "Thanks — I've noted that correction. A human will review it before it "
+        "changes how I demo."
+    )
     plan = Plan(spoken_response=spoken, tool_calls=[])
     return CallState(
         plan=plan,
@@ -1588,8 +1701,34 @@ def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
     )
 
 
-def _plan_handoff(deps: CallDeps, *, query: str, spoken: str, **extra) -> CallState:
+def _plan_handoff(
+    deps: CallDeps,
+    *,
+    query: str,
+    spoken: str,
+    session_id: str | None = None,
+    **extra,
+) -> CallState:
     print(f"[handoff] out_of_scope: {query!r}", flush=True)
+    url = (getattr(deps, "handoff_webhook_url", "") or "").strip()
+    sid = session_id or extra.pop("session_id", None)
+    if url and sid:
+        try:
+            import json
+            import urllib.request
+
+            payload = json.dumps(
+                {"utterance": query, "session_id": str(sid), "spoken": spoken}
+            ).encode()
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5)  # noqa: S310
+        except Exception as exc:  # noqa: BLE001
+            print(f"[handoff] webhook failed: {exc}", flush=True)
     plan = Plan(spoken_response=spoken, tool_calls=[])
     return CallState(
         plan=plan,

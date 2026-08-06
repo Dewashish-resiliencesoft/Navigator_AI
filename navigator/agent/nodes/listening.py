@@ -91,9 +91,22 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
     if deps.audio_frames is not None:
         try:
             if phase == "awaiting_resume":
+                from navigator.agent.brain_config import pacing_resume_silence
                 from navigator.agent.end_policy import RESUME_SILENCE_S
 
-                timeout = RESUME_SILENCE_S
+                cfg = getattr(deps, "brain_config", None)
+                pacing = "neutral"
+                mem = getattr(deps, "memory", None)
+                if mem is not None and getattr(mem, "pacing_history", None):
+                    pacing = mem.pacing_history[-1]
+                timeout = (
+                    pacing_resume_silence(pacing, cfg)
+                    if cfg is not None
+                    else RESUME_SILENCE_S
+                )
+            elif walkthrough:
+                cfg = getattr(deps, "brain_config", None)
+                timeout = cfg.listen_timeout_s if cfg is not None else 12.0
             elif anything_else:
                 from navigator.agent.end_policy import SILENCE_S
 

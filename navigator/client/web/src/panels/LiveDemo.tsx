@@ -473,7 +473,8 @@ export function LiveDemo() {
         )}
         {platform === "zoom" && (
           <p className="mb-3 text-[0.74rem] text-[var(--muted)]">
-            Navigator hosts via ZAK (auto-tunnels :8000 if PUBLIC_BASE_URL unset).
+            Navigator hosts via ZAK (web SDK + screenshare). Auto-tunnels :8000 if
+            PUBLIC_BASE_URL unset.
           </p>
         )}
         <div className="grid gap-x-3 sm:grid-cols-2">

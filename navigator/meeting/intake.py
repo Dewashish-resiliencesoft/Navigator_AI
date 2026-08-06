@@ -17,6 +17,7 @@ from navigator.meeting.intake_clean import (
     clean_phrase,
     summarize_need,
 )
+from navigator.core.console import safe_print
 from navigator.core.schemas import Persona
 from navigator.voice.tts import Speaker
 
@@ -272,8 +273,11 @@ Do not output full sentences. Only output the extracted entity. Do not use quote
 
 
 def _say(speaker: Speaker, text: str) -> None:
-    print(f"[agent] {text}", flush=True)
+    try:
+        safe_print(f"[agent] {text}")
+    except UnicodeEncodeError:
+        pass
     try:
         speaker.say(text)
     except Exception as exc:  # noqa: BLE001
-        print(f"[agent] TTS skipped: {exc}", flush=True)
+        safe_print(f"[agent] TTS skipped: {exc}")

@@ -59,7 +59,11 @@ class Settings(BaseSettings):
     zoom_account_id: str = ""
     zoom_client_id: str = ""
     zoom_client_secret: str = ""
-    #: Zoom user id for create/ZAK (`me` = S2S token owner).
+    #: Attendee web bot Meeting SDK JWT (General OAuth + Embed SDK). Required for
+    #: Zoom join/screenshare — S2S OAuth creds above cannot sign SDK JWTs.
+    attendee_zoom_client_id: str = ""
+    attendee_zoom_client_secret: str = ""
+    #: Zoom user id for create + ZAK (`me` = S2S token owner).
     zoom_user_id: str = "me"
     #: Public origin Attendee can reach for ZAK callback (tunnel or deploy URL).
     public_base_url: str = ""

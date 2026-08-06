@@ -31,10 +31,12 @@ def _zak_origin_reachable(base: str) -> bool:
     """
     base = base.rstrip("/")
     if "trycloudflare.com" in base:
-        from navigator.meeting.tunnel import _probe_via_public_dns
+        from navigator.meeting.tunnel import _probe_via_public_dns, is_quick_tunnel_url
 
+        if not is_quick_tunnel_url(base):
+            return False
         try:
-            code = _probe_via_public_dns(f"{base}/openapi.json")
+            code = _probe_via_public_dns(f"{base}/healthz")
         except Exception:
             return False
         return 200 <= int(code) < 500
@@ -64,21 +66,26 @@ def ensure_public_base_url(*, local_port: int = 8000) -> str:
     trusted as configured.
     """
     global _api_tunnel
+    from navigator.meeting.tunnel import is_quick_tunnel_url
+
     base = (settings.public_base_url or "").rstrip("/")
     if base and "trycloudflare.com" not in base:
         return base
-    if base and _zak_origin_reachable(base):
+    if base and is_quick_tunnel_url(base) and _zak_origin_reachable(base):
         return base
 
     with _api_tunnel_lock:
         base = (settings.public_base_url or "").rstrip("/")
         if base and "trycloudflare.com" not in base:
             return base
-        if base and _zak_origin_reachable(base):
+        if base and is_quick_tunnel_url(base) and _zak_origin_reachable(base):
             return base
         if _api_tunnel is not None and _api_tunnel._proc.poll() is None:
-            settings.public_base_url = _api_tunnel.public_url
-            return _api_tunnel.public_url
+            if is_quick_tunnel_url(_api_tunnel.public_url):
+                settings.public_base_url = _api_tunnel.public_url
+                return _api_tunnel.public_url
+            _api_tunnel.stop()
+            _api_tunnel = None
 
         from navigator.meeting.tunnel import start_tunnel
 

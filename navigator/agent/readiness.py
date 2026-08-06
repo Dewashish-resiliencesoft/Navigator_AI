@@ -47,11 +47,11 @@ class DemoReadiness:
 
 
 def _has_offerable_flow(graph: SiteGraph) -> bool:
-    for page in graph.pages.values():
+    for page_id, page in graph.pages.items():
         for fid in page.flows:
             if is_offerable(graph.flow_validation(fid)):
                 try:
-                    if list(graph.flow(page.id, fid)):
+                    if list(graph.flow(page_id, fid)):
                         return True
                 except SiteGraphError:
                     continue

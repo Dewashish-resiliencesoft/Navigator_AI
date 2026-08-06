@@ -24,6 +24,27 @@ def test_available_requires_api_key():
     assert FishSpeaker("sk-test").available() is True
 
 
+def test_synthesize_mp3_posts_sarah_free_model():
+    seen: dict = {}
+
+    def fake_post(url, *, headers, body):
+        seen["url"] = url
+        seen["headers"] = headers
+        seen["body"] = body
+        return b"ID3" + b"\x00" * 32
+
+    sp = FishSpeaker("sk-test", post=fake_post)
+    mp3 = sp.synthesize_mp3("Hello from the demo.")
+    assert mp3 is not None
+    assert mp3[:3] == b"ID3"
+    assert seen["headers"]["Authorization"] == "Bearer sk-test"
+    assert seen["headers"]["model"] == FREE_MODEL
+    assert seen["body"]["reference_id"] == DEFAULT_SARAH_ID
+    assert seen["body"]["format"] == "mp3"
+    assert seen["body"]["mp3_bitrate"] == 128
+    assert seen["body"]["text"] == "Hello from the demo."
+
+
 def test_synthesize_wav_posts_sarah_free_model():
     seen: dict = {}
 

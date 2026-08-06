@@ -20,15 +20,29 @@ def test_speak_posts_mp3_output_audio():
         captured["body"] = body
         return {}
 
-    # Pretend ffmpeg returns mp3 by short-circuiting converter
+    with patch.object(client, "_request", side_effect=fake_request):
+        client.speak("bot_1", b"ID3fake")
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/bots/bot_1/output_audio"
+    assert captured["body"]["type"] == "audio/mp3"
+    assert base64.b64decode(captured["body"]["data"]) == b"ID3fake"
+
+
+def test_speak_converts_wav_via_ffmpeg():
+    client = AttendeeClient("https://example.test/api/v1", "key")
+    captured: dict = {}
+
+    def fake_request(method, path, body=None):
+        captured["body"] = body
+        return {}
+
     with patch(
         "navigator.meeting.attendee._wav_bytes_to_mp3", return_value=b"ID3fake"
     ):
         with patch.object(client, "_request", side_effect=fake_request):
             client.speak("bot_1", b"RIFF....wav")
 
-    assert captured["method"] == "POST"
-    assert captured["path"] == "/bots/bot_1/output_audio"
     assert captured["body"]["type"] == "audio/mp3"
     assert base64.b64decode(captured["body"]["data"]) == b"ID3fake"
 

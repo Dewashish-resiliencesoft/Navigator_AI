@@ -14,8 +14,14 @@ API_URL = "https://api.fish.audio/v1/tts"
 FREE_MODEL = "s2.1-pro-free"
 
 
+def _is_mp3(data: bytes) -> bool:
+    if data[:3] == b"ID3":
+        return True
+    return len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0
+
+
 class FishSpeaker:
-    """Cloud TTS via Fish Audio. synthesize_wav → WAV for Attendee."""
+    """Cloud TTS via Fish Audio. synthesize_mp3 for Meet (no ffmpeg)."""
 
     def __init__(
         self,
@@ -38,15 +44,26 @@ class FishSpeaker:
 
     def say(self, text: str) -> None:
         print(f"[speak] {text}", flush=True)
-        wav = self.synthesize_wav(text)
-        if not wav:
-            return
-        # Local play only if something wired later; Meet uses synthesize_wav.
-        _ = wav
+        _ = self.synthesize_mp3(text)
+
+    def synthesize_mp3(self, text: str) -> bytes | None:
+        """MP3 for Attendee output_audio — no local ffmpeg needed."""
+        return self._synthesize(text, fmt="mp3")
 
     def synthesize_wav(self, text: str) -> bytes | None:
+        return self._synthesize(text, fmt="wav")
+
+    def _synthesize(self, text: str, *, fmt: str) -> bytes | None:
         if not text.strip() or not self.available():
             return None
+        body: dict = {
+            "text": text.strip(),
+            "reference_id": self.reference_id,
+            "format": fmt,
+            "latency": self.latency,
+        }
+        if fmt == "mp3":
+            body["mp3_bitrate"] = 128
         try:
             raw = self._post(
                 API_URL,
@@ -55,20 +72,19 @@ class FishSpeaker:
                     "Content-Type": "application/json",
                     "model": self.model,
                 },
-                body={
-                    "text": text.strip(),
-                    "reference_id": self.reference_id,
-                    "format": "wav",
-                    "latency": self.latency,
-                },
+                body=body,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[speak] fish tts failed: {exc}", flush=True)
             return None
-        if not raw or len(raw) < 44:
+        if not raw or len(raw) < 16:
             print("[speak] fish tts returned empty", flush=True)
             return None
-        # Sanity: must look like WAV (RIFF) for Meet duration + Attendee path.
+        if fmt == "mp3":
+            if not _is_mp3(raw):
+                print("[speak] fish tts: expected MP3, got other format", flush=True)
+                return None
+            return raw
         if raw[:4] != b"RIFF":
             print("[speak] fish tts: expected WAV (RIFF), got other format", flush=True)
             return None

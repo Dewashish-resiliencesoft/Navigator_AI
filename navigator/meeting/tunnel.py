@@ -36,6 +36,24 @@ class TunnelHandle:
 
 
 _URL_RE = re.compile(r"https://[a-zA-Z0-9.-]+\.trycloudflare\.com")
+# cloudflared logs mention api.trycloudflare.com before the real quick-tunnel URL.
+_RESERVED_TRYCF_HOSTS = frozenset(
+    {"api.trycloudflare.com", "www.trycloudflare.com", "trycloudflare.com"}
+)
+
+
+def is_quick_tunnel_url(url: str) -> bool:
+    """True for ephemeral ``*.trycloudflare.com`` quick-tunnel hosts only."""
+    host = (urlparse(url).hostname or "").lower()
+    return host.endswith(".trycloudflare.com") and host not in _RESERVED_TRYCF_HOSTS
+
+
+def _extract_quick_tunnel_url(line: str) -> str | None:
+    for match in _URL_RE.finditer(line or ""):
+        url = match.group(0)
+        if is_quick_tunnel_url(url):
+            return url
+    return None
 
 
 def _drain_stdout(proc: subprocess.Popen[str]) -> None:
@@ -73,9 +91,9 @@ def start_tunnel(
         line = proc.stdout.readline()
         if not line and proc.poll() is not None:
             break
-        match = _URL_RE.search(line or "")
-        if match:
-            public = match.group(0)
+        url = _extract_quick_tunnel_url(line or "")
+        if url:
+            public = url
             break
 
     if not public:
@@ -158,8 +176,29 @@ def _socket_resolve(host: str) -> list[str]:
         return []
 
 
+def _nslookup_ips(host: str) -> list[str]:
+    """Resolve via public DNS on Windows where dig is often missing."""
+    try:
+        out = subprocess.check_output(
+            ["nslookup", host, "1.1.1.1"],
+            text=True,
+            timeout=10,
+            stderr=subprocess.STDOUT,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return []
+    ips: list[str] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if line.lower().startswith("address:"):
+            candidate = line.split(":", 1)[-1].strip()
+            if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", candidate):
+                ips.append(candidate)
+    return ips
+
+
 def _dig_ips(host: str) -> list[str]:
-    """Resolve host via 1.1.1.1 when systemd-resolved fails on trycloudflare CNAMEs."""
+    """Resolve host via 1.1.1.1 when local stub resolver fails on trycloudflare CNAMEs."""
     try:
         out = subprocess.check_output(
             ["dig", "+short", host, "A", "@1.1.1.1"],
@@ -167,17 +206,32 @@ def _dig_ips(host: str) -> list[str]:
             timeout=5,
         )
     except FileNotFoundError:
-        # dig not installed — try Python socket.
-        print("[tunnel] dig not found; using socket fallback", flush=True)
-        return _socket_resolve(host)
+        # dig not installed — nslookup on Windows, else Python socket.
+        ips = _nslookup_ips(host)
+        return ips or _socket_resolve(host)
     except subprocess.SubprocessError:
-        return []
+        return _nslookup_ips(host) or _socket_resolve(host)
     ips: list[str] = []
     for line in out.splitlines():
         line = line.strip()
         if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", line):
             ips.append(line)
-    return ips
+    return ips or _nslookup_ips(host)
+
+
+def _dns_probe_failed(message: str) -> bool:
+    low = message.lower()
+    return any(
+        token in low
+        for token in (
+            "name or service not known",
+            "nodename",
+            "getaddrinfo failed",
+            "11001",
+            "nxdomain",
+            "name resolution",
+        )
+    )
 
 
 def _probe_via_public_dns(url: str, *, timeout: float = 5.0) -> int:
@@ -210,6 +264,20 @@ def _probe_via_public_dns(url: str, *, timeout: float = 5.0) -> int:
     raise URLError(f"probe via 1.1.1.1 failed for {host}: {last_err}")
 
 
+def _tunnel_probe_ok(status: int) -> bool:
+    """True when the edge/origin answered (403 = Cloudflare bot probe, still live)."""
+    if status < 200:
+        return False
+    if status in (502, 503, 504):
+        return False
+    return True
+
+
+def _probe_reachable_status(status: int) -> bool:
+    """True when the edge answered — 403 still means DNS/routing works."""
+    return status < 500 and status not in (502, 503, 504)
+
+
 def wait_until_public(url: str, *, timeout_s: float = 30.0) -> None:
     """Fail fast if the edge cannot reach our local relay (avoids Meet 1033)."""
     deadline = time.time() + timeout_s
@@ -217,16 +285,27 @@ def wait_until_public(url: str, *, timeout_s: float = 30.0) -> None:
     while time.time() < deadline:
         try:
             with urlopen(url, timeout=5) as resp:
-                if 200 <= getattr(resp, "status", 200) < 300:
+                status = getattr(resp, "status", 200)
+                if _probe_reachable_status(status):
                     return
-                last = f"HTTP {resp.status}"
+                last = f"HTTP {status}"
         except URLError as e:
             last = str(e)
             # Local stub DNS often cannot resolve fresh *.trycloudflare.com names.
-            if "Name or service not known" in last or "nodename" in last.lower():
+            if _dns_probe_failed(last):
                 try:
                     status = _probe_via_public_dns(url)
-                    if 200 <= status < 300:
+                    if _probe_reachable_status(status):
+                        return
+                    last = f"HTTP {status} (via 1.1.1.1)"
+                except Exception as dig_err:  # noqa: BLE001
+                    last = f"{last}; dig-fallback: {dig_err}"
+        except OSError as e:
+            last = str(e)
+            if _dns_probe_failed(last):
+                try:
+                    status = _probe_via_public_dns(url)
+                    if _probe_reachable_status(status):
                         return
                     last = f"HTTP {status} (via 1.1.1.1)"
                 except Exception as dig_err:  # noqa: BLE001

@@ -286,10 +286,10 @@ class ZoomProvider:
                 # got: the meeting starts now or it is useless.
                 "type": 1,
                 "settings": {
-                    # Host-first: Navigator starts the room via ZAK. Guests wait
-                    # until the bot is host — if ZAK fails they would both hang
-                    # forever with join_before_host=True and no host present.
-                    "join_before_host": False,
+                    # Bot joins as host via ZAK before the link is shown (live_bot_first).
+                    # True lets the End User open the link anytime; they wait in-meeting
+                    # until the agent is already hosting — no human host join required.
+                    "join_before_host": True,
                     "waiting_room": False,
                     "approval_type": 2,  # no registration
                 },

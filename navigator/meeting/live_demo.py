@@ -1,7 +1,7 @@
 """Live meeting demo: join quietly → intake → screenshare → agent demo graph.
 
-Meet and Zoom share the same media path (tunnel → avatar tile → /view share).
-Zoom join: ZAK host + native SDK (no voice-agent / screenshare — Attendee limits).
+Meet and Zoom web SDK share the same media path (tunnel → /view screenshare).
+Zoom: web SDK + ZAK host role (Attendee native SDK has no screenshare).
 
 Order (what the prospect experiences):
 
@@ -126,13 +126,12 @@ def assert_live_site_graph(path: Path) -> None:
 def share_media_join_opts(*, is_zoom: bool) -> tuple[bool, str | None]:
     """Join flags for Meet vs Zoom.
 
-    Meet: reserve voice agent → avatar tile + screenshare after join.
-    Zoom: native SDK + ZAK host only. Attendee rejects ``reserve_resources`` on
-    native Zoom (``voice agent not supported``); ``zoom_sdk=web`` hangs join so
-    guests sit on “waiting for the host”. Screenshare on Zoom stays deferred.
+    Meet: reserve voice agent → screenshare after join.
+    Zoom: web SDK + ``reserve_resources`` + ZAK (host role in Attendee web
+    adapter). Native SDK has no voice-agent/screenshare support.
     """
     if is_zoom:
-        return False, None
+        return True, "web"
     return True, None
 
 
@@ -244,6 +243,39 @@ def _start_human_leave_watcher(
     return t
 
 
+def _fatal_error_hint(client: AttendeeClient, bot_id: str) -> str:
+    """Turn Attendee bot events into an actionable message."""
+    try:
+        raw = client._request("GET", f"/bots/{bot_id}")
+    except Exception:  # noqa: BLE001
+        return (
+            "Check Attendee worker logs. Zoom 3712 = wrong Meeting SDK OAuth app — "
+            "set NAVIGATOR_ATTENDEE_ZOOM_CLIENT_ID/SECRET (General OAuth + Meeting SDK)."
+        )
+    events = raw.get("events") if isinstance(raw, dict) else None
+    if not isinstance(events, list):
+        return (
+            "Check Attendee worker logs. Zoom 3712 = wrong Meeting SDK OAuth app — "
+            "set NAVIGATOR_ATTENDEE_ZOOM_CLIENT_ID/SECRET (General OAuth + Meeting SDK)."
+        )
+    for ev in reversed(events):
+        if not isinstance(ev, dict):
+            continue
+        sub = str(ev.get("sub_type") or "")
+        if "zoom" in sub:
+            return (
+                "Zoom join failed (likely error 3712 Signature is invalid). "
+                "Attendee needs NAVIGATOR_ATTENDEE_ZOOM_CLIENT_ID/SECRET from a "
+                "General OAuth app with Meeting SDK enabled — not the S2S app."
+            )
+        if ev.get("type") == "could_not_join_meeting":
+            return (
+                "Bot could not join the meeting. For Zoom, set "
+                "NAVIGATOR_ATTENDEE_ZOOM_CLIENT_ID/SECRET (Meeting SDK OAuth app)."
+            )
+    return "Check Attendee worker logs (docker compose logs attendee-worker-local)."
+
+
 def wait_until_joined(
     client: AttendeeClient,
     bot_id: str,
@@ -261,7 +293,10 @@ def wait_until_joined(
         if bot.state == "joined":
             return
         if bot.state == "fatal_error":
-            raise RuntimeError(f"Attendee bot fatal_error (last state={last})")
+            hint = _fatal_error_hint(client, bot_id)
+            raise RuntimeError(
+                f"Attendee bot fatal_error (last state={last}). {hint}".rstrip()
+            )
         if "waiting" in last.lower() and not warned_waiting:
             warned_waiting = True
             print(
@@ -412,7 +447,14 @@ def run_live_meet_demo(
     _leave_stale_bots(client, meeting_url)
     speaker = _require_tts_for_meet(mute=mute)
     # Warm synthesizer so first Meet utterance isn't cold.
-    if hasattr(speaker, "synthesize_wav"):
+    if hasattr(speaker, "synthesize_mp3"):
+        try:
+            speaker.synthesize_mp3("Ready.")  # type: ignore[union-attr]
+            kind = type(speaker).__name__
+            print(f"[live] TTS warmed ({kind}, mp3)", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live] TTS warm skipped: {exc}", flush=True)
+    elif hasattr(speaker, "synthesize_wav"):
         try:
             speaker.synthesize_wav("Ready.")  # type: ignore[union-attr]
             kind = type(speaker).__name__
@@ -430,7 +472,9 @@ def run_live_meet_demo(
     bot_id: str | None = None
 
     try:
-        zoom_native = is_zoom_meeting(meeting_url)
+        is_zoom = is_zoom_meeting(meeting_url)
+        reserve, zoom_sdk = share_media_join_opts(is_zoom=is_zoom)
+        supports_screenshare = not is_zoom or zoom_sdk == "web"
         public_view: str | None = None
 
         # Audio tunnel first — join needs the wss URL. Screenshare tunnel waits
@@ -472,8 +516,8 @@ def run_live_meet_demo(
             print(
                 "[live] Navigator joining meeting first"
                 + (
-                    " (Zoom native + ZAK)…"
-                    if zoom_native
+                    " (Zoom web SDK + ZAK host — do NOT join as host yourself)…"
+                    if is_zoom
                     else " (voice reserved; share after)…"
                 ),
                 flush=True,
@@ -484,7 +528,13 @@ def run_live_meet_demo(
                 flush=True,
             )
         zoom_tokens_url = None
-        if zoom_native:
+        if is_zoom:
+            from navigator.meeting.attendee_setup import AttendeeSetupError, sync_attendee_zoom_credentials
+
+            try:
+                sync_attendee_zoom_credentials()
+            except AttendeeSetupError as exc:
+                raise RuntimeError(str(exc)) from exc
             zoom_tokens_url = zoom_zak_callback_url()
             # Tunnel may need a few more seconds after ensure_public_base_url's
             # probe loop; don't abort the demo on one flaky dig — Attendee will
@@ -504,12 +554,9 @@ def run_live_meet_demo(
                 flush=True,
             )
             print(
-                "[live] Zoom: native SDK + ZAK host "
-                "(no voice-agent reserve — Attendee native forbids it; "
-                "web SDK hangs join)",
+                "[live] Zoom: web SDK + ZAK host + voice-agent reserve (screenshare after intake)",
                 flush=True,
             )
-        reserve, zoom_sdk = share_media_join_opts(is_zoom=zoom_native)
         bot = client.join(
             meeting_url,
             bot_name=(persona.agent_name or "Navigator AI").strip() or "Navigator AI",
@@ -545,31 +592,6 @@ def run_live_meet_demo(
                     flush=True,
                 )
                 webbrowser.open(meeting_url)
-
-        # Screenshare tunnel after join — Meet only.
-        # Zoom native SDK cannot reserve voice-agent / screenshare (Attendee 400).
-        public_agent: str | None = None
-        if not zoom_native:
-            print("[live] starting screenshare tunnel…", flush=True)
-            tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
-            public_view = f"{tunnel.public_url}/view"
-            public_agent = f"{tunnel.public_url}/agent"
-            print(f"[live] screenshare URL ready: {public_view}", flush=True)
-            if tunnel._proc.poll() is not None:
-                raise RuntimeError("cloudflared died before screenshare")
-            # Avatar tile temporarily off — focus on product screenshare.
-            # try:
-            #     client.set_voice_agent_url(bot.id, public_agent)
-            #     print(f"[live] avatar tile armed: {public_agent}", flush=True)
-            # except Exception as exc:  # noqa: BLE001
-            #     print(f"[live] avatar tile skipped: {exc}", flush=True)
-            _ = public_agent  # keep tunnel agent path warm for later re-enable
-        else:
-            public_view = ""
-            print(
-                "[live] Zoom: skipping screenshare tunnel (native SDK — voice only)",
-                flush=True,
-            )
 
         if audio_bridge is not None:
             # Attendee retries WS up to ~60s; wait so intake isn't deaf.
@@ -691,7 +713,7 @@ def run_live_meet_demo(
             interactive=interactive_listen,
             listen=intake_listen,
             prefill=merged_prefill,
-            will_share_screen=not zoom_native,
+            will_share_screen=supports_screenshare,
         )
         print(f"[live] intake done: {intake.model_dump()}", flush=True)
         from navigator.meeting.intake import preferred_flow_id
@@ -699,6 +721,26 @@ def run_live_meet_demo(
         hint = preferred_flow_id(intake.looking_for)
         if hint:
             print(f"[live] intake suggests flow {hint!r} for looking_for", flush=True)
+
+        # Screenshare tunnel after intake so voice is never blocked by probe failures.
+        if supports_screenshare:
+            print("[live] starting screenshare tunnel…", flush=True)
+            try:
+                tunnel = start_tunnel(
+                    relay.port, binary=settings.tunnel_bin, ready_path=None
+                )
+                public_view = f"{tunnel.public_url}/view"
+                print(f"[live] screenshare URL ready: {public_view}", flush=True)
+                if tunnel._proc.poll() is not None:
+                    raise RuntimeError("cloudflared died before screenshare")
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[live] WARN: screenshare tunnel failed: {exc} — continuing voice-only",
+                    flush=True,
+                )
+                public_view = ""
+        else:
+            public_view = ""
 
         conversational = bool(settings.groq_api_key)
 
@@ -845,11 +887,11 @@ def run_live_meet_demo(
                     except Exception as exc:  # noqa: BLE001
                         print(f"[live] share-timeout TTS skipped: {exc}", flush=True)
             else:
-                print("[live] Zoom voice-only — no screenshare arm", flush=True)
+                print("[live] no screenshare URL — continuing voice-only", flush=True)
                 try:
                     meet_speaker.say(
                         "I'll walk you through the product on this call. "
-                        "Screen share isn't available on this Zoom path yet."
+                        "Tell me if you can't follow along."
                     )
                 except Exception as exc:  # noqa: BLE001
                     print(f"[live] voice-only TTS skipped: {exc}", flush=True)

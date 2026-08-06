@@ -142,7 +142,7 @@ ZOOM_MEETING = {
 
 
 def test_zoom_creates_a_meeting_for_host_first_join(calls):
-    """Host (ZAK bot) starts the room; guests must not enter before host."""
+    """Instant meeting — agent hosts via ZAK; End User may join anytime."""
     calls.replies.extend([{"access_token": "zt"}, ZOOM_MEETING])
     info = ZoomProvider(
         account_id="acc", client_id="cid", client_secret="sec"
@@ -162,7 +162,7 @@ def test_zoom_creates_a_meeting_for_host_first_join(calls):
     )
     assert "start_time" not in create_req["body"]
     settings_sent = create_req["body"]["settings"]
-    assert settings_sent["join_before_host"] is False
+    assert settings_sent["join_before_host"] is True
     assert settings_sent["waiting_room"] is False
 
 

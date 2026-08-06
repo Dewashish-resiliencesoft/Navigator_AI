@@ -262,11 +262,11 @@ class AttendeeClient:
         humans = [v for k, v in present.items() if k not in bots]
         return bool(humans) and not any(humans)
 
-    def speak(self, bot_id: str, wav: bytes) -> None:
+    def speak(self, bot_id: str, audio: bytes) -> None:
         """Play audio into the meeting via Attendee output_audio (MP3)."""
         import base64
 
-        mp3 = _wav_bytes_to_mp3(wav)
+        mp3 = audio if _is_mp3(audio) else _wav_bytes_to_mp3(audio)
         self._request(
             "POST",
             f"/bots/{bot_id}/output_audio",
@@ -315,6 +315,12 @@ class AttendeeClient:
         return Bot(id=str(data["id"]), state=mapped, raw_state=raw)
 
 
+def _is_mp3(data: bytes) -> bool:
+    if data[:3] == b"ID3":
+        return True
+    return len(data) >= 2 and data[0] == 0xFF and (data[1] & 0xE0) == 0xE0
+
+
 def _wav_bytes_to_mp3(wav: bytes) -> bytes:
     """Convert WAV → MP3 for Attendee output_audio. Needs ffmpeg on PATH."""
     import shutil
@@ -322,10 +328,14 @@ def _wav_bytes_to_mp3(wav: bytes) -> bytes:
     import tempfile
     from pathlib import Path
 
-    if wav[:3] == b"ID3" or wav[:2] == b"\xff\xfb":
-        return wav  # already mp3-ish
+    if _is_mp3(wav):
+        return wav
     if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg required to convert Piper WAV → MP3 for Meet speak")
+        raise RuntimeError(
+            "ffmpeg required to convert WAV to MP3 for Meet speak. "
+            "Install ffmpeg (winget install Gyan.FFmpeg) or set NAVIGATOR_FISH_API_KEY "
+            "so Fish TTS sends MP3 directly."
+        )
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "in.wav"
         dst = Path(tmp) / "out.mp3"

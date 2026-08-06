@@ -37,15 +37,30 @@ export const useDemoSession = create<DemoSession>((set, get) => ({
     try {
       const list = await api.listDemos();
       const active = pickActive(list);
-      set({ demo: active ?? get().demo, hydrated: true });
       if (active) {
         try {
           const fresh = await api.getDemo(active.demo_id);
-          set({ demo: fresh });
+          set({ demo: fresh, hydrated: true });
         } catch {
-          set({ demo: active });
+          set({ demo: active, hydrated: true });
         }
+        return;
       }
+      const cur = get().demo;
+      if (cur && ACTIVE.has(cur.status)) {
+        set({ demo: { ...cur, status: "finished", bot_in_meeting: false }, hydrated: true });
+        return;
+      }
+      if (cur?.demo_id) {
+        try {
+          const fresh = await api.getDemo(cur.demo_id);
+          set({ demo: fresh, hydrated: true });
+        } catch {
+          set({ demo: cur, hydrated: true });
+        }
+        return;
+      }
+      set({ hydrated: true });
     } catch {
       set({ hydrated: true });
     }
@@ -54,17 +69,27 @@ export const useDemoSession = create<DemoSession>((set, get) => ({
   refreshActive: async () => {
     const cur = get().demo;
     if (!cur || !ACTIVE.has(cur.status)) {
-      // Still scan list in case another tab / process started one.
       try {
         const list = await api.listDemos();
         const active = pickActive(list);
-        if (active && active.demo_id !== cur?.demo_id) {
-          set({ demo: active });
-        } else if (cur && !ACTIVE.has(cur.status)) {
-          // keep finished demo visible until user starts again
-        } else if (!active && cur && ACTIVE.has(cur.status)) {
-          // lost from runner — mark finished
-          set({ demo: { ...cur, status: "finished" } });
+        if (active) {
+          try {
+            const fresh = await api.getDemo(active.demo_id);
+            set({ demo: fresh });
+          } catch {
+            set({ demo: active });
+          }
+          return;
+        }
+        if (cur?.demo_id) {
+          try {
+            const fresh = await api.getDemo(cur.demo_id);
+            set({ demo: fresh });
+          } catch {
+            if (cur && ACTIVE.has(cur.status)) {
+              set({ demo: { ...cur, status: "finished", bot_in_meeting: false } });
+            }
+          }
         }
       } catch {
         /* ignore poll errors */
@@ -78,7 +103,7 @@ export const useDemoSession = create<DemoSession>((set, get) => ({
       // 404 → ended elsewhere
       const msg = errText(e);
       if (msg.toLowerCase().includes("404") || msg.toLowerCase().includes("no such")) {
-        set({ demo: { ...cur, status: "finished" } });
+        set({ demo: { ...cur, status: "finished", bot_in_meeting: false } });
       }
     }
   },
@@ -115,7 +140,12 @@ export const useDemoSession = create<DemoSession>((set, get) => ({
       if (msg.includes("no such demo") || msg.includes("404")) {
         const cur = get().demo;
         const finished = cur
-          ? { ...cur, status: "finished" as const, demo_id: id }
+          ? {
+              ...cur,
+              status: "finished" as const,
+              demo_id: id,
+              bot_in_meeting: false,
+            }
           : null;
         set({ demo: finished, ending: false });
         return finished;

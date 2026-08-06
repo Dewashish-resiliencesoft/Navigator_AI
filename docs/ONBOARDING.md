@@ -162,6 +162,12 @@ python init_env.py > .env   # edit POSTGRES_SSL_REQUIRE=false, DISABLE_EMAIL=tru
 
 # 4. Attendee API key — create account at http://localhost:8002 after first boot
 # Put key in Navigator .env as NAVIGATOR_ATTENDEE_API_KEY
+#
+# Voice agents (required for Meet screenshare): Navigator syncs docker/attendee-local.docker-compose.yaml
+# into the Attendee clone (ENABLE_VOICE_AGENTS=true). After clone or upgrade:
+#   ./scripts/sync-attendee-compose.sh
+#   cd ~/projects/attendee && docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml \
+#     --profile webpage-streamer up -d --force-recreate
 ```
 
 **Docker:** user must be in `docker` group (`sudo usermod -aG docker $USER`, re-login)
@@ -254,6 +260,7 @@ Full list: `.env.example`.
 | Symptom | Cause / fix |
 |---|---|
 | `Attendee unreachable` | Docker down, wrong compose files, or autostart path wrong |
+| `400 Voice agents are not enabled` | Run `./scripts/sync-attendee-compose.sh` then recreate Attendee stack (see below) |
 | Bot stuck "joining" on static Meet | Admit bot as host, or enable Meet Quick access |
 | Demo dies mid-start with `--reload` | File save triggers uvicorn reload; use plain uvicorn for live tests |
 | Screenshare NXDOMAIN | Attendee streamer container DNS — see `navigator/meeting/tunnel.py` |

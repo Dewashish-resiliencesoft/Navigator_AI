@@ -19,6 +19,7 @@ from navigator.core.settings import settings
 
 _COMPOSE_FILES = ("dev.docker-compose.yaml", "local.docker-compose.yaml")
 _COMPOSE_PROFILE = "webpage-streamer"
+_COMPOSE_ID = "voice-agents-v1"
 
 
 def is_local_attendee_url(base_url: str) -> bool:
@@ -50,7 +51,40 @@ def _compose_dir() -> Path:
     return settings.attendee_compose_dir.expanduser()
 
 
-def _docker_compose_up(compose_dir: Path) -> subprocess.CompletedProcess[str]:
+def _sync_attendee_override(compose_dir: Path) -> None:
+    """Copy bundled compose override (ENABLE_VOICE_AGENTS) into Attendee clone."""
+    import shutil
+
+    src = Path(__file__).resolve().parents[2] / "docker" / "attendee-local.docker-compose.yaml"
+    if not src.is_file():
+        return
+    dst = compose_dir / "local.docker-compose.yaml"
+    try:
+        shutil.copy2(src, dst)
+        print(f"[attendee] synced voice-agent compose → {dst}", flush=True)
+    except OSError as exc:
+        print(f"[attendee] WARN: compose sync skipped: {exc}", flush=True)
+
+
+def _needs_voice_agent_recreate(compose_dir: Path) -> bool:
+    marker = compose_dir / ".navigator-compose-id"
+    try:
+        current = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+    except OSError:
+        current = ""
+    return current != _COMPOSE_ID
+
+
+def _mark_voice_agent_compose(compose_dir: Path) -> None:
+    try:
+        (compose_dir / ".navigator-compose-id").write_text(_COMPOSE_ID, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _docker_compose_up(
+    compose_dir: Path, *, force_recreate: bool = False
+) -> subprocess.CompletedProcess[str]:
     missing = [f for f in _COMPOSE_FILES if not (compose_dir / f).is_file()]
     if missing:
         raise FileNotFoundError(
@@ -69,13 +103,19 @@ def _docker_compose_up(compose_dir: Path) -> subprocess.CompletedProcess[str]:
         "up",
         "-d",
     ]
-    return subprocess.run(
+    if force_recreate:
+        cmd.append("--force-recreate")
+
+    proc = subprocess.run(
         cmd,
         cwd=compose_dir,
         capture_output=True,
         text=True,
         check=False,
     )
+    if proc.returncode == 0 and force_recreate:
+        _mark_voice_agent_compose(compose_dir)
+    return proc
 
 
 def ensure_attendee_stack(
@@ -93,10 +133,6 @@ def ensure_attendee_stack(
     if not autostart or _in_pytest() or not is_local_attendee_url(base_url):
         return attendee_reachable(base_url)
 
-    if attendee_reachable(base_url):
-        print(f"[attendee] already up at {base_url}", flush=True)
-        return True
-
     if not compose_dir.is_dir():
         print(
             f"[attendee] WARN: {compose_dir} missing — clone attendee-labs/attendee "
@@ -105,9 +141,17 @@ def ensure_attendee_stack(
         )
         return False
 
+    _sync_attendee_override(compose_dir)
+    recreate = _needs_voice_agent_recreate(compose_dir)
+    if not recreate and attendee_reachable(base_url):
+        print(f"[attendee] already up at {base_url}", flush=True)
+        return True
+    if recreate:
+        print("[attendee] recreating stack (ENABLE_VOICE_AGENTS)…", flush=True)
+
     print(f"[attendee] starting docker stack in {compose_dir}…", flush=True)
     try:
-        proc = _docker_compose_up(compose_dir)
+        proc = _docker_compose_up(compose_dir, force_recreate=recreate)
     except FileNotFoundError as exc:
         print(f"[attendee] WARN: {exc}", flush=True)
         return False
@@ -121,8 +165,8 @@ def ensure_attendee_stack(
         )
         if "permission denied" in detail.lower() or "connect: permission denied" in detail.lower():
             print(
-                "[attendee] docker permission denied — run `newgrp docker` or "
-                "`sg docker -c 'docker compose … up -d'` from the Attendee clone",
+                "[attendee] docker permission denied — run ./scripts/fix-attendee-voice.sh "
+                "on the host (or add user to docker group)",
                 flush=True,
             )
         return False

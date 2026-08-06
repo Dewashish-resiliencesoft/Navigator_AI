@@ -79,6 +79,14 @@ class AttendeeClient:
                 raw = resp.read() or b"{}"
         except HTTPError as e:
             detail = e.read().decode(errors="replace")
+            if e.code == 400 and "Voice agents are not enabled" in detail:
+                raise RuntimeError(
+                    "Attendee voice agents are disabled. Run from Navigator repo:\n"
+                    "  ./scripts/sync-attendee-compose.sh\n"
+                    "  cd ~/projects/attendee && docker compose -f dev.docker-compose.yaml "
+                    "-f local.docker-compose.yaml --profile webpage-streamer up -d --force-recreate\n"
+                    f"Original: {detail}"
+                ) from e
             raise RuntimeError(f"Attendee {method} {path} -> {e.code}: {detail}") from e
         except URLError as e:
             raise RuntimeError(f"Attendee unreachable at {self.base_url}: {e}") from e

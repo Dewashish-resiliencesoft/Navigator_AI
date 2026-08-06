@@ -106,7 +106,15 @@ def navigate(
     page: Page, graph: SiteGraph, page_id: str, call: Navigate
 ) -> tuple[str, str]:
     url = graph.url_for(call.page_id)
-    page.goto(url, timeout=call.expects.timeout_ms)
+    from navigator.automation.login_match import same_page_path
+
+    try:
+        current = page.url or ""
+    except Exception:  # noqa: BLE001
+        current = ""
+    if current and same_page_path(current, url):
+        return f"already on {call.page_id}", call.page_id
+    page.goto(url, timeout=call.expects.timeout_ms, wait_until="domcontentloaded")
     try:
         from navigator.automation.browser.cursor import install_cursor
 

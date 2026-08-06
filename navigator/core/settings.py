@@ -101,10 +101,16 @@ class Settings(BaseSettings):
     brain_stt_model: str = "whisper-large-v3-turbo"
     brain_vision_text_model: str = "gemini-2.0-flash"
     brain_vision_image_model: str = "gemini-2.0-flash"
-    brain_listen_timeout_s: float = 12.0
-    brain_resume_silence_s: float = 10.0
+    brain_listen_timeout_s: float = 8.0
+    brain_resume_silence_s: float = 6.0
     #: Bot joins Meet first; link shared only after Navigator is inside.
     live_bot_first: bool = True
+    #: Seconds after human join before first spoken greet.
+    live_human_settle_s: float = 3.0
+    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier.
+    live_stt_min_silence_ms: int = 400
+    #: Max wait for Attendee audio websocket before starting demo anyway.
+    live_audio_ws_wait_s: float = 12.0
     #: Attendee signed-in Google Meet bot (needs Bot Logins in Attendee dashboard).
     google_meet_use_login: bool = False
     #: Product API key for local client dashboard (server-side; never sent to browser).

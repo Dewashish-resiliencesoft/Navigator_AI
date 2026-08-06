@@ -47,11 +47,11 @@ class DemoReadiness:
 
 
 def _has_offerable_flow(graph: SiteGraph) -> bool:
-    for page in graph.pages.values():
+    for page_id, page in graph.pages.items():
         for fid in page.flows:
             if is_offerable(graph.flow_validation(fid)):
                 try:
-                    if list(graph.flow(page.id, fid)):
+                    if list(graph.flow(page_id, fid)):
                         return True
                 except SiteGraphError:
                     continue
@@ -296,7 +296,14 @@ def assess_demo_readiness(
         )
     )
 
-    fish_ok = bool(settings.fish_api_key) or settings.tts_provider == "piper"
+    fish_ok = (
+        bool(settings.fish_api_key)
+        or settings.tts_provider == "piper"
+        or (
+            settings.tts_provider in ("auto", "gemini")
+            and bool(settings.gemini_api_key)
+        )
+    )
     checks.append(
         ReadinessCheck(
             id="tts",

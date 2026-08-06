@@ -14,6 +14,23 @@ class _RecordingSpeaker:
         self.said.append(text)
 
 
+def test_quick_greet_and_intake_from_prefill():
+    from navigator.meeting.intake import (
+        demo_kickoff_line,
+        intake_from_prefill,
+        quick_greet_line,
+    )
+
+    persona = Persona(product_name="Acme", agent_name="Nav", one_liner="x")
+    greet = quick_greet_line(persona, "Sam")
+    assert "Sam" in greet and "Nav" in greet
+    assert "share" in greet.lower()
+    assert "let's get started" in demo_kickoff_line().lower()
+    intake = intake_from_prefill({"company": "Co"}, human_name="Sam")
+    assert intake.name == "Sam"
+    assert intake.company == "Co"
+
+
 def test_greet_uses_persona_agent_and_product():
     persona = Persona(
         product_name="the WhatsApp CRM dashboard",

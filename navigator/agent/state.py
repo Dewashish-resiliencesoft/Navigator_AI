@@ -135,6 +135,8 @@ class CallDeps:
     handoff_webhook_url: str = ""
     #: Per-product Tier 2 live fallback. Default OFF — must be explicitly enabled.
     tier2_enabled: bool = False
+    #: Live demo already spoke quick greet + kickoff — skip INTRODUCING narration.
+    live_opening_done: bool = False
     #: Injected Tier 2 proposer for tests / live reasoner. Returns dict|None.
     tier2_propose: Callable[..., object] | None = None
     #: Injected guardrail classify. Defaults to explore.guardrail.classify_action.

@@ -46,6 +46,41 @@ _QUESTIONS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def demo_kickoff_line() -> str:
+    return "Without wasting any time, let's get started with the demo."
+
+
+def quick_greet_line(persona: Persona, prospect_name: str = "") -> str:
+    """Short greet right after human joins — no intake Q&A."""
+    from navigator.agent.speech_safety import prospect_facing_persona
+
+    persona = prospect_facing_persona(persona)
+    who = prospect_name.strip() or "there"
+    return (
+        f"Hi {who}, I'm {persona.agent_name}. Thanks for joining — "
+        f"I'll share my screen and walk you through {persona.product_name} now."
+    )
+
+
+def intake_from_prefill(
+    prefill: dict[str, str] | None = None,
+    *,
+    human_name: str = "",
+) -> ProspectIntake:
+    """Build intake from landing-page / signup data — no spoken questions."""
+    raw = {k: v.strip() for k, v in (prefill or {}).items() if v and v.strip()}
+    if human_name.strip() and "name" not in raw:
+        raw["name"] = human_name.strip()
+    return ProspectIntake(
+        name=_clean_field("name", raw.get("name", "")) or "there",
+        company=_clean_field("company", raw.get("company", "")) or "your team",
+        business_type=_clean_field("business_type", raw.get("business_type", ""))
+        or "your business",
+        looking_for=_clean_field("looking_for", raw.get("looking_for", ""))
+        or "seeing how the product works",
+    )
+
+
 def greet_line(persona: Persona, prospect_name: str = "") -> str:
     from navigator.agent.speech_safety import prospect_facing_persona
 

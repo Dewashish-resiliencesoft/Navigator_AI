@@ -1,5 +1,6 @@
-"""TTS speakers: Fish Audio (main) + Piper (local fallback).
+"""TTS speakers: Gemini Live (main) + Fish + Piper (legacy fallbacks).
 
+Gemini Live: native audio, English + Hindi, warm Indian female voice (Sulafat).
 Piper is GPL-3.0 (OHF-Voice/piper1-gpl). Fish uses cloud S2.1 Pro free + Sarah.
 """
 
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Protocol
 
 from navigator.voice.fish_tts import FishSpeaker
+from navigator.voice.gemini_live import GeminiLiveSpeaker
+from navigator.voice.language import SpokenLanguage
 
 
 class Speaker(Protocol):
@@ -26,6 +29,10 @@ class Speaker(Protocol):
 def make_speaker(
     *,
     mute: bool = False,
+    gemini_api_key: str = "",
+    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025",
+    gemini_live_voice: str = "Sulafat",
+    spoken_language: SpokenLanguage = "en",
     fish_api_key: str = "",
     fish_model: str = "s2.1-pro-free",
     fish_reference_id: str = "",
@@ -34,10 +41,26 @@ def make_speaker(
     piper_data_dir: str | Path = "voices",
     require_audio: bool = False,
 ) -> Speaker:
-    """Pick Fish (main) or Piper. require_audio=True raises if Meet would be silent."""
+    """Pick Gemini Live (main), Fish, or Piper. require_audio=True raises if silent."""
     if mute:
         return PrintSpeaker()
     provider = (tts_provider or "auto").strip().lower()
+    want_gemini = provider == "gemini" or (
+        provider == "auto" and bool((gemini_api_key or "").strip())
+    )
+    if want_gemini:
+        gemini = GeminiLiveSpeaker(
+            gemini_api_key,
+            model=gemini_live_model,
+            voice_name=gemini_live_voice,
+            spoken_language=spoken_language,
+        )
+        if gemini.available():
+            return gemini
+        if provider == "gemini" and require_audio:
+            raise RuntimeError(
+                "NAVIGATOR_TTS_PROVIDER=gemini but NAVIGATOR_GEMINI_API_KEY is empty."
+            )
     want_fish = provider == "fish" or (
         provider == "auto" and bool((fish_api_key or "").strip())
     )
@@ -60,8 +83,8 @@ def make_speaker(
         return piper
     if require_audio:
         raise RuntimeError(
-            "No TTS available for Meet. Set NAVIGATOR_FISH_API_KEY "
-            "(preferred, free S2.1 + Sarah) or install Piper:\n"
+            "No TTS available for Meet. Set NAVIGATOR_GEMINI_API_KEY "
+            "(Gemini Live, preferred) or NAVIGATOR_FISH_API_KEY or install Piper:\n"
             f"  .venv/bin/pip install 'piper-tts>=1.4'\n"
             f"  .venv/bin/python -m piper.download_voices {piper_voice} "
             f"--data-dir {piper_data_dir}"

@@ -1,0 +1,41 @@
+services:
+  navigator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NAVIGATOR_EXTRAS: slim
+    ports:
+      - "8080:8000"
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      NAVIGATOR_HEADFUL: "0"
+      NAVIGATOR_ATTENDEE_AUTOSTART: "1"
+      NAVIGATOR_ATTENDEE_BASE_URL: http://host.docker.internal:8002/api/v1
+      NAVIGATOR_ATTENDEE_COMPOSE_DIR: /attendee
+      NAVIGATOR_TUNNEL_BIN: /usr/local/bin/cloudflared
+      NAVIGATOR_DB_PATH: /data/navigator.db
+      NAVIGATOR_REGISTRY_DB: /data/registry.db
+      NAVIGATOR_CHROMA_PATH: /data/chroma
+      NAVIGATOR_CREDENTIAL_DB_PATH: /data/credentials.db
+      NAVIGATOR_PIPER_DATA_DIR: /data/voices
+      NAVIGATOR_EXPLORE_EPISODES_PATH: /data/explore_episodes
+    volumes:
+      - navigator-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${ATTENDEE_COMPOSE_DIR:-/home/akash-vaidya/projects/attendee}:/attendee
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+volumes:
+  navigator-data:

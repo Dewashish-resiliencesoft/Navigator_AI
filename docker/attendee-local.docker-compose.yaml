@@ -1,0 +1,34 @@
+# Canonical Attendee override for Navigator live demos.
+# Synced to ~/projects/attendee/local.docker-compose.yaml by scripts/sync-attendee-compose.sh
+services:
+  attendee-app-local:
+    ports: !override
+      - "8002:8000"
+    environment:
+      - CHARGE_CREDITS_FOR_BOTS=false
+      - ENABLE_VOICE_AGENTS=true
+      - VOICE_AGENT_URL_PREFIX_ALLOWLIST=https://
+
+  attendee-worker-local:
+    environment:
+      - CHARGE_CREDITS_FOR_BOTS=false
+      - ENABLE_VOICE_AGENTS=true
+
+  attendee-scheduler-local:
+    environment:
+      - CHARGE_CREDITS_FOR_BOTS=false
+      - ENABLE_VOICE_AGENTS=true
+
+  attendee-webpage-streamer-local:
+    # It self-exits after 900s without a keepalive (i.e. between demos), and a
+    # dead streamer means screenshare silently never appears in the meeting.
+    restart: unless-stopped
+    dns:
+      - 127.0.0.11
+      - 1.1.1.1
+      - 8.8.8.8
+    environment:
+      - ENABLE_VOICE_AGENTS=true
+      - VOICE_AGENT_URL_PREFIX_ALLOWLIST=https://
+    security_opt:
+      - seccomp:unconfined

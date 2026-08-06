@@ -51,7 +51,7 @@ sequenceDiagram
    Zoom ZAK callback) when `NAVIGATOR_PUBLIC_BASE_URL` is unset.
 6. **Playwright** runs headful/headless Chromium; the LangGraph agent in
    `navigator/agent/` executes flow steps and logs every action to SQLite.
-7. **Voice:** Fish or Piper TTS out; Groq Whisper STT in on live audio.
+7. **Voice:** Gemini Live TTS out (English + Hindi, Indian female voice); Groq Whisper STT in on live audio.
 
 ---
 
@@ -87,7 +87,7 @@ Code is organized **by feature** under `navigator/`:
 | `navigator/meeting/` | Attendee client, live demo orchestration, tunnels, Zoom ZAK |
 | `navigator/knowledge/` | Site graph parser, demo script composer, Chroma memory |
 | `navigator/client/` | Dashboard backend helpers + **`web/` React app** |
-| `navigator/voice/` | TTS (Fish/Piper), STT hooks |
+| `navigator/voice/` | TTS (Gemini Live; Fish/Piper legacy fallback), STT hooks, language switch |
 | `navigator/logs/` | ActionLog schema and queries |
 | `navigator/core/` | `settings.py`, shared Pydantic schemas |
 
@@ -152,7 +152,7 @@ python3 -m venv .venv
 
 # 2. Config
 cp .env.example .env
-# Minimum for live demo: GROQ (STT), TTS (Fish or Piper), ATTENDEE_API_KEY, CREDENTIAL_KEY
+# Minimum for live demo: GROQ (STT), GEMINI (TTS + vision), ATTENDEE_API_KEY, CREDENTIAL_KEY
 
 # 3. Attendee clone (once)
 git clone https://github.com/attendee-labs/attendee ~/projects/attendee
@@ -162,6 +162,12 @@ python init_env.py > .env   # edit POSTGRES_SSL_REQUIRE=false, DISABLE_EMAIL=tru
 
 # 4. Attendee API key — create account at http://localhost:8002 after first boot
 # Put key in Navigator .env as NAVIGATOR_ATTENDEE_API_KEY
+#
+# Voice agents (required for Meet screenshare): Navigator syncs docker/attendee-local.docker-compose.yaml
+# into the Attendee clone (ENABLE_VOICE_AGENTS=true). After clone or upgrade:
+#   ./scripts/sync-attendee-compose.sh
+#   cd ~/projects/attendee && docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml \
+#     --profile webpage-streamer up -d --force-recreate
 ```
 
 **Docker:** user must be in `docker` group (`sudo usermod -aG docker $USER`, re-login)
@@ -236,8 +242,11 @@ Disable with `NAVIGATOR_ATTENDEE_AUTOSTART=0`. Cloud Attendee URL skips docker.
 | `NAVIGATOR_ATTENDEE_API_KEY` | Token from Attendee UI |
 | `NAVIGATOR_ATTENDEE_AUTOSTART` | `1` = docker up on Navigator boot (local only) |
 | `NAVIGATOR_ATTENDEE_COMPOSE_DIR` | Path to Attendee clone (default `~/projects/attendee`) |
-| `NAVIGATOR_GROQ_API_KEY` | Live STT |
-| `NAVIGATOR_FISH_API_KEY` | TTS (or Piper via `NAVIGATOR_TTS_PROVIDER`) |
+| `NAVIGATOR_GROQ_API_KEY` | Live STT + text LLM (flow pick, phrasing) |
+| `NAVIGATOR_GEMINI_API_KEY` | Gemini Live TTS, vision turn brain, reflection |
+| `NAVIGATOR_GEMINI_LIVE_VOICE` | Prebuilt voice name (default `Sulafat` — warm female) |
+| `NAVIGATOR_DEFAULT_SPOKEN_LANGUAGE` | `en` (default) or `hi`; prospect can switch by voice |
+| `NAVIGATOR_FISH_API_KEY` | Legacy TTS fallback when Gemini key unset |
 | `NAVIGATOR_MEETING_URL` | Static Meet link for `platform=static` |
 | `NAVIGATOR_PUBLIC_BASE_URL` | Stable public origin for Zoom ZAK; empty → auto-tunnel |
 | `NAVIGATOR_CREDENTIAL_KEY` | Fernet key for Client product login vault |
@@ -251,6 +260,7 @@ Full list: `.env.example`.
 | Symptom | Cause / fix |
 |---|---|
 | `Attendee unreachable` | Docker down, wrong compose files, or autostart path wrong |
+| `400 Voice agents are not enabled` | Run `./scripts/sync-attendee-compose.sh` then recreate Attendee stack (see below) |
 | Bot stuck "joining" on static Meet | Admit bot as host, or enable Meet Quick access |
 | Demo dies mid-start with `--reload` | File save triggers uvicorn reload; use plain uvicorn for live tests |
 | Screenshare NXDOMAIN | Attendee streamer container DNS — see `navigator/meeting/tunnel.py` |
@@ -261,11 +271,60 @@ Full list: `.env.example`.
 
 ---
 
+## Docker
+
+Run Navigator in a container (Playwright Chromium + built dashboard + cloudflared).
+Attendee stays **separate** — start it on the host (or another compose stack) and point
+Navigator at it.
+
+```bash
+cp .env.example .env   # fill keys; Attendee API key required for live demos
+
+docker compose build
+docker compose up -d
+
+# Full stack (live demo: VAD, Chroma, Piper) — slower build, CPU torch only:
+# docker compose build --build-arg NAVIGATOR_EXTRAS=full
+
+# Dashboard (loopback only — use localhost, not 0.0.0.0 hostname)
+open http://127.0.0.1:8080/client
+```
+
+| Setting | Docker default | Why |
+|---|---|---|
+| `NAVIGATOR_HEADFUL` | `0` | headless Chromium in container |
+| `NAVIGATOR_ATTENDEE_AUTOSTART` | `0` | no Docker-in-Docker; run Attendee on host |
+| `NAVIGATOR_ATTENDEE_BASE_URL` | `http://host.docker.internal:8002/api/v1` | reach host Attendee from container |
+| Host port | **8080** → container 8000 | Attendee dev stack often binds host `:8000`; change `ports` in `docker-compose.yml` if free |
+| DB / Chroma / vault | `/data/*` volume | persists across restarts |
+
+**Attendee on host** (while Navigator runs in Docker):
+
+```bash
+cd ~/projects/attendee
+docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml \
+  --profile webpage-streamer up -d
+```
+
+Optional Redis (multi-worker coordination later):
+
+```bash
+docker compose --profile redis up -d
+# set NAVIGATOR_REDIS_URL=redis://redis:6379/0 in .env or compose environment
+```
+
+Logs: `docker compose logs -f navigator` · Stop: `docker compose down`
+
+---
+
 ## Quick reference
 
 ```bash
-# Backend
+# Backend (local venv)
 .venv/bin/uvicorn navigator.app.main:app --port 8000 --workers 1
+
+# Backend (Docker)
+docker compose up -d
 
 # Frontend dev
 cd navigator/client/web && npm run dev

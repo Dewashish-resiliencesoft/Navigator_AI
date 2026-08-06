@@ -48,6 +48,8 @@ def test_stop_marks_finished_immediately_while_worker_alive():
     assert handle._stop.is_set()
     assert handle.status == "finished"
     assert handle.finished_at is not None
+    assert handle.bot_in_meeting is False
+    assert any("demo ended" in s.lower() for s in handle.said)
 
 
 def test_stop_without_bot_id_still_sets_event():
@@ -119,8 +121,10 @@ def test_live_worker_sets_bot_in_meeting_when_ready(site_graph):
     )
     runner.wait(handle.demo_id, timeout=5.0)
 
-    assert handle.bot_in_meeting is True
     assert handle.bot_id == "bot-1"
+    assert handle.bot_in_meeting is False
+    assert any("join link ready" in s.lower() for s in handle.said)
+    assert any("demo completed" in s.lower() for s in handle.said)
 
 
 def test_live_worker_bot_in_meeting_false_until_ready(site_graph):

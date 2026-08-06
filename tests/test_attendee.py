@@ -17,6 +17,26 @@ def _resp(body: bytes, status: int = 200) -> MagicMock:
     return fake
 
 
+def test_join_voice_agents_disabled_hint():
+    from urllib.error import HTTPError
+
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    err = HTTPError(
+        url="https://x/bots",
+        code=400,
+        msg="Bad Request",
+        hdrs=None,
+        fp=MagicMock(read=MagicMock(return_value=b'{"voice_agent_settings":["Voice agents are not enabled"]}')),
+    )
+    with patch("navigator.meeting.attendee.urlopen", side_effect=err):
+        try:
+            client.join("https://meet.google.com/abc-defg-hij")
+        except RuntimeError as exc:
+            assert "ENABLE_VOICE_AGENTS" in str(exc) or "voice agents" in str(exc).lower()
+        else:
+            raise AssertionError("expected RuntimeError")
+
+
 def test_join_reserves_resources_without_screenshare():
     client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
     captured: dict = {}

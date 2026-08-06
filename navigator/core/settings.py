@@ -26,8 +26,12 @@ class Settings(BaseSettings):
     fish_model: str = "s2.1-pro-free"
     #: Default: warm conversational Sarah (fish.audio/m/3a7a3d3df82948c6bd756761d6b139b5)
     fish_reference_id: str = "3a7a3d3df82948c6bd756761d6b139b5"
-    #: "fish" | "piper" | "auto" (Fish if key set, else Piper)
-    tts_provider: Literal["auto", "fish", "piper"] = "auto"
+    #: "auto" | "gemini" | "fish" | "piper" (auto: Gemini → Fish → Piper)
+    tts_provider: Literal["auto", "gemini", "fish", "piper"] = "auto"
+    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
+    #: Warm female voice for English + Hindi (Gemini Live prebuilt).
+    gemini_live_voice: str = "Sulafat"
+    default_spoken_language: Literal["en", "hi"] = "en"
 
     # Phase 2+
     groq_api_key: str = ""
@@ -63,6 +67,9 @@ class Settings(BaseSettings):
     zoom_user_id: str = "me"
     #: Public origin Attendee can reach for ZAK callback (tunnel or deploy URL).
     public_base_url: str = ""
+    #: Local port the Navigator API listens on. Tunnelled for the Zoom ZAK
+    #: callback — pointing at the wrong port leaves Zoom waiting for a host.
+    api_port: int = 8000
     #: Optional shared secret appended as ?secret= on zoom_tokens_url.
     zoom_zak_callback_secret: str = ""
     product_url: str = ""
@@ -92,15 +99,23 @@ class Settings(BaseSettings):
     live_max_turns: int = 50
     #: Brain model pins (override provider defaults).
     brain_planning_model: str = "llama-3.3-70b-versatile"
-    brain_phrasing_model: str = "llama-3.3-70b-versatile"
+    brain_phrasing_model: str = "llama-3.1-8b-instant"
     brain_classify_model: str = "llama-3.1-8b-instant"
     brain_stt_model: str = "whisper-large-v3-turbo"
     brain_vision_text_model: str = "gemini-2.0-flash"
     brain_vision_image_model: str = "gemini-2.0-flash"
-    brain_listen_timeout_s: float = 12.0
-    brain_resume_silence_s: float = 10.0
+    brain_listen_timeout_s: float = 8.0
+    brain_resume_silence_s: float = 6.0
     #: Bot joins Meet first; link shared only after Navigator is inside.
     live_bot_first: bool = True
+    #: Seconds after human join before first spoken greet.
+    live_human_settle_s: float = 3.0
+    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier, but
+    #: below ~300 an ordinary mid-sentence pause ends the turn and the agent
+    #: replies to half a question.
+    live_stt_min_silence_ms: int = 400
+    #: Max wait for Attendee audio websocket before starting demo anyway.
+    live_audio_ws_wait_s: float = 12.0
     #: Attendee signed-in Google Meet bot (needs Bot Logins in Attendee dashboard).
     google_meet_use_login: bool = False
     #: Product API key for local client dashboard (server-side; never sent to browser).

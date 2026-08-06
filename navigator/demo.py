@@ -69,6 +69,10 @@ def _speaker():
     from navigator.voice.tts import PrintSpeaker
 
     speaker = make_speaker(
+        gemini_api_key=settings.gemini_api_key,
+        gemini_live_model=settings.gemini_live_model,
+        gemini_live_voice=settings.gemini_live_voice,
+        spoken_language=settings.default_spoken_language,
         fish_api_key=settings.fish_api_key,
         fish_model=settings.fish_model,
         fish_reference_id=settings.fish_reference_id,
@@ -78,8 +82,8 @@ def _speaker():
     )
     if isinstance(speaker, PrintSpeaker):
         print(
-            "[demo] no Fish key and no Piper voice — narration prints only.\n"
-            "[demo] set NAVIGATOR_FISH_API_KEY (Sarah / free S2.1) or install Piper."
+            "[demo] no Gemini/Fish key and no Piper voice — narration prints only.\n"
+            "[demo] set NAVIGATOR_GEMINI_API_KEY (Gemini Live) or NAVIGATOR_FISH_API_KEY or Piper."
         )
     return speaker
 

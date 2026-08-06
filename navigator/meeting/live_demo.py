@@ -1,20 +1,15 @@
-"""Live meeting demo: join quietly → intake → screenshare → agent demo graph.
+"""Live meeting demo: bot-first join → quick greet → screenshare → demo graph.
 
-Meet and Zoom share the same media path (tunnel → avatar tile → /view share).
-Zoom join: ZAK host + native SDK (no voice-agent / screenshare — Attendee limits).
+Meet and Zoom: tunnel /view → enable_screenshare after join (Zoom needs web SDK).
 
 Order (what the prospect experiences):
 
-  1. Bot joins *without* screen share (resources reserved)
-  2. Console prints join link
-  3. Wait until a human participant joins
-  4. Greet + ask name, company, business, what they're looking for
-  5. Pitch the wrapped product from the site-graph persona
-  6. Enable screenshare of Playwright, run intro→listen→plan→execute→verify
-  7. Leave bot, tear down
-
-Listening: STT when audio hub registered; else stdin when TTY; else scripted.
-Planning: Groq picks named flow or handoff when NAVIGATOR_GROQ_API_KEY set.
+  1. Bot joins quietly (voice agent resources reserved)
+  2. Join link shared once bot is in the meeting
+  3. Wait for human → brief settle → quick greet (no long Q&A)
+  4. Browser opens on start page → screenshare armed
+  5. Kickoff line → agent walkthrough (seamless in-page clicks, no reload spam)
+  6. Leave bot, tear down
 """
 
 from __future__ import annotations
@@ -36,11 +31,16 @@ from navigator.automation.browser.cursor import install_cursor
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
 from navigator.automation.browser.product_login import login_product
 from navigator.automation.browser.screen_context import screen_snapshot
+from navigator.automation.external_links import url_origin
 from navigator.knowledge.product_brief import load_agent_context
 from navigator.knowledge.site_graph import load_site_graph
 from navigator.logs.store import ActionLog
 from navigator.meeting.attendee import AttendeeClient, ParticipantWaitStopped
-from navigator.meeting.intake import run_intake
+from navigator.meeting.intake import (
+    demo_kickoff_line,
+    intake_from_prefill,
+    quick_greet_line,
+)
 from navigator.meeting.meet_speaker import MeetSpeaker
 from navigator.meeting.relay import push_frame, start_relay
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
@@ -95,7 +95,8 @@ def _wait_meet_utterance(
             except Empty:
                 continue
 
-    for pcm in VoiceSegmenter().segments(frames()):
+    segmenter = VoiceSegmenter(min_silence_ms=settings.live_stt_min_silence_ms)
+    for pcm in segmenter.segments(frames()):
         text = (transcribe(pcm, api_key) or "").strip()
         if not text:
             continue
@@ -126,13 +127,11 @@ def assert_live_site_graph(path: Path) -> None:
 def share_media_join_opts(*, is_zoom: bool) -> tuple[bool, str | None]:
     """Join flags for Meet vs Zoom.
 
-    Meet: reserve voice agent → avatar tile + screenshare after join.
-    Zoom: native SDK + ZAK host only. Attendee rejects ``reserve_resources`` on
-    native Zoom (``voice agent not supported``); ``zoom_sdk=web`` hangs join so
-    guests sit on “waiting for the host”. Screenshare on Zoom stays deferred.
+    Meet: reserve voice agent → mid-call screenshare via tunnel /view.
+    Zoom: web SDK + reserve so screenshare PATCH works (native SDK blocks it).
     """
     if is_zoom:
-        return False, None
+        return True, "web"
     return True, None
 
 
@@ -164,13 +163,9 @@ def _require_live_settings(meeting_url: str) -> None:
         if not val
     ]
     if is_zoom_meeting(meeting_url) and not settings.public_base_url:
-        # Empty is OK locally — zoom_zak_callback_url() auto-tunnels :8000.
-        # Still flag it when cloudflared is missing so the error is early.
-        from shutil import which
-        from pathlib import Path
+        from navigator.meeting.tunnel import tunnel_binary_available
 
-        tunnel = settings.tunnel_bin
-        if tunnel != "cloudflared" and not Path(tunnel).is_file() and not which(tunnel):
+        if not tunnel_binary_available(settings.tunnel_bin):
             missing.append("NAVIGATOR_PUBLIC_BASE_URL (or a working tunnel_bin)")
     if missing:
         raise RuntimeError(f"missing config for live Meet demo: {', '.join(missing)}")
@@ -272,7 +267,7 @@ def wait_until_joined(
                 "[live] Or admit Navigator once from another device, then re-run.",
                 flush=True,
             )
-        time.sleep(2)
+        time.sleep(0.75)
     raise TimeoutError(
         f"Attendee bot did not join within {timeout_s}s (last={last}). "
         "For bot-first demos, enable Meet Quick access so Navigator enters "
@@ -295,28 +290,37 @@ def _share_meet_link(*, meeting_url: str, bot_ready: bool) -> None:
     print("=" * 60, flush=True)
 
 
-def _speaker(*, mute: bool):
+def _make_live_speaker(
+    *,
+    mute: bool,
+    spoken_language: str = "en",
+    require_audio: bool = False,
+):
     return make_speaker(
         mute=mute,
+        gemini_api_key=settings.gemini_api_key,
+        gemini_live_model=settings.gemini_live_model,
+        gemini_live_voice=settings.gemini_live_voice,
+        spoken_language=spoken_language,  # type: ignore[arg-type]
         fish_api_key=settings.fish_api_key,
         fish_model=settings.fish_model,
         fish_reference_id=settings.fish_reference_id,
         tts_provider=settings.tts_provider,
         piper_voice=settings.piper_voice,
         piper_data_dir=settings.piper_data_dir,
+        require_audio=require_audio,
     )
 
 
-def _require_tts_for_meet(*, mute: bool):
-    """Live Meet needs Fish (preferred) or Piper WAV → Attendee speak."""
-    return make_speaker(
+def _speaker(*, mute: bool, spoken_language: str = "en"):
+    return _make_live_speaker(mute=mute, spoken_language=spoken_language)
+
+
+def _require_tts_for_meet(*, mute: bool, spoken_language: str = "en"):
+    """Live Meet needs Gemini Live (preferred), Fish, or Piper WAV → Attendee speak."""
+    return _make_live_speaker(
         mute=mute,
-        fish_api_key=settings.fish_api_key,
-        fish_model=settings.fish_model,
-        fish_reference_id=settings.fish_reference_id,
-        tts_provider=settings.tts_provider,
-        piper_voice=settings.piper_voice,
-        piper_data_dir=settings.piper_data_dir,
+        spoken_language=spoken_language,
         require_audio=True,
     )
 
@@ -409,8 +413,13 @@ def run_live_meet_demo(
         open_meet_in_browser = settings.open_meet_in_browser
 
     client = AttendeeClient(settings.attendee_base_url, settings.attendee_api_key)
+    if any(h in settings.attendee_base_url for h in ("localhost", "127.0.0.1")):
+        from navigator.meeting.attendee_stack import ensure_webpage_streamer
+
+        ensure_webpage_streamer()
     _leave_stale_bots(client, meeting_url)
-    speaker = _require_tts_for_meet(mute=mute)
+    spoken_language: str = settings.default_spoken_language
+    speaker = _require_tts_for_meet(mute=mute, spoken_language=spoken_language)
     # Warm synthesizer so first Meet utterance isn't cold.
     if hasattr(speaker, "synthesize_wav"):
         try:
@@ -472,7 +481,7 @@ def run_live_meet_demo(
             print(
                 "[live] Navigator joining meeting first"
                 + (
-                    " (Zoom native + ZAK)…"
+                    " (Zoom web SDK + ZAK)…"
                     if zoom_native
                     else " (voice reserved; share after)…"
                 ),
@@ -492,21 +501,24 @@ def run_live_meet_demo(
             from navigator.meeting.zoom_host import _zak_origin_reachable, ensure_public_base_url
 
             base = ensure_public_base_url()
+            # Zoom meetings are created with join_before_host=False, so the ZAK
+            # is what makes Navigator the host. If Attendee cannot reach the
+            # callback there is no host at all and every guest sits on "waiting
+            # for the host" until they give up — fail here instead.
             if not _zak_origin_reachable(base):
-                print(
-                    f"[live] WARN: ZAK probe failed for {base}/v1/zoom/zak — "
-                    "continuing; if Zoom waits for host, set "
-                    "NAVIGATOR_PUBLIC_BASE_URL to a stable public origin",
-                    flush=True,
+                raise RuntimeError(
+                    f"Zoom host join needs Attendee to reach {base}/v1/zoom/zak, "
+                    "but that origin does not answer. Navigator would never "
+                    "become host and everyone would wait in the lobby. Set "
+                    "NAVIGATOR_PUBLIC_BASE_URL to a stable public origin, or "
+                    "check that cloudflared is running."
                 )
             print(
                 f"[live] Zoom host ZAK callback: {zoom_tokens_url.split('?', 1)[0]}",
                 flush=True,
             )
             print(
-                "[live] Zoom: native SDK + ZAK host "
-                "(no voice-agent reserve — Attendee native forbids it; "
-                "web SDK hangs join)",
+                "[live] Zoom: web SDK + ZAK host (screenshare via tunnel after join)",
                 flush=True,
             )
         reserve, zoom_sdk = share_media_join_opts(is_zoom=zoom_native)
@@ -546,42 +558,27 @@ def run_live_meet_demo(
                 )
                 webbrowser.open(meeting_url)
 
-        # Screenshare tunnel after join — Meet only.
-        # Zoom native SDK cannot reserve voice-agent / screenshare (Attendee 400).
+        # Screenshare tunnel after bot join (Meet + Zoom web SDK).
         public_agent: str | None = None
-        if not zoom_native:
-            print("[live] starting screenshare tunnel…", flush=True)
-            tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
-            public_view = f"{tunnel.public_url}/view"
-            public_agent = f"{tunnel.public_url}/agent"
-            print(f"[live] screenshare URL ready: {public_view}", flush=True)
-            if tunnel._proc.poll() is not None:
-                raise RuntimeError("cloudflared died before screenshare")
-            # Avatar tile temporarily off — focus on product screenshare.
-            # try:
-            #     client.set_voice_agent_url(bot.id, public_agent)
-            #     print(f"[live] avatar tile armed: {public_agent}", flush=True)
-            # except Exception as exc:  # noqa: BLE001
-            #     print(f"[live] avatar tile skipped: {exc}", flush=True)
-            _ = public_agent  # keep tunnel agent path warm for later re-enable
-        else:
-            public_view = ""
-            print(
-                "[live] Zoom: skipping screenshare tunnel (native SDK — voice only)",
-                flush=True,
-            )
+        print("[live] starting screenshare tunnel…", flush=True)
+        tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
+        public_view = f"{tunnel.public_url}/view"
+        public_agent = f"{tunnel.public_url}/agent"
+        print(f"[live] screenshare URL ready: {public_view}", flush=True)
+        if tunnel._proc.poll() is not None:
+            raise RuntimeError("cloudflared died before screenshare")
+        _ = public_agent  # avatar tile path reserved for later
 
         if audio_bridge is not None:
-            # Attendee retries WS up to ~60s; wait so intake isn't deaf.
             print("[live] waiting for Attendee audio websocket…", flush=True)
-            deadline = time.time() + 45
+            deadline = time.time() + settings.live_audio_ws_wait_s
             while time.time() < deadline and audio_bridge.clients_connected < 1:
                 _check_stop(stop_event)
-                time.sleep(0.5)
+                time.sleep(0.25)
             if audio_bridge.clients_connected < 1:
                 print(
                     "[live] WARNING: Attendee never connected to audio WS — "
-                    "voice listen will fail. Check tunnel / wss URL.",
+                    "continuing; voice listen may be delayed.",
                     flush=True,
                 )
             else:
@@ -623,6 +620,14 @@ def run_live_meet_demo(
                 pending_barge_in=pending_barge_in,
             )
 
+        merged_prefill = dict(intake_prefill or {})
+
+        from navigator.agent.speech_safety import prospect_facing_persona
+
+        facing = prospect_facing_persona(
+            persona, fallback_product=product_id or graph_cfg.site or ""
+        )
+
         print("[live] waiting for a human participant…", flush=True)
         human_name = ""
         if wait_for_human:
@@ -636,10 +641,20 @@ def run_live_meet_demo(
                     or ""
                 )
                 print(f"[live] human joined: {human_name!r}", flush=True)
+                if merged_prefill.get("name") is None and human_name:
+                    merged_prefill["name"] = human_name
+                settle = max(0.0, settings.live_human_settle_s)
+                if settle:
+                    print(f"[live] settle {settle:.1f}s before greet…", flush=True)
+                    time.sleep(settle)
+                relay.set_status("speaking", "Greeting…")
+                meet_speaker.say(
+                    quick_greet_line(facing, merged_prefill.get("name", human_name))
+                )
                 _start_human_leave_watcher(
                     client=client,
                     bot_id=bot.id,
-                    human_name=human_name or "there",
+                    human_name=human_name or merged_prefill.get("name") or "there",
                     agent_name=persona.agent_name,
                     stop_event=stop_event,
                     speaker_box=speaker_box,
@@ -657,43 +672,14 @@ def run_live_meet_demo(
                     input()
                 else:
                     print(
-                        "[live] no join event (non-interactive) — continuing intake",
+                        "[live] no join event — quick greet anyway",
                         flush=True,
                     )
+                relay.set_status("speaking", "Greeting…")
+                meet_speaker.say(quick_greet_line(facing, merged_prefill.get("name", "")))
 
-        intake_listen = None
-        if audio_bridge is not None and settings.groq_api_key:
-            print("[live] intake will wait for your voice answers", flush=True)
-
-            def intake_listen(prompt: str) -> str:
-                return _wait_meet_utterance(
-                    audio_bridge.inbound,
-                    prompt=prompt,
-                    api_key=settings.groq_api_key,
-                    timeout_s=60.0,
-                    audio_bridge=audio_bridge,
-                )
-
-        merged_prefill = dict(intake_prefill or {})
-        if human_name and "name" not in merged_prefill:
-            merged_prefill["name"] = human_name
-
-        print("[live] starting intake (voice into Meet)…", flush=True)
-        _check_stop(stop_event)
-        relay.set_status("listening", "Listening…")
-        from navigator.agent.speech_safety import prospect_facing_persona
-
-        intake = run_intake(
-            persona=prospect_facing_persona(
-                persona, fallback_product=product_id or graph_cfg.site or ""
-            ),
-            speaker=meet_speaker,
-            interactive=interactive_listen,
-            listen=intake_listen,
-            prefill=merged_prefill,
-            will_share_screen=not zoom_native,
-        )
-        print(f"[live] intake done: {intake.model_dump()}", flush=True)
+        intake = intake_from_prefill(merged_prefill, human_name=human_name)
+        print(f"[live] intake (prefill): {intake.model_dump()}", flush=True)
         from navigator.meeting.intake import preferred_flow_id
 
         hint = preferred_flow_id(intake.looking_for)
@@ -702,14 +688,13 @@ def run_live_meet_demo(
 
         conversational = bool(settings.groq_api_key)
 
-        # Inbound Meet audio for agent LISTENING (interrupt / anything-else).
         audio_frames = None
         if audio_bridge is not None:
-            # Per-get wait: keep listening between walkthrough steps for interrupts.
-            audio_frames = client.audio_stream(bot.id, timeout_s=6.0)
+            audio_frames = client.audio_stream(bot.id, timeout_s=4.0)
             print("[live] Meet audio STT armed", flush=True)
 
         session_id = session_id or uuid4()
+        live_opening_done = False
         with ActionLog(settings.db_path) as log, sync_playwright() as pw:
             browser = pw.chromium.launch(headless=not headful)
             context = browser.new_context(viewport={"width": 1280, "height": 720})
@@ -735,6 +720,12 @@ def run_live_meet_demo(
                 )
 
             origin = _real_origin()
+            # The graph may carry a stale/placeholder base_url. Anything that
+            # compares the live URL against it (external-link revert, page
+            # resolution) would then treat every product page as off-origin and
+            # yank the shared screen back after each action.
+            if url_origin(graph_cfg.base_url) != url_origin(origin):
+                graph_cfg = graph_cfg.model_copy(update={"base_url": origin})
             # Prefer per-product vault; fall back to legacy process-wide env for
             # CLI smoke / single-tenant local runs.
             login_email = ""
@@ -760,6 +751,10 @@ def run_live_meet_demo(
             if not (login_email and login_password):
                 login_email = settings.product_login_email
                 login_password = settings.product_login_password
+            start_spec = graph_cfg.page(page_id)
+            hold_url = urljoin(origin, start_spec.url.lstrip("/"))
+            from navigator.automation.login_match import same_page_path
+
             if login_email and login_password:
                 if not login_url:
                     login_url = settings.product_url.strip() or origin
@@ -770,9 +765,9 @@ def run_live_meet_demo(
                     url=login_url,
                     email=login_email,
                     password=login_password,
-                    speaker=meet_speaker,
-                    attendee=client,
-                    bot_id=bot.id,
+                    speaker=None,
+                    attendee=None,
+                    bot_id=None,
                 )
                 if gate is LoginGateResult.failed:
                     print(
@@ -782,21 +777,13 @@ def run_live_meet_demo(
                     context.close()
                     browser.close()
                     return bot_id or ""
+                if not same_page_path(page.url, hold_url):
+                    print(f"[live] opening start page: {hold_url}", flush=True)
+                    page.goto(hold_url, wait_until="domcontentloaded", timeout=60_000)
             else:
-                page.goto(origin, wait_until="domcontentloaded")
-
-            # Hold on the walkthrough start page (do not advance the flow yet).
-            start_spec = graph_cfg.page(page_id)
-            hold_url = urljoin(origin, start_spec.url.lstrip("/"))
-            is_fixture = "fixtures" in hold_url or hold_url.endswith(".html")
-            is_real_site = "fixtures" not in page.url and not page.url.endswith(".html")
-            if is_fixture and is_real_site:
-                print(f"[live] holding on logged-in real site: {page.url}", flush=True)
-            elif hold_url.rstrip("/") not in page.url.rstrip("/"):
-                print(f"[live] opening start page and holding: {hold_url}", flush=True)
+                print(f"[live] opening start page: {hold_url}", flush=True)
                 page.goto(hold_url, wait_until="domcontentloaded", timeout=60_000)
-            else:
-                print(f"[live] already on start page: {page.url}", flush=True)
+            print(f"[live] demo page ready: {page.url}", flush=True)
 
             def _push() -> None:
                 try:
@@ -804,55 +791,32 @@ def run_live_meet_demo(
                 except Exception as exc:  # noqa: BLE001
                     print(f"[live] frame push skipped: {exc}", flush=True)
 
-            # Paint a few frames so /view is not blank when Attendee opens it.
-            for _ in range(5):
+            # Paint frames so /view is not blank when Attendee opens it.
+            for _ in range(3):
                 _push()
-                time.sleep(0.15)
+                time.sleep(0.08)
 
             baseline_hits = relay.frame_hits
-            if public_view:
-                print("[live] enabling screen share (holding start page)…", flush=True)
-                try:
-                    meet_speaker.say(
-                        "One moment — I'm sharing my screen now. "
-                        "I'll start the walkthrough once you can see it."
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[live] pre-share TTS skipped: {exc}", flush=True)
+            print("[live] enabling screen share…", flush=True)
+            relay.set_status("thinking", "Sharing screen…")
+            arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
+            live = wait_until_screenshare_live(
+                relay,
+                push_frame=_push,
+                baseline_frame_hits=baseline_hits,
+                min_frame_hits=4,
+                timeout_s=45.0,
+                settle_s=1.0,
+            )
+            if not live:
+                print("[live] screenshare slow — continuing demo anyway", flush=True)
 
-                arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
-                live = wait_until_screenshare_live(
-                    relay,
-                    push_frame=_push,
-                    baseline_frame_hits=baseline_hits,
-                    min_frame_hits=10,
-                    timeout_s=90.0,
-                    settle_s=2.5,
-                )
-                if live:
-                    try:
-                        meet_speaker.say(
-                            "Screen share is up. Let's walk through the product."
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[live] share-ready TTS skipped: {exc}", flush=True)
-                else:
-                    try:
-                        meet_speaker.say(
-                            "Screen share is still catching up — I'll start the "
-                            "walkthrough; tell me if you can't see my screen."
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[live] share-timeout TTS skipped: {exc}", flush=True)
-            else:
-                print("[live] Zoom voice-only — no screenshare arm", flush=True)
-                try:
-                    meet_speaker.say(
-                        "I'll walk you through the product on this call. "
-                        "Screen share isn't available on this Zoom path yet."
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[live] voice-only TTS skipped: {exc}", flush=True)
+            relay.set_status("speaking", "Starting demo…")
+            try:
+                meet_speaker.say(demo_kickoff_line())
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] kickoff TTS skipped: {exc}", flush=True)
+            live_opening_done = True
 
             from navigator.automation.login_match import LoginConfig
 
@@ -977,6 +941,8 @@ def run_live_meet_demo(
                 handoff_webhook_url=handoff_webhook_url,
                 decision_db_path=settings.db_path,
                 on_user_utterance=_schedule_prefetch,
+                spoken_language=spoken_language,  # type: ignore[arg-type]
+                live_opening_done=live_opening_done,
             )
 
             mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"
@@ -999,7 +965,7 @@ def run_live_meet_demo(
                 flush=True,
             )
             # Let final Meet TTS finish playing before we tear the bot down.
-            time.sleep(1.5)
+            time.sleep(0.6)
 
             context.close()
             browser.close()
@@ -1017,6 +983,11 @@ def run_live_meet_demo(
         if tunnel is not None:
             tunnel.stop()
         relay.stop()
+        if hasattr(speaker, "close"):
+            try:
+                speaker.close()  # type: ignore[union-attr]
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] TTS close skipped: {exc}", flush=True)
 
     return bot_id or ""
 

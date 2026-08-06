@@ -123,6 +123,8 @@ class CallDeps:
     retrieve: Callable[..., object] | None = None
     #: Injected phrasing for tests. Signature matches agent.phrasing.phrase_turn.
     phrase: Callable[..., str] | None = None
+    #: Spoken language for TTS + phrasing: "en" (default) or "hi".
+    spoken_language: Literal["en", "hi"] = "en"
     #: Mid-step STT for requires_live_input fills. Signature (prompt: str) -> heard.
     listen_once: Callable[[str], str] | None = None
     #: Entity extraction for live fills. Signature (key, question, heard) -> str.
@@ -133,6 +135,8 @@ class CallDeps:
     handoff_webhook_url: str = ""
     #: Per-product Tier 2 live fallback. Default OFF — must be explicitly enabled.
     tier2_enabled: bool = False
+    #: Live demo already spoke quick greet + kickoff — skip INTRODUCING narration.
+    live_opening_done: bool = False
     #: Injected Tier 2 proposer for tests / live reasoner. Returns dict|None.
     tier2_propose: Callable[..., object] | None = None
     #: Injected guardrail classify. Defaults to explore.guardrail.classify_action.

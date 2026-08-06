@@ -64,7 +64,11 @@ _CURSOR_JS = """
 
 
 def install_cursor(page: Page) -> None:
-    page.add_init_script(_CURSOR_JS)
+    # Called before every cursor move, but init scripts are never replaced —
+    # registering per call leaves hundreds queued to run on each real navigation.
+    if not getattr(page, "_nav_cursor_init", False):
+        page.add_init_script(_CURSOR_JS)
+        page._nav_cursor_init = True
     page.evaluate(_CURSOR_JS)
 
 

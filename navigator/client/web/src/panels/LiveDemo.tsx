@@ -31,6 +31,7 @@ export function LiveDemo() {
   const ending = useDemoSession((s) => s.ending);
   const startSession = useDemoSession((s) => s.start);
   const endSession = useDemoSession((s) => s.end);
+  const refreshActive = useDemoSession((s) => s.refreshActive);
 
   const [platform, setPlatform] = useState("google_meet");
   const [topic, setTopic] = useState("");
@@ -66,7 +67,16 @@ export function LiveDemo() {
   // deadlocks test demos: static Meet (and some Zoom joins) leave the bot in
   // the waiting room until a human opens the link and admits it.
   const joinUrl = demo?.meeting_url ?? null;
-  const botReady = !!demo?.bot_in_meeting;
+  const botReady = live && !!demo?.bot_in_meeting;
+  const joinDisplay =
+    live || starting ? (joinUrl ?? LINK_PENDING) : done ? "—" : (joinUrl ?? "—");
+  const transcriptLines = (demo?.said ?? []).filter(
+    (line) => !done || !/join link ready/i.test(line),
+  );
+
+  useEffect(() => {
+    void refreshActive();
+  }, [refreshActive]);
 
   useEffect(() => {
     let alive = true;
@@ -116,7 +126,7 @@ export function LiveDemo() {
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [demo?.said.length]);
+  }, [transcriptLines.length]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -558,6 +568,18 @@ export function LiveDemo() {
           Active demo
         </CardTitle>
 
+        {live && (
+          <p className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[0.76rem] text-emerald-800 dark:text-emerald-300">
+            Test demo running — open the join link and admit Navigator. End closes
+            meeting and browser.
+          </p>
+        )}
+        {done && (
+          <p className="mb-3 text-[0.76rem] text-[var(--muted)]">
+            Demo finished. Start a new test demo when ready.
+          </p>
+        )}
+
         <p className="mb-2 text-[0.74rem] font-medium tracking-wide text-[var(--muted)]">
           Join link
         </p>
@@ -567,14 +589,14 @@ export function LiveDemo() {
         >
           <AnimatePresence mode="popLayout" initial={false}>
             <motion.span
-              key={joinUrl ?? (live ? "pending" : "idle")}
+              key={joinDisplay}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={soft}
-              className={joinUrl ? "" : "text-[var(--muted)]"}
+              className={joinDisplay !== "—" && joinDisplay !== LINK_PENDING ? "" : "text-[var(--muted)]"}
             >
-              {joinUrl ?? (live || starting ? LINK_PENDING : "—")}
+              {joinDisplay}
             </motion.span>
           </AnimatePresence>
         </div>
@@ -591,7 +613,7 @@ export function LiveDemo() {
         )}
 
         <div className="mt-4 flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={copy} disabled={!joinUrl}>
+          <Button variant="secondary" onClick={copy} disabled={!joinUrl || !live}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy link"}
           </Button>
@@ -710,10 +732,10 @@ export function LiveDemo() {
 
       <Card span="lg:col-span-2">
         <CardTitle hint="What the agent has said so far, live.">Transcript</CardTitle>
-        {!demo?.said?.length && <Empty>Nothing yet.</Empty>}
+        {!transcriptLines.length && <Empty>Nothing yet.</Empty>}
         <ul ref={listRef} className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
           <AnimatePresence initial={false}>
-            {(demo?.said ?? []).map((line, i) => (
+            {transcriptLines.map((line, i) => (
               <motion.li
                 key={`${i}-${line.slice(0, 24)}`}
                 variants={rise}

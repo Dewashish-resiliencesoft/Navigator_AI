@@ -235,6 +235,25 @@ class DemoRunner:
         remote.update(local)
         return list(remote.values())
 
+    @staticmethod
+    def _finalize_live_demo(handle: DemoHandle, *, operator_stopped: bool = False) -> None:
+        """Clear meeting flag and append a terminal transcript line once."""
+        handle.bot_in_meeting = False
+        tail = [s.lower() for s in handle.said[-3:]]
+        if any(
+            t.startswith(("demo ended", "demo completed", "demo failed")) for t in tail
+        ):
+            return
+        if operator_stopped or handle._stop.is_set():
+            handle.said.append("Demo ended — meeting and browser closed.")
+        elif handle.status == "failed":
+            handle.said.append("Demo failed — meeting and browser closed.")
+        else:
+            handle.said.append(
+                f"Demo completed — {handle.actions} actions, "
+                f"{handle.failures} failures."
+            )
+
     def stop(
         self,
         demo_id: UUID,
@@ -262,6 +281,7 @@ class DemoRunner:
 
         # UI End must free Start immediately — don't wait for worker teardown.
         if handle.status in ("starting", "running"):
+            self._finalize_live_demo(handle, operator_stopped=True)
             handle.status = "finished"
             handle.error = None
             handle.finished_at = datetime.now(timezone.utc)
@@ -420,7 +440,11 @@ class DemoRunner:
             handle.failures = sum(
                 1 for e in entries if not (e.verify and e.verify.passed)
             )
+            self._finalize_live_demo(
+                handle, operator_stopped=handle._stop.is_set()
+            )
             self._persist_run(handle)
+            self._store.save(handle)
 
     @staticmethod
     def _product_live_kwargs(product_id: str) -> dict:

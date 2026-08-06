@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     zoom_user_id: str = "me"
     #: Public origin Attendee can reach for ZAK callback (tunnel or deploy URL).
     public_base_url: str = ""
+    #: Local port the Navigator API listens on. Tunnelled for the Zoom ZAK
+    #: callback — pointing at the wrong port leaves Zoom waiting for a host.
+    api_port: int = 8000
     #: Optional shared secret appended as ?secret= on zoom_tokens_url.
     zoom_zak_callback_secret: str = ""
     product_url: str = ""
@@ -96,7 +99,7 @@ class Settings(BaseSettings):
     live_max_turns: int = 50
     #: Brain model pins (override provider defaults).
     brain_planning_model: str = "llama-3.3-70b-versatile"
-    brain_phrasing_model: str = "llama-3.3-70b-versatile"
+    brain_phrasing_model: str = "llama-3.1-8b-instant"
     brain_classify_model: str = "llama-3.1-8b-instant"
     brain_stt_model: str = "whisper-large-v3-turbo"
     brain_vision_text_model: str = "gemini-2.0-flash"
@@ -107,7 +110,9 @@ class Settings(BaseSettings):
     live_bot_first: bool = True
     #: Seconds after human join before first spoken greet.
     live_human_settle_s: float = 3.0
-    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier.
+    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier, but
+    #: below ~300 an ordinary mid-sentence pause ends the turn and the agent
+    #: replies to half a question.
     live_stt_min_silence_ms: int = 400
     #: Max wait for Attendee audio websocket before starting demo anyway.
     live_audio_ws_wait_s: float = 12.0

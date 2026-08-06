@@ -219,7 +219,7 @@ class AttendeeClient:
         bot_id: str,
         *,
         timeout_s: float = 300.0,
-        poll_s: float = 3.0,
+        poll_s: float = 1.0,
         stop_event=None,
     ) -> str:
         """Block until a non-bot participant join event appears. Returns their name."""
@@ -327,33 +327,21 @@ def _wav_bytes_to_mp3(wav: bytes) -> bytes:
     """Convert WAV → MP3 for Attendee output_audio. Needs ffmpeg on PATH."""
     import shutil
     import subprocess
-    import tempfile
-    from pathlib import Path
 
     if wav[:3] == b"ID3" or wav[:2] == b"\xff\xfb":
         return wav  # already mp3-ish
     if shutil.which("ffmpeg") is None:
         raise RuntimeError("ffmpeg required to convert Piper WAV → MP3 for Meet speak")
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "in.wav"
-        dst = Path(tmp) / "out.mp3"
-        src.write_bytes(wav)
-        proc = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(src),
-                "-codec:a",
-                "libmp3lame",
-                "-q:a",
-                "4",
-                str(dst),
-            ],
-            capture_output=True,
+    # Piped, not via a temp dir: this runs on every utterance, so two disk
+    # round-trips per sentence land directly in conversational latency.
+    proc = subprocess.run(
+        ["ffmpeg", "-loglevel", "error", "-i", "pipe:0",
+         "-codec:a", "libmp3lame", "-q:a", "4", "-f", "mp3", "pipe:1"],
+        input=wav,
+        capture_output=True,
+    )
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError(
+            f"ffmpeg wav→mp3 failed: {proc.stderr[-400:].decode(errors='replace')}"
         )
-        if proc.returncode != 0 or not dst.exists():
-            raise RuntimeError(
-                f"ffmpeg wav→mp3 failed: {proc.stderr[-400:].decode(errors='replace')}"
-            )
-        return dst.read_bytes()
+    return proc.stdout

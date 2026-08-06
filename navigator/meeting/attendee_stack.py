@@ -19,7 +19,8 @@ from navigator.core.settings import settings
 
 _COMPOSE_FILES = ("dev.docker-compose.yaml", "local.docker-compose.yaml")
 _COMPOSE_PROFILE = "webpage-streamer"
-_COMPOSE_ID = "voice-agents-v1"
+_COMPOSE_ID = "voice-agents-v2-streamer-restart"
+_STREAMER_SERVICE = "attendee-webpage-streamer-local"
 
 
 def is_local_attendee_url(base_url: str) -> bool:
@@ -116,6 +117,41 @@ def _docker_compose_up(
     if proc.returncode == 0 and force_recreate:
         _mark_voice_agent_compose(compose_dir)
     return proc
+
+
+def ensure_webpage_streamer(*, compose_dir: Path | None = None) -> bool:
+    """Bring the webpage-streamer back up before a demo arms screenshare.
+
+    Attendee's streamer shuts itself down after 900s with no keepalive, i.e.
+    whenever there is a gap between demos. Nothing restarts it, and the failure
+    is silent: the screenshare PATCH still returns 200 and the meeting simply
+    never sees a shared screen. Returns True when the service is running.
+    """
+    compose_dir = compose_dir or _compose_dir()
+    if _in_pytest() or not compose_dir.is_dir():
+        return False
+    try:
+        proc = subprocess.run(
+            ["docker", "compose", "-f", _COMPOSE_FILES[0], "-f", _COMPOSE_FILES[1],
+             "--profile", _COMPOSE_PROFILE, "up", "-d", _STREAMER_SERVICE],
+            cwd=compose_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        print(f"[attendee] WARN: streamer preflight skipped: {exc}", flush=True)
+        return False
+    if proc.returncode != 0:
+        print(
+            "[attendee] WARN: webpage-streamer not started — screenshare will be "
+            f"blank: {(proc.stderr or proc.stdout or '').strip()[:300]}",
+            flush=True,
+        )
+        return False
+    print("[attendee] webpage-streamer up (screenshare renderer)", flush=True)
+    return True
 
 
 def ensure_attendee_stack(

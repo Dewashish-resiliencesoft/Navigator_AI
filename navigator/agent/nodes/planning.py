@@ -207,13 +207,16 @@ def _ensure_browser_on_page(deps: CallDeps, page_id: str) -> None:
         expected = deps.graph.url_for(page_id)
     except SiteGraphError:
         return
-    from navigator.automation.login_match import same_page_path
+    from navigator.automation.login_match import same_page_path, is_sub_route
 
     try:
         current = deps.page.url or ""
     except Exception:  # noqa: BLE001
         return
-    if same_page_path(current, expected):
+    # A click that drilled into a sub-route (/inbox -> /inbox/message/7) is the
+    # demo working, not a detour. Re-navigating there undoes the click on the
+    # shared screen.
+    if same_page_path(current, expected) or is_sub_route(current, expected):
         return
     print(
         f"[plan] resume re-nav {current!r} → {expected!r} (page {page_id})",
@@ -1469,7 +1472,10 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     else:
         step = int(state.get("walkthrough_step") or 0)
 
-    _ensure_browser_on_page(deps, page_id)
+    # Only after a detour. On ordinary step advance the browser is already where
+    # the last click left it, and re-navigating reloads the shared screen.
+    if resume_step is not None:
+        _ensure_browser_on_page(deps, page_id)
     try:
         calls = list(deps.graph.flow(page_id, flow_id))
     except SiteGraphError as exc:

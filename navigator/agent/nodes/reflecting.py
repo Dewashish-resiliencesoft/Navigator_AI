@@ -25,6 +25,15 @@ _NOT_CORRECTION = re.compile(
     re.I,
 )
 
+#: A correction always contests what the agent just did. Utterances with no such
+#: cue skip the classifier LLM entirely — that call sits in the turn's critical
+#: path, and the overwhelming majority of utterances are not corrections.
+_MAYBE_CORRECTION = re.compile(
+    r"\b(no|not|wrong|isn'?t|didn'?t|don'?t|stop|wait|back|undo|mistake|"
+    r"should(n'?t)?|meant|instead|actually|other one|that'?s not)\b",
+    re.I,
+)
+
 
 def reflecting(state: CallState, deps: CallDeps) -> CallState:
     failures = list(state.get("failures") or [])
@@ -89,6 +98,8 @@ def classify_correction(
     # Nav / UI complaints / end — never corrections (even if LLM says yes).
     if _NOT_CORRECTION.search(utterance):
         return False
+    if not _MAYBE_CORRECTION.search(utterance):
+        return False
     prompt = (
         "Answer ONLY yes or no. Is the user correcting HOW the agent demoed "
         "(wrong click, wrong field, wrong step)? "
@@ -103,10 +114,9 @@ def classify_correction(
         key = api_key if api_key is not None else settings.groq_api_key
         if not key:
             return False
-        from groq import Groq
+        from navigator.core.groq_client import groq_client
 
-        client = Groq(api_key=key)
-        resp = client.chat.completions.create(
+        resp = groq_client(key).chat.completions.create(
             model=CLASSIFY_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,

@@ -56,7 +56,7 @@ def _zak_origin_reachable(base: str) -> bool:
         return False
 
 
-def ensure_public_base_url(*, local_port: int = 8000) -> str:
+def ensure_public_base_url(*, local_port: int | None = None) -> str:
     """Return a reachable public origin for ZAK; refresh dead quick-tunnels.
 
     Stale ``*.trycloudflare.com`` URLs leave Zoom bots stuck joining while
@@ -64,6 +64,7 @@ def ensure_public_base_url(*, local_port: int = 8000) -> str:
     trusted as configured.
     """
     global _api_tunnel
+    local_port = settings.api_port if local_port is None else local_port
     base = (settings.public_base_url or "").rstrip("/")
     if base and "trycloudflare.com" not in base:
         return base

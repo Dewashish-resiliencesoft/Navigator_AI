@@ -12,7 +12,7 @@ services:
         required: false
     environment:
       NAVIGATOR_HEADFUL: "0"
-      NAVIGATOR_ATTENDEE_AUTOSTART: "0"
+      NAVIGATOR_ATTENDEE_AUTOSTART: "1"
       NAVIGATOR_ATTENDEE_BASE_URL: http://host.docker.internal:8002/api/v1
       NAVIGATOR_ATTENDEE_COMPOSE_DIR: /attendee
       NAVIGATOR_TUNNEL_BIN: /usr/local/bin/cloudflared

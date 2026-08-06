@@ -45,6 +45,7 @@ RUN if [ "$NAVIGATOR_EXTRAS" = "full" ]; then \
     fi
 
 COPY docker/entrypoint.sh /entrypoint.sh
+COPY docker/attendee-local.docker-compose.yaml /app/docker/attendee-local.docker-compose.yaml
 RUN chmod +x /entrypoint.sh
 
 RUN mkdir -p /data

@@ -22,9 +22,9 @@ def test_ensure_skips_cloud_url(monkeypatch):
 
 
 def test_ensure_skips_when_already_up(monkeypatch, tmp_path):
-    up = MagicMock(return_value=Path("/tmp/x"))
     monkeypatch.setattr(attendee_stack, "_compose_dir", lambda: tmp_path)
     monkeypatch.setattr(attendee_stack, "attendee_reachable", lambda _url: True)
+    (tmp_path / ".navigator-compose-id").write_text(attendee_stack._COMPOSE_ID)
     docker = MagicMock()
     monkeypatch.setattr(attendee_stack, "_docker_compose_up", docker)
 
@@ -46,7 +46,11 @@ def test_ensure_starts_compose_when_down(monkeypatch, tmp_path):
     monkeypatch.setattr(attendee_stack, "_in_pytest", lambda: False)
 
     proc = MagicMock(returncode=0, stdout="", stderr="")
-    monkeypatch.setattr(attendee_stack, "_docker_compose_up", lambda _d: proc)
+    monkeypatch.setattr(
+        attendee_stack,
+        "_docker_compose_up",
+        lambda _d, force_recreate=False: proc,
+    )
     monkeypatch.setattr(attendee_stack.time, "sleep", lambda _s: None)
 
     assert attendee_stack.ensure_attendee_stack(autostart=True, wait_timeout_s=10) is True

@@ -10,11 +10,13 @@ if [[ ! -f "$ATTENDEE/dev.docker-compose.yaml" ]]; then
   exit 1
 fi
 
-echo "[up] Attendee stack…"
+"$ROOT/scripts/sync-attendee-compose.sh"
+
+echo "[up] Attendee stack (voice agents enabled)…"
 docker compose \
   -f "$ATTENDEE/dev.docker-compose.yaml" \
   -f "$ATTENDEE/local.docker-compose.yaml" \
-  --profile webpage-streamer up -d
+  --profile webpage-streamer up -d --force-recreate
 
 echo "[up] Navigator…"
 export ATTENDEE_COMPOSE_DIR="$ATTENDEE"

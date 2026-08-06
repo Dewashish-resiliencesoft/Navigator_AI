@@ -105,6 +105,74 @@ def apply_playlist_to_yaml(yaml_text: str, playlist: list[dict[str, Any]]) -> st
     return yaml.safe_dump(raw, sort_keys=False)
 
 
+_FLOW_META_KEYS = (
+    "semantics",
+    "narration_suggestions",
+    "validation",
+    "demo_script",
+)
+
+
+def clear_all_flows_from_yaml(yaml_text: str) -> str:
+    """Drop every flow, playlist row, and flow-derived _meta (unpublished draft)."""
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        raise SiteGraphError("site graph must be a mapping")
+
+    raw["demo_playlist"] = []
+    pages = raw.get("pages") or {}
+    if isinstance(pages, dict):
+        for page in pages.values():
+            if isinstance(page, dict):
+                page["flows"] = {}
+
+    meta = raw.get("_meta")
+    if isinstance(meta, dict):
+        for key in _FLOW_META_KEYS:
+            meta.pop(key, None)
+
+    parse_site_graph(yaml.safe_dump(raw), origin="<ops-flows-clear>")
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
+def reset_site_graph_for_explore(yaml_text: str) -> str:
+    """Minimal valid draft: persona + base_url kept, pages/flows/demo script wiped."""
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        raise SiteGraphError("site graph must be a mapping")
+
+    site = str(raw.get("site") or "client").strip() or "client"
+    base_url = str(raw.get("base_url") or "https://example.com/").strip()
+    persona_in = raw.get("persona") if isinstance(raw.get("persona"), dict) else {}
+    product_name = str(persona_in.get("product_name") or "your product").strip()
+    one_liner = str(persona_in.get("one_liner") or "").strip()
+    agent_name = str(persona_in.get("agent_name") or "Navigator AI").strip()
+    tone = str(persona_in.get("tone") or "friendly, clear, concise").strip()
+
+    reset: dict[str, Any] = {
+        "version": raw.get("version") or 1,
+        "site": site,
+        "base_url": base_url,
+        "persona": {
+            "product_name": product_name,
+            "one_liner": one_liner,
+            "agent_name": agent_name,
+            "tone": tone,
+        },
+        "demo_playlist": [],
+        "pages": {
+            "home": {
+                "name": "Home",
+                "url": "/",
+                "selectors": {"body": "body"},
+                "flows": {},
+            }
+        },
+    }
+    parse_site_graph(yaml.safe_dump(reset), origin="<ops-site-graph-reset>")
+    return yaml.safe_dump(reset, sort_keys=False)
+
+
 def remove_flow_from_yaml(
     yaml_text: str, *, flow_id: str, page_id: str | None = None
 ) -> str:

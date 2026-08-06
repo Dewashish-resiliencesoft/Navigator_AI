@@ -23,21 +23,29 @@ def is_zoom_meeting(meeting_url: str) -> bool:
     return settings.meeting_platform == "zoom"
 
 
-def _zak_origin_reachable(base: str) -> bool:
-    """True when our FastAPI answers through this public origin.
-
-    Local stub DNS often cannot resolve fresh ``*.trycloudflare.com`` names, so
-    those are probed via dig@1.1.1.1 (same trick as screenshare tunnels).
-    """
+def _zak_origin_reachable_once(base: str) -> bool:
+    """Single probe — may flake on fresh trycloudflare DNS."""
     base = base.rstrip("/")
     if "trycloudflare.com" in base:
         from navigator.meeting.tunnel import _probe_via_public_dns
 
+        url = f"{base}/openapi.json"
         try:
-            code = _probe_via_public_dns(f"{base}/openapi.json")
-        except Exception:
+            with urlopen(url, timeout=5) as resp:
+                return 200 <= getattr(resp, "status", 200) < 500
+        except HTTPError as exc:
+            return 400 <= int(exc.code) < 500
+        except URLError as exc:
+            last = str(exc)
+            if "Name or service not known" not in last and "nodename" not in last.lower():
+                return False
+            try:
+                code = _probe_via_public_dns(url)
+            except Exception:
+                return False
+            return 200 <= int(code) < 500
+        except (TimeoutError, OSError):
             return False
-        return 200 <= int(code) < 500
 
     url = f"{base}/v1/zoom/zak"
     try:
@@ -54,6 +62,16 @@ def _zak_origin_reachable(base: str) -> bool:
         return 400 <= int(exc.code) < 500
     except (URLError, TimeoutError, OSError):
         return False
+
+
+def _zak_origin_reachable(base: str, *, attempts: int = 5) -> bool:
+    """True when our FastAPI answers through this public origin."""
+    for attempt in range(max(1, attempts)):
+        if _zak_origin_reachable_once(base):
+            return True
+        if attempt + 1 < attempts:
+            time.sleep(1)
+    return False
 
 
 def ensure_public_base_url(*, local_port: int | None = None) -> str:
@@ -78,8 +96,13 @@ def ensure_public_base_url(*, local_port: int | None = None) -> str:
         if base and _zak_origin_reachable(base):
             return base
         if _api_tunnel is not None and _api_tunnel._proc.poll() is None:
-            settings.public_base_url = _api_tunnel.public_url
-            return _api_tunnel.public_url
+            live = _api_tunnel.public_url
+            if _zak_origin_reachable(live):
+                settings.public_base_url = live
+                return live
+            print("[zoom] stale tunnel process — restarting cloudflared", flush=True)
+            _api_tunnel.stop()
+            _api_tunnel = None
 
         from navigator.meeting.tunnel import start_tunnel
 
@@ -92,11 +115,22 @@ def ensure_public_base_url(*, local_port: int | None = None) -> str:
             local_port, binary=settings.tunnel_bin, ready_path=None
         )
         settings.public_base_url = _api_tunnel.public_url
-        # Quick tunnels need a moment before the edge routes.
-        for _ in range(15):
-            if _zak_origin_reachable(settings.public_base_url):
+        # Quick tunnels need a moment before the edge routes; dig can flake too.
+        for _ in range(30):
+            if _zak_origin_reachable(settings.public_base_url, attempts=2):
                 break
             time.sleep(1)
+        else:
+            dead = settings.public_base_url
+            _api_tunnel.stop()
+            _api_tunnel = None
+            settings.public_base_url = ""
+            raise RuntimeError(
+                f"Zoom host join needs Attendee to reach {dead}/v1/zoom/zak, "
+                "but that origin does not answer. Set "
+                "NAVIGATOR_PUBLIC_BASE_URL to a stable public origin, or "
+                "check that cloudflared is running."
+            )
         print(f"[zoom] public base: {settings.public_base_url}", flush=True)
         return settings.public_base_url
 

@@ -76,6 +76,8 @@ type ExploreSession = {
   saveMode: "new" | "update";
   targetFlowId: string;
   targetFlowName: string;
+  newFlowName: string;
+  focusHint: string;
   /** Wall-clock anchor for elapsed display — not overwritten every poll. */
   elapsedAnchorMs: number | null;
   showMeter: boolean;
@@ -86,6 +88,8 @@ type ExploreSession = {
   setSaveMode: (v: "new" | "update") => void;
   setTargetFlowId: (v: string) => void;
   setTargetFlowName: (v: string) => void;
+  setNewFlowName: (v: string) => void;
+  setFocusHint: (v: string) => void;
   setOnFlowDrafted: (cb: (() => void) | null) => void;
   /** Prefill baseUrl from Product Login URL, else Product Domain (if untouched). */
   syncProductUrl: () => Promise<string>;
@@ -126,6 +130,8 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   saveMode: "new",
   targetFlowId: "",
   targetFlowName: "",
+  newFlowName: "",
+  focusHint: "",
   elapsedAnchorMs: null,
   showMeter: false,
   latestFrame: null,
@@ -135,6 +141,8 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   setSaveMode: (saveMode) => set({ saveMode }),
   setTargetFlowId: (targetFlowId) => set({ targetFlowId }),
   setTargetFlowName: (targetFlowName) => set({ targetFlowName }),
+  setNewFlowName: (newFlowName) => set({ newFlowName }),
+  setFocusHint: (focusHint) => set({ focusHint }),
   setOnFlowDrafted: (cb) => {
     onFlowDrafted = cb;
   },
@@ -387,6 +395,9 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
         target_flow_id: mode === "update" ? target : null,
         target_flow_name:
           mode === "update" ? (opts?.targetFlowName || null) : null,
+        new_flow_name:
+          mode === "new" ? get().newFlowName.trim() || null : null,
+        focus_hint: get().focusHint.trim() || null,
       });
       set((prev) => ({
         status: { ...prev.status, ...s, active: true },

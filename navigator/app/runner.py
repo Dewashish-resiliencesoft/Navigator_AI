@@ -465,6 +465,7 @@ class DemoRunner:
                     "brain_config": cfg,
                     "use_turn_brain": cfg.use_turn_brain,
                     "handoff_webhook_url": getattr(p, "handoff_webhook_url", "") or "",
+                    "agent_settings": reg.get_agent_settings(product_id),
                 }
         except Exception:  # noqa: BLE001
             cfg = BrainConfig.from_settings()

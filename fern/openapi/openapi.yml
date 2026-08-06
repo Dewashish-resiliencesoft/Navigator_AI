@@ -1356,6 +1356,101 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/agent-settings:
+    get:
+      summary: Client Get Agent Settings
+      operationId: client_get_agent_settings_client_api_agent_settings_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Get Agent Settings Client Api Agent Settings Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Client Put Agent Settings
+      operationId: client_put_agent_settings_client_api_agent_settings_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentSettingsBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Put Agent Settings Client Api Agent Settings Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/agent-provider-keys:
+    put:
+      summary: Client Put Agent Provider Keys
+      operationId: client_put_agent_provider_keys_client_api_agent_provider_keys_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentProviderKeysBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Put Agent Provider Keys Client Api Agent Provider Keys Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/demo-readiness:
     get:
       summary: Client Demo Readiness
@@ -1476,6 +1571,35 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Client Put Site Graph Client Api Site Graph Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/site-graph/clear:
+    post:
+      summary: Client Clear Site Graph
+      description: Reset draft site graph to empty shell + clear demo script metadata.
+      operationId: client_clear_site_graph_client_api_site_graph_clear_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Clear Site Graph Client Api Site Graph Clear Post
         '422':
           description: Validation Error
           content:
@@ -1802,6 +1926,35 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Client Put Flows Client Api Flows Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/clear:
+    post:
+      summary: Client Clear All Flows
+      description: "Reset flows, demo script, and explored pages \u2014 fresh shell for Auto-Explore."
+      operationId: client_clear_all_flows_client_api_flows_clear_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Clear All Flows Client Api Flows Clear Post
         '422':
           description: Validation Error
           content:
@@ -2524,6 +2677,66 @@ components:
         `tool_call.expects` so the log can be queried on it without deserializing the
 
         whole call.'
+    AgentProviderKeysBody:
+      properties:
+        gemini_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Gemini Api Key
+        groq_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Groq Api Key
+        fish_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fish Api Key
+      type: object
+      title: AgentProviderKeysBody
+    AgentSettingsBody:
+      properties:
+        default_language:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Default Language
+        extra_languages:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Extra Languages
+        agent_gender:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Gender
+        agent_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Agent Name
+        tone:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tone
+        tts_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tts Provider
+        gemini_voice:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Gemini Voice
+      type: object
+      title: AgentSettingsBody
     ApproveCorrectionBody:
       properties:
         rule:
@@ -2894,6 +3107,16 @@ components:
           - type: string
           - type: 'null'
           title: Target Flow Name
+        new_flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: New Flow Name
+        focus_hint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Focus Hint
       type: object
       title: ExploreStartBody
     FillField:
@@ -3584,6 +3807,12 @@ components:
             type: object
           type: array
           title: Health
+        token_usage:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Token Usage
       type: object
       required:
       - host_label

@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Literal
 
+from navigator.agent.speech_persona import speech_rules
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
 
 Intent = Literal["navigate_page", "click_nav", "speak", "end", "clarify"]
@@ -81,6 +82,7 @@ def decide_turn(
     intake_summary: str = "",
     nav_labels: Sequence[str] | None = None,
     spoken_language: str = "en",
+    agent_gender: str = "female",
     complete_with_image: CompleteWithImage | None = None,
 ) -> TurnDecision:
     if complete_with_image is None:
@@ -89,11 +91,8 @@ def decide_turn(
         complete_with_image = get_provider().complete_with_image
 
     labels = list(nav_labels or [])
-    lang_rule = (
-        "Respond in natural Hindi (spoken_response in Devanagari). "
-        "Keep product/UI terms in English when natural for Indian users."
-        if (spoken_language or "en").strip().lower() == "hi"
-        else "Respond in natural Indian English."
+    lang_rule = speech_rules(
+        spoken_language=spoken_language, agent_gender=agent_gender
     )
     user = "\n".join(
         [

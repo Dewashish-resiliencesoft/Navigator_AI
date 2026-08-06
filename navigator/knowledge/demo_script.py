@@ -211,8 +211,8 @@ def resolve_flow_step_spoken(
         purpose = str(sem.get("purpose") or "").strip()
         if purpose:
             return purpose, "semantics"
-        return f"Starting on {page_name} — {flow_id.replace('_', ' ')}."
-    return f"Continuing on {page_name}."
+        return f"Starting on {page_name} — {flow_id.replace('_', ' ')}.", "generated"
+    return f"Continuing on {page_name}.", "generated"
 
 
 def _section_knowledge(

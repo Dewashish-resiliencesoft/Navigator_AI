@@ -45,6 +45,9 @@ class GeminiProvider:
             contents=user,
             config=types.GenerateContentConfig(system_instruction=system),
         )
+        from navigator.core.usage_context import record_gemini_generate
+
+        record_gemini_generate(resp, purpose="reflect", model=self.text_model)
         text = (resp.text or "").strip()
         if not text:
             raise RuntimeError("Gemini returned empty reflection")
@@ -63,6 +66,9 @@ class GeminiProvider:
             ],
             config=types.GenerateContentConfig(system_instruction=system),
         )
+        from navigator.core.usage_context import record_gemini_generate
+
+        record_gemini_generate(resp, purpose="vision", model=self.vision_model)
         text = (resp.text or "").strip()
         if not text:
             raise RuntimeError("Gemini vision returned empty")

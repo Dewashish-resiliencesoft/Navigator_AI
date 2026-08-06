@@ -25,6 +25,9 @@ class RecordedStep:
     value: str | None = None
     page_id: str = "main"
     postcondition: dict[str, Any] = field(default_factory=dict)
+    #: "user" → live demo pauses for End User input (requires_live_input).
+    source: str = "agent"
+    live_question: str | None = None
 
 
 def _slug(text: str, fallback: str) -> str:
@@ -110,6 +113,10 @@ def draft_site_graph(
         if step.tool == "fill_field":
             call["selector"] = step.alias
             call["value"] = step.value or ""
+            if step.source == "user":
+                call["source"] = "user"
+                if step.live_question:
+                    call["live_question"] = step.live_question
         elif step.tool == "click_element":
             call["selector"] = step.alias
         elif step.tool == "navigate":

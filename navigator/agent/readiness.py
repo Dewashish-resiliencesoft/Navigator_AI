@@ -83,6 +83,24 @@ def _knowledge_count(product_id: str, chroma_path: Path) -> int:
         return 0
 
 
+def _draft_graph_if_ahead(
+    registry: Registry, product_id: str, published_rev: int | None
+) -> tuple[SiteGraph | None, int | None]:
+    """Draft revision when it is newer than what visitors see."""
+    if published_rev is None:
+        return None, None
+    try:
+        draft_rev = registry.latest_revision(product_id)
+    except ProductNotFound:
+        return None, None
+    if draft_rev.revision <= published_rev:
+        return None, None
+    try:
+        return registry.load_graph(product_id, draft_rev.revision), draft_rev.revision
+    except (ProductNotFound, SiteGraphError):
+        return None, None
+
+
 def assert_live_graph_yaml(yaml_text: str) -> None:
     """Reject fixture graphs for live demos (API path)."""
     if "tests/fixtures" in yaml_text or "crm_dashboard.html" in yaml_text:
@@ -166,7 +184,10 @@ def assess_demo_readiness(
         if origin == "public_embed" and published_rev is not None:
             graph = registry.load_graph(product_id, published_rev)
         else:
-            graph = registry.load_graph(product_id)
+            # Test demos run latest draft — readiness must match what start will use.
+            graph = registry.load_graph(
+                product_id, registry.latest_revision(product_id).revision
+            )
     except (ProductNotFound, SiteGraphError) as exc:
         checks.append(
             ReadinessCheck(
@@ -202,29 +223,47 @@ def assess_demo_readiness(
         )
 
     offerable = _has_offerable_flow(graph)
+    draft_graph, draft_rev = (
+        _draft_graph_if_ahead(registry, product_id, published_rev)
+        if origin == "public_embed"
+        else (None, None)
+    )
+    if offerable:
+        offerable_msg = "At least one validated flow is ready to show."
+    elif draft_graph and _has_offerable_flow(draft_graph) and draft_rev is not None:
+        offerable_msg = (
+            f"Published revision has no demo flows — publish draft revision {draft_rev} "
+            "on Site graph to go live."
+        )
+    else:
+        offerable_msg = (
+            "No offerable flows — explore and validate flows before demoing."
+        )
     checks.append(
         ReadinessCheck(
             id="offerable_flow",
             ok=offerable,
-            message=(
-                "At least one validated flow is ready to show."
-                if offerable
-                else "No offerable flows — explore and validate flows before demoing."
-            ),
+            message=offerable_msg,
             blocking=True,
         )
     )
 
     playlist_ok = bool(graph.demo_playlist)
+    if playlist_ok:
+        playlist_msg = "Demo playlist configured."
+    elif draft_graph and draft_graph.demo_playlist and draft_rev is not None:
+        n = len(draft_graph.demo_playlist)
+        playlist_msg = (
+            f"Published playlist is empty — publish draft revision {draft_rev} "
+            f"({n} flow{'s' if n != 1 else ''} in draft)."
+        )
+    else:
+        playlist_msg = "Add a demo playlist so the walkthrough knows what to show."
     checks.append(
         ReadinessCheck(
             id="playlist",
             ok=playlist_ok,
-            message=(
-                "Demo playlist configured."
-                if playlist_ok
-                else "Add a demo playlist so the walkthrough knows what to show."
-            ),
+            message=playlist_msg,
             blocking=False,
         )
     )

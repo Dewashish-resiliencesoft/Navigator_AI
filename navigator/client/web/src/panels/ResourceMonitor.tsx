@@ -9,6 +9,7 @@ import {
   Network,
   Server,
   ShieldCheck,
+  Sparkles,
   Zap,
 } from "lucide-react";
 import { LiveMetricChart } from "../components/Chart";
@@ -66,6 +67,32 @@ function UsageBar({ value, color }: { value: number; color: string }) {
         animate={{ width: `${pct}%` }}
         transition={soft}
       />
+    </div>
+  );
+}
+
+function formatTokens(n: number) {
+  return n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+}
+
+function TokenSummary({
+  label,
+  input,
+  output,
+  calls,
+}: {
+  label: string;
+  input: number;
+  output: number;
+  calls: number;
+}) {
+  return (
+    <div className="rounded-lg border px-3 py-2.5" style={{ borderColor: "var(--line)" }}>
+      <p className="text-[0.68rem] font-medium uppercase tracking-wide text-[var(--muted)]">{label}</p>
+      <p className="mt-1 text-[1.35rem] font-semibold tabular-nums">{formatTokens(input + output)}</p>
+      <p className="text-[0.72rem] text-[var(--muted)]">
+        {formatTokens(input)} in · {formatTokens(output)} out · {calls} calls
+      </p>
     </div>
   );
 }
@@ -203,6 +230,120 @@ export function ResourceMonitor() {
               </div>
             </Card>
           </div>
+
+          <Card interactive={false}>
+            <CardTitle hint="LLM tokens from demos on this product — last 14 days">
+              <span className="inline-flex items-center gap-2">
+                <Sparkles size={14} /> AI token usage
+              </span>
+            </CardTitle>
+            {!metrics.token_usage ? (
+              <p className="text-[0.78rem] text-[var(--muted)]">
+                Token metrics unavailable from the server. Hard-refresh this page (Ctrl+Shift+R). If
+                it persists, restart Navigator so the API picks up the latest build.
+              </p>
+            ) : (
+              <>
+                <p className="mb-4 text-[0.78rem] text-[var(--muted)]">
+                  {metrics.token_usage.billing_label}
+                </p>
+
+                {metrics.token_usage.has_usage ? (
+                  metrics.token_usage.uses_byok ? (
+                    <div className="space-y-4">
+                      {(metrics.token_usage.platform.calls > 0 ||
+                        metrics.token_usage.client.calls > 0) && (
+                        <div
+                          className={`grid gap-3 ${metrics.token_usage.platform.calls > 0 && metrics.token_usage.client.calls > 0 ? "sm:grid-cols-2" : ""}`}
+                        >
+                          {metrics.token_usage.platform.calls > 0 && (
+                            <TokenSummary
+                              label="Platform keys (merged)"
+                              input={metrics.token_usage.platform.input_tokens}
+                              output={metrics.token_usage.platform.output_tokens}
+                              calls={metrics.token_usage.platform.calls}
+                            />
+                          )}
+                          {metrics.token_usage.client.calls > 0 &&
+                            metrics.token_usage.client_models.length === 0 && (
+                              <TokenSummary
+                                label="Your keys (BYOK)"
+                                input={metrics.token_usage.client.input_tokens}
+                                output={metrics.token_usage.client.output_tokens}
+                                calls={metrics.token_usage.client.calls}
+                              />
+                            )}
+                        </div>
+                      )}
+                      {metrics.token_usage.client_models.length > 0 && (
+                        <div className="overflow-x-auto rounded-lg border" style={{ borderColor: "var(--line)" }}>
+                          <table className="w-full min-w-[480px] text-left text-[0.78rem]">
+                            <thead className="bg-black/[0.03] text-[0.72rem] uppercase tracking-wide text-[var(--muted)] dark:bg-white/[0.04]">
+                              <tr>
+                                <th className="px-4 py-2.5 font-medium">Model</th>
+                                <th className="px-4 py-2.5 font-medium">Input</th>
+                                <th className="px-4 py-2.5 font-medium">Output</th>
+                                <th className="px-4 py-2.5 font-medium">Calls</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {metrics.token_usage.client_models.map((row) => (
+                                <tr
+                                  key={row.model}
+                                  className="border-t"
+                                  style={{ borderColor: "var(--line)" }}
+                                >
+                                  <td className="px-4 py-2.5 font-medium">{row.model}</td>
+                                  <td className="px-4 py-2.5 tabular-nums text-[var(--muted)]">
+                                    {formatTokens(row.input_tokens)}
+                                  </td>
+                                  <td className="px-4 py-2.5 tabular-nums text-[var(--muted)]">
+                                    {formatTokens(row.output_tokens)}
+                                  </td>
+                                  <td className="px-4 py-2.5 tabular-nums text-[var(--muted)]">{row.calls}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <TokenSummary
+                      label="Included usage (merged)"
+                      input={metrics.token_usage.platform.input_tokens}
+                      output={metrics.token_usage.platform.output_tokens}
+                      calls={metrics.token_usage.platform.calls}
+                    />
+                  )
+                ) : (
+                  <div className="space-y-3">
+                    <p className="text-[0.78rem] text-[var(--muted)]">
+                      No recorded usage yet. Run a test demo — totals appear here after LLM calls.
+                    </p>
+                    {!metrics.token_usage.uses_byok && (
+                      <>
+                        <p className="text-[0.72rem] font-medium uppercase tracking-wide text-[var(--muted)]">
+                          Typical per ~10 min demo
+                        </p>
+                        <TokenSummary
+                          label="Included usage (merged estimate)"
+                          input={metrics.token_usage.typical_platform_per_demo.input_tokens}
+                          output={metrics.token_usage.typical_platform_per_demo.output_tokens}
+                          calls={metrics.token_usage.typical_platform_per_demo.calls}
+                        />
+                      </>
+                    )}
+                    {metrics.token_usage.uses_byok && (
+                      <p className="text-[0.72rem] text-[var(--muted)]">
+                        Your API keys are configured — usage will appear here by model after demos.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+          </Card>
 
           <div className="grid gap-4 xl:grid-cols-2">
             <Card interactive={false}>

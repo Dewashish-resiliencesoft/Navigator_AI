@@ -19,7 +19,7 @@ from navigator.core.settings import settings
 
 _COMPOSE_FILES = ("dev.docker-compose.yaml", "local.docker-compose.yaml")
 _COMPOSE_PROFILE = "webpage-streamer"
-_COMPOSE_ID = "voice-agents-v2-streamer-restart"
+_COMPOSE_ID = "voice-agents-v3-worker-dns"
 _STREAMER_SERVICE = "attendee-webpage-streamer-local"
 
 
@@ -119,6 +119,93 @@ def _docker_compose_up(
     return proc
 
 
+def attendee_ui_origin(base_url: str | None = None) -> str:
+    """Attendee dashboard origin (strip ``/api/v1`` from API base URL)."""
+    base = (base_url or settings.attendee_base_url).rstrip("/")
+    if "/api/" in base:
+        return base.split("/api/", 1)[0]
+    return base
+
+
+def ensure_attendee_zoom_credentials(
+    *,
+    compose_dir: Path | None = None,
+    project_name: str | None = None,
+) -> bool:
+    """Copy ``NAVIGATOR_ZOOM_*`` into local Attendee for Zoom web SDK bots."""
+    if not is_local_attendee_url(settings.attendee_base_url):
+        return True
+    client_id = (settings.zoom_client_id or "").strip()
+    client_secret = (settings.zoom_client_secret or "").strip()
+    if not client_id or not client_secret:
+        print(
+            "[attendee] WARN: NAVIGATOR_ZOOM_CLIENT_ID/SECRET unset — "
+            "Attendee cannot join Zoom until project credentials are saved",
+            flush=True,
+        )
+        return False
+
+    compose_dir = compose_dir or _compose_dir()
+    if not compose_dir.is_dir() or _in_pytest():
+        return False
+
+    script = Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_attendee_zoom.py"
+    if not script.is_file():
+        print(f"[attendee] WARN: missing {script}", flush=True)
+        return False
+
+    env = os.environ.copy()
+    env["NAVIGATOR_ZOOM_CLIENT_ID"] = client_id
+    env["NAVIGATOR_ZOOM_CLIENT_SECRET"] = client_secret
+    env["NAVIGATOR_ATTENDEE_PROJECT_NAME"] = (
+        project_name or os.environ.get("NAVIGATOR_ATTENDEE_PROJECT_NAME") or "Navigator"
+    ).strip()
+
+    try:
+        proc = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "-f",
+                _COMPOSE_FILES[0],
+                "-f",
+                _COMPOSE_FILES[1],
+                "exec",
+                "-T",
+                "attendee-app-local",
+                "env",
+                f"NAVIGATOR_ZOOM_CLIENT_ID={client_id}",
+                f"NAVIGATOR_ZOOM_CLIENT_SECRET={client_secret}",
+                f"NAVIGATOR_ATTENDEE_PROJECT_NAME={env['NAVIGATOR_ATTENDEE_PROJECT_NAME']}",
+                "python",
+                "manage.py",
+                "shell",
+            ],
+            input=script.read_text(encoding="utf-8"),
+            cwd=compose_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+            env=env,
+        )
+    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+        print(f"[attendee] WARN: zoom credential sync skipped: {exc}", flush=True)
+        return False
+
+    out = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode != 0 or "ATTENDEE_ZOOM_CREDENTIALS_OK" not in out:
+        print(
+            "[attendee] WARN: zoom credential sync failed — "
+            f"run ./scripts/sync-attendee-zoom-credentials.sh\n{out.strip()[:500]}",
+            flush=True,
+        )
+        return False
+
+    print("[attendee] synced Zoom OAuth creds into Attendee project", flush=True)
+    return True
+
+
 def ensure_webpage_streamer(*, compose_dir: Path | None = None) -> bool:
     """Bring the webpage-streamer back up before a demo arms screenshare.
 
@@ -181,6 +268,7 @@ def ensure_attendee_stack(
     recreate = _needs_voice_agent_recreate(compose_dir)
     if not recreate and attendee_reachable(base_url):
         print(f"[attendee] already up at {base_url}", flush=True)
+        ensure_attendee_zoom_credentials(compose_dir=compose_dir)
         return True
     if recreate:
         print("[attendee] recreating stack (ENABLE_VOICE_AGENTS)…", flush=True)
@@ -211,6 +299,7 @@ def ensure_attendee_stack(
     while time.time() < deadline:
         if attendee_reachable(base_url):
             print(f"[attendee] ready at {base_url}", flush=True)
+            ensure_attendee_zoom_credentials(compose_dir=compose_dir)
             return True
         time.sleep(2)
 

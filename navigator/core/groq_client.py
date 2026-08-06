@@ -15,3 +15,12 @@ def groq_client(api_key: str):
     from groq import Groq
 
     return Groq(api_key=api_key)
+
+
+def chat_completions_create(api_key: str, *, purpose: str = "", **kwargs):
+    """Groq chat completion with token usage recording when demo context is bound."""
+    resp = groq_client(api_key).chat.completions.create(**kwargs)
+    from navigator.core.usage_context import record_groq_chat
+
+    record_groq_chat(resp, purpose=purpose, model=str(kwargs.get("model") or ""))
+    return resp

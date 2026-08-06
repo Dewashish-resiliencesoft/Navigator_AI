@@ -118,6 +118,14 @@ def looks_like_nav(el: dict[str, Any]) -> bool:
     return role in {"link", "tab", "menuitem", "treeitem"}
 
 
+def _matches_focus(el: dict[str, Any], hint: str) -> bool:
+    needle = (hint or "").strip().lower()
+    if not needle or len(needle) < 2:
+        return False
+    blob = _el_blob(el)
+    return needle in blob or re.search(rf"\b{re.escape(needle)}\b", blob)
+
+
 def heuristic_pick(
     elements: Sequence[dict[str, Any]],
     visited_paths: Sequence[str],
@@ -125,6 +133,7 @@ def heuristic_pick(
     known_bad: dict[str, int] | None = None,
     product_base: str = "",
     page_url: str = "",
+    focus_hint: str = "",
 ) -> Choice | None:
     """Pick clear unvisited navigation without an LLM call.
 
@@ -145,6 +154,10 @@ def heuristic_pick(
         return None
     nav = [(i, e) for i, e in ranked if looks_like_nav(e)]
     pool = nav or ranked
+    if focus_hint.strip():
+        focused = [(i, e) for i, e in pool if _matches_focus(e, focus_hint)]
+        if focused:
+            pool = focused
     if known_bad:
         fresh = [(i, e) for i, e in pool if known_bad.get(element_key(e), 0) < 2]
         if fresh:
@@ -161,6 +174,7 @@ def choose_next(
     visited_paths: Sequence[str] = (),
     known_bad: dict[str, int] | None = None,
     product_base: str = "",
+    focus_hint: str = "",
     ask_text: Callable[[str], str] | None = None,
     ask_vision: Callable[[str, str], str] | None = None,
     screenshot: str = "",
@@ -177,6 +191,7 @@ def choose_next(
             known_bad=known_bad,
             product_base=product_base,
             page_url=url,
+            focus_hint=focus_hint,
         )
         if fast is not None:
             return fast
@@ -187,6 +202,13 @@ def choose_next(
             "Known issues from previous runs (do not repeat these):\n"
             + "\n".join(f"- {c}" for c in corrections)
             + "\n"
+        )
+    focus_block = ""
+    hint = (focus_hint or "").strip()
+    if hint:
+        focus_block = (
+            f"Client asked to prioritize this area first: {hint!r}. "
+            "Prefer nav/tabs whose label matches before unrelated pages.\n"
         )
     visited = ", ".join(visited_paths) if visited_paths else "(none yet)"
     # Drop obvious backtrack targets from the LLM menu when alternatives exist.
@@ -211,7 +233,7 @@ def choose_next(
     prompt = _PROMPT.format(
         url=url,
         visited=visited,
-        corrections=corr_block,
+        corrections=corr_block + focus_block,
         elements=format_elements(menu_els),
     )
 

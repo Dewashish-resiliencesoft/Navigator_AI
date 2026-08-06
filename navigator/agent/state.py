@@ -125,6 +125,10 @@ class CallDeps:
     phrase: Callable[..., str] | None = None
     #: Spoken language for TTS + phrasing: "en" (default) or "hi".
     spoken_language: Literal["en", "hi"] = "en"
+    #: Languages the agent may switch to when the prospect asks.
+    extra_languages: tuple[Literal["en", "hi"], ...] = ("hi",)
+    #: First-person voice gender — must match TTS voice and Hindi verb forms.
+    agent_gender: Literal["female", "male"] = "female"
     #: Mid-step STT for requires_live_input fills. Signature (prompt: str) -> heard.
     listen_once: Callable[[str], str] | None = None
     #: Entity extraction for live fills. Signature (key, question, heard) -> str.

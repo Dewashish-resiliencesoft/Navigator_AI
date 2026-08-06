@@ -10,6 +10,11 @@ services:
       - VOICE_AGENT_URL_PREFIX_ALLOWLIST=https://
 
   attendee-worker-local:
+    # Worker POSTs to Navigator's ZAK callback through the cloudflare tunnel.
+    dns:
+      - 127.0.0.11
+      - 1.1.1.1
+      - 8.8.8.8
     environment:
       - CHARGE_CREDITS_FOR_BOTS=false
       - ENABLE_VOICE_AGENTS=true

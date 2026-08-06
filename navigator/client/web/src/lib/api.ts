@@ -10,6 +10,24 @@ export type DemoOrigin = "dashboard_test" | "public_embed";
 
 export type AutonomyMode = "guided" | "adaptive" | "explorer";
 
+export type SpokenLanguage = "en" | "hi";
+export type AgentGender = "female" | "male";
+export type TtsProvider = "auto" | "gemini" | "fish" | "piper";
+
+export type AgentSettings = {
+  default_language: SpokenLanguage;
+  extra_languages: SpokenLanguage[];
+  agent_gender: AgentGender;
+  agent_name: string;
+  tone: string;
+  tts_provider: TtsProvider;
+  gemini_voice: string;
+  has_gemini_api_key: boolean;
+  has_groq_api_key: boolean;
+  has_fish_api_key: boolean;
+  updated_at: string | null;
+};
+
 export type ReadinessCheck = {
   id: string;
   ok: boolean;
@@ -80,6 +98,44 @@ export type SystemMetrics = {
   services: { name: string; status: string; detail: string }[];
   processes: { name: string; status: string; cpu: string; mem: string }[];
   health: { name: string; ok: boolean; detail?: string }[];
+  token_usage?: {
+    days: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    calls: number;
+    has_usage: boolean;
+    uses_byok: boolean;
+    billing_label: string;
+    byok: {
+      has_groq_api_key: boolean;
+      has_gemini_api_key: boolean;
+      has_fish_api_key: boolean;
+      updated_at: string | null;
+    };
+    platform: { input_tokens: number; output_tokens: number; total_tokens: number; calls: number };
+    client: { input_tokens: number; output_tokens: number; total_tokens: number; calls: number };
+    providers: {
+      provider: string;
+      billed_to: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    }[];
+    client_models: {
+      model: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    }[];
+    typical_platform_per_demo: {
+      input_tokens: number;
+      output_tokens: number;
+      calls: number;
+    };
+  } | null;
 };
 export type DemoScriptBeat = {
   id: string;
@@ -181,6 +237,8 @@ export type ExploreStatus = {
   save_mode?: string;
   target_flow_id?: string | null;
   target_flow_name?: string | null;
+  new_flow_name?: string | null;
+  focus_hint?: string | null;
   budget?: {
     max_pages: number;
     max_steps: number;
@@ -535,6 +593,22 @@ export const api = {
   deleteProductLogin: () =>
     send<{ ok: boolean }>("/client/api/product-login", "DELETE"),
 
+  getAgentSettings: () => get<AgentSettings>("/client/api/agent-settings"),
+  putAgentSettings: (body: Partial<AgentSettings>) =>
+    send<AgentSettings & { ok: boolean }>("/client/api/agent-settings", "PUT", body),
+  putAgentProviderKeys: (body: {
+    gemini_api_key?: string | null;
+    groq_api_key?: string | null;
+    fish_api_key?: string | null;
+  }) =>
+    send<{
+      ok: boolean;
+      has_gemini_api_key: boolean;
+      has_groq_api_key: boolean;
+      has_fish_api_key: boolean;
+      updated_at: string | null;
+    }>("/client/api/agent-provider-keys", "PUT", body),
+
   getSiteGraph: () =>
     get<{
       yaml: string;
@@ -585,6 +659,19 @@ export const api = {
       "POST",
       { flow_id, page_id: page_id || null },
     ),
+  clearAllFlows: () =>
+    send<{ playlist: Flow[]; revision: number; yaml: string; cleared: boolean }>(
+      "/client/api/flows/clear",
+      "POST",
+    ),
+  clearSiteGraph: () =>
+    send<{
+      yaml: string;
+      revision: number;
+      site: string;
+      playlist: Flow[];
+      cleared: boolean;
+    }>("/client/api/site-graph/clear", "POST"),
   patchFlowSemantics: (body: {
     flow_id: string;
     purpose?: string;
@@ -616,7 +703,7 @@ export const api = {
   exploreStatus: () => get<ExploreStatus>("/client/api/explore"),
   exploreFrame: () =>
     get<{ mime: string; data: string }>("/client/api/explore/frame"),
-  exploreStart: (body: {
+    exploreStart: (body: {
     base_url?: string | null;
     max_pages?: number;
     max_steps?: number;
@@ -624,6 +711,8 @@ export const api = {
     save_mode?: "new" | "update";
     target_flow_id?: string | null;
     target_flow_name?: string | null;
+    new_flow_name?: string | null;
+    focus_hint?: string | null;
   }) => send<ExploreStatus>("/client/api/explore/start", "POST", body),
   exploreStop: () => send<ExploreStatus>("/client/api/explore/stop", "POST"),
   exploreAnswer: (qid: string, value: string, skip = false) =>

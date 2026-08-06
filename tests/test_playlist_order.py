@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from navigator.client.content import (
     apply_playlist_to_yaml,
+    clear_all_flows_from_yaml,
     playlist_from_graph,
     remove_flow_from_yaml,
+    reset_site_graph_for_explore,
 )
 from navigator.knowledge.site_graph import parse_site_graph
 
@@ -64,3 +66,33 @@ def test_remove_flow_drops_playlist_and_definition():
     assert [p.flow_id for p in g.demo_playlist] == ["second"]
     assert "first" not in g.pages["main"].flows
     assert "second" in g.pages["main"].flows
+
+
+def test_clear_all_flows_wipes_playlist_steps_and_meta():
+    graph_with_meta = _GRAPH + """
+_meta:
+  semantics:
+    first:
+      purpose: Tour intro
+  demo_script:
+    full_demo:
+      beats: []
+"""
+    out = clear_all_flows_from_yaml(graph_with_meta)
+    g = parse_site_graph(out)
+    assert g.demo_playlist == ()
+    assert g.pages["main"].flows == {}
+    assert g.meta.get("semantics") is None
+    assert g.meta.get("demo_script") is None
+    assert playlist_from_graph(g) == []
+
+
+def test_reset_site_graph_for_explore_minimal_shell():
+    out = reset_site_graph_for_explore(_GRAPH)
+    g = parse_site_graph(out)
+    assert g.demo_playlist == ()
+    assert set(g.pages.keys()) == {"home"}
+    assert g.pages["home"].flows == {}
+    assert g.base_url == "https://example.com/"
+    assert g.persona.product_name == "Acme"
+    assert g.meta == {}

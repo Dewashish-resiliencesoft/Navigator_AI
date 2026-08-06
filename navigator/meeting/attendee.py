@@ -87,6 +87,19 @@ class AttendeeClient:
                     "-f local.docker-compose.yaml --profile webpage-streamer up -d --force-recreate\n"
                     f"Original: {detail}"
                 ) from e
+            if e.code == 400 and "Zoom App credentials are required" in detail:
+                from navigator.meeting.attendee_stack import attendee_ui_origin
+
+                ui = attendee_ui_origin(self.base_url)
+                raise RuntimeError(
+                    "Attendee needs Zoom OAuth credentials for web SDK bots (separate "
+                    "from Navigator's ZAK tunnel).\n"
+                    "Fix: set NAVIGATOR_ZOOM_CLIENT_ID and NAVIGATOR_ZOOM_CLIENT_SECRET "
+                    "in .env (same Zoom Server-to-Server app), then run:\n"
+                    "  ./scripts/sync-attendee-zoom-credentials.sh\n"
+                    f"Or open Attendee → Project → Credentials: {ui}/projects/…/credentials\n"
+                    f"Original: {detail}"
+                ) from e
             raise RuntimeError(f"Attendee {method} {path} -> {e.code}: {detail}") from e
         except URLError as e:
             raise RuntimeError(f"Attendee unreachable at {self.base_url}: {e}") from e
@@ -161,6 +174,25 @@ class AttendeeClient:
 
     def leave(self, bot_id: str) -> None:
         self._request("POST", f"/bots/{bot_id}/leave", {})
+
+    _LEAVE_SKIP_RAW = frozenset(
+        {"ended", "leaving", "fatal_error", "post_processing", "post_processing_complete"}
+    )
+
+    def leave_if_active(self, bot_id: str) -> bool:
+        """POST /leave only when Attendee accepts it (skip ended/leaving/post_processing)."""
+        bot = self.get(bot_id)
+        raw = (bot.raw_state or bot.state or "").lower()
+        if raw in self._LEAVE_SKIP_RAW or bot.state in {"ended", "leaving", "fatal_error"}:
+            return False
+        try:
+            self.leave(bot_id)
+            return True
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "leave_requested not allowed" in msg or "post_processing" in msg:
+                return False
+            raise
 
     def enable_screenshare(self, bot_id: str, screenshare_url: str, voice_agent_url: str | None = None) -> None:
         """Start screen share mid-call (requires reserve_resources at join).

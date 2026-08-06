@@ -186,6 +186,28 @@ def test_leave_posts():
             client.leave("bot_1")
 
 
+def test_leave_if_active_skips_post_processing():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    with patch.object(
+        client,
+        "get",
+        return_value=AttendeeClient._bot({"id": "bot_1", "state": "post_processing"}),
+    ):
+        assert client.leave_if_active("bot_1") is False
+
+
+def test_leave_if_active_posts_when_joined():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    with patch.object(
+        client,
+        "get",
+        return_value=AttendeeClient._bot({"id": "bot_1", "state": "joined_recording"}),
+    ):
+        with patch.object(client, "leave") as leave:
+            assert client.leave_if_active("bot_1") is True
+            leave.assert_called_once_with("bot_1")
+
+
 def test_human_has_left_tracks_join_then_leave():
     from navigator.meeting.attendee import ParticipantEvent
 

@@ -278,6 +278,8 @@ def start_exploration(
     save_mode: str = "new",
     target_flow_id: str = "",
     target_flow_name: str = "",
+    new_flow_name: str = "",
+    focus_hint: str = "",
     on_complete: Callable[[ExplorationSession], None] | None = None,
 ) -> ExplorationSession:
     """Launch a run on a daemon thread. Raises if one is already active."""
@@ -290,7 +292,16 @@ def start_exploration(
         raise RuntimeError("target_flow_id required when save_mode is update")
     with _lock:
         if _active is not None and _active.phase not in {"done", "failed", "stopped"}:
-            raise RuntimeError("an exploration session is already running")
+            stale_s = _active.budget.max_wall_clock_s + 180.0
+            if _active.elapsed_s() > stale_s:
+                _active.phase = "failed"
+                _active.error = (
+                    "exploration session expired — previous run did not finish cleanly"
+                )
+                _active.emit({"type": "error", "msg": _active.error})
+                _active = None
+            else:
+                raise RuntimeError("an exploration session is already running")
         session = ExplorationSession(
             product_id=product_id,
             base_url=base_url,
@@ -299,6 +310,8 @@ def start_exploration(
             save_mode=mode,
             target_flow_id=flow_target,
             target_flow_name=(target_flow_name or "").strip(),
+            new_flow_name=(new_flow_name or "").strip(),
+            focus_hint=(focus_hint or "").strip(),
         )
         if mode == "update":
             session.emit(
@@ -317,7 +330,19 @@ def start_exploration(
                 {
                     "type": "log",
                     "level": "info",
-                    "msg": "plan: create new flow (unpublished draft)",
+                    "msg": (
+                        "plan: create new flow (unpublished draft)"
+                        + (
+                            f" — “{session.new_flow_name}”"
+                            if session.new_flow_name
+                            else ""
+                        )
+                        + (
+                            f"; focus: {session.focus_hint}"
+                            if session.focus_hint
+                            else ""
+                        )
+                    ),
                 }
             )
         _active = session
@@ -329,6 +354,20 @@ def start_exploration(
             session.error = str(exc)
             session.phase = "failed"
             session.emit({"type": "error", "msg": str(exc)})
+            if session.steps:
+                try:
+                    _persist(
+                        session,
+                        product_name=product_name,
+                        narration=[],
+                        flow_semantics=None,
+                        ask_text=None,
+                    )
+                except Exception as persist_exc:  # noqa: BLE001
+                    print(
+                        f"[explore] partial save after failure failed: {persist_exc}",
+                        flush=True,
+                    )
         finally:
             if session.phase not in {"failed", "stopped"}:
                 session.phase = "done"
@@ -527,7 +566,7 @@ def _persist(
     """
     from navigator.app.main import get_registry
     from navigator.automation.explore.segment import Segment, segment_steps
-    from navigator.client.content import merge_recorded_flow
+    from navigator.client.content import merge_recorded_flow, _slug_flow
 
     if not session.steps:
         session.emit(
@@ -572,12 +611,17 @@ def _persist(
         if update:
             flow_id = session.target_flow_id
             flow_name = session.target_flow_name or f"Explored — {product_name}"
+        elif session.new_flow_name:
+            flow_id = _slug_flow(session.new_flow_name)
+            flow_name = session.new_flow_name
         else:
             flow_id = f"explored_{uuid4().hex[:8]}"
             flow_name = (
                 seg.semantics.auto_name
                 or (f"Explored — {product_name}" if len(segments) == 1 else f"Explored {i + 1} — {product_name}")
             )
+        if not update and session.new_flow_name and i > 0:
+            flow_id = f"{flow_id}_{i + 1}"
         new_yaml = merge_recorded_flow(
             new_yaml,
             flow_name=flow_name,
@@ -604,6 +648,13 @@ def _persist(
                 if label
             ]
             new_yaml = _attach_meta(new_yaml, "semantics", flow_id, payload)
+        live_hints = [
+            d.as_dict()
+            for d in session.field_decisions
+            if d.classification == "business_specific"
+        ]
+        if live_hints:
+            new_yaml = _attach_meta(new_yaml, "live_input_hints", flow_id, live_hints)
         flow_ids.append(flow_id)
 
     rev = registry.put_site_graph(

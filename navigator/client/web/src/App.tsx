@@ -7,6 +7,7 @@ import { LiveDemo } from "./panels/LiveDemo";
 import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
+import { Settings } from "./panels/Settings";
 import { ResourceMonitor } from "./panels/ResourceMonitor";
 import { ExploreFloat } from "./components/ExploreFloat";
 import { soft } from "./lib/motion";
@@ -40,6 +41,7 @@ const PANELS: Record<string, () => React.ReactElement> = {
   graph: SiteGraph,
   knowledge: Knowledge,
   bio: Bio,
+  settings: Settings,
   monitor: ResourceMonitor,
 };
 

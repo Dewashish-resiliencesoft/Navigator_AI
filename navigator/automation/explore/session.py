@@ -151,6 +151,10 @@ class ExplorationSession:
     save_mode: str = "new"
     target_flow_id: str = ""
     target_flow_name: str = ""
+    #: Client label for a new flow (save_mode=new). Becomes playlist name + flow_id slug.
+    new_flow_name: str = ""
+    #: Tab / section / feature name to prioritize (e.g. "Billing", "Inbox").
+    focus_hint: str = ""
     started_at: float = field(default_factory=time.monotonic)
     consecutive_no_new: int = 0
     #: Why the loop ended (budget / client stop / dead end) — for dashboard summary.
@@ -373,7 +377,10 @@ class ExplorationSession:
     def status(self) -> dict[str, Any]:
         # Same URL path can appear under multiple DOM hashes (SPA re-renders);
         # dashboard list should show unique paths, order preserved.
-        visited_paths = list(dict.fromkeys(fp.url_path for fp in self.visited))
+        raw_paths = [fp.url_path for fp in self.visited]
+        visited_paths = list(
+            dict.fromkeys(p for p in raw_paths if p and p not in {"blank", "/blank"})
+        )
         # Last log-ish events for dashboard pollers that missed the WS stream.
         recent = [
             e
@@ -381,7 +388,9 @@ class ExplorationSession:
             if e.get("type") in {"log", "flagged", "field", "explored", "repair"}
         ][-80:]
         steps = len(self.steps)
-        pages = len({fp.url_path for fp in self.visited})
+        pages = len(
+            {p for p in raw_paths if p and p not in {"blank", "/blank"}}
+        )
         max_pages = max(1, self.budget.max_pages)
         # Progress = unique pages covered / budget. No soft time floor that
         # freezes the meter at 20% while the explorer is still crawling.
@@ -421,6 +430,8 @@ class ExplorationSession:
             "save_mode": self.save_mode,
             "target_flow_id": self.target_flow_id or None,
             "target_flow_name": self.target_flow_name or None,
+            "new_flow_name": self.new_flow_name or None,
+            "focus_hint": self.focus_hint or None,
             "error": self.error,
             "flow_id": self.flow_id,
             "revision": self.revision,

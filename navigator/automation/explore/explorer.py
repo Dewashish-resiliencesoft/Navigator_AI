@@ -24,6 +24,8 @@ from navigator.automation.explore import history, perceive, reason, semantics
 from navigator.automation.external_links import (
     element_is_external,
     is_external_url,
+    is_product_surface,
+    recover_product_surface,
     revert_external_navigation,
 )
 from navigator.automation.explore.diagnose import classify, looks_nav_stalled
@@ -165,6 +167,23 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             break
 
         url = _current_url(deps.page)
+        if not is_product_surface(url, session.base_url):
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "warn",
+                    "msg": f"off-surface URL {url!r} — returning to product",
+                }
+            )
+            if recover_product_surface(deps.page, session.base_url):
+                session.publish_frame(deps.page)
+                continue
+            session.stop_reason = "browser left the product surface"
+            session.emit(
+                {"type": "log", "level": "info", "msg": f"stopping: {session.stop_reason}"}
+            )
+            break
+
         elements = perceive.inventory(deps.page)
         fp = fingerprint(url, elements)
         visited_paths = tuple(dict.fromkeys(p.url_path for p in session.visited))
@@ -185,6 +204,12 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
 
         untried = session.untried(fp, elements)
         if not untried:
+            if fp.url_path in {"blank", "/blank"} or not is_product_surface(
+                url, session.base_url
+            ):
+                if recover_product_surface(deps.page, session.base_url):
+                    session.publish_frame(deps.page)
+                    continue
             # Exhausted this DOM state's untried set — do NOT tight-loop bumping
             # consecutive_no_new (that stopped runs at ~40% with pages left).
             if _try_dead_end_escape(session, deps, graph, fp, elements, url, execute, verify):
@@ -210,6 +235,7 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
             visited_paths=visited_paths,
             known_bad=deps.known_bad or None,
             product_base=session.base_url,
+            focus_hint=session.focus_hint,
             ask_text=deps.ask_text,
             ask_vision=deps.ask_vision,
             screenshot=(
@@ -342,6 +368,16 @@ def _try_dead_end_escape(
         return False
 
     after = _current_url(deps.page)
+    if not is_product_surface(after, session.base_url):
+        if recover_product_surface(deps.page, session.base_url):
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": "backed up from off-surface page — recovered to product",
+                }
+            )
+            return True
     if after == before:
         session.emit(
             {
@@ -542,6 +578,13 @@ def _step(
         or reason.looks_like_nav(el)
     )
     verify_ok = click_verify_passed(result, verify_result, call.expects)
+    path_before = urlparse(url_before).path or "/"
+    path_after = urlparse(url_after).path or "/"
+    navigated = not fillable and result.ok and path_before != path_after
+    if navigated and not stalled and not verify_ok:
+        # Nav succeeded but visibility verify flaky (tabs, SPA shells) — still
+        # count as a demo step when we landed on a new path.
+        verify_ok = True
     passed = bool(result.ok and verify_ok and not stalled)
 
     kind = ""
@@ -669,15 +712,32 @@ def _step(
 
     if passed:
         after_path = urlparse(_current_url(deps.page)).path or "/"
-        # Demo flow = first landing on each URL path only. Revisits / backtracks
-        # still explore the site but do not clutter the walkthrough.
-        if after_path not in session.flow_paths:
+        if fillable and step.tool == "fill_field":
+            _mark_live_input_step(step, session, el)
+            session.steps.append(step)
+            session.consecutive_no_new = 0
+            _label_step(
+                session,
+                deps,
+                tool=step.tool,
+                element=_label(el),
+                snap_before=snap_before,
+                elements_before=elements_before,
+            )
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        f"demo step +{alias} (fill on {after_path}) — "
+                        f"{choice.why or 'ok'}"
+                    ),
+                }
+            )
+        elif after_path not in session.flow_paths:
             session.flow_paths.add(after_path)
             session.steps.append(step)
             session.consecutive_no_new = 0
-            # Label only steps that made it into the demo. Labelling every
-            # attempted action would multiply the cost by ~5x for text nobody
-            # ever hears. Re-inventory: a repair may have moved the page on.
             _label_step(
                 session,
                 deps,
@@ -711,6 +771,24 @@ def _step(
 
     if deps.on_action is not None:
         deps.on_action(step, result, verify_result)
+
+
+def _mark_live_input_step(
+    step: RecordedStep,
+    session: ExplorationSession,
+    el: dict[str, Any],
+) -> None:
+    """Business-specific fills become live-input beats in the saved demo."""
+    for dec in reversed(session.field_decisions):
+        if dec.alias != step.alias:
+            continue
+        if dec.classification != "business_specific":
+            return
+        step.source = "user"
+        step.live_question = question_for(el)
+        if dec.value:
+            step.value = dec.value
+        return
 
 
 def _label_step(

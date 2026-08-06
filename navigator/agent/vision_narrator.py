@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 
+from navigator.agent.speech_persona import speech_rules
+
 _SYSTEM = """You are a product specialist giving a live screen-share demo.
 You can SEE the product on screen via a screenshot. You are narrating a live
 walkthrough to a prospect.
@@ -39,6 +41,8 @@ def generate_narration(
     product_brief: str = "",
     step_action: str = "",
     section_knowledge: str = "",
+    spoken_language: str = "en",
+    agent_gender: str = "female",
     complete_with_image: Callable[[str, str, bytes], str] | None = None,
 ) -> str:
     """Generate narration from what the agent sees on screen.
@@ -68,6 +72,7 @@ def generate_narration(
         f"Product brief: {(product_brief or '')[:1500]}",
         f"Section knowledge (use this to explain how this part works; do not invent beyond it): {(section_knowledge or '')[:2000] or '(none)'}",
         f"Visible text: {(screen_text or '')[:1000]}",
+        speech_rules(spoken_language=spoken_language, agent_gender=agent_gender),
         "Generate the narration I should speak right now. Voice only, 2-3 sentences.",
         "If section knowledge is present, weave in one concrete point about how this feature works.",
     ]

@@ -114,9 +114,11 @@ def classify_correction(
         key = api_key if api_key is not None else settings.groq_api_key
         if not key:
             return False
-        from navigator.core.groq_client import groq_client
+        from navigator.core.groq_client import chat_completions_create
 
-        resp = groq_client(key).chat.completions.create(
+        resp = chat_completions_create(
+            key,
+            purpose="reflect_classify",
             model=CLASSIFY_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,

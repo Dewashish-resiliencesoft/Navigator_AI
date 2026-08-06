@@ -125,6 +125,34 @@ def test_spoken_prefers_semantics_over_misaligned_explore():
     assert steps[0]["spoken_source"] == "semantics"
 
 
+def test_resolve_flow_step_spoken_fallback_is_pair():
+    from navigator.knowledge.demo_script import resolve_flow_step_spoken
+
+    raw = yaml.safe_load(_minimal_graph_yaml())
+    raw["pages"]["home"]["flows"]["tour"] = [
+        {
+            "tool": "click_element",
+            "selector": "body",
+            "expects": {"check": "visible", "selector": "body"},
+        }
+    ]
+    raw["_meta"] = {}
+    graph = parse_site_graph(yaml.safe_dump(raw))
+    call = graph.pages["home"].flows["tour"][0]
+    spoken, source = resolve_flow_step_spoken(
+        graph=graph,
+        flow_id="tour",
+        step_index=0,
+        step_count=1,
+        page_id="home",
+        page_name="Home",
+        call=call,
+    )
+    assert isinstance(spoken, str)
+    assert source == "generated"
+    assert spoken  # derived from click action
+
+
 def test_spoken_action_derived_not_next_step():
     raw = yaml.safe_load(_minimal_graph_yaml())
     raw["pages"]["home"]["flows"]["tour"] = [

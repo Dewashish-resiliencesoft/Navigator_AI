@@ -124,55 +124,70 @@ def start_tunnel(
     return handle
 
 
-def _attendee_webpage_streamer_container() -> str | None:
+def _attendee_compose_container(*name_filters: str) -> str | None:
+    """First running Attendee compose container matching any filter substring."""
     try:
         out = subprocess.check_output(
-            [
-                "docker",
-                "ps",
-                "--filter",
-                "name=webpage-streamer",
-                "--format",
-                "{{.Names}}",
-            ],
+            ["docker", "ps", "--format", "{{.Names}}"],
             text=True,
             timeout=5,
         ).strip()
         if not out:
             return None
-        return out.splitlines()[0]
+        for line in out.splitlines():
+            name = line.strip()
+            if not name:
+                continue
+            if any(f in name for f in name_filters):
+                return name
+        return None
     except (FileNotFoundError, subprocess.SubprocessError):
         return None
 
 
-def verify_attendee_docker_dns(hostname: str) -> None:
-    """Fail fast when Attendee's webpage-streamer Chromium cannot resolve the host.
+def _attendee_webpage_streamer_container() -> str | None:
+    return _attendee_compose_container("webpage-streamer")
 
-    ``wait_until_public`` may pass via dig@1.1.1.1 while Docker's stub resolver
-    still NXDOMAINs fresh ``*.trycloudflare.com`` names.
+
+def _attendee_worker_container() -> str | None:
+    return _attendee_compose_container("attendee-worker")
+
+
+def verify_attendee_docker_dns(hostname: str) -> None:
+    """Fail fast when Attendee Docker cannot resolve a tunnel hostname.
+
+    Checks webpage-streamer (screenshare) and worker (ZAK callback from Attendee
+    to Navigator). ``wait_until_public`` may pass via dig@1.1.1.1 on the host
+    while Docker's stub resolver still NXDOMAINs fresh ``*.trycloudflare.com``.
     """
-    container = _attendee_webpage_streamer_container()
-    if not container:
+    containers: list[str] = []
+    for finder in (_attendee_worker_container, _attendee_webpage_streamer_container):
+        name = finder()
+        if name and name not in containers:
+            containers.append(name)
+    if not containers:
         return
     script = f"import socket\nsocket.getaddrinfo({hostname!r}, 443)\n"
-    try:
-        subprocess.run(
-            ["docker", "exec", container, "python", "-c", script],
-            check=True,
-            timeout=15,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"Attendee container {container!r} cannot resolve {hostname!r} — "
-            "Meet screenshare will show DNS_PROBE_FINISHED_NXDOMAIN. "
-            "In ~/projects/attendee/local.docker-compose.yaml set "
-            "dns: [127.0.0.11, 1.1.1.1, 8.8.8.8] on attendee-webpage-streamer-local "
-            "(127.0.0.11 must stay first for compose service names), then "
-            "recreate: docker compose -f dev.docker-compose.yaml "
-            "-f local.docker-compose.yaml --profile webpage-streamer up -d "
-            "--force-recreate attendee-webpage-streamer-local"
-        ) from exc
+    for container in containers:
+        try:
+            subprocess.run(
+                ["docker", "exec", container, "python", "-c", script],
+                check=True,
+                timeout=15,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Attendee container {container!r} cannot resolve {hostname!r} — "
+                "Zoom ZAK callback and/or screenshare will fail. "
+                "In ~/projects/attendee/local.docker-compose.yaml set "
+                "dns: [127.0.0.11, 1.1.1.1, 8.8.8.8] on attendee-worker-local and "
+                "attendee-webpage-streamer-local (127.0.0.11 first), then run "
+                "./scripts/sync-attendee-compose.sh and recreate: "
+                "docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml "
+                "--profile webpage-streamer up -d --force-recreate "
+                "attendee-worker-local attendee-webpage-streamer-local"
+            ) from exc
 
 
 def _socket_resolve(host: str) -> list[str]:
@@ -204,7 +219,9 @@ def _dig_ips(host: str) -> list[str]:
         line = line.strip()
         if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", line):
             ips.append(line)
-    return ips
+    if ips:
+        return ips
+    return _socket_resolve(host)
 
 
 def _probe_via_public_dns(url: str, *, timeout: float = 5.0) -> int:
@@ -214,7 +231,12 @@ def _probe_via_public_dns(url: str, *, timeout: float = 5.0) -> int:
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
-    ips = _dig_ips(host)
+    ips: list[str] = []
+    for _ in range(3):
+        ips = _dig_ips(host)
+        if ips:
+            break
+        time.sleep(0.5)
     if not ips:
         raise URLError(f"dig@1.1.1.1 returned no A records for {host}")
     ctx = ssl.create_default_context()

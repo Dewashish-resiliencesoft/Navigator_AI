@@ -62,6 +62,11 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
     utterance = _capture_utterance(state, deps)
     if utterance:
         print(f"[listen] heard: {utterance!r}", flush=True)
+    if utterance and deps.on_user_utterance is not None:
+        try:
+            deps.on_user_utterance(utterance)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[listen] on_user_utterance skipped: {exc}", flush=True)
     last = _last_entry(state, deps)
     is_correction = False
     if last is not None:

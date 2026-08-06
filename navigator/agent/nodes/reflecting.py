@@ -17,7 +17,7 @@ REFLECT_SYSTEM = (
     "they are aliases already mentioned. Return ONLY the rule text."
 )
 
-CLASSIFY_MODEL = "llama-3.1-8b-instant"
+CLASSIFY_MODEL = settings.brain_classify_model
 
 _NOT_CORRECTION = re.compile(
     r"\b(take me to|show me|go to|open the|navigate|404|not found|"

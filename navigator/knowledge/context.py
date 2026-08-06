@@ -153,7 +153,8 @@ def score_flows(
     if trigger_hits:
         lists.append(sorted(trigger_hits, key=lambda x: -x[1]))
     fused = reciprocal_rank_fusion(*lists)
-    return [(fid, score) for fid, score in fused]
+    dense_map = dict(dense)
+    return [(fid, dense_map.get(fid, score)) for fid, score in fused]
 
 
 def _cosine(a, b) -> float:

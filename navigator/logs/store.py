@@ -179,7 +179,9 @@ class ActionLog:
             (product_id, limit),
         )
 
-    def product_metrics(self, product_id: str, days: int = 14) -> dict:
+    def product_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
         """Rolled-up counters + a daily series for one product's dashboard.
 
         Counts LIVE demos only. A Client running test demos from their dashboard
@@ -190,6 +192,8 @@ class ActionLog:
         Aggregated in SQL rather than by hydrating entries: the action log is the
         highest-volume table here and a dashboard poll must not scan it row by row.
         """
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
         # action_log has no origin of its own; a session's origin lives on its
         # demo_runs row. Subtracting test sessions (rather than selecting live
         # ones) means a run row that failed to persist still bills, instead of
@@ -197,6 +201,7 @@ class ActionLog:
         live_only = (
             "AND session_id NOT IN (SELECT session_id FROM demo_runs "
             "WHERE product_id = ? AND origin = 'dashboard_test') "
+            "AND timestamp >= ? "
         )
         totals = self._conn.execute(
             "SELECT COUNT(*) AS actions, "
@@ -206,7 +211,7 @@ class ActionLog:
             "COALESCE(SUM(passed = 1), 0) AS passed, "
             "MAX(timestamp) AS last_seen "
             "FROM action_log WHERE product_id = ? " + live_only,
-            (product_id, product_id),
+            (product_id, product_id, cutoff),
         ).fetchone()
 
         rows = self._conn.execute(
@@ -216,13 +221,13 @@ class ActionLog:
             "COALESCE(SUM(failed), 0) AS failures "
             "FROM action_log WHERE product_id = ? " + live_only +
             "GROUP BY day ORDER BY day DESC LIMIT ?",
-            (product_id, product_id, max(1, days)),
+            (product_id, product_id, cutoff, max(1, days)),
         ).fetchall()
 
         test_sessions = self._conn.execute(
             "SELECT COUNT(*) AS n FROM demo_runs "
-            "WHERE product_id = ? AND origin = 'dashboard_test'",
-            (product_id,),
+            "WHERE product_id = ? AND origin = 'dashboard_test' AND started_at >= ?",
+            (product_id, cutoff),
         ).fetchone()
 
         return {
@@ -244,14 +249,16 @@ class ActionLog:
             ],
         }
 
-    def demo_run_metrics(self, product_id: str, days: int = 14) -> dict:
+    def demo_run_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
         """Durable demo_runs rollups for the Overview Sessions card.
 
         Unlike ``product_metrics`` (billable action_log only), this counts every
         persisted demo run — test and live — so the dashboard reflects what the
         Client actually ran.
         """
-        when = utcnow()
+        when = now or utcnow()
         cutoff = (when - timedelta(days=max(1, days))).isoformat()
 
         def _totals(origin: str | None) -> dict[str, int]:
@@ -295,6 +302,107 @@ class ActionLog:
             "failed": all_totals["failed"],
             "live": _totals("public_embed"),
             "test": _totals("dashboard_test"),
+        }
+
+    def dashboard_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
+        """Unified Client dashboard KPIs — one ``days`` window, test + live included.
+
+        ``sessions`` / daily ``series[].sessions`` = demo run count (``demo_runs``).
+        ``failures`` / ``series[].failures`` = failed tool steps (``action_log``).
+        ``failed_runs`` = demos whose run ``status`` is ``failed``.
+        """
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        runs = self.demo_run_metrics(product_id, days=days, now=when)
+
+        totals = self._conn.execute(
+            """
+            SELECT COUNT(*) AS actions,
+                   COALESCE(SUM(al.failed), 0) AS failures,
+                   COALESCE(SUM(al.passed IS NOT NULL), 0) AS verified,
+                   COALESCE(SUM(al.passed = 1), 0) AS passed,
+                   MAX(al.timestamp) AS last_seen
+            FROM action_log al
+            INNER JOIN demo_runs dr
+              ON dr.session_id = al.session_id AND dr.product_id = al.product_id
+            WHERE dr.product_id = ? AND dr.started_at >= ?
+            """,
+            (product_id, cutoff),
+        ).fetchone()
+
+        action_rows = self._conn.execute(
+            """
+            SELECT substr(al.timestamp, 1, 10) AS day,
+                   COUNT(*) AS actions,
+                   COALESCE(SUM(al.failed), 0) AS failures
+            FROM action_log al
+            INNER JOIN demo_runs dr
+              ON dr.session_id = al.session_id AND dr.product_id = al.product_id
+            WHERE dr.product_id = ? AND dr.started_at >= ?
+            GROUP BY day
+            """,
+            (product_id, cutoff),
+        ).fetchall()
+
+        run_days = {r["day"]: int(r["sessions"]) for r in runs["series"]}
+        action_days = {
+            r["day"]: {"actions": int(r["actions"]), "failures": int(r["failures"])}
+            for r in action_rows
+        }
+        all_days = sorted(set(run_days) | set(action_days))
+
+        series = [
+            {
+                "day": day,
+                "sessions": run_days.get(day, 0),
+                "actions": action_days.get(day, {}).get("actions", 0),
+                "failures": action_days.get(day, {}).get("failures", 0),
+            }
+            for day in all_days
+        ]
+
+        visitor = self.product_metrics(product_id, days=days, now=when)
+
+        runs_with_step_failures = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM demo_runs dr
+            WHERE dr.product_id = ? AND dr.started_at >= ?
+              AND EXISTS (
+                SELECT 1 FROM action_log al
+                WHERE al.session_id = dr.session_id
+                  AND al.product_id = dr.product_id
+                  AND al.failed = 1
+              )
+            """,
+            (product_id, cutoff),
+        ).fetchone()
+
+        return {
+            "days": days,
+            "test_sessions": runs["test"]["total"],
+            "sessions": runs["total"],
+            "actions": int(totals["actions"] or 0),
+            "failures": int(totals["failures"] or 0),
+            "failed_runs": runs["failed"],
+            "runs_with_step_failures": int(runs_with_step_failures["n"] or 0),
+            "verified": int(totals["verified"] or 0),
+            "passed": int(totals["passed"] or 0),
+            "last_seen": totals["last_seen"],
+            "series": series,
+            "demos": {
+                "total": runs["total"],
+                "running": runs["running"],
+                "failed": runs["failed"],
+            },
+            "live": runs["live"],
+            "test": runs["test"],
+            "visitor": {
+                "sessions": visitor["sessions"],
+                "actions": visitor["actions"],
+                "failures": visitor["failures"],
+            },
         }
 
     def sessions(self) -> list[UUID]:

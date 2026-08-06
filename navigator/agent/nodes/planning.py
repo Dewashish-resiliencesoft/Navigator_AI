@@ -16,7 +16,15 @@ Every live turn writes one DecisionTrace row -- including the boring ones.
 from __future__ import annotations
 
 from navigator.agent.call_memory import CallMemory
-from navigator.agent.end_policy import ANYTHING_ELSE, WRAP_UP, is_goodbye, next_silence_action
+from navigator.agent.end_policy import (
+    ANYTHING_ELSE,
+    QUESTION_ANSWERED,
+    RESUME_AFTER_QUESTION,
+    RESUME_AFTER_SILENCE,
+    WRAP_UP,
+    is_goodbye,
+    next_silence_action,
+)
 from navigator.agent.planner import HANDOFF_SPOKEN, FlowChoice, choose_flow
 from navigator.agent.phrasing import phrase_turn
 from navigator.agent.speech_safety import REFUSE_SPOKEN, is_exfil_request
@@ -321,6 +329,16 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
     if phase == "anything_else":
         return _plan_anything_else(state, deps, utterance=utterance, transcript=transcript)
 
+    if phase == "awaiting_resume":
+        return _plan_awaiting_resume(
+            state, deps, utterance=utterance, transcript=transcript
+        )
+
+    if phase == "detour":
+        if utterance and not _is_continue(utterance):
+            return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
+        return _plan_detour_next(state, deps)
+
     # Clarifying-question follow-up must see "yes"/"ok" — those are also continue tokens.
     if (state.get("awaiting_confirm_flow_id") or "").strip() and utterance:
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
@@ -527,10 +545,14 @@ def _try_tier2(
         store.close()
 
     return CallState(
-        phase="walkthrough",
+        phase="detour",
         walkthrough_step=walkthrough_step,
         resume_step=walkthrough_step,
         resume_page_id=state.get("walkthrough_page_id") or page_id,
+        detour_one_shot=True,
+        detour_flow_id="",
+        detour_page_id=page_id,
+        detour_step=0,
         plan=Plan(spoken_response=spoken, tool_calls=[outcome.call]),
         pending_calls=[outcome.call],
         narration=[spoken],
@@ -613,13 +635,13 @@ def _resolve_awaiting_confirm(
     pacing = _memory(deps).note_turn(utterance)
 
     if _is_affirm(utterance):
-        spoken = _say(
+        spoken = _seamless_detour_spoken(
             deps,
-            intent="flow_intro",
-            fallback=_describe(deps.graph.page(page_id).name, pending_flow_id),
+            page_id=page_id,
+            flow_id=pending_flow_id,
             utterance=utterance,
-            context=f"Confirmed flow: {pending_flow_id}",
             pacing=pacing,
+            context=f"Confirmed flow: {pending_flow_id}",
         )
         _memory(deps).note_flow(pending_flow_id)
         _trace(
@@ -631,16 +653,14 @@ def _resolve_awaiting_confirm(
             chosen_flow_id=pending_flow_id,
             detail="prospect confirmed clarifying question",
         )
-        return _plan_from_flow(
+        return _start_detour(
             deps,
+            state,
             page_id,
             pending_flow_id,
             spoken=spoken,
-            phase="walkthrough",
             walkthrough_step=walkthrough_step,
-            resume_step=walkthrough_step,
-            resume_page_id=state.get("walkthrough_page_id") or page_id,
-            awaiting_confirm_flow_id=None,
+            walkthrough_page=state.get("walkthrough_page_id") or page_id,
         )
 
     if _is_negate(utterance):
@@ -730,49 +750,79 @@ def _decide_live_turn(
 
     if band == "high" and band_source is not None:
         flow_id, conf = band_source
-        knowledge_bits = " ".join(
-            (chunk.summary or chunk.text)[:240]
-            for chunk, score in result.knowledge_chunks[:2]
-            if score >= 0.25
-        )
-        spoken = _say(
-            deps,
-            intent="flow_intro",
-            fallback=_describe(deps.graph.page(page_id).name, flow_id),
-            utterance=utterance,
-            context=(
-                f"Matched flow {flow_id} at confidence {conf:.2f}. "
-                f"Explain briefly using this product knowledge if relevant: "
-                f"{knowledge_bits or '(none)'}"
-            ),
-            pacing=pacing,
-        )
-        mem.note_flow(flow_id)
-        _trace(
-            deps,
-            state,
-            utterance=utterance,
-            branch="flow_executed",
-            spoken=spoken,
-            chosen_flow_id=flow_id,
-            flow_candidates=flow_cands,
-            knowledge_hits=k_hits,
-            detail=f"high confidence {conf:.2f}",
-        )
-        return _plan_from_flow(
-            deps,
-            page_id,
-            flow_id,
-            spoken=spoken,
-            phase="walkthrough",
-            walkthrough_step=walkthrough_step,
-            resume_step=walkthrough_step,
-            resume_page_id=walkthrough_page,
-            awaiting_confirm_flow_id=None,
-        )
+        if not _flow_offerable(deps, page_id, flow_id):
+            band = "none"
+        else:
+            knowledge_bits = " ".join(
+                (chunk.summary or chunk.text)[:240]
+                for chunk, score in result.knowledge_chunks[:2]
+                if score >= 0.25
+            )
+            spoken = _seamless_detour_spoken(
+                deps,
+                page_id=page_id,
+                flow_id=flow_id,
+                utterance=utterance,
+                pacing=pacing,
+                context=(
+                    f"Matched flow {flow_id} at confidence {conf:.2f}. "
+                    f"Product knowledge: {knowledge_bits or '(none)'}"
+                ),
+            )
+            mem.note_flow(flow_id)
+            _trace(
+                deps,
+                state,
+                utterance=utterance,
+                branch="flow_executed",
+                spoken=spoken,
+                chosen_flow_id=flow_id,
+                flow_candidates=flow_cands,
+                knowledge_hits=k_hits,
+                detail=f"high confidence {conf:.2f}; seamless detour",
+            )
+            return _start_detour(
+                deps,
+                state,
+                page_id,
+                flow_id,
+                spoken=spoken,
+                walkthrough_step=walkthrough_step,
+                walkthrough_page=walkthrough_page,
+            )
 
     if band == "medium" and band_source is not None:
         flow_id, conf = band_source
+        if _flow_offerable(deps, page_id, flow_id):
+            spoken = _seamless_detour_spoken(
+                deps,
+                page_id=page_id,
+                flow_id=flow_id,
+                utterance=utterance,
+                pacing=pacing,
+                context=f"Matched flow {flow_id} at confidence {conf:.2f}",
+            )
+            mem.note_flow(flow_id)
+            _trace(
+                deps,
+                state,
+                utterance=utterance,
+                branch="flow_executed",
+                spoken=spoken,
+                chosen_flow_id=flow_id,
+                flow_candidates=flow_cands,
+                knowledge_hits=k_hits,
+                detail=f"medium confidence {conf:.2f}; offerable → direct detour",
+            )
+            return _start_detour(
+                deps,
+                state,
+                page_id,
+                flow_id,
+                spoken=spoken,
+                walkthrough_step=walkthrough_step,
+                walkthrough_page=walkthrough_page,
+            )
         label = flow_id.replace("_", " ").replace("-", " ")
         fallback = f"Want me to show you {label}?"
         spoken = _say(
@@ -792,7 +842,7 @@ def _decide_live_turn(
             chosen_flow_id=flow_id,
             flow_candidates=flow_cands,
             knowledge_hits=k_hits,
-            detail=f"medium confidence {conf:.2f}; awaiting confirm",
+            detail=f"medium confidence {conf:.2f}; not offerable → awaiting confirm",
         )
         return CallState(
             phase="walkthrough",
@@ -834,8 +884,11 @@ def _decide_live_turn(
             detail=f"knowledge hit {score:.2f}; no flow run",
         )
         return CallState(
-            phase="walkthrough",
+            phase="awaiting_resume",
             walkthrough_step=walkthrough_step,
+            resume_step=walkthrough_step,
+            resume_page_id=walkthrough_page,
+            resume_checkin_pending=True,
             awaiting_confirm_flow_id=None,
             plan=Plan(spoken_response=spoken, tool_calls=[]),
             pending_calls=[],
@@ -916,11 +969,11 @@ def _try_turn_brain(
         return None
 
     spoken = decision.spoken_response.strip()
-    base = dict(
-        phase="walkthrough",
+    walkthrough_page = state.get("walkthrough_page_id") or _guide_page_id(state)
+    resume = dict(
         walkthrough_step=walkthrough_step,
-        narration=[spoken],
-        transcript=[f"agent: {spoken}"],
+        resume_step=walkthrough_step,
+        resume_page_id=walkthrough_page,
     )
 
     if decision.intent == "end":
@@ -934,9 +987,13 @@ def _try_turn_brain(
 
     if decision.intent in {"speak", "clarify"}:
         return CallState(
-            **base,
+            phase="awaiting_resume",
+            resume_checkin_pending=True,
+            **resume,
             plan=Plan(spoken_response=spoken, tool_calls=[]),
             pending_calls=[],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
         )
 
     if decision.intent == "navigate_page" and decision.page_id:
@@ -949,23 +1006,371 @@ def _try_turn_brain(
             ),
         )
         return CallState(
-            **base,
+            phase="detour",
+            detour_one_shot=True,
+            detour_flow_id="",
+            detour_page_id=decision.page_id,
+            detour_step=0,
+            **resume,
             plan=Plan(spoken_response=spoken, tool_calls=[call]),
             pending_calls=[call],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
         )
 
     if decision.intent == "click_nav" and decision.nav_label:
         return CallState(
-            **base,
+            phase="awaiting_resume",
+            **resume,
             plan=Plan(spoken_response=spoken, tool_calls=[]),
             pending_calls=[],
             nav_click_label=decision.nav_label.strip(),
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
         )
 
     return CallState(
-        **base,
+        phase="awaiting_resume",
+        **resume,
         plan=Plan(spoken_response=spoken, tool_calls=[]),
         pending_calls=[],
+        narration=[spoken],
+        transcript=[f"agent: {spoken}"],
+    )
+
+
+def _flow_offerable(deps: CallDeps, page_id: str, flow_id: str) -> bool:
+    """True when flow exists on the site graph and may be shown live."""
+    from navigator.automation.explore.validate import is_offerable
+
+    try:
+        page = deps.graph.page(page_id)
+    except SiteGraphError:
+        return False
+    if flow_id not in page.flows:
+        return False
+    try:
+        list(deps.graph.flow(page_id, flow_id))
+    except SiteGraphError:
+        return False
+    return is_offerable(deps.graph.flow_validation(flow_id))
+
+
+def _seamless_detour_fallback(page_name: str, flow_id: str) -> str:
+    label = flow_id.replace("_", " ").replace("-", " ")
+    return f"Yes, we can show that too — here's {label} on {page_name}."
+
+
+def _seamless_detour_spoken(
+    deps: CallDeps,
+    *,
+    page_id: str,
+    flow_id: str,
+    utterance: str,
+    pacing: str,
+    context: str,
+) -> str:
+    page_name = deps.graph.page(page_id).name
+    return _say(
+        deps,
+        intent="detour_intro",
+        fallback=_seamless_detour_fallback(page_name, flow_id),
+        utterance=utterance,
+        context=context,
+        pacing=pacing,
+    )
+
+
+def _start_detour(
+    deps: CallDeps,
+    state: CallState,
+    page_id: str,
+    flow_id: str,
+    *,
+    spoken: str,
+    walkthrough_step: int,
+    walkthrough_page: str,
+    **extra,
+) -> CallState:
+    """Begin a step-by-step detour; main demo bookmark preserved in resume_*."""
+    _ensure_browser_on_page(deps, page_id)
+    try:
+        calls = list(deps.graph.flow(page_id, flow_id))
+    except SiteGraphError as exc:
+        raise RuntimeError(
+            f"detour flow {flow_id!r} not found on page {page_id!r}"
+        ) from exc
+    if not calls:
+        return _enter_awaiting_resume(state, deps, preamble=spoken)
+
+    nxt = calls[0]
+    step_spoken = _spoken_for_flow_step(
+        deps,
+        page_id=page_id,
+        flow_id=flow_id,
+        step=0,
+        call=nxt,
+        intro=spoken,
+    )
+    _memory(deps).note_spoken(step_spoken)
+    return CallState(
+        phase="detour",
+        detour_flow_id=flow_id,
+        detour_page_id=page_id,
+        detour_step=1,
+        detour_one_shot=False,
+        walkthrough_step=walkthrough_step,
+        walkthrough_page_id=walkthrough_page,
+        resume_step=walkthrough_step,
+        resume_page_id=walkthrough_page,
+        plan=Plan(spoken_response=step_spoken, tool_calls=[nxt]),
+        pending_calls=[nxt],
+        narration=[step_spoken],
+        transcript=[f"agent: {step_spoken}"],
+        awaiting_confirm_flow_id=None,
+        **{k: v for k, v in extra.items() if k != "awaiting_confirm_flow_id"},
+    )
+
+
+def _spoken_for_flow_step(
+    deps: CallDeps,
+    *,
+    page_id: str,
+    flow_id: str,
+    step: int,
+    call: object,
+    intro: str = "",
+    resume_bridge: str = "",
+) -> str:
+    yaml_hint = _step_narration_hint(
+        deps, page_id=page_id, flow_id=flow_id, step=step, call=call
+    )
+    yaml_hint = format_with_intake(yaml_hint, deps.intake)
+    parts = [p for p in (intro, resume_bridge, yaml_hint) if p.strip()]
+    spoken = " ".join(parts).strip()
+
+    if _use_turn_brain(deps) and deps.page is not None:
+        try:
+            from navigator.agent.turn_brain import capture_screenshot_png
+            from navigator.agent.vision_narrator import generate_narration
+
+            png = capture_screenshot_png(deps.page)
+            screen = ""
+            if deps.screen_context is not None:
+                screen = deps.screen_context() or ""
+            intake_summary = ""
+            if deps.intake:
+                intake_summary = (
+                    f"{deps.intake.name} at {deps.intake.company}, "
+                    f"{deps.intake.business_type}, need={deps.intake.looking_for}"
+                )
+            tool = getattr(call, "tool", "") or type(call).__name__
+            alias = getattr(call, "alias", "") or getattr(call, "page_id", "")
+            step_action = f"{tool} {alias}".strip()
+            section_knowledge = _section_knowledge_for_step(
+                deps,
+                page_id=page_id,
+                flow_id=flow_id,
+                step_action=step_action,
+            )
+            spoken = generate_narration(
+                screenshot_png=png,
+                screen_text=screen,
+                narration_hint=spoken,
+                intake_summary=intake_summary,
+                product_brief=deps.product_brief or "",
+                step_action=step_action,
+                section_knowledge=section_knowledge,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[plan] vision narration skipped: {exc}", flush=True)
+    return spoken
+
+
+def _plan_detour_next(state: CallState, deps: CallDeps) -> CallState:
+    if state.get("detour_one_shot"):
+        return _enter_awaiting_resume(state, deps)
+
+    page_id = state.get("detour_page_id") or _guide_page_id(state)
+    flow_id = state.get("detour_flow_id") or ""
+    step = int(state.get("detour_step") or 0)
+    if not flow_id:
+        return _enter_awaiting_resume(state, deps)
+
+    _ensure_browser_on_page(deps, page_id)
+    try:
+        calls = list(deps.graph.flow(page_id, flow_id))
+    except SiteGraphError as exc:
+        raise RuntimeError(
+            f"detour flow {flow_id!r} not found on page {page_id!r}"
+        ) from exc
+
+    if step >= len(calls):
+        return _enter_awaiting_resume(state, deps)
+
+    nxt = calls[step]
+    spoken = _spoken_for_flow_step(
+        deps, page_id=page_id, flow_id=flow_id, step=step, call=nxt
+    )
+    _memory(deps).note_spoken(spoken)
+    _trace(
+        deps,
+        state,
+        utterance="",
+        branch="detour_step",
+        spoken=spoken,
+        chosen_flow_id=flow_id,
+        detail=f"detour step {step} → {step + 1}",
+    )
+    return CallState(
+        phase="detour",
+        detour_flow_id=flow_id,
+        detour_page_id=page_id,
+        detour_step=step + 1,
+        detour_one_shot=False,
+        walkthrough_step=state.get("walkthrough_step"),
+        walkthrough_page_id=state.get("walkthrough_page_id"),
+        resume_step=state.get("resume_step"),
+        resume_page_id=state.get("resume_page_id") or "",
+        plan=Plan(spoken_response=spoken, tool_calls=[nxt]),
+        pending_calls=[nxt],
+        narration=[spoken],
+        transcript=[f"agent: {spoken}"],
+    )
+
+
+def _enter_awaiting_resume(
+    state: CallState, deps: CallDeps, *, preamble: str = ""
+) -> CallState:
+    spoken = _say(
+        deps,
+        intent="question_answered",
+        fallback=QUESTION_ANSWERED,
+        pacing=_memory(deps).pacing_history[-1]
+        if _memory(deps).pacing_history
+        else "neutral",
+    )
+    if preamble.strip():
+        spoken = f"{preamble.strip()} {spoken}".strip()
+    _trace(
+        deps,
+        state,
+        utterance="",
+        branch="awaiting_resume",
+        spoken=spoken,
+        detail="detour complete → check if question answered",
+    )
+    return CallState(
+        phase="awaiting_resume",
+        detour_flow_id="",
+        detour_page_id="",
+        detour_step=0,
+        detour_one_shot=False,
+        walkthrough_step=state.get("walkthrough_step"),
+        walkthrough_page_id=state.get("walkthrough_page_id"),
+        resume_step=state.get("resume_step"),
+        resume_page_id=state.get("resume_page_id") or "",
+        plan=Plan(spoken_response=spoken, tool_calls=[]),
+        pending_calls=[],
+        narration=[spoken],
+        transcript=[f"agent: {spoken}"],
+        awaiting_confirm_flow_id=None,
+    )
+
+
+def _plan_awaiting_resume(
+    state: CallState,
+    deps: CallDeps,
+    *,
+    utterance: str,
+    transcript: list[str],
+) -> CallState:
+    if state.get("resume_checkin_pending"):
+        if utterance and not _is_continue(utterance):
+            if is_goodbye(utterance):
+                return CallState(
+                    phase="ending",
+                    plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
+                    pending_calls=[],
+                    narration=[WRAP_UP],
+                    transcript=[f"agent: {WRAP_UP}"],
+                )
+            if _is_affirm(utterance):
+                return _plan_resume_main(
+                    {**state, "resume_checkin_pending": False},
+                    deps,
+                    after_silence=False,
+                )
+            return _plan_interrupt(
+                {**state, "resume_checkin_pending": False},
+                deps,
+                utterance=utterance,
+                transcript=transcript,
+            )
+        spoken = _say(
+            deps,
+            intent="question_answered",
+            fallback=QUESTION_ANSWERED,
+            pacing=_memory(deps).pacing_history[-1]
+            if _memory(deps).pacing_history
+            else "neutral",
+        )
+        return CallState(
+            phase="awaiting_resume",
+            resume_checkin_pending=False,
+            walkthrough_step=state.get("walkthrough_step"),
+            walkthrough_page_id=state.get("walkthrough_page_id"),
+            resume_step=state.get("resume_step"),
+            resume_page_id=state.get("resume_page_id") or "",
+            plan=Plan(spoken_response=spoken, tool_calls=[]),
+            pending_calls=[],
+            narration=[spoken],
+            transcript=[f"agent: {spoken}"],
+        )
+
+    if utterance and is_goodbye(utterance):
+        return CallState(
+            phase="ending",
+            plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
+            pending_calls=[],
+            narration=[WRAP_UP],
+            transcript=[f"agent: {WRAP_UP}"],
+        )
+
+    if utterance and not _is_continue(utterance) and not _is_affirm(utterance):
+        return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
+
+    if utterance.strip():
+        return _plan_resume_main(state, deps, after_silence=False)
+
+    return _plan_resume_main(state, deps, after_silence=True)
+
+
+def _plan_resume_main(
+    state: CallState, deps: CallDeps, *, after_silence: bool
+) -> CallState:
+    pacing = _memory(deps).pacing_history[-1] if _memory(deps).pacing_history else "neutral"
+    bridge = _say(
+        deps,
+        intent="resume_silence" if after_silence else "resume_confirm",
+        fallback=RESUME_AFTER_SILENCE if after_silence else RESUME_AFTER_QUESTION,
+        pacing=pacing,
+    )
+    resume_state: CallState = {
+        **state,
+        "phase": "walkthrough",
+    }
+    cont = _plan_walkthrough_next(resume_state, deps)
+    step_spoken = (cont.get("plan") or Plan(spoken_response="", tool_calls=[])).spoken_response
+    combined = f"{bridge} {step_spoken}".strip() if step_spoken else bridge
+    plan = cont.get("plan")
+    if plan is not None:
+        plan = Plan(spoken_response=combined, tool_calls=list(plan.tool_calls))
+    return CallState(
+        **{k: v for k, v in cont.items() if k not in ("plan", "narration", "transcript")},
+        plan=plan,
+        narration=[combined],
+        transcript=[f"agent: {combined}"],
     )
 
 

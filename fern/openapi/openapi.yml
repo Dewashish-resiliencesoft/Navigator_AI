@@ -2056,9 +2056,9 @@ paths:
         required: false
         schema:
           type: integer
-          maximum: 7
+          maximum: 90
           minimum: 1
-          default: 7
+          default: 14
           title: Days
       - name: authorization
         in: header

@@ -89,21 +89,31 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
     phase = state.get("phase") or ""
     anything_else = phase == "anything_else"
     walkthrough = phase == "walkthrough"
+    awaiting_resume = phase == "awaiting_resume"
 
     if deps.audio_frames is not None:
         try:
-            timeout = SILENCE_S if anything_else else None
+            if phase == "awaiting_resume":
+                from navigator.agent.end_policy import RESUME_SILENCE_S
+
+                timeout = RESUME_SILENCE_S
+            elif anything_else:
+                from navigator.agent.end_policy import SILENCE_S
+
+                timeout = SILENCE_S
+            else:
+                timeout = None
             text = _from_audio(deps, silence_timeout=timeout)
             if text:
                 return text
-            if anything_else or walkthrough:
+            if anything_else or walkthrough or awaiting_resume:
                 # Empty → planning advances walkthrough or runs silence end-policy.
                 return ""
             print("[listen] no Meet audio utterance — falling back", flush=True)
         except RuntimeError as exc:
             # Missing silero-vad/torch — do not invent a fake user question.
             print(f"[listen] STT unavailable ({exc}) — falling back", flush=True)
-            if (anything_else or walkthrough) and not deps.interactive_listen:
+            if (anything_else or walkthrough or awaiting_resume) and not deps.interactive_listen:
                 return ""
 
     if deps.interactive_listen:
@@ -119,9 +129,9 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
             typed = ""
         if typed:
             return typed
-        return "" if (anything_else or walkthrough) else SCRIPTED_UTTERANCE
+        return "" if (anything_else or walkthrough or awaiting_resume) else SCRIPTED_UTTERANCE
 
-    if anything_else or walkthrough:
+    if anything_else or walkthrough or awaiting_resume:
         return ""
     return SCRIPTED_UTTERANCE
 

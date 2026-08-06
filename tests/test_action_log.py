@@ -169,3 +169,49 @@ def test_demo_run_metrics_counts_test_and_live_runs(log):
     assert [d["day"] for d in m["series"]] == ["2026-07-31", "2026-08-01"]
     assert m["series"][0]["sessions"] == 1
     assert m["series"][1]["sessions"] == 1
+
+
+def test_dashboard_metrics_aligns_runs_actions_and_failures(log):
+    live_sid, test_sid = uuid4(), uuid4()
+    day_two = TS + timedelta(days=1)
+
+    log.upsert_run(
+        session_id=live_sid,
+        demo_id=uuid4(),
+        product_id="acme",
+        platform="google_meet",
+        status="finished",
+        origin="public_embed",
+        started_at=TS,
+    )
+    log.upsert_run(
+        session_id=test_sid,
+        demo_id=uuid4(),
+        product_id="acme",
+        platform="static",
+        status="failed",
+        origin="dashboard_test",
+        started_at=day_two,
+    )
+
+    ok = entry(live_sid)
+    ok.product_id = "acme"
+    log.append(ok)
+
+    bad = entry(test_sid, ok=False, passed=False)
+    bad.product_id = "acme"
+    bad.timestamp = day_two
+    log.append(bad)
+
+    m = log.dashboard_metrics("acme", days=14, now=day_two + timedelta(hours=1))
+
+    assert m["sessions"] == 2
+    assert m["actions"] == 2
+    assert m["failures"] == 1
+    assert m["failed_runs"] == 1
+    assert m["runs_with_step_failures"] == 1
+    assert m["demos"]["failed"] == 1
+    assert sum(d["sessions"] for d in m["series"]) == 2
+    assert sum(d["failures"] for d in m["series"]) == 1
+    assert m["visitor"]["sessions"] == 1
+    assert m["visitor"]["failures"] == 0

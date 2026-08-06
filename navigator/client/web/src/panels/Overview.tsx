@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, ArrowDownRight, ArrowRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
-import { api, type DemoRun, type Metrics } from "../lib/api";
+import { api, DASHBOARD_DAYS, type DemoRun, type Metrics } from "../lib/api";
 import { formatRunDuration } from "../lib/elapsed";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
@@ -63,6 +63,10 @@ function calcTrend(series: Metrics["series"], key: "sessions" | "actions" | "fai
   return "flat";
 }
 
+function sumFailCount(runs: DemoRun[]): number {
+  return runs.reduce((n, r) => n + r.fail_count, 0);
+}
+
 export function Overview() {
   const { err, setTab, setLogsSessionId } = useUi();
   const epoch = useProductData((s) => s.epoch);
@@ -74,7 +78,10 @@ export function Overview() {
     let alive = true;
     const load = async () => {
       try {
-        const [metrics, runList] = await Promise.all([api.metrics(), api.listRuns(7)]);
+        const [metrics, runList] = await Promise.all([
+          api.metrics(DASHBOARD_DAYS),
+          api.listRuns(DASHBOARD_DAYS),
+        ]);
         if (!alive) return;
         setM(metrics);
         setRuns(runList);
@@ -89,6 +96,7 @@ export function Overview() {
           actions: 0,
           sessions: 0,
           failures: 0,
+          failed_runs: 0,
           verified: 0,
           passed: 0,
           last_seen: null,
@@ -118,6 +126,10 @@ export function Overview() {
   }
 
   const passRate = m.verified > 0 ? Math.round((m.passed / m.verified) * 100) : null;
+  const failedRuns = m.failed_runs ?? m.demos?.failed ?? 0;
+  const runsWithStepFails = m.runs_with_step_failures ?? null;
+  const windowDays = m.days ?? DASHBOARD_DAYS;
+  const tableFailSum = runs ? sumFailCount(runs) : null;
 
   return (
     <motion.div
@@ -135,9 +147,9 @@ export function Overview() {
       )}
       <Kpi
         icon={Radio}
-        label="Visitor sessions"
+        label="Demo sessions"
         value={String(m.sessions)}
-        sub={`${m.live.running} running now · ${m.test_sessions} test`}
+        sub={`${m.live.total} live · ${m.test?.total ?? m.test_sessions} test · last ${windowDays}d`}
         trend={calcTrend(m.series, "sessions")}
         onClick={() => setTab("logs")}
       />
@@ -145,7 +157,7 @@ export function Overview() {
         icon={Zap}
         label="Actions"
         value={String(m.actions)}
-        sub="tool calls logged"
+        sub={`tool steps · last ${windowDays}d`}
         trend={calcTrend(m.series, "actions")}
         onClick={() => setTab("logs")}
       />
@@ -153,48 +165,56 @@ export function Overview() {
         icon={CircleCheck}
         label="Pass rate"
         value={passRate === null ? "—" : `${passRate}%`}
-        sub={passRate === null ? "no verified steps" : `${m.passed}/${m.verified} verified`}
+        sub={passRate === null ? "no verified steps" : `${m.passed}/${m.verified} verified steps`}
       />
       <Kpi
         icon={TriangleAlert}
-        label="Failures"
+        label="Step failures"
         value={String(m.failures)}
-        sub={m.last_seen ? `last ${m.last_seen.slice(0, 10)}` : "never run"}
+        sub={`${runsWithStepFails ?? "—"} demos affected · last ${windowDays}d`}
         trend={calcTrend(m.series, "failures")}
         onClick={() => setTab("logs")}
       />
 
       <Card span="sm:col-span-2 xl:col-span-3">
-        <CardTitle hint="Tool calls per day, from the durable action log.">
+        <CardTitle hint={`Last ${windowDays} days — actions, demo sessions, and step failures share one window and data source.`}>
           Activity
         </CardTitle>
         <AreaChart series={m.series} />
       </Card>
 
       <Card span="sm:col-span-2 xl:col-span-1">
-        <CardTitle hint="Demo runs per day (test + live). Visitor KPIs above count live only.">
+        <CardTitle hint={`Demo runs per day — totals match the KPIs above (last ${windowDays} days).`}>
           Sessions
         </CardTitle>
-        <Sparkbars series={m.run_series?.length ? m.run_series : m.series} />
+        <Sparkbars series={m.series} />
         <div className="mt-4 space-y-2 border-t pt-3" style={{ borderColor: "var(--line)" }}>
           {[
-            ["Total demos", m.demos?.total ?? 0],
+            ["Total demos", m.demos?.total ?? m.sessions],
             ["Running", m.demos?.running ?? 0],
-            ["Failed", m.demos?.failed ?? 0],
+            ["Step failures", m.failures],
+            ["Demos w/ step fails", runsWithStepFails ?? "—"],
+            ["Crashed demos", failedRuns],
           ].map(([k, v]) => (
             <div key={String(k)} className="flex justify-between text-[0.78rem]">
               <span className="text-[var(--muted)]">{k}</span>
               <span className="font-mono">{v}</span>
             </div>
           ))}
-          <p className="pt-1 text-[0.68rem] text-[var(--muted)]">
-            Live visitors: {m.live.total} · Test: {m.test?.total ?? m.test_sessions}
+          {m.visitor && (
+            <p className="pt-1 text-[0.68rem] text-[var(--muted)]">
+              Billable visitors only: {m.visitor.sessions} sessions · {m.visitor.actions} actions
+            </p>
+          )}
+          <p className="text-[0.65rem] leading-snug text-[var(--muted)]">
+            Step failures = bad tool/verify steps. Crashed demos = run ended with error (e.g. bot
+            never joined).
           </p>
         </div>
       </Card>
 
       <Card span="sm:col-span-2 xl:col-span-4">
-        <CardTitle hint="Last 7 days of demo runs — click to expand in Logs.">
+        <CardTitle hint={`Last ${windowDays} days — step failures column sums to ${m.failures} (table total ${tableFailSum ?? "…"}). Click a row for Logs.`}>
           Recent runs
         </CardTitle>
         {runs && runs.length === 0 && <Empty>No demos run recently.</Empty>}
@@ -207,7 +227,7 @@ export function Overview() {
                 <th className="px-3 py-2 font-medium">Origin</th>
                 <th className="px-3 py-2 font-medium">Started</th>
                 <th className="px-3 py-2 font-medium">Duration</th>
-                <th className="px-3 py-2 font-medium">Failures</th>
+                <th className="px-3 py-2 font-medium">Step fails</th>
               </tr>
             </thead>
             <tbody>

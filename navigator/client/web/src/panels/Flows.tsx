@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowDown,
@@ -58,6 +58,23 @@ function FlowDraftLoader({ pct, label }: { pct: number; label?: string }) {
   );
 }
 
+function FlowFieldCell({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <label className="min-w-0">
+      <span className="mb-0.5 block text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
 export function Flows() {
   const { ok, err } = useUi();
   const epoch = useProductData((s) => s.epoch);
@@ -72,6 +89,7 @@ export function Flows() {
   const [recUrl, setRecUrl] = useState("");
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
+  const [confirmClearAll, setConfirmClearAll] = useState(false);
   const timer = useRef<number | null>(null);
 
   const exploreStatus = useExploreSession((s) => s.status);
@@ -234,6 +252,23 @@ export function Flows() {
     }
   };
 
+  const clearAllFlows = async () => {
+    setConfirmClearAll(false);
+    try {
+      const d = await api.clearAllFlows();
+      const playlist = d.playlist ?? [];
+      setRows(playlist);
+      applyPlaylist(playlist);
+      setStepCount({});
+      const explore = useExploreSession.getState();
+      explore.setTargetFlowId("");
+      explore.setTargetFlowName("");
+      ok("Site graph and demo script cleared — run Auto-Explore to build a new walkthrough.");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
   const confirmRemoveFlow = async () => {
     if (confirmDelete === null || !rows) return;
     const idx = confirmDelete;
@@ -275,6 +310,13 @@ export function Flows() {
           hint="Playlist order for guided demos. The top row is the default walkthrough."
           right={
             <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                onClick={() => setConfirmClearAll(true)}
+                disabled={!rows?.length && !Object.keys(stepCount).length}
+              >
+                <Trash2 size={14} /> Clear all
+              </Button>
               <Button variant="secondary" onClick={() => setRows([...(rows ?? []), { name: "", page_id: "", flow_id: "" }])}>
                 <Plus size={14} /> Add row
               </Button>
@@ -303,7 +345,7 @@ export function Flows() {
                 layoutId={`flow-${f.flow_id || i}`}
                 transition={soft}
                 exit={{ opacity: 0, x: -10 }}
-                className={`grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-center gap-2 rounded-lg border px-2 py-1.5 ${
+                className={`grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border px-2 py-1.5 ${
                   rowDisabled ? "opacity-45 pointer-events-none" : ""
                 }`}
                 style={{ borderColor: "var(--line)" }}
@@ -314,7 +356,7 @@ export function Flows() {
                     <span className="text-[0.6rem] mt-0.5">{stepCount[f.flow_id]} steps</span>
                   )}
                 </span>
-                <span className="flex flex-col">
+                <span className="flex flex-col pt-5">
                   <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0 || rowDisabled} className="h-5 px-1 py-0">
                     <ArrowUp size={11} />
                   </Button>
@@ -322,10 +364,32 @@ export function Flows() {
                     <ArrowDown size={11} />
                   </Button>
                 </span>
-                <Input value={f.name ?? ""} onChange={(v) => patch(i, "name", v)} placeholder="name" disabled={rowDisabled} />
-                <Input value={f.page_id ?? ""} onChange={(v) => patch(i, "page_id", v)} placeholder="page_id" disabled={rowDisabled} />
-                <Input value={f.flow_id ?? ""} onChange={(v) => patch(i, "flow_id", v)} placeholder="flow_id" disabled={rowDisabled} />
+                <FlowFieldCell label="Name">
+                  <Input
+                    value={f.name ?? ""}
+                    onChange={(v) => patch(i, "name", v)}
+                    placeholder="e.g. Login tour"
+                    disabled={rowDisabled}
+                  />
+                </FlowFieldCell>
+                <FlowFieldCell label="Page ID">
+                  <Input
+                    value={f.page_id ?? ""}
+                    onChange={(v) => patch(i, "page_id", v)}
+                    placeholder="e.g. home"
+                    disabled={rowDisabled}
+                  />
+                </FlowFieldCell>
+                <FlowFieldCell label="Flow ID">
+                  <Input
+                    value={f.flow_id ?? ""}
+                    onChange={(v) => patch(i, "flow_id", v)}
+                    placeholder="e.g. login_flow"
+                    disabled={rowDisabled}
+                  />
+                </FlowFieldCell>
                 {isUpdating ? (
+                  <div className="flex items-center self-center pt-4">
                   <FlowDraftLoader
                     pct={exploreDraftPct}
                     label={
@@ -334,7 +398,9 @@ export function Flows() {
                         : "Exploring…"
                     }
                   />
+                  </div>
                 ) : (
+                <div className="flex items-center self-center pt-4">
                 <Button
                   variant="ghost"
                   onClick={() => setConfirmDelete(i)}
@@ -343,6 +409,7 @@ export function Flows() {
                 >
                   <Trash2 size={13} />
                 </Button>
+                </div>
                 )}
                 {(f.verdict || f.purpose || (f.tags && f.tags.length > 0)) && (
                   <div className="col-span-6 flex flex-wrap items-center gap-2 px-1 pb-1 text-[0.68rem]">
@@ -384,30 +451,37 @@ export function Flows() {
                 layout
                 initial={{ opacity: 0, y: 6 }}
                 animate={{ opacity: 1, y: 0 }}
-                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-center gap-2 rounded-lg border border-dashed px-2 py-1.5 opacity-45"
+                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border border-dashed px-2 py-1.5 opacity-45"
                 style={{ borderColor: "var(--line)" }}
               >
-                <span className="text-center font-mono text-[0.72rem] text-[var(--muted)]">
+                <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] pt-5">
                   …
                 </span>
                 <span />
-                <Input
-                  value={pendingNewFlowName}
-                  onChange={() => {}}
-                  placeholder="name"
-                  disabled
-                />
-                <Input value="main" onChange={() => {}} placeholder="page_id" disabled />
-                <Input
-                  value={
-                    exploreIsPersisting(exploreStatus)
-                      ? "assigning…"
-                      : "exploring…"
-                  }
-                  onChange={() => {}}
-                  placeholder="flow_id"
-                  disabled
-                />
+                <FlowFieldCell label="Name">
+                  <Input
+                    value={pendingNewFlowName}
+                    onChange={() => {}}
+                    placeholder="e.g. Login tour"
+                    disabled
+                  />
+                </FlowFieldCell>
+                <FlowFieldCell label="Page ID">
+                  <Input value="main" onChange={() => {}} placeholder="e.g. home" disabled />
+                </FlowFieldCell>
+                <FlowFieldCell label="Flow ID">
+                  <Input
+                    value={
+                      exploreIsPersisting(exploreStatus)
+                        ? "assigning…"
+                        : "exploring…"
+                    }
+                    onChange={() => {}}
+                    placeholder="e.g. login_flow"
+                    disabled
+                  />
+                </FlowFieldCell>
+                <div className="flex items-center self-center pt-4">
                 <FlowDraftLoader
                   pct={exploreDraftPct}
                   label={
@@ -416,6 +490,7 @@ export function Flows() {
                       : "Exploring product…"
                   }
                 />
+                </div>
               </motion.div>
             )}
           </AnimatePresence>
@@ -430,6 +505,18 @@ export function Flows() {
               void confirmRemoveFlow();
             }}
             onCancel={() => setConfirmDelete(null)}
+          />
+        )}
+        {confirmClearAll && (
+          <ConfirmDialog
+            title="Clear all flows?"
+            message="Resets the draft site graph to a minimal empty shell and clears the demo script. Persona and product URL stay. Run Auto-Explore to build a new walkthrough."
+            confirmLabel="Clear all"
+            danger
+            onConfirm={() => {
+              void clearAllFlows();
+            }}
+            onCancel={() => setConfirmClearAll(false)}
           />
         )}
       </Card>
@@ -687,6 +774,10 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const setSaveMode = useExploreSession((s) => s.setSaveMode);
   const setTargetFlowId = useExploreSession((s) => s.setTargetFlowId);
   const setTargetFlowName = useExploreSession((s) => s.setTargetFlowName);
+  const newFlowName = useExploreSession((s) => s.newFlowName);
+  const focusHint = useExploreSession((s) => s.focusHint);
+  const setNewFlowName = useExploreSession((s) => s.setNewFlowName);
+  const setFocusHint = useExploreSession((s) => s.setFocusHint);
   const setOnFlowDrafted = useExploreSession((s) => s.setOnFlowDrafted);
   const hydrate = useExploreSession((s) => s.hydrate);
   const syncProductUrl = useExploreSession((s) => s.syncProductUrl);
@@ -770,6 +861,10 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
   const finished = exploreIsTerminal(status.phase);
   const flagged = status.flagged ?? [];
   const visitedPaths = status.visited_paths ?? [];
+  const fieldDecisions = status.field_decisions ?? [];
+  const liveInputFields = fieldDecisions.filter(
+    (d) => d.classification === "business_specific",
+  );
   const progressPct = exploreDraftProgressPct(status);
   const maxPages = status.budget?.max_pages ?? 25;
   const planMode = (status.save_mode === "update" ? "update" : saveMode) as
@@ -777,10 +872,16 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
     | "update";
   const planFlowId = status.target_flow_id || targetFlowId;
   const planFlowName =
-    status.target_flow_name || targetFlowName || planFlowId;
+    status.target_flow_name ||
+    status.new_flow_name ||
+    targetFlowName ||
+    (planMode === "new" ? newFlowName : "") ||
+    planFlowId;
   const resultFlowId = status.flow_id || (planMode === "update" ? planFlowId : "");
   const resultFlowName =
     status.target_flow_name ||
+    status.new_flow_name ||
+    newFlowName ||
     targetFlowName ||
     flows.find((f) => f.flow_id === resultFlowId)?.name ||
     resultFlowId;
@@ -797,9 +898,32 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
     if (status.error?.trim()) msgs.push(status.error.trim());
     for (const e of events) {
       if (e.type === "error" && e.msg) msgs.push(String(e.msg).trim());
+    }
+    return [...new Set(msgs.filter(Boolean))];
+  })();
+  const exploreWarnings = (() => {
+    const benign =
+      /repairs exhausted|no answer for .* within|skipping field|off-surface URL/i;
+    const msgs: string[] = [];
+    for (const e of events) {
       if (e.type === "log" && e.level === "warn" && e.msg) {
-        msgs.push(String(e.msg).trim());
+        const m = String(e.msg).trim();
+        if (m && !benign.test(m)) msgs.push(m);
       }
+    }
+    const softBenign = events
+      .filter(
+        (e) =>
+          e.type === "log" &&
+          e.level === "warn" &&
+          e.msg &&
+          benign.test(String(e.msg)),
+      )
+      .map((e) => String(e.msg).trim());
+    if (softBenign.length > 0 && exploreErrors.length === 0) {
+      msgs.push(
+        `${softBenign.length} step(s) needed extra retries (normal on complex UIs)`,
+      );
     }
     return [...new Set(msgs.filter(Boolean))];
   })();
@@ -810,7 +934,8 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
       !!status.flow_id ||
       logLines.length > 0 ||
       visitedPaths.length > 0 ||
-      exploreErrors.length > 0);
+      exploreErrors.length > 0 ||
+      exploreWarnings.length > 0);
 
   const pillStatus = running
     ? question
@@ -918,13 +1043,33 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
             )}
           </Field>
         ) : (
-          <Field label="Demo draft">
-            <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
-              Saves a new unpublished flow. Only first visit per page becomes a
-              demo step — extra clicks still explore, not the walkthrough.
-            </p>
+          <Field label="New flow name">
+            <Input
+              value={newFlowName}
+              onChange={setNewFlowName}
+              disabled={running}
+              placeholder="e.g. Inbox walkthrough, Billing demo"
+            />
           </Field>
         )}
+      </div>
+
+      <div className="mt-1 grid gap-3 sm:grid-cols-2">
+        <Field label="Focus area (optional)">
+          <Input
+            value={focusHint}
+            onChange={setFocusHint}
+            disabled={running}
+            placeholder="Tab or feature name — e.g. Meta accounts, Campaigns"
+          />
+        </Field>
+        <Field label="Demo draft rules">
+          <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
+            Only first visit per page becomes a demo step. Extra clicks still map
+            the site but stay out of the walkthrough. Business-specific form fields
+            are saved as live-input beats (demo asks your visitor).
+          </p>
+        </Field>
       </div>
 
       <div className="flex flex-wrap gap-2">
@@ -1139,7 +1284,12 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
             {status.stop_reason && (
               <li>
                 <span className="text-[var(--muted)]">Ended · </span>
-                <span className="font-medium">{status.stop_reason}</span>
+                <span className="font-medium">
+                  {status.stop_reason.replace(
+                    /^dead end at blank$/i,
+                    "finished mapping — nothing new to try (recovered from blank page)",
+                  )}
+                </span>
               </li>
             )}
             {flagged.length > 0 && (
@@ -1149,7 +1299,54 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
                 demo)
               </li>
             )}
+            {liveInputFields.length > 0 && (
+              <li>
+                <span className="text-[var(--muted)]">Live input fields · </span>
+                <span className="font-medium">{liveInputFields.length}</span>
+                <span className="text-[var(--muted)]">
+                  {" "}
+                  — demo will ask your visitor on these
+                </span>
+              </li>
+            )}
           </ul>
+          {liveInputFields.length > 0 && (
+            <div
+              className="mt-3 rounded-lg border px-3 py-2.5"
+              style={{ borderColor: "var(--line)", background: "var(--bg)" }}
+            >
+              <p className="text-[0.72rem] font-medium tracking-tight">
+                Fields marked for live visitor input
+              </p>
+              <ul className="mt-2 space-y-1 text-[0.72rem] text-[var(--muted)]">
+                {liveInputFields.map((f) => (
+                  <li key={`${f.alias}-${f.label}`}>
+                    <span className="font-medium text-[var(--text)]">{f.label}</span>
+                    {f.answered_by === "client" && f.value ? (
+                      <span> — example during explore: {f.value}</span>
+                    ) : f.answered_by?.startsWith("skipped") ? (
+                      <span> — skipped during explore (not in demo)</span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {exploreWarnings.length > 0 && exploreErrors.length === 0 && (
+            <div
+              className="mt-3 rounded-lg border border-amber-500/40 px-3 py-2.5"
+              style={{ background: "rgb(245 158 11 / 0.06)" }}
+            >
+              <p className="text-[0.72rem] font-medium text-amber-800 dark:text-amber-300">
+                Notes from explore
+              </p>
+              <ul className="mt-1.5 max-h-36 space-y-1 overflow-y-auto text-[0.72rem] leading-snug text-amber-900 dark:text-amber-200">
+                {exploreWarnings.map((msg) => (
+                  <li key={msg}>• {msg}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {exploreErrors.length > 0 && (
             <div
               className="mt-3 rounded-lg border border-red-500/40 px-3 py-2.5"

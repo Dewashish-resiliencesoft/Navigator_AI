@@ -87,6 +87,19 @@ class AttendeeClient:
                     "-f local.docker-compose.yaml --profile webpage-streamer up -d --force-recreate\n"
                     f"Original: {detail}"
                 ) from e
+            if e.code == 400 and "Zoom App credentials are required" in detail:
+                from navigator.meeting.attendee_stack import attendee_ui_origin
+
+                ui = attendee_ui_origin(self.base_url)
+                raise RuntimeError(
+                    "Attendee needs Zoom OAuth credentials for web SDK bots (separate "
+                    "from Navigator's ZAK tunnel).\n"
+                    "Fix: set NAVIGATOR_ZOOM_CLIENT_ID and NAVIGATOR_ZOOM_CLIENT_SECRET "
+                    "in .env (same Zoom Server-to-Server app), then run:\n"
+                    "  ./scripts/sync-attendee-zoom-credentials.sh\n"
+                    f"Or open Attendee → Project → Credentials: {ui}/projects/…/credentials\n"
+                    f"Original: {detail}"
+                ) from e
             raise RuntimeError(f"Attendee {method} {path} -> {e.code}: {detail}") from e
         except URLError as e:
             raise RuntimeError(f"Attendee unreachable at {self.base_url}: {e}") from e

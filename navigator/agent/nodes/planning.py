@@ -105,6 +105,7 @@ def _maybe_language_switch_ack(
         utterance=utterance,
         current=deps.spoken_language,
         on_switch=lambda lang: _set_spoken_language(deps, lang),
+        allowed=frozenset({deps.spoken_language, *deps.extra_languages}),
     )
     if not ack:
         return None
@@ -140,6 +141,7 @@ def _say(
             persona_name=deps.graph.effective_persona().product_name,
             product_brief=deps.product_brief or "",
             spoken_language=deps.spoken_language,
+            agent_gender=deps.agent_gender,
             fallback=fallback,
             api_key=api_key or None,
         )
@@ -1044,6 +1046,7 @@ def _try_turn_brain(
                 intake_summary=intake_summary,
                 nav_labels=nav_labels,
                 spoken_language=deps.spoken_language,
+                agent_gender=deps.agent_gender,
             )
     except Exception as exc:  # noqa: BLE001
         print(f"[plan] turn brain failed ({exc}); falling back", flush=True)
@@ -1262,6 +1265,8 @@ def _spoken_for_flow_step(
                 product_brief=deps.product_brief or "",
                 step_action=step_action,
                 section_knowledge=section_knowledge,
+                spoken_language=deps.spoken_language,
+                agent_gender=deps.agent_gender,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[plan] vision narration skipped: {exc}", flush=True)
@@ -1602,6 +1607,8 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
                 product_brief=deps.product_brief or "",
                 step_action=step_action,
                 section_knowledge=section_knowledge,
+                spoken_language=deps.spoken_language,
+                agent_gender=deps.agent_gender,
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[plan] vision narration skipped: {exc}", flush=True)

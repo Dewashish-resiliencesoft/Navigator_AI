@@ -204,7 +204,9 @@ def _dig_ips(host: str) -> list[str]:
         line = line.strip()
         if re.fullmatch(r"\d+\.\d+\.\d+\.\d+", line):
             ips.append(line)
-    return ips
+    if ips:
+        return ips
+    return _socket_resolve(host)
 
 
 def _probe_via_public_dns(url: str, *, timeout: float = 5.0) -> int:
@@ -214,7 +216,12 @@ def _probe_via_public_dns(url: str, *, timeout: float = 5.0) -> int:
     path = parsed.path or "/"
     if parsed.query:
         path = f"{path}?{parsed.query}"
-    ips = _dig_ips(host)
+    ips: list[str] = []
+    for _ in range(3):
+        ips = _dig_ips(host)
+        if ips:
+            break
+        time.sleep(0.5)
     if not ips:
         raise URLError(f"dig@1.1.1.1 returned no A records for {host}")
     ctx = ssl.create_default_context()

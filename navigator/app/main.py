@@ -44,6 +44,7 @@ from navigator.client.dashboard import (
 )
 from navigator.client.content import (
     apply_playlist_to_yaml,
+    reset_site_graph_for_explore,
     begin_capture,
     merge_recorded_flow,
     playlist_from_graph,
@@ -1051,6 +1052,22 @@ class HandoffWebhookBody(BaseModel):
     url: str = ""
 
 
+class AgentSettingsBody(BaseModel):
+    default_language: str | None = None
+    extra_languages: list[str] | None = None
+    agent_gender: str | None = None
+    agent_name: str | None = None
+    tone: str | None = None
+    tts_provider: str | None = None
+    gemini_voice: str | None = None
+
+
+class AgentProviderKeysBody(BaseModel):
+    gemini_api_key: str | None = None
+    groq_api_key: str | None = None
+    fish_api_key: str | None = None
+
+
 class ProductLoginBody(BaseModel):
     login_url: str = ""
     username: str = ""
@@ -1147,6 +1164,52 @@ def client_put_handoff_webhook(
 ) -> dict:
     updated = registry.set_handoff_webhook(product.product_id, body.url)
     return {"ok": True, "url": updated.handoff_webhook_url}
+
+
+@app.get("/client/api/agent-settings")
+def client_get_agent_settings(
+    product: DashboardAuthedProduct, registry: Reg, vault: Vault
+) -> dict:
+    settings_view = registry.get_agent_settings(product.product_id).model_dump()
+    return {**settings_view, **vault.provider_keys_public(product.product_id)}
+
+
+@app.put("/client/api/agent-settings")
+def client_put_agent_settings(
+    product: DashboardAuthedProduct, body: AgentSettingsBody, registry: Reg
+) -> dict:
+    patch = body.model_dump(exclude_none=True)
+    if "default_language" in patch and patch["default_language"] not in {"en", "hi"}:
+        raise HTTPException(422, "default_language must be en or hi")
+    if "agent_gender" in patch and patch["agent_gender"] not in {"female", "male"}:
+        raise HTTPException(422, "agent_gender must be female or male")
+    if "tts_provider" in patch and patch["tts_provider"] not in {
+        "auto",
+        "gemini",
+        "fish",
+        "piper",
+    }:
+        raise HTTPException(422, "invalid tts_provider")
+    merged = registry.set_agent_settings(product.product_id, patch)
+    return {"ok": True, **merged.model_dump()}
+
+
+@app.put("/client/api/agent-provider-keys")
+def client_put_agent_provider_keys(
+    product: DashboardAuthedProduct, body: AgentProviderKeysBody, vault: Vault
+) -> dict:
+    try:
+        vault.put_provider_keys(
+            product.product_id,
+            gemini_api_key=body.gemini_api_key,
+            groq_api_key=body.groq_api_key,
+            fish_api_key=body.fish_api_key,
+        )
+    except VaultNotConfigured as exc:
+        raise HTTPException(503, str(exc)) from None
+    except CredentialVaultError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True, **vault.provider_keys_public(product.product_id)}
 
 
 @app.get("/client/api/demo-readiness")
@@ -1279,6 +1342,31 @@ def client_get_site_graph(product: DashboardAuthedProduct, registry: Reg) -> dic
 
 class SiteGraphBody(BaseModel):
     yaml: str = Field(min_length=1)
+
+
+@app.post("/client/api/site-graph/clear")
+def client_clear_site_graph(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    """Reset draft site graph to empty shell + clear demo script metadata."""
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    try:
+        new_yaml = reset_site_graph_for_explore(rev.yaml)
+        rev = registry.put_site_graph(
+            product.product_id, new_yaml, "yaml", publish=False
+        )
+        graph = parse_site_graph(new_yaml)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {
+        "yaml": new_yaml,
+        "revision": rev.revision,
+        "site": graph.site,
+        "published": False,
+        "playlist": playlist_from_graph(graph),
+        "cleared": True,
+    }
 
 
 @app.put("/client/api/site-graph")
@@ -1567,6 +1655,30 @@ class FlowDeleteBody(BaseModel):
     page_id: str | None = None
 
 
+@app.post("/client/api/flows/clear")
+def client_clear_all_flows(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    """Reset flows, demo script, and explored pages — fresh shell for Auto-Explore."""
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    try:
+        new_yaml = reset_site_graph_for_explore(rev.yaml)
+        rev = registry.put_site_graph(
+            product.product_id, new_yaml, "yaml", publish=False
+        )
+        graph = parse_site_graph(new_yaml)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {
+        "yaml": new_yaml,
+        "playlist": playlist_from_graph(graph),
+        "revision": rev.revision,
+        "published": False,
+        "cleared": True,
+    }
+
+
 @app.post("/client/api/flows/delete")
 def client_delete_flow(
     product: DashboardAuthedProduct, body: FlowDeleteBody, registry: Reg
@@ -1765,6 +1877,10 @@ class ExploreStartBody(BaseModel):
     """`new` mints explored_*; `update` overwrites target_flow_id in place."""
     target_flow_id: str | None = None
     target_flow_name: str | None = None
+    new_flow_name: str | None = None
+    """Display name (and flow_id slug) when save_mode is new."""
+    focus_hint: str | None = None
+    """Tab, nav label, or feature area to explore first (e.g. Inbox, Billing)."""
 
 
 class ExploreAnswerBody(BaseModel):
@@ -1856,6 +1972,8 @@ def client_explore_start(
             save_mode=body.save_mode,
             target_flow_id=(body.target_flow_id or "").strip(),
             target_flow_name=(body.target_flow_name or "").strip(),
+            new_flow_name=(body.new_flow_name or "").strip(),
+            focus_hint=(body.focus_hint or "").strip(),
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None

@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from navigator.agent.call_memory import CallMemory
+from navigator.agent.speech_persona import speech_rules
 
 def _phrasing_model() -> str:
     from navigator.core.settings import settings
@@ -72,6 +73,7 @@ def phrase_turn(
     persona_name: str = "",
     product_brief: str = "",
     spoken_language: str = "en",
+    agent_gender: str = "female",
     fallback: str,
     api_key: str | None = None,
     complete: Callable[[str], str] | None = None,
@@ -93,6 +95,7 @@ def phrase_turn(
         persona_name=persona_name,
         product_brief=product_brief,
         spoken_language=spoken_language,
+        agent_gender=agent_gender,
     )
     try:
         completer = complete or (lambda p: _groq_complete(api_key or "", p))
@@ -117,15 +120,12 @@ def build_prompt(
     persona_name: str = "",
     product_brief: str = "",
     spoken_language: str = "en",
+    agent_gender: str = "female",
 ) -> str:
     lines = [_SYSTEM, "", f"Your task this turn: {INTENTS.get(intent, intent)}"]
-    if (spoken_language or "en").strip().lower() == "hi":
-        lines.append(
-            "Write the spoken line in natural Hindi (Devanagari). "
-            "Keep product/UI terms in English when that is natural for Indian users."
-        )
-    else:
-        lines.append("Write the spoken line in natural Indian English.")
+    lines.append(
+        speech_rules(spoken_language=spoken_language, agent_gender=agent_gender)
+    )
     if persona_name:
         lines.append(f"You are demoing: {persona_name}")
     lines.append(

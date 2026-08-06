@@ -13,7 +13,7 @@ def load_product_brief(product_id: str) -> str:
     """Return markdown knowledge brief for product_id, or empty if missing."""
     path = _ROOT / f"{product_id}.md"
     if not path.is_file():
-        # Common alias: site graph `site: resiliohub` → same file.
+        # Common alias: site graph `site: acme-corp` → acme_corp.md if present.
         alt = _ROOT / f"{product_id.replace('-', '_')}.md"
         if alt.is_file():
             path = alt

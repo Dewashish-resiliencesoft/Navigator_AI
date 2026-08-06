@@ -58,6 +58,40 @@ def is_external_url(url: str, product_base: str) -> bool:
     return bool(cur and cur != prod)
 
 
+def is_product_surface(url: str, product_base: str) -> bool:
+    """True when Playwright is on an in-product http(s) page worth exploring."""
+    raw = (url or "").strip()
+    if not raw:
+        return False
+    low = raw.lower()
+    if low.startswith("about:") or low in {"about:blank", "chrome://newtab/"}:
+        return False
+    if url_origin(raw) == "":
+        return False
+    if product_base and is_external_url(raw, product_base):
+        return False
+    return True
+
+
+def explore_path_label(url: str) -> str:
+    """Human path for logs / visited list. Empty when not a real product URL."""
+    if not is_product_surface(url, ""):
+        return ""
+    return urlparse(url).path or "/"
+
+
+def recover_product_surface(page: Any, product_base: str) -> bool:
+    """Leave about:blank / off-origin — go_back first, then product home."""
+    base = (product_base or "").strip()
+    try:
+        page.go_back(timeout=8000)
+        if is_product_surface(getattr(page, "url", "") or "", base):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return revert_external_navigation(page, product_base=base)
+
+
 def external_href_reason(
     href: str,
     product_base: str,

@@ -7,8 +7,9 @@ Order (what the prospect experiences):
   1. Bot joins quietly (voice agent resources reserved)
   2. Join link shared once bot is in the meeting
   3. Wait for human → brief settle → quick greet (no long Q&A)
-  4. Browser opens on start page → screenshare armed
-  5. Kickoff line → agent walkthrough (seamless in-page clicks, no reload spam)
+  4. Browser opens on start page (or login page when login is part of the demo)
+     → screenshare armed
+  5. Kickoff line → visible login if opted in → agent walkthrough
   6. Leave bot, tear down
 """
 
@@ -29,7 +30,7 @@ from navigator.agent.graph import build_graph
 from navigator.agent.state import CallDeps, initial_state
 from navigator.automation.browser.cursor import install_cursor
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
-from navigator.automation.browser.product_login import login_product
+from navigator.automation.browser.product_login import login_product, open_login_page
 from navigator.automation.browser.screen_context import screen_snapshot
 from navigator.automation.external_links import url_origin
 from navigator.knowledge.product_brief import load_agent_context
@@ -122,6 +123,28 @@ def assert_live_site_graph(path: Path) -> None:
             "Record your product: python -m navigator.automation.record --url $NAVIGATOR_PRODUCT_URL "
             "or upload a live site graph for this client."
         )
+
+
+def show_login_on_screenshare(
+    graph,
+    *,
+    login_url: str,
+    include_login_in_default_flow: bool,
+) -> bool:
+    """True when the prospect should see the login form before auth runs."""
+    if include_login_in_default_flow:
+        return True
+    playlist = sorted(graph.demo_playlist or [], key=lambda x: x.order)
+    if not playlist:
+        return False
+    first = playlist[0]
+    if "login" in first.flow_id.lower():
+        return True
+    if not login_url:
+        return False
+    from navigator.automation.login_match import LoginConfig, is_login_url
+
+    return is_login_url(graph.url_for(first.page_id), LoginConfig(login_url=login_url))
 
 
 def share_media_join_opts(*, is_zoom: bool) -> tuple[bool, str | None]:
@@ -295,33 +318,71 @@ def _make_live_speaker(
     mute: bool,
     spoken_language: str = "en",
     require_audio: bool = False,
+    gemini_api_key: str = "",
+    gemini_live_voice: str = "",
+    groq_api_key: str = "",
+    fish_api_key: str = "",
+    tts_provider: str = "",
 ):
     return make_speaker(
         mute=mute,
-        gemini_api_key=settings.gemini_api_key,
+        gemini_api_key=gemini_api_key or settings.gemini_api_key,
         gemini_live_model=settings.gemini_live_model,
-        gemini_live_voice=settings.gemini_live_voice,
+        gemini_live_voice=gemini_live_voice or settings.gemini_live_voice,
         spoken_language=spoken_language,  # type: ignore[arg-type]
-        fish_api_key=settings.fish_api_key,
+        fish_api_key=fish_api_key or settings.fish_api_key,
         fish_model=settings.fish_model,
         fish_reference_id=settings.fish_reference_id,
-        tts_provider=settings.tts_provider,
+        tts_provider=tts_provider or settings.tts_provider,
         piper_voice=settings.piper_voice,
         piper_data_dir=settings.piper_data_dir,
         require_audio=require_audio,
     )
 
 
+def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
+    out = {
+        "gemini": settings.gemini_api_key or "",
+        "groq": settings.groq_api_key or "",
+        "fish": settings.fish_api_key or "",
+    }
+    if not product_id:
+        return out
+    try:
+        from navigator.app.credential_vault import CredentialVault
+
+        with CredentialVault(settings.credential_db_path) as vault:
+            for kind in out:
+                key = vault.provider_key(product_id, kind)
+                if key:
+                    out[kind] = key
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def _speaker(*, mute: bool, spoken_language: str = "en"):
     return _make_live_speaker(mute=mute, spoken_language=spoken_language)
 
 
-def _require_tts_for_meet(*, mute: bool, spoken_language: str = "en"):
+def _require_tts_for_meet(
+    *,
+    mute: bool,
+    spoken_language: str = "en",
+    gemini_api_key: str = "",
+    gemini_live_voice: str = "",
+    fish_api_key: str = "",
+    tts_provider: str = "",
+):
     """Live Meet needs Gemini Live (preferred), Fish, or Piper WAV → Attendee speak."""
     return _make_live_speaker(
         mute=mute,
         spoken_language=spoken_language,
         require_audio=True,
+        gemini_api_key=gemini_api_key,
+        gemini_live_voice=gemini_live_voice,
+        fish_api_key=fish_api_key,
+        tts_provider=tts_provider,
     )
 
 
@@ -387,6 +448,7 @@ def run_live_meet_demo(
     brain_config=None,
     use_turn_brain: bool | None = None,
     handoff_webhook_url: str = "",
+    agent_settings=None,
 ) -> str:
     """Join Meet, qualify prospect, then share screen and run demo. Returns bot id.
 
@@ -418,8 +480,30 @@ def run_live_meet_demo(
 
         ensure_webpage_streamer()
     _leave_stale_bots(client, meeting_url)
-    spoken_language: str = settings.default_spoken_language
-    speaker = _require_tts_for_meet(mute=mute, spoken_language=spoken_language)
+
+    from navigator.core.agent_settings import AgentSettings, merge_agent_settings
+
+    if agent_settings is None and product_id:
+        try:
+            from navigator.app.registry import Registry
+
+            with Registry(settings.db_path) as reg:
+                agent_settings = reg.get_agent_settings(product_id)
+        except Exception:  # noqa: BLE001
+            agent_settings = merge_agent_settings(None)
+    elif agent_settings is None:
+        agent_settings = merge_agent_settings(None)
+
+    provider_keys = _resolve_provider_keys(product_id)
+    spoken_language: str = agent_settings.default_language or settings.default_spoken_language
+    speaker = _require_tts_for_meet(
+        mute=mute,
+        spoken_language=spoken_language,
+        gemini_api_key=provider_keys["gemini"],
+        gemini_live_voice=agent_settings.effective_gemini_voice(),
+        fish_api_key=provider_keys["fish"],
+        tts_provider=agent_settings.tts_provider,
+    )
     # Warm synthesizer so first Meet utterance isn't cold.
     if hasattr(speaker, "synthesize_wav"):
         try:
@@ -431,6 +515,12 @@ def run_live_meet_demo(
     if graph_cfg is None:
         graph_cfg = load_site_graph(settings.site_graph)
     persona = graph_cfg.effective_persona()
+    if (agent_settings.agent_name or "").strip():
+        persona = persona.model_copy(
+            update={"agent_name": agent_settings.agent_name.strip()}
+        )
+    if (agent_settings.tone or "").strip():
+        persona = persona.model_copy(update={"tone": agent_settings.tone.strip()})
 
     relay = start_relay()
     tunnel = None
@@ -494,25 +584,35 @@ def run_live_meet_demo(
             )
         zoom_tokens_url = None
         if zoom_native:
-            zoom_tokens_url = zoom_zak_callback_url()
-            # Tunnel may need a few more seconds after ensure_public_base_url's
-            # probe loop; don't abort the demo on one flaky dig — Attendee will
-            # hit the callback when it needs the ZAK.
-            from navigator.meeting.zoom_host import _zak_origin_reachable, ensure_public_base_url
+            from urllib.parse import urlparse
 
-            base = ensure_public_base_url()
-            # Zoom meetings are created with join_before_host=False, so the ZAK
-            # is what makes Navigator the host. If Attendee cannot reach the
-            # callback there is no host at all and every guest sits on "waiting
-            # for the host" until they give up — fail here instead.
-            if not _zak_origin_reachable(base):
+            from navigator.meeting.attendee_stack import ensure_attendee_zoom_credentials
+            from navigator.meeting.tunnel import verify_attendee_docker_dns
+            from navigator.meeting.zoom_host import ensure_public_base_url
+
+            if not ensure_attendee_zoom_credentials():
+                ui_hint = ""
+                try:
+                    from navigator.meeting.attendee_stack import attendee_ui_origin
+
+                    ui_hint = (
+                        f"\nOr Attendee dashboard → Project → Credentials "
+                        f"({attendee_ui_origin()}/projects/…/credentials)"
+                    )
+                except Exception:
+                    pass
                 raise RuntimeError(
-                    f"Zoom host join needs Attendee to reach {base}/v1/zoom/zak, "
-                    "but that origin does not answer. Navigator would never "
-                    "become host and everyone would wait in the lobby. Set "
-                    "NAVIGATOR_PUBLIC_BASE_URL to a stable public origin, or "
-                    "check that cloudflared is running."
+                    "Zoom web SDK bot needs Attendee project Zoom credentials. "
+                    "Set NAVIGATOR_ZOOM_CLIENT_ID/SECRET in .env, then run "
+                    "./scripts/sync-attendee-zoom-credentials.sh"
+                    f"{ui_hint}"
                 )
+
+            zoom_tokens_url = zoom_zak_callback_url()
+            base = ensure_public_base_url()
+            host = urlparse(base).hostname or ""
+            if host:
+                verify_attendee_docker_dns(host)
             print(
                 f"[live] Zoom host ZAK callback: {zoom_tokens_url.split('?', 1)[0]}",
                 flush=True,
@@ -702,7 +802,15 @@ def run_live_meet_demo(
             install_cursor(page)
 
             def _do_login(*, url: str, email: str, password: str, **_kw) -> None:
-                login_product(page, url=url, email=email, password=password)
+                login_product(
+                    page,
+                    url=url,
+                    email=email,
+                    password=password,
+                    visible=show_login,
+                    skip_open=show_login,
+                    on_progress=_push if show_login else None,
+                )
 
             def _real_origin() -> str:
                 """Prefer site-graph base_url; fall back to NAVIGATOR_PRODUCT_URL."""
@@ -731,6 +839,7 @@ def run_live_meet_demo(
             login_email = ""
             login_password = ""
             login_url = ""
+            include_login_in_flow = False
             if product_id:
                 try:
                     from navigator.app.credential_vault import (
@@ -742,6 +851,9 @@ def run_live_meet_demo(
                         creds = vault.credentials_for(product_id)
                         if creds is not None:
                             login_url, login_email, login_password = creds
+                        include_login_in_flow = vault.include_login_in_default_flow(
+                            product_id
+                        )
                 except VaultNotConfigured:
                     print(
                         "[live] credential vault not configured — "
@@ -755,31 +867,50 @@ def run_live_meet_demo(
             hold_url = urljoin(origin, start_spec.url.lstrip("/"))
             from navigator.automation.login_match import same_page_path
 
+            show_login = bool(
+                login_email
+                and login_password
+                and show_login_on_screenshare(
+                    graph_cfg,
+                    login_url=login_url or "",
+                    include_login_in_default_flow=include_login_in_flow,
+                )
+            )
+
             if login_email and login_password:
                 if not login_url:
                     login_url = settings.product_url.strip() or origin
                 if "fixtures" in login_url or login_url.endswith(".html"):
                     login_url = origin
-                gate = run_login_gate(
-                    login_fn=_do_login,
-                    url=login_url,
-                    email=login_email,
-                    password=login_password,
-                    speaker=None,
-                    attendee=None,
-                    bot_id=None,
-                )
-                if gate is LoginGateResult.failed:
+                if show_login:
                     print(
-                        "[live] login gate failed — aborting before Planning",
+                        f"[live] opening login page for screenshare: {login_url}",
                         flush=True,
                     )
-                    context.close()
-                    browser.close()
-                    return bot_id or ""
-                if not same_page_path(page.url, hold_url):
-                    print(f"[live] opening start page: {hold_url}", flush=True)
-                    page.goto(hold_url, wait_until="domcontentloaded", timeout=60_000)
+                    open_login_page(page, url=login_url)
+                else:
+                    gate = run_login_gate(
+                        login_fn=_do_login,
+                        url=login_url,
+                        email=login_email,
+                        password=login_password,
+                        speaker=None,
+                        attendee=None,
+                        bot_id=None,
+                    )
+                    if gate is LoginGateResult.failed:
+                        print(
+                            "[live] login gate failed — aborting before Planning",
+                            flush=True,
+                        )
+                        context.close()
+                        browser.close()
+                        return bot_id or ""
+                    if not same_page_path(page.url, hold_url):
+                        print(f"[live] opening start page: {hold_url}", flush=True)
+                        page.goto(
+                            hold_url, wait_until="domcontentloaded", timeout=60_000
+                        )
             else:
                 print(f"[live] opening start page: {hold_url}", flush=True)
                 page.goto(hold_url, wait_until="domcontentloaded", timeout=60_000)
@@ -817,6 +948,39 @@ def run_live_meet_demo(
             except Exception as exc:  # noqa: BLE001
                 print(f"[live] kickoff TTS skipped: {exc}", flush=True)
             live_opening_done = True
+
+            if show_login:
+                print("[live] signing in on screenshare…", flush=True)
+                relay.set_status("speaking", "Signing in…")
+                try:
+                    meet_speaker.say(
+                        "Signing into your product with the saved demo credentials."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] login intro TTS skipped: {exc}", flush=True)
+                gate = run_login_gate(
+                    login_fn=_do_login,
+                    url=login_url,
+                    email=login_email,
+                    password=login_password,
+                    speaker=meet_speaker,
+                    attendee=None,
+                    bot_id=None,
+                )
+                if gate is LoginGateResult.failed:
+                    print(
+                        "[live] login gate failed — aborting after screenshare",
+                        flush=True,
+                    )
+                    context.close()
+                    browser.close()
+                    return bot_id or ""
+                if not same_page_path(page.url, hold_url):
+                    print(f"[live] opening start page: {hold_url}", flush=True)
+                    page.goto(hold_url, wait_until="domcontentloaded", timeout=60_000)
+                for _ in range(3):
+                    _push()
+                    time.sleep(0.08)
 
             from navigator.automation.login_match import LoginConfig
 
@@ -915,7 +1079,7 @@ def run_live_meet_demo(
                 scripted_flow=None if conversational else (page_id, flow_id),
                 product_id=product_id or graph_cfg.site or "default",
                 archive_dir=Path("archives"),
-                groq_api_key=settings.groq_api_key or None,
+                groq_api_key=provider_keys["groq"] or None,
                 meeting_url=None,
                 attendee=client,
                 bot_id=bot.id,
@@ -942,6 +1106,8 @@ def run_live_meet_demo(
                 decision_db_path=settings.db_path,
                 on_user_utterance=_schedule_prefetch,
                 spoken_language=spoken_language,  # type: ignore[arg-type]
+                extra_languages=tuple(agent_settings.extra_languages),
+                agent_gender=agent_settings.agent_gender,
                 live_opening_done=live_opening_done,
             )
 

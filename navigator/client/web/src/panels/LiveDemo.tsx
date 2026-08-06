@@ -5,6 +5,10 @@ import { api, ApiError, type AutonomyMode, type DemoReadiness, type RunEvent } f
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { useExploreSession } from "../lib/exploreSession";
 import { useProductData } from "../lib/productData";
+import {
+  clientReadinessScore,
+  clientVisibleReadinessChecks,
+} from "../lib/readiness";
 import { rise, soft, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -191,7 +195,10 @@ export function LiveDemo() {
     }
   };
 
-  const blockingChecks = readiness?.checks.filter((c) => c.blocking && !c.ok) ?? [];
+  const visibleReadinessChecks = clientVisibleReadinessChecks(
+    readiness?.checks ?? [],
+  );
+  const blockingChecks = visibleReadinessChecks.filter((c) => c.blocking && !c.ok);
   const startBlocked = blockingChecks.length > 0;
 
   const saveIncludeLogin = async (enabled: boolean) => {
@@ -393,6 +400,19 @@ export function LiveDemo() {
           className="mb-3 border-t pt-3"
           style={{ borderColor: "var(--line)" }}
         >
+          <Switch
+            label="Show login during demo"
+            description="Share the login page on screenshare — visitors watch email fill in, password as dots, then Sign in. Off = silent sign-in before screen share."
+            checked={includeLogin}
+            disabled={savingIncludeLogin || !loginUser.trim()}
+            onChange={(v) => void saveIncludeLogin(v)}
+          />
+        </div>
+
+        <div
+          className="mb-3 border-t pt-3"
+          style={{ borderColor: "var(--line)" }}
+        >
           <p className="mb-2 text-[0.78rem] font-medium">How should your agent handle unexpected questions?</p>
           <div className="mb-3 grid gap-2 sm:grid-cols-3">
             {(
@@ -427,13 +447,6 @@ export function LiveDemo() {
               Explorer is dashboard test demos only — not for your live website embed.
             </p>
           )}
-          <Switch
-            label="Login in default demo"
-            description="Run saved login before the default walkthrough. Topic flows skip login."
-            checked={includeLogin}
-            disabled={savingIncludeLogin || !loginUser.trim()}
-            onChange={(v) => void saveIncludeLogin(v)}
-          />
         </div>
 
         <Button
@@ -522,14 +535,16 @@ export function LiveDemo() {
           <div className="mb-2 flex items-center justify-between gap-2">
             <p className="text-[0.78rem] font-medium">Demo readiness</p>
             {readiness && (
-              <span className="text-[0.76rem] text-[var(--muted)]">Score {readiness.score}/100</span>
+              <span className="text-[0.76rem] text-[var(--muted)]">
+                Score {clientReadinessScore(readiness.checks)}/100
+              </span>
             )}
           </div>
           {loadingReadiness && !readiness ? (
             <p className="text-[0.74rem] text-[var(--muted)]">Checking…</p>
           ) : readiness ? (
             <ul className="space-y-1 text-[0.72rem]">
-              {readiness.checks.map((c) => (
+              {visibleReadinessChecks.map((c) => (
                 <li
                   key={c.id}
                   className={

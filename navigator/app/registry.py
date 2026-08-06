@@ -22,6 +22,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from navigator.core.agent_settings import AgentSettings, merge_agent_settings
 from navigator.knowledge.site_graph import SiteGraph, SiteGraphError, parse_site_graph
 
 SiteGraphSource = Literal["yaml", "recorded", "explored", "sdk"]
@@ -185,6 +186,11 @@ class Registry:
             self._conn.execute(
                 "ALTER TABLE products ADD COLUMN handoff_webhook_url "
                 "TEXT NOT NULL DEFAULT ''"
+            )
+        if "agent_settings_json" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN agent_settings_json "
+                "TEXT NOT NULL DEFAULT '{}'"
             )
 
     @property
@@ -455,6 +461,31 @@ class Registry:
             (url.strip(), product_id),
         )
         return self.get(product_id)
+
+    def get_agent_settings(self, product_id: str) -> AgentSettings:
+        row = self._conn.execute(
+            "SELECT agent_settings_json FROM products WHERE product_id = ?",
+            (product_id,),
+        ).fetchone()
+        if row is None:
+            raise ProductNotFound(f"no such product: {product_id}")
+        raw = row["agent_settings_json"] if "agent_settings_json" in row.keys() else "{}"
+        return merge_agent_settings(str(raw or "{}"))
+
+    def set_agent_settings(
+        self, product_id: str, patch: dict[str, object]
+    ) -> AgentSettings:
+        current = self.get_agent_settings(product_id)
+        data = current.model_dump()
+        for key in data:
+            if key in patch:
+                data[key] = patch[key]
+        merged = AgentSettings.model_validate(data)
+        self._conn.execute(
+            "UPDATE products SET agent_settings_json = ? WHERE product_id = ?",
+            (merged.model_dump_json(), product_id),
+        )
+        return merged
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)

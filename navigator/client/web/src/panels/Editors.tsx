@@ -49,6 +49,7 @@ export function SiteGraph() {
   const [revision, setRevision] = useState<number | null>(null);
   const [liveRevision, setLiveRevision] = useState<number | null>(null);
   const [confirmPublish, setConfirmPublish] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
 
   const load = useCallback(async () => {
@@ -68,11 +69,28 @@ export function SiteGraph() {
 
   const save = async () => {
     if (yaml === null) return;
+    if (!yaml.trim()) {
+      err("Site graph YAML cannot be empty. Use Clear all to reset for a new explore.");
+      return;
+    }
     try {
       const d = await api.putSiteGraph(yaml);
       setRevision(d.revision);
       invalidate();
       ok(`Draft saved — revision ${d.revision}. Publish to make it live.`);
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const clearSiteGraph = async () => {
+    setConfirmClear(false);
+    try {
+      const d = await api.clearSiteGraph();
+      setYaml(d.yaml ?? "");
+      setRevision(d.revision);
+      invalidate();
+      ok("Site graph and demo script cleared — run Auto-Explore to build a new walkthrough.");
     } catch (e) {
       err(errText(e));
     }
@@ -109,6 +127,9 @@ export function SiteGraph() {
               <Button variant="ghost" onClick={() => setFullScreen(!fullScreen)} className="px-2">
                 {fullScreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
               </Button>
+              <Button variant="secondary" onClick={() => setConfirmClear(true)} disabled={yaml === null}>
+                <Trash2 size={14} /> Clear all
+              </Button>
               <Button onClick={save} disabled={yaml === null}>
                 <Save size={14} /> Save draft
               </Button>
@@ -144,6 +165,18 @@ export function SiteGraph() {
           message={`This will make revision ${revision} live for all End User visitors. Current live revision is ${liveRevision}. Continue?`}
           onConfirm={publish}
           onCancel={() => setConfirmPublish(false)}
+        />
+      )}
+      {confirmClear && (
+        <ConfirmDialog
+          title="Clear site graph and demo script?"
+          message="Resets the draft to a minimal empty shell: no flows, no explored pages, no demo script. Persona and product URL stay. Run Auto-Explore to build a new walkthrough. Publish later to make changes live."
+          confirmLabel="Clear all"
+          danger
+          onConfirm={() => {
+            void clearSiteGraph();
+          }}
+          onCancel={() => setConfirmClear(false)}
         />
       )}
     </motion.div>

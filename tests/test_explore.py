@@ -149,6 +149,21 @@ def test_business_specific_field_waits_for_the_client():
     assert decision.classification == "business_specific"
     assert decision.answered_by == "client"
     assert any(e.get("type") == "question" for e in session.events)
+    assert len(session.steps) == 1
+    assert session.steps[0].source == "user"
+    assert session.steps[0].live_question
+
+
+def test_heuristic_prefers_focus_hint():
+    from navigator.automation.explore.reason import heuristic_pick
+
+    els = [
+        _el(testid="reports", text="Reports", tag="a", href="/reports/"),
+        _el(testid="billing", text="Billing", tag="a", href="/billing/"),
+    ]
+    choice = heuristic_pick(els, ["/"], focus_hint="Billing")
+    assert choice is not None
+    assert choice.index == 1
 
 
 def test_unanswered_business_field_is_skipped_not_guessed():

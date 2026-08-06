@@ -1,0 +1,38 @@
+---
+description: After starting Navigator locally, read server logs and fix startup/runtime errors before continuing.
+alwaysApply: true
+---
+
+# Check logs when you start the project
+
+When **you** start Navigator (or Attendee) from this workspace — uvicorn, docker
+compose, npm dev, or a script — **always read the logs** before claiming the stack
+is ready or moving on to another task.
+
+## Required workflow
+
+1. **Start** using the repo’s normal entrypoint (e.g.
+   `.venv/bin/uvicorn navigator.app.main:app --host 127.0.0.1 --port 8000 --workers 1`).
+2. **Read logs** from the terminal file, `docker compose logs`, or process output —
+   not only the last line; scan for `ERROR`, `Traceback`, `WARN`, `failed`, and
+   `[runner]` / `[live]` / `[attendee]` / `[zoom]` lines.
+3. **If errors appear**, diagnose and fix (config, missing creds, dead tunnel,
+   Attendee stack, Zoom sync, etc.) — do not ask the user to retry until logs are
+   clean or the error is understood and documented.
+4. **Re-check** after fixes: restart if needed and read logs again.
+
+## Common local failures (fix, don’t ignore)
+
+| Log signal | Likely fix |
+|---|---|
+| Attendee unreachable | `docker compose` in Attendee clone; `NAVIGATOR_ATTENDEE_AUTOSTART` |
+| Zoom credentials 400 | `./scripts/sync-attendee-zoom-credentials.sh` |
+| ZAK / tunnel unreachable | cloudflared running; stale `NAVIGATOR_PUBLIC_BASE_URL` |
+| Voice agents disabled | `./scripts/fix-attendee-voice.sh` |
+| Import / syntax on boot | Fix code before proceeding |
+
+## Do not
+
+- Start the server and immediately tell the user “try now” without reading logs.
+- Treat HTTP 200 on dashboard polls as proof a live demo succeeded — read runner
+  tracebacks in the same log stream.

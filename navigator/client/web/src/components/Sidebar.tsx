@@ -9,6 +9,7 @@ import {
   Network,
   PlayCircle,
   ScrollText,
+  Settings2,
 } from "lucide-react";
 import { cn } from "../lib/cn";
 import { soft } from "../lib/motion";
@@ -30,6 +31,7 @@ export const TABS = [
   { id: "graph", label: "Site graph", icon: Network },
   { id: "knowledge", label: "Knowledge", icon: BookOpen },
   { id: "bio", label: "Company bio", icon: Building2 },
+  { id: "settings", label: "Settings", icon: Settings2 },
 ] as const;
 
 export function Sidebar({
@@ -145,7 +147,7 @@ export function Sidebar({
           </button>
         )}
         <p className="text-[0.68rem] leading-relaxed text-[var(--muted)]">
-          Powered by Resiliencesoft
+          Navigator AI
         </p>
       </div>
     </aside>

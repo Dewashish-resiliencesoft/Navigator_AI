@@ -4,6 +4,10 @@ import { ArrowUpRight, ArrowDownRight, ArrowRight, CircleCheck, Radio, TriangleA
 import { api, DASHBOARD_DAYS, type DemoRun, type Metrics, type PublishChecklist } from "../lib/api";
 import { formatRunDuration } from "../lib/elapsed";
 import { useProductData } from "../lib/productData";
+import {
+  clientReadinessScore,
+  clientVisibleReadinessChecks,
+} from "../lib/readiness";
 import { soft, stagger } from "../lib/motion";
 import { AreaChart, Sparkbars } from "../components/Chart";
 import { BarLoader, Card, CardTitle, Empty, StatusPill } from "../components/ui";
@@ -185,14 +189,14 @@ export function Overview() {
             Publish checklist
           </CardTitle>
           <div className="mb-2 flex flex-wrap items-center gap-3 text-[0.78rem]">
-            <span>Readiness {checklist.readiness.score}/100</span>
+            <span>Readiness {clientReadinessScore(checklist.readiness.checks)}/100</span>
             {checklist.eval_score_pct != null && (
               <span>Eval {Math.round(checklist.eval_score_pct)}%</span>
             )}
             <span className="text-[var(--muted)]">{checklist.autonomy_recommendation}</span>
           </div>
           <ul className="grid gap-1 sm:grid-cols-2 text-[0.72rem]">
-            {checklist.readiness.checks.map((c) => (
+            {clientVisibleReadinessChecks(checklist.readiness.checks).map((c) => (
               <li
                 key={c.id}
                 className={

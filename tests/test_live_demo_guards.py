@@ -7,8 +7,10 @@ from navigator.meeting.live_demo import (
     _require_live_settings,
     assert_live_site_graph,
     share_media_join_opts,
+    show_login_on_screenshare,
 )
 from navigator.core.settings import settings
+from navigator.knowledge.site_graph import DemoPlaylistItem, PageSpec, SiteGraph
 
 
 def test_assert_live_site_graph_rejects_fixture_path():
@@ -98,6 +100,57 @@ def test_reachability_probe_treats_an_http_error_as_alive(monkeypatch):
 
     monkeypatch.setattr("navigator.meeting.attendee_stack.urlopen", raise_refused)
     assert live_demo._attendee_reachable("http://localhost:8002/api/v1") is False
+
+
+def test_show_login_on_screenshare_include_toggle():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={"inbox": PageSpec(name="inbox", url="inbox", selectors={}, flows={})},
+    )
+    assert show_login_on_screenshare(
+        graph, login_url="https://app.acme.test/login", include_login_in_default_flow=True
+    )
+
+
+def test_show_login_on_screenshare_first_playlist_login_flow():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "login": PageSpec(
+                name="login", url="login", selectors={}, flows={"login_flow": ()}
+            ),
+            "inbox": PageSpec(name="inbox", url="inbox", selectors={}, flows={}),
+        },
+        demo_playlist=[
+            DemoPlaylistItem(page_id="login", flow_id="login_flow", order=1),
+        ],
+    )
+    assert show_login_on_screenshare(
+        graph, login_url="", include_login_in_default_flow=False
+    )
+
+
+def test_show_login_on_screenshare_silent_when_not_opted_in():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "inbox": PageSpec(
+                name="inbox", url="inbox", selectors={}, flows={"home": ()}
+            ),
+        },
+        demo_playlist=[
+            DemoPlaylistItem(page_id="inbox", flow_id="home", order=1),
+        ],
+    )
+    assert not show_login_on_screenshare(
+        graph, login_url="https://app.acme.test/login", include_login_in_default_flow=False
+    )
 
 
 def test_missing_attendee_key_is_still_refused(monkeypatch):

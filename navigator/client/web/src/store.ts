@@ -24,5 +24,26 @@ export const useUi = create<State>((set) => ({
   clear: () => set({ toast: null }),
 }));
 
-export const errText = (e: unknown) =>
-  e instanceof Error ? e.message : String(e);
+export const errText = (e: unknown) => {
+  const raw = e instanceof Error ? e.message : String(e);
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => {
+          if (item && typeof item === "object" && "msg" in item) {
+            const loc = Array.isArray((item as { loc?: unknown }).loc)
+              ? (item as { loc: unknown[] }).loc.join(".")
+              : "";
+            const msg = String((item as { msg: unknown }).msg);
+            return loc ? `${loc}: ${msg}` : msg;
+          }
+          return JSON.stringify(item);
+        })
+        .join("; ");
+    }
+  } catch {
+    /* not JSON validation detail */
+  }
+  return raw;
+};

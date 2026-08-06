@@ -105,6 +105,8 @@ def sync_speaker_language(
 def sync_call_language(deps: object, utterance: str) -> SpokenLanguage:
     """Apply language switch from utterance onto CallDeps + speakers."""
     current: SpokenLanguage = getattr(deps, "spoken_language", "en") or "en"
+    extra = getattr(deps, "extra_languages", ("hi",)) or ("hi",)
+    allowed = frozenset({current, *extra})
 
     def _on_switch(lang: SpokenLanguage) -> None:
         setattr(deps, "spoken_language", lang)
@@ -117,6 +119,7 @@ def sync_call_language(deps: object, utterance: str) -> SpokenLanguage:
         utterance=utterance,
         current=current,
         on_switch=_on_switch,
+        allowed=allowed,
     )
     return new_lang
 
@@ -126,10 +129,13 @@ def apply_language_switch(
     utterance: str,
     current: SpokenLanguage,
     on_switch: Callable[[SpokenLanguage], None],
+    allowed: frozenset[SpokenLanguage] | None = None,
 ) -> tuple[SpokenLanguage, str | None]:
     """Apply a language switch. Returns (language, optional ack line)."""
     target = detect_language_switch(utterance)
     if target is None or target == current:
+        return current, None
+    if allowed is not None and target not in allowed:
         return current, None
     on_switch(target)
     ack = SWITCH_ACK.get(target) if is_language_switch_only(utterance) else None

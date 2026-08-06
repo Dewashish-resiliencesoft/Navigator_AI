@@ -37,4 +37,4 @@ def test_external_link_not_added_to_demo_steps():
     msgs = " ".join(
         str(e.get("msg", "")) for e in session.events if e.get("type") == "log"
     )
-    assert "external" in msgs.lower()
+    assert "off-product" in msgs.lower() or "external" in msgs.lower()

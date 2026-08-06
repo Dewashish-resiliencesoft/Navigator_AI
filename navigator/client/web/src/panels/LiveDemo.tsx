@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Copy, ExternalLink, PhoneOff, Play, Mic } from "lucide-react";
-import { api, ApiError, type RunEvent } from "../lib/api";
+import { Check, Copy, ExternalLink, PhoneOff, Play, Mic, TriangleAlert } from "lucide-react";
+import { api, ApiError, type AutonomyMode, type DemoReadiness, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { useExploreSession } from "../lib/exploreSession";
 import { useProductData } from "../lib/productData";
@@ -42,8 +42,10 @@ export function LiveDemo() {
   const [domain, setDomain] = useState("");
   const [domainPlaceholder, setDomainPlaceholder] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
-  const [tier2Enabled, setTier2Enabled] = useState(false);
-  const [savingTier2, setSavingTier2] = useState(false);
+  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("guided");
+  const [savingAutonomy, setSavingAutonomy] = useState(false);
+  const [readiness, setReadiness] = useState<DemoReadiness | null>(null);
+  const [loadingReadiness, setLoadingReadiness] = useState(false);
   const [loginUrl, setLoginUrl] = useState("");
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
@@ -78,11 +80,21 @@ export function LiveDemo() {
         if (alive) err(errText(e));
       }
       try {
-        const t2 = await api.getTier2();
+        const mode = await api.getAutonomyMode();
         if (!alive) return;
-        setTier2Enabled(!!t2.enabled);
+        setAutonomyMode(mode.mode);
       } catch (e) {
         if (alive) err(errText(e));
+      }
+      try {
+        setLoadingReadiness(true);
+        const ready = await api.getDemoReadiness("dashboard_test");
+        if (!alive) return;
+        setReadiness(ready);
+      } catch (e) {
+        if (alive) err(errText(e));
+      } finally {
+        if (alive) setLoadingReadiness(false);
       }
       try {
         const login = await api.getProductLogin();
@@ -153,19 +165,24 @@ export function LiveDemo() {
     }
   };
 
-  const saveTier2 = async (enabled: boolean) => {
-    setSavingTier2(true);
+  const saveAutonomy = async (mode: AutonomyMode) => {
+    setSavingAutonomy(true);
     try {
-      const d = await api.putTier2(enabled);
-      setTier2Enabled(!!d.enabled);
+      const d = await api.putAutonomyMode(mode);
+      setAutonomyMode(d.mode);
       invalidate();
-      ok(d.enabled ? "Live fallback on." : "Live fallback off.");
+      const ready = await api.getDemoReadiness("dashboard_test");
+      setReadiness(ready);
+      ok(`Autonomy: ${d.mode}.`);
     } catch (e) {
       err(errText(e));
     } finally {
-      setSavingTier2(false);
+      setSavingAutonomy(false);
     }
   };
+
+  const blockingChecks = readiness?.checks.filter((c) => c.blocking && !c.ok) ?? [];
+  const startBlocked = blockingChecks.length > 0;
 
   const saveIncludeLogin = async (enabled: boolean) => {
     if (!loginUser.trim()) {
@@ -233,6 +250,10 @@ export function LiveDemo() {
   const start = async () => {
     if (domainPlaceholder || !domain.trim() || /example\.com/i.test(domain)) {
       err("Set your product domain first (https://your-product.com), then Start.");
+      return;
+    }
+    if (startBlocked) {
+      err(blockingChecks[0]?.message ?? "Demo not ready — fix blocking checks first.");
       return;
     }
     if (live) {
@@ -362,13 +383,40 @@ export function LiveDemo() {
           className="mb-3 border-t pt-3"
           style={{ borderColor: "var(--line)" }}
         >
-          <Switch
-            label="Live fallback"
-            description="One safe click when no flow or knowledge matches. Goes to corrections — never auto-promoted."
-            checked={tier2Enabled}
-            disabled={savingTier2}
-            onChange={(v) => void saveTier2(v)}
-          />
+          <p className="mb-2 text-[0.78rem] font-medium">How should your agent handle unexpected questions?</p>
+          <div className="mb-3 grid gap-2 sm:grid-cols-3">
+            {(
+              [
+                ["guided", "Guided demo", "Published flows + knowledge only. Safest."],
+                ["adaptive", "Adaptive demo", "Safe live clicks when no flow matches."],
+                ["explorer", "Explorer demo", "Test only — navigates freely from screen."],
+              ] as const
+            ).map(([value, label, desc]) => (
+              <label
+                key={value}
+                className={`cursor-pointer rounded-lg border px-3 py-2 text-[0.76rem] ${
+                  autonomyMode === value ? "border-[var(--accent)] bg-[var(--accent)]/5" : ""
+                }`}
+                style={{ borderColor: autonomyMode === value ? undefined : "var(--line)" }}
+              >
+                <input
+                  type="radio"
+                  name="autonomy"
+                  className="mr-2"
+                  checked={autonomyMode === value}
+                  disabled={savingAutonomy}
+                  onChange={() => void saveAutonomy(value)}
+                />
+                <span className="font-medium">{label}</span>
+                <p className="mt-1 text-[var(--muted)]">{desc}</p>
+              </label>
+            ))}
+          </div>
+          {autonomyMode === "explorer" && (
+            <p className="mb-2 text-[0.74rem] text-amber-600 dark:text-amber-400">
+              Explorer is dashboard test demos only — not for your live website embed.
+            </p>
+          )}
           <Switch
             label="Login in default demo"
             description="Run saved login before the default walkthrough. Topic flows skip login."
@@ -456,7 +504,46 @@ export function LiveDemo() {
           />
           <span>Auto-play: continue sequentially through all flows in the playlist</span>
         </label>
-        <Button onClick={start} disabled={starting || live || ending}>
+
+        <div
+          className="mb-3 rounded-lg border px-3 py-2.5"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-[0.78rem] font-medium">Demo readiness</p>
+            {readiness && (
+              <span className="text-[0.76rem] text-[var(--muted)]">Score {readiness.score}/100</span>
+            )}
+          </div>
+          {loadingReadiness && !readiness ? (
+            <p className="text-[0.74rem] text-[var(--muted)]">Checking…</p>
+          ) : readiness ? (
+            <ul className="space-y-1 text-[0.72rem]">
+              {readiness.checks.map((c) => (
+                <li
+                  key={c.id}
+                  className={
+                    c.ok
+                      ? "text-emerald-700 dark:text-emerald-400"
+                      : c.blocking
+                        ? "text-red-700 dark:text-red-400"
+                        : "text-amber-700 dark:text-amber-400"
+                  }
+                >
+                  {c.ok ? "✓" : c.blocking ? "✕" : "!"} {c.message}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {startBlocked && (
+            <p className="mt-2 flex items-center gap-1.5 text-[0.74rem] text-red-600 dark:text-red-400">
+              <TriangleAlert size={14} />
+              Fix blocking items before starting a test demo.
+            </p>
+          )}
+        </div>
+
+        <Button onClick={start} disabled={starting || live || ending || startBlocked}>
           <Play size={14} strokeWidth={2.2} />
           {starting
             ? "Starting…"

@@ -30,7 +30,7 @@ def make_barge_in_checker(
     *,
     is_bot_echo: Callable[[str], bool] | None = None,
     transcribe: Callable[[bytes], str] | None = None,
-    energy_threshold: float = 900.0,
+    energy_threshold: float = 650.0,
     pending_barge_in: list[str] | None = None,
 ) -> Callable[[], bool]:
     """Return a checker suitable for MeetSpeaker.check_barge_in.

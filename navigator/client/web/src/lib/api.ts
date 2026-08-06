@@ -3,6 +3,40 @@ export type DemoStatus = "starting" | "running" | "finished" | "failed";
 /** Who started a demo. `dashboard_test` never counts toward usage. */
 export type DemoOrigin = "dashboard_test" | "public_embed";
 
+export type AutonomyMode = "guided" | "adaptive" | "explorer";
+
+export type ReadinessCheck = {
+  id: string;
+  ok: boolean;
+  message: string;
+  blocking: boolean;
+};
+
+export type DemoReadiness = {
+  score: number;
+  autonomy_mode: AutonomyMode;
+  checks: ReadinessCheck[];
+};
+
+export type PublishChecklist = {
+  readiness: DemoReadiness;
+  eval_score_pct: number | null;
+  autonomy_recommendation: string;
+};
+
+export type DecisionTrace = {
+  id: string;
+  session_id: string;
+  utterance: string;
+  branch: string;
+  chosen_flow_id: string | null;
+  spoken: string;
+  flow_candidates: (string | number)[][];
+  knowledge_hits: (string | number)[][];
+  detail: string;
+  created_at: string;
+};
+
 export type Demo = {
   demo_id: string;
   product_id: string;
@@ -447,6 +481,25 @@ export const api = {
   getTier2: () => get<{ enabled: boolean }>("/client/api/tier2"),
   putTier2: (enabled: boolean) =>
     send<{ ok: boolean; enabled: boolean }>("/client/api/tier2", "PUT", { enabled }),
+
+  getAutonomyMode: () =>
+    get<{ mode: AutonomyMode; tier2_enabled: boolean; handoff_webhook_url: string }>(
+      "/client/api/autonomy-mode",
+    ),
+  putAutonomyMode: (mode: AutonomyMode) =>
+    send<{ ok: boolean; mode: AutonomyMode; tier2_enabled: boolean }>(
+      "/client/api/autonomy-mode",
+      "PUT",
+      { mode },
+    ),
+
+  getDemoReadiness: (origin: DemoOrigin = "dashboard_test") =>
+    get<DemoReadiness>(`/client/api/demo-readiness?origin=${origin}`),
+
+  getPublishChecklist: () => get<PublishChecklist>("/client/api/publish-checklist"),
+
+  runDecisions: (sessionId: string) =>
+    get<DecisionTrace[]>(`/client/api/runs/${sessionId}/decisions`),
 
   getProductLogin: () =>
     get<{

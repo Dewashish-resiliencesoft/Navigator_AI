@@ -891,6 +891,30 @@ def run_live_meet_demo(
                 )
                 return gate is LoginGateResult.ok
 
+            _pid = product_id or graph_cfg.site or "default"
+
+            def _schedule_prefetch(utterance: str) -> None:
+                if not utterance.strip():
+                    return
+
+                def _run() -> None:
+                    try:
+                        from navigator.agent.brain_router import prefetch_context
+                        from navigator.knowledge.context import flow_text
+
+                        pg = graph_cfg.page(page_id)
+                        texts = {fid: flow_text(fid) for fid in pg.flows}
+                        prefetch_context(
+                            product_id=_pid,
+                            base_query=utterance,
+                            flow_texts=texts,
+                            chroma_path=settings.chroma_path,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[live] prefetch skipped: {exc}", flush=True)
+
+                threading.Thread(target=_run, daemon=True).start()
+
             def _listen_once(prompt: str) -> str:
                 """STT/stdin for requires_live_input FillField pauses."""
                 from types import SimpleNamespace
@@ -952,6 +976,7 @@ def run_live_meet_demo(
                 use_turn_brain=use_turn_brain,
                 handoff_webhook_url=handoff_webhook_url,
                 decision_db_path=settings.db_path,
+                on_user_utterance=_schedule_prefetch,
             )
 
             mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"

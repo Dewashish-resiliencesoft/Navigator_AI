@@ -750,6 +750,8 @@ def _decide_live_turn(
             )
 
     try:
+        result = retrieve(
+            enriched,
             deps.product_id,
             flow_texts=flow_texts,
             available_flow_ids=list(flow_texts),

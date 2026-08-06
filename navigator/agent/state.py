@@ -98,6 +98,8 @@ class CallDeps:
     product_brief: str = ""
     #: During TTS wait: return True to cut remaining playback wait (barge-in).
     check_barge_in: Callable[[], bool] | None = None
+    #: Optional hook when prospect speech is captured (prefetch, analytics).
+    on_user_utterance: Callable[[str], None] | None = None
     #: Filled when barge-in heard speech; LISTENING consumes it.
     pending_barge_in: list[str] | None = None
     #: Injected Gemini turn brain for tests. When None, use decide_turn if Gemini key set.

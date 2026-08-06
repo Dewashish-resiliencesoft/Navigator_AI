@@ -120,10 +120,9 @@ def build_prompt(
 
 
 def _groq_complete(api_key: str, prompt: str) -> str:
-    from groq import Groq
+    from navigator.core.groq_client import groq_client
 
-    client = Groq(api_key=api_key)
-    resp = client.chat.completions.create(
+    resp = groq_client(api_key).chat.completions.create(
         model=_planning_model(),
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},

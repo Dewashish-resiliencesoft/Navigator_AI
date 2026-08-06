@@ -108,6 +108,8 @@ def revert_external_navigation(page: Any, *, product_base: str = "") -> bool:
     base = (product_base or "").strip()
     if not base:
         return False
+    # Last resort only: this is a full load of the product home page, which on a
+    # shared screen looks like the demo restarting.
     try:
         page.goto(base, wait_until="domcontentloaded", timeout=60_000)
         return True

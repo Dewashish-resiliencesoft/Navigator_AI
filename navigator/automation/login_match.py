@@ -82,6 +82,18 @@ def same_page_path(a: str, b: str) -> bool:
     return bool(a and b) and _path_of(a) == _path_of(b)
 
 
+def is_sub_route(current: str, base: str) -> bool:
+    """True when ``current`` is a deeper route under ``base`` (host ignored).
+
+    A demo click that drills from /inbox into /inbox/message/7 has not left the
+    page the flow declared, so it must not be treated as a detour to undo.
+    """
+    cur, root = _path_of(current), _path_of(base)
+    if not cur or not root or root == "/":
+        return False
+    return cur.startswith(root + "/")
+
+
 def looks_like_login(
     *,
     config: LoginConfig,

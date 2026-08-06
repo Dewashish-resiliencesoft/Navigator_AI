@@ -31,6 +31,7 @@ from navigator.automation.browser.cursor import install_cursor
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
 from navigator.automation.browser.product_login import login_product
 from navigator.automation.browser.screen_context import screen_snapshot
+from navigator.automation.external_links import url_origin
 from navigator.knowledge.product_brief import load_agent_context
 from navigator.knowledge.site_graph import load_site_graph
 from navigator.logs.store import ActionLog
@@ -94,7 +95,8 @@ def _wait_meet_utterance(
             except Empty:
                 continue
 
-    for pcm in VoiceSegmenter().segments(frames()):
+    segmenter = VoiceSegmenter(min_silence_ms=settings.live_stt_min_silence_ms)
+    for pcm in segmenter.segments(frames()):
         text = (transcribe(pcm, api_key) or "").strip()
         if not text:
             continue
@@ -265,7 +267,7 @@ def wait_until_joined(
                 "[live] Or admit Navigator once from another device, then re-run.",
                 flush=True,
             )
-        time.sleep(2)
+        time.sleep(0.75)
     raise TimeoutError(
         f"Attendee bot did not join within {timeout_s}s (last={last}). "
         "For bot-first demos, enable Meet Quick access so Navigator enters "
@@ -411,6 +413,10 @@ def run_live_meet_demo(
         open_meet_in_browser = settings.open_meet_in_browser
 
     client = AttendeeClient(settings.attendee_base_url, settings.attendee_api_key)
+    if any(h in settings.attendee_base_url for h in ("localhost", "127.0.0.1")):
+        from navigator.meeting.attendee_stack import ensure_webpage_streamer
+
+        ensure_webpage_streamer()
     _leave_stale_bots(client, meeting_url)
     spoken_language: str = settings.default_spoken_language
     speaker = _require_tts_for_meet(mute=mute, spoken_language=spoken_language)
@@ -495,12 +501,17 @@ def run_live_meet_demo(
             from navigator.meeting.zoom_host import _zak_origin_reachable, ensure_public_base_url
 
             base = ensure_public_base_url()
+            # Zoom meetings are created with join_before_host=False, so the ZAK
+            # is what makes Navigator the host. If Attendee cannot reach the
+            # callback there is no host at all and every guest sits on "waiting
+            # for the host" until they give up — fail here instead.
             if not _zak_origin_reachable(base):
-                print(
-                    f"[live] WARN: ZAK probe failed for {base}/v1/zoom/zak — "
-                    "continuing; if Zoom waits for host, set "
-                    "NAVIGATOR_PUBLIC_BASE_URL to a stable public origin",
-                    flush=True,
+                raise RuntimeError(
+                    f"Zoom host join needs Attendee to reach {base}/v1/zoom/zak, "
+                    "but that origin does not answer. Navigator would never "
+                    "become host and everyone would wait in the lobby. Set "
+                    "NAVIGATOR_PUBLIC_BASE_URL to a stable public origin, or "
+                    "check that cloudflared is running."
                 )
             print(
                 f"[live] Zoom host ZAK callback: {zoom_tokens_url.split('?', 1)[0]}",
@@ -709,6 +720,12 @@ def run_live_meet_demo(
                 )
 
             origin = _real_origin()
+            # The graph may carry a stale/placeholder base_url. Anything that
+            # compares the live URL against it (external-link revert, page
+            # resolution) would then treat every product page as off-origin and
+            # yank the shared screen back after each action.
+            if url_origin(graph_cfg.base_url) != url_origin(origin):
+                graph_cfg = graph_cfg.model_copy(update={"base_url": origin})
             # Prefer per-product vault; fall back to legacy process-wide env for
             # CLI smoke / single-tenant local runs.
             login_email = ""
@@ -948,7 +965,7 @@ def run_live_meet_demo(
                 flush=True,
             )
             # Let final Meet TTS finish playing before we tear the bot down.
-            time.sleep(1.5)
+            time.sleep(0.6)
 
             context.close()
             browser.close()

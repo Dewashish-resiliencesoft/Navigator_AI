@@ -20,8 +20,9 @@ import { OnboardingWizard } from "./panels/Onboarding";
 import { Button, StatusPill } from "./components/ui";
 import { DISPLAY_TICK_MS } from "./lib/elapsed";
 import {
-  isSignupPending,
   markSignupPending,
+  shouldAutoOpenWizard,
+  loadUserPreferences,
   type OnboardingItemId,
 } from "./lib/onboarding";
 
@@ -129,8 +130,16 @@ export default function App() {
 
   useEffect(() => {
     let alive = true;
-    api.checkAuth().then((pass) => {
-      if (alive) setAuthed(pass);
+    api.checkAuth().then(async (pass) => {
+      if (!alive) return;
+      if (pass) {
+        try {
+          await loadUserPreferences();
+        } catch {
+          /* prefs optional */
+        }
+      }
+      setAuthed(pass);
     });
     return () => {
       alive = false;
@@ -139,7 +148,7 @@ export default function App() {
 
   useEffect(() => {
     if (!authed) return;
-    if (isSignupPending()) {
+    if (shouldAutoOpenWizard()) {
       setShowOnboarding(true);
     }
   }, [authed]);

@@ -1,4 +1,5 @@
 import { motion } from "motion/react";
+import { useEffect, useState } from "react";
 import {
   Activity,
   BookOpen,
@@ -13,7 +14,13 @@ import { cn } from "../lib/cn";
 import { soft } from "../lib/motion";
 import { useUi } from "../store";
 import { GetStartedCard } from "./GetStartedCard";
-import type { OnboardingItemId } from "../lib/onboarding";
+import {
+  isOnboardingCardHidden,
+  loadUserPreferences,
+  showOnboardingCard,
+  type OnboardingItemId,
+} from "../lib/onboarding";
+import { useOnboardingProgress } from "../lib/useOnboardingProgress";
 
 export const TABS = [
   { id: "overview", label: "Overview", icon: Activity },
@@ -33,6 +40,23 @@ export function Sidebar({
   onContinueSetup?: (startAt: OnboardingItemId | null) => void;
 }) {
   const { tab, setTab } = useUi();
+  const { progress } = useOnboardingProgress();
+  const [cardHidden, setCardHidden] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      await loadUserPreferences();
+      if (!alive) return;
+      setCardHidden(isOnboardingCardHidden());
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [progress?.percent, progress?.complete]);
+
+  const setupIncomplete = progress && !progress.complete;
+  const showSetupLink = setupIncomplete && cardHidden && onContinueSetup;
 
   return (
     <aside
@@ -81,6 +105,21 @@ export function Sidebar({
       <div className="mt-auto space-y-3 px-1">
         {onContinueSetup && (
           <GetStartedCard onContinue={onContinueSetup} />
+        )}
+        {showSetupLink && (
+          <button
+            type="button"
+            onClick={() => {
+              void showOnboardingCard().then(() => {
+                setCardHidden(false);
+                onContinueSetup?.(null);
+              });
+            }}
+            className="w-full rounded-lg border px-2.5 py-2 text-left text-[0.75rem] font-medium text-[var(--muted)] hover:text-[var(--text)]"
+            style={{ borderColor: "var(--line)" }}
+          >
+            Show setup guide
+          </button>
         )}
         <button
           type="button"

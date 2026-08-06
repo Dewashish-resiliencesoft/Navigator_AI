@@ -1,6 +1,11 @@
 export type DemoStatus = "starting" | "running" | "finished" | "failed";
 
-/** Who started a demo. `dashboard_test` never counts toward usage. */
+export type UserPreferences = {
+  hide_get_started_card: boolean;
+  onboarding_wizard_dismissed: boolean;
+  onboarding_wizard_completed: boolean;
+};
+
 export type DemoOrigin = "dashboard_test" | "public_embed";
 
 export type AutonomyMode = "guided" | "adaptive" | "explorer";
@@ -438,6 +443,10 @@ export const api = {
       return false;
     }
   },
+
+  getUserPreferences: () => get<UserPreferences>("/client/api/user/preferences"),
+  putUserPreferences: (patch: Partial<UserPreferences>) =>
+    send<UserPreferences>("/client/api/user/preferences", "PUT", patch),
   bootstrap: () =>
     request<{ ok: boolean; product_id: string; api_key: string | null; message: string }>(
       "/client/api/bootstrap",

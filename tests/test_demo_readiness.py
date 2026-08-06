@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from navigator.agent.readiness import assert_live_graph_yaml, assess_demo_readiness
+from navigator.agent.readiness import (
+    _has_offerable_flow,
+    assert_live_graph_yaml,
+    assess_demo_readiness,
+)
 from navigator.app.registry import NewProduct, Registry
 
 
@@ -22,6 +26,11 @@ def test_assess_demo_readiness_new_product(tmp_path: Path):
         report = assess_demo_readiness(reg, "acme", origin="dashboard_test")
     assert report.score >= 0
     assert any(c.id == "published" for c in report.checks)
+
+
+def test_has_offerable_flow_uses_page_keys(site_graph):
+    """Regression: PageSpec has no .id — page_id comes from graph.pages keys."""
+    assert _has_offerable_flow(site_graph) is True
 
 
 def test_explorer_blocks_public_embed(tmp_path: Path):

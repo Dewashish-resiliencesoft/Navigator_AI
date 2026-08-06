@@ -2,7 +2,7 @@
 # Synced to ~/projects/attendee/local.docker-compose.yaml by scripts/sync-attendee-compose.sh
 services:
   attendee-app-local:
-    ports:
+    ports: !override
       - "8002:8000"
     environment:
       - CHARGE_CREDITS_FOR_BOTS=false

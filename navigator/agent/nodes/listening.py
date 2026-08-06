@@ -170,7 +170,7 @@ def _from_audio(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
     frames: Iterator[bytes] = deps.audio_frames
     if silence_timeout is not None:
         frames = _frames_until_deadline(deps.audio_frames, silence_timeout)
-    segmenter = VoiceSegmenter()
+    segmenter = VoiceSegmenter(min_silence_ms=settings.live_stt_min_silence_ms)
     for pcm in segmenter.segments(frames):
         if _aborted(deps) or getattr(deps.speaker, "bot_ended", False):
             return ""

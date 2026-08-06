@@ -79,11 +79,10 @@ from navigator.app.credential_vault import (
 from navigator.app.runner import DemoOrigin, DemoRunner
 
 import jwt
-import bcrypt
-from fastapi import Response, Cookie
-from navigator.app.auth_store import AuthStore, AuthError, InvalidCredentials
 
-from navigator.app.session_tokens import SessionTokenStore, SessionTokenError
+from navigator.auth import AuthStore, AuthError, SessionTokenStore, SessionTokenError
+from navigator.auth.routes import build_auth_router
+from navigator.app.auth_store import InvalidCredentials
 from navigator.knowledge.site_graph import SiteGraphError, parse_site_graph
 from navigator.meeting.providers import (
     MeetingProvider,
@@ -149,6 +148,11 @@ _auth_store = AuthStore(settings.db_path)
 
 def get_auth_store() -> AuthStore:
     return _auth_store
+
+
+app.include_router(
+    build_auth_router(get_registry=get_registry, get_auth_store=get_auth_store)
+)
 
 _runner = DemoRunner(str(settings.db_path), headful=settings.headful)
 
@@ -316,152 +320,6 @@ class DemoRunView(BaseModel):
     started_at: datetime
     ended_at: datetime | None = None
     fail_count: int = 0
-
-
-class LoginRequest(BaseModel):
-    email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=1, max_length=200)
-
-
-class SignupRequest(BaseModel):
-    company_name: str = Field(min_length=1, max_length=200)
-    email: str = Field(min_length=3, max_length=320)
-    password: str = Field(min_length=8, max_length=200)
-
-
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    expires_in: int
-    product_id: str
-
-
-def _mint_jwt(user_id: str, product_id: str) -> str:
-    now = datetime.now(timezone.utc)
-    expires_in = 900
-    payload = {
-        "sub": user_id,
-        "product_id": product_id,
-        "role": "admin",
-        "exp": int(now.timestamp() + expires_in),
-    }
-    return jwt.encode(payload, settings.jwt_secret, algorithm="HS256")
-
-
-def _set_refresh_cookie(response: Response, token: str) -> None:
-    # Client console is loopback HTTP — Secure cookies would never stick.
-    response.set_cookie(
-        key="refresh_token",
-        value=token,
-        httponly=True,
-        secure=False,
-        samesite="lax",
-        max_age=7 * 24 * 3600,
-        path="/",
-    )
-
-
-def _issue_tokens(
-    response: Response, store: AuthStore, *, user_id: str, product_id: str
-) -> dict:
-    access_token = _mint_jwt(user_id, product_id)
-    refresh_token = store.create_refresh_token(user_id)
-    _set_refresh_cookie(response, refresh_token)
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "expires_in": 900,
-        "product_id": product_id,
-    }
-
-
-@app.post("/v1/auth/signup", response_model=TokenResponse, status_code=201)
-def signup(
-    req: SignupRequest,
-    response: Response,
-    registry: Reg,
-    store: Annotated[AuthStore, Depends(get_auth_store)],
-) -> dict:
-    """Create a new client company (product) + first admin user, return JWT."""
-    email = req.email.strip().lower()
-    if store.get_user_by_email(email):
-        raise HTTPException(409, "email already registered")
-
-    spec = NewProduct(name=req.company_name.strip())
-    try:
-        registered = registry.register(spec)
-    except RegistryError as exc:
-        raise HTTPException(409, str(exc)) from None
-
-    product_id = registered.product.product_id
-    try:
-        # A brand-new tenant has nothing live to protect, and needs a published
-        # revision to exist at all before they can run anything.
-        registry.put_site_graph(product_id, _BLANK_CLIENT_GRAPH, "yaml", publish=True)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(500, f"could not seed site graph: {exc}") from None
-
-    try:
-        user_id = store.create_user(product_id, email, req.password)
-    except AuthError as exc:
-        raise HTTPException(409, str(exc)) from None
-
-    return _issue_tokens(response, store, user_id=user_id, product_id=product_id)
-
-
-@app.post("/v1/auth/login", response_model=TokenResponse)
-def login(
-    req: LoginRequest,
-    response: Response,
-    store: Annotated[AuthStore, Depends(get_auth_store)],
-) -> dict:
-    email = req.email.strip().lower()
-    user = store.get_user_by_email(email)
-    if not user or not bcrypt.checkpw(
-        req.password.encode(), user["password_hash"].encode()
-    ):
-        raise HTTPException(401, "invalid credentials")
-
-    return _issue_tokens(
-        response, store, user_id=user["user_id"], product_id=user["product_id"]
-    )
-
-
-@app.post("/v1/auth/refresh", response_model=TokenResponse)
-def refresh(
-    response: Response,
-    store: Annotated[AuthStore, Depends(get_auth_store)],
-    refresh_token: Annotated[str | None, Cookie()] = None,
-) -> dict:
-    if not refresh_token:
-        raise HTTPException(401, "no refresh token")
-
-    try:
-        user_id = store.consume_refresh_token(refresh_token)
-        user = store.get_user(user_id)
-        if not user:
-            raise HTTPException(401, "invalid user")
-
-        return _issue_tokens(
-            response,
-            store,
-            user_id=user["user_id"],
-            product_id=user["product_id"],
-        )
-    except AuthError as exc:
-        raise HTTPException(401, str(exc)) from None
-
-
-@app.post("/v1/auth/logout")
-def logout(
-    response: Response,
-    store: Annotated[AuthStore, Depends(get_auth_store)],
-    refresh_token: Annotated[str | None, Cookie()] = None,
-) -> dict:
-    if refresh_token:
-        store.revoke_refresh_token(refresh_token)
-    response.delete_cookie("refresh_token", path="/")
-    return {"ok": True}
 
 
 class SessionTokenRequest(BaseModel):

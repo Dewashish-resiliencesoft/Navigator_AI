@@ -8,8 +8,9 @@ info:
 paths:
   /v1/auth/signup:
     post:
+      tags:
+      - auth
       summary: Signup
-      description: Create a new client company (product) + first admin user, return JWT.
       operationId: signup_v1_auth_signup_post
       requestBody:
         content:
@@ -32,6 +33,8 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/auth/login:
     post:
+      tags:
+      - auth
       summary: Login
       operationId: login_v1_auth_login_post
       requestBody:
@@ -55,6 +58,8 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/auth/refresh:
     post:
+      tags:
+      - auth
       summary: Refresh
       operationId: refresh_v1_auth_refresh_post
       parameters:
@@ -81,6 +86,8 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/auth/logout:
     post:
+      tags:
+      - auth
       summary: Logout
       operationId: logout_v1_auth_logout_post
       parameters:
@@ -101,6 +108,67 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Logout V1 Auth Logout Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/user/preferences:
+    get:
+      tags:
+      - auth
+      summary: Get User Preferences
+      operationId: get_user_preferences_client_api_user_preferences_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferencesView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - auth
+      summary: Put User Preferences
+      operationId: put_user_preferences_client_api_user_preferences_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserPreferencesBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserPreferencesView'
         '422':
           description: Validation Error
           content:
@@ -3591,6 +3659,42 @@ components:
         A tool that raises is still a ToolResult with ok=False, never an exception
 
         escaping into the state machine.'
+    UserPreferencesBody:
+      properties:
+        hide_get_started_card:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Hide Get Started Card
+        onboarding_wizard_dismissed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Onboarding Wizard Dismissed
+        onboarding_wizard_completed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Onboarding Wizard Completed
+      type: object
+      title: UserPreferencesBody
+    UserPreferencesView:
+      properties:
+        hide_get_started_card:
+          type: boolean
+          title: Hide Get Started Card
+        onboarding_wizard_dismissed:
+          type: boolean
+          title: Onboarding Wizard Dismissed
+        onboarding_wizard_completed:
+          type: boolean
+          title: Onboarding Wizard Completed
+      type: object
+      required:
+      - hide_get_started_card
+      - onboarding_wizard_dismissed
+      - onboarding_wizard_completed
+      title: UserPreferencesView
     ValidationError:
       properties:
         loc:

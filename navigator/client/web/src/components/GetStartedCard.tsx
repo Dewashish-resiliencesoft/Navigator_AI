@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
 import { Rocket } from "lucide-react";
 import {
+  completeOnboardingWizard,
   hideOnboardingCard,
   isOnboardingCardHidden,
+  loadUserPreferences,
   type OnboardingItemId,
 } from "../lib/onboarding";
 import { useOnboardingProgress } from "../lib/useOnboardingProgress";
@@ -14,10 +16,23 @@ export function GetStartedCard({
   onContinue: (startAt: OnboardingItemId | null) => void;
 }) {
   const { progress } = useOnboardingProgress();
-  const [hidden, setHidden] = useState(() => isOnboardingCardHidden());
+  const [hidden, setHidden] = useState(true);
 
   useEffect(() => {
-    if (progress?.complete) setHidden(true);
+    let alive = true;
+    (async () => {
+      await loadUserPreferences();
+      if (!alive) return;
+      setHidden(isOnboardingCardHidden());
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [progress?.complete, progress?.percent]);
+
+  useEffect(() => {
+    if (!progress?.complete) return;
+    void completeOnboardingWizard().then(() => setHidden(true));
   }, [progress?.complete]);
 
   if (hidden || !progress || progress.complete) return null;
@@ -71,8 +86,7 @@ export function GetStartedCard({
             <Button
               variant="ghost"
               onClick={() => {
-                hideOnboardingCard();
-                setHidden(true);
+                void hideOnboardingCard().then(() => setHidden(true));
               }}
             >
               Hide

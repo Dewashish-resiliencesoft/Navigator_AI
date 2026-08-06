@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, ArrowDownRight, ArrowRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
-import { api, DASHBOARD_DAYS, type DemoRun, type Metrics } from "../lib/api";
+import { api, DASHBOARD_DAYS, type DemoRun, type Metrics, type PublishChecklist } from "../lib/api";
 import { formatRunDuration } from "../lib/elapsed";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
@@ -72,19 +72,22 @@ export function Overview() {
   const epoch = useProductData((s) => s.epoch);
   const [m, setM] = useState<Metrics | null>(null);
   const [runs, setRuns] = useState<DemoRun[] | null>(null);
+  const [checklist, setChecklist] = useState<PublishChecklist | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const [metrics, runList] = await Promise.all([
+        const [metrics, runList, pub] = await Promise.all([
           api.metrics(DASHBOARD_DAYS),
           api.listRuns(DASHBOARD_DAYS),
+          api.getPublishChecklist().catch(() => null),
         ]);
         if (!alive) return;
         setM(metrics);
         setRuns(runList);
+        setChecklist(pub);
         setLoadErr(null);
       } catch (e) {
         if (!alive) return;
@@ -175,6 +178,37 @@ export function Overview() {
         trend={calcTrend(m.series, "failures")}
         onClick={() => setTab("logs")}
       />
+
+      {checklist && (
+        <Card span="sm:col-span-2 xl:col-span-4">
+          <CardTitle hint="Pre-publish gate for live visitors — flows, knowledge, eval.">
+            Publish checklist
+          </CardTitle>
+          <div className="mb-2 flex flex-wrap items-center gap-3 text-[0.78rem]">
+            <span>Readiness {checklist.readiness.score}/100</span>
+            {checklist.eval_score_pct != null && (
+              <span>Eval {Math.round(checklist.eval_score_pct)}%</span>
+            )}
+            <span className="text-[var(--muted)]">{checklist.autonomy_recommendation}</span>
+          </div>
+          <ul className="grid gap-1 sm:grid-cols-2 text-[0.72rem]">
+            {checklist.readiness.checks.map((c) => (
+              <li
+                key={c.id}
+                className={
+                  c.ok
+                    ? "text-emerald-700 dark:text-emerald-400"
+                    : c.blocking
+                      ? "text-red-700 dark:text-red-400"
+                      : "text-amber-700 dark:text-amber-400"
+                }
+              >
+                {c.ok ? "✓" : c.blocking ? "✕" : "!"} {c.message}
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <Card span="sm:col-span-2 xl:col-span-3">
         <CardTitle hint={`Last ${windowDays} days — actions, demo sessions, and step failures share one window and data source.`}>

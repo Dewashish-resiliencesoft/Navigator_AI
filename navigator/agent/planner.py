@@ -11,7 +11,10 @@ from navigator.meeting.intake import ProspectIntake
 from navigator.knowledge.memory.retrieval import Correction
 from navigator.core.schemas import Persona
 
-MODEL = "llama-3.3-70b-versatile"
+def _planning_model() -> str:
+    from navigator.core.settings import settings
+
+    return settings.brain_planning_model
 
 #: Spoken when prospect asks for something outside the site-graph allow-list.
 HANDOFF_SPOKEN = (
@@ -121,7 +124,7 @@ def _groq_complete(api_key: str, prompt: str) -> str:
 
     client = Groq(api_key=api_key)
     resp = client.chat.completions.create(
-        model=MODEL,
+        model=_planning_model(),
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
         temperature=0,

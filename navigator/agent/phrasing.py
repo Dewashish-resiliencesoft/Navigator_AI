@@ -17,7 +17,10 @@ from collections.abc import Callable
 
 from navigator.agent.call_memory import CallMemory
 
-MODEL = "llama-3.3-70b-versatile"
+def _phrasing_model() -> str:
+    from navigator.core.settings import settings
+
+    return settings.brain_phrasing_model
 
 _SYSTEM = """You are a product specialist on a live voice demo. Write the single
 line you say out loud right now.
@@ -162,7 +165,7 @@ def _groq_complete(api_key: str, prompt: str) -> str:
     from groq import Groq
 
     resp = Groq(api_key=api_key).chat.completions.create(
-        model=MODEL,
+        model=_phrasing_model(),
         messages=[{"role": "user", "content": prompt}],
         # Non-zero on purpose: identical consecutive narration is the bug this
         # layer exists to fix, and temperature 0 reproduces it exactly.

@@ -41,7 +41,11 @@ class Product(BaseModel):
     active_revision: int | None = None
     """Which site graph revision demos use. None until the first upload."""
     tier2_enabled: bool = False
-    """Opt-in constrained live fallback when retrieval finds nothing. Default OFF."""
+    """Legacy toggle — superseded by autonomy_mode when set."""
+    autonomy_mode: str = "guided"
+    """guided | adaptive | explorer — how off-script questions are handled."""
+    handoff_webhook_url: str = ""
+    """Optional URL notified when agent hands off to a human."""
 
 
 class SiteGraphRevision(BaseModel):
@@ -171,6 +175,16 @@ class Registry:
             self._conn.execute(
                 "ALTER TABLE products ADD COLUMN tier2_enabled "
                 "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "autonomy_mode" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN autonomy_mode "
+                "TEXT NOT NULL DEFAULT 'guided'"
+            )
+        if "handoff_webhook_url" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN handoff_webhook_url "
+                "TEXT NOT NULL DEFAULT ''"
             )
 
     @property
@@ -379,7 +393,33 @@ class Registry:
             "UPDATE products SET active_revision = ? WHERE product_id = ?",
             (revision, product_id),
         )
-        return self.get(product_id)
+        product = self.get(product_id)
+        try:
+            graph = parse_site_graph(
+                self.get_revision(product_id, revision).yaml,
+                origin=f"product {product_id}",
+            )
+            from navigator.knowledge.publish_index import index_on_publish
+            from navigator.core.settings import settings
+
+            index_on_publish(
+                product_id=product_id,
+                graph=graph,
+                revision=revision,
+                chroma_path=settings.chroma_path,
+            )
+            from navigator.agent.rehearse import rehearse_published_graph
+
+            report = rehearse_published_graph(graph)
+            if report.failures:
+                print(
+                    f"[registry] rehearse warnings for {product_id}: "
+                    f"{list(report.failures)[:3]}",
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[registry] publish index skipped: {exc}", flush=True)
+        return product
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -389,6 +429,30 @@ class Registry:
         self._conn.execute(
             "UPDATE products SET tier2_enabled = ? WHERE product_id = ?",
             (1 if enabled else 0, product_id),
+        )
+        mode = "adaptive" if enabled else "guided"
+        self._conn.execute(
+            "UPDATE products SET autonomy_mode = ? WHERE product_id = ?",
+            (mode, product_id),
+        )
+        return self.get(product_id)
+
+    def set_autonomy_mode(self, product_id: str, mode: str) -> Product:
+        self.get(product_id)
+        normalized = mode if mode in {"guided", "adaptive", "explorer"} else "guided"
+        tier2 = 1 if normalized in {"adaptive", "explorer"} else 0
+        self._conn.execute(
+            "UPDATE products SET autonomy_mode = ?, tier2_enabled = ? "
+            "WHERE product_id = ?",
+            (normalized, tier2, product_id),
+        )
+        return self.get(product_id)
+
+    def set_handoff_webhook(self, product_id: str, url: str) -> Product:
+        self.get(product_id)
+        self._conn.execute(
+            "UPDATE products SET handoff_webhook_url = ? WHERE product_id = ?",
+            (url.strip(), product_id),
         )
         return self.get(product_id)
 
@@ -408,10 +472,16 @@ class Registry:
 def _to_product(row: sqlite3.Row) -> Product:
     keys = row.keys()
     tier2 = bool(row["tier2_enabled"]) if "tier2_enabled" in keys else False
+    mode = str(row["autonomy_mode"]) if "autonomy_mode" in keys else "guided"
+    if mode not in {"guided", "adaptive", "explorer"}:
+        mode = "guided"
+    webhook = str(row["handoff_webhook_url"]) if "handoff_webhook_url" in keys else ""
     return Product(
         product_id=row["product_id"],
         name=row["name"],
         created_at=row["created_at"],
         active_revision=row["active_revision"],
         tier2_enabled=tier2,
+        autonomy_mode=mode,
+        handoff_webhook_url=webhook,
     )

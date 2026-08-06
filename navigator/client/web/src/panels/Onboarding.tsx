@@ -12,6 +12,8 @@ import {
 import { api } from "../lib/api";
 import {
   clearSignupPending,
+  completeOnboardingWizard,
+  dismissOnboardingWizard,
   patchBioFields,
   signupCompanyPrefill,
   type OnboardingItemId,
@@ -152,18 +154,20 @@ export function OnboardingWizard({
     clearSignupPending();
     invalidate();
     void syncProductUrl();
-    onClose();
     const p = latest ?? progress;
     if (p?.complete) {
+      void completeOnboardingWizard();
       onFullyComplete?.();
     } else {
       ok("Setup saved — you can finish anything left from Get started.");
     }
+    onClose();
   };
 
   const skipAll = () => {
     clearSignupPending();
-    ok("Setup skipped — use Get started in the sidebar anytime.");
+    void dismissOnboardingWizard();
+    ok("Setup skipped — reopen from Overview or sidebar anytime.");
     onClose();
   };
 

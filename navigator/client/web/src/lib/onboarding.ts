@@ -1,10 +1,14 @@
 /** Client setup checklist + localStorage flags for onboarding wizard. */
 
-import { api, type BioField } from "./api";
+import { api, type BioField, type UserPreferences } from "./api";
 
 const LS_PENDING = "nav-onboarding-pending";
-const LS_CARD_HIDDEN = "nav-onboarding-card-hidden";
 const LS_SIGNUP_COMPANY = "nav-signup-company";
+
+/** Cached server prefs — refreshed after login. */
+let _userPrefs: UserPreferences | null = null;
+
+export type { UserPreferences };
 
 export type OnboardingItemId =
   | "product_url"
@@ -49,15 +53,53 @@ export function signupCompanyPrefill(): string {
 }
 
 export function isOnboardingCardHidden(): boolean {
-  return localStorage.getItem(LS_CARD_HIDDEN) === "1";
+  return _userPrefs?.hide_get_started_card ?? false;
 }
 
-export function hideOnboardingCard() {
-  localStorage.setItem(LS_CARD_HIDDEN, "1");
+export async function loadUserPreferences(): Promise<UserPreferences> {
+  try {
+    _userPrefs = await api.getUserPreferences();
+  } catch {
+    _userPrefs = {
+      hide_get_started_card: false,
+      onboarding_wizard_dismissed: false,
+      onboarding_wizard_completed: false,
+    };
+  }
+  return _userPrefs;
 }
 
-export function showOnboardingCard() {
-  localStorage.removeItem(LS_CARD_HIDDEN);
+export function cachedUserPreferences(): UserPreferences | null {
+  return _userPrefs;
+}
+
+export async function hideOnboardingCard(): Promise<void> {
+  _userPrefs = await api.putUserPreferences({ hide_get_started_card: true });
+}
+
+export async function showOnboardingCard(): Promise<void> {
+  _userPrefs = await api.putUserPreferences({ hide_get_started_card: false });
+}
+
+export async function dismissOnboardingWizard(): Promise<void> {
+  _userPrefs = await api.putUserPreferences({
+    onboarding_wizard_dismissed: true,
+    hide_get_started_card: true,
+  });
+}
+
+export async function completeOnboardingWizard(): Promise<void> {
+  _userPrefs = await api.putUserPreferences({
+    onboarding_wizard_completed: true,
+    hide_get_started_card: true,
+  });
+}
+
+export function shouldAutoOpenWizard(): boolean {
+  if (!isSignupPending()) return false;
+  const p = _userPrefs;
+  if (p?.onboarding_wizard_dismissed || p?.onboarding_wizard_completed) return false;
+  return true;
 }
 
 function bioMap(fields: BioField[]): Record<string, string> {

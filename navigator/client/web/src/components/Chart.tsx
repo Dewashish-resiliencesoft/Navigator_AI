@@ -48,18 +48,24 @@ export function AreaChart({ series }: { series: MetricPoint[] }) {
   return (
     <div className="relative">
       <div className="mb-4 flex gap-2">
-        {(["actions", "sessions", "failures"] as const).map((m) => (
+        {(
+          [
+            ["actions", "Actions"],
+            ["sessions", "Sessions"],
+            ["failures", "Step fails"],
+          ] as const
+        ).map(([key, label]) => (
           <button
-            key={m}
-            onClick={() => setMetric(m)}
+            key={key}
+            onClick={() => setMetric(key)}
             className={cn(
               "rounded px-2 py-1 text-[0.72rem] font-medium uppercase tracking-wider transition-colors",
-              metric === m
+              metric === key
                 ? "bg-[var(--text)] text-[var(--bg)]"
                 : "text-[var(--muted)] hover:bg-black/[0.04] dark:hover:bg-white/[0.06]",
             )}
           >
-            {m}
+            {label}
           </button>
         ))}
       </div>

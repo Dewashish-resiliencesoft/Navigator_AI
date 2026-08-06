@@ -1193,6 +1193,164 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/autonomy-mode:
+    get:
+      summary: Client Get Autonomy Mode
+      operationId: client_get_autonomy_mode_client_api_autonomy_mode_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Get Autonomy Mode Client Api Autonomy Mode Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      summary: Client Put Autonomy Mode
+      operationId: client_put_autonomy_mode_client_api_autonomy_mode_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutonomyModeBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Put Autonomy Mode Client Api Autonomy Mode Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/handoff-webhook:
+    put:
+      summary: Client Put Handoff Webhook
+      operationId: client_put_handoff_webhook_client_api_handoff_webhook_put
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/HandoffWebhookBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Put Handoff Webhook Client Api Handoff Webhook Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/demo-readiness:
+    get:
+      summary: Client Demo Readiness
+      operationId: client_demo_readiness_client_api_demo_readiness_get
+      parameters:
+      - name: origin
+        in: query
+        required: false
+        schema:
+          type: string
+          default: dashboard_test
+          title: Origin
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Demo Readiness Client Api Demo Readiness Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/publish-checklist:
+    get:
+      summary: Client Publish Checklist
+      operationId: client_publish_checklist_client_api_publish_checklist_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Publish Checklist Client Api Publish Checklist Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/site-graph:
     get:
       summary: Client Get Site Graph
@@ -2056,9 +2214,9 @@ paths:
         required: false
         schema:
           type: integer
-          maximum: 7
+          maximum: 90
           minimum: 1
-          default: 7
+          default: 14
           title: Days
       - name: authorization
         in: header
@@ -2148,6 +2306,42 @@ paths:
                 items:
                   $ref: '#/components/schemas/ActionLogEntry'
                 title: Response Client Run Events Client Api Runs  Session Id  Events Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/runs/{session_id}/decisions:
+    get:
+      summary: Client Run Decisions
+      operationId: client_run_decisions_client_api_runs__session_id__decisions_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DecisionTraceView'
+                title: Response Client Run Decisions Client Api Runs  Session Id  Decisions Get
         '422':
           description: Validation Error
           content:
@@ -2272,6 +2466,16 @@ components:
       type: object
       title: ApproveCorrectionBody
       description: Optional override when promoting a pending rule into Chroma.
+    AutonomyModeBody:
+      properties:
+        mode:
+          type: string
+          pattern: ^(guided|adaptive|explorer)$
+          title: Mode
+      type: object
+      required:
+      - mode
+      title: AutonomyModeBody
     BioBody:
       properties:
         fields:
@@ -2325,6 +2529,62 @@ components:
       - expects
       - selector
       title: ClickElement
+    DecisionTraceView:
+      properties:
+        id:
+          type: string
+          title: Id
+        session_id:
+          type: string
+          title: Session Id
+        utterance:
+          type: string
+          title: Utterance
+        branch:
+          type: string
+          title: Branch
+        chosen_flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Chosen Flow Id
+        spoken:
+          type: string
+          title: Spoken
+        flow_candidates:
+          items:
+            items:
+              anyOf:
+              - type: number
+              - type: string
+            type: array
+          type: array
+          title: Flow Candidates
+        knowledge_hits:
+          items:
+            items:
+              anyOf:
+              - type: number
+              - type: string
+            type: array
+          type: array
+          title: Knowledge Hits
+        detail:
+          type: string
+          title: Detail
+          default: ''
+        created_at:
+          type: string
+          title: Created At
+      type: object
+      required:
+      - id
+      - session_id
+      - utterance
+      - branch
+      - spoken
+      - created_at
+      title: DecisionTraceView
     DemoRunView:
       properties:
         session_id:
@@ -2639,6 +2899,13 @@ components:
             type: array
           - type: 'null'
           title: Tags
+        triggers:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Triggers
         auto_name:
           anyOf:
           - type: string
@@ -2669,6 +2936,14 @@ components:
           title: Detail
       type: object
       title: HTTPValidationError
+    HandoffWebhookBody:
+      properties:
+        url:
+          type: string
+          title: Url
+          default: ''
+      type: object
+      title: HandoffWebhookBody
     IntakePrefill:
       properties:
         name:
@@ -2940,6 +3215,14 @@ components:
           type: boolean
           title: Tier2 Enabled
           default: false
+        autonomy_mode:
+          type: string
+          title: Autonomy Mode
+          default: guided
+        handoff_webhook_url:
+          type: string
+          title: Handoff Webhook Url
+          default: ''
       type: object
       required:
       - product_id

@@ -17,7 +17,10 @@ from collections.abc import Callable
 
 from navigator.agent.call_memory import CallMemory
 
-MODEL = "llama-3.3-70b-versatile"
+def _phrasing_model() -> str:
+    from navigator.core.settings import settings
+
+    return settings.brain_phrasing_model
 
 _SYSTEM = """You are a product specialist on a live voice demo. Write the single
 line you say out loud right now.
@@ -35,7 +38,24 @@ INTENTS = {
     "clarify": "Ask ONE short clarifying question between the options given. Do not explain.",
     "answer": "Answer their question from the knowledge provided. Nothing beyond it.",
     "flow_intro": "Say what you're about to show them and why it fits what they asked.",
+    "detour_intro": (
+        "Acknowledge their question naturally — yes, you can show that — then "
+        "transition smoothly into demonstrating it. Do NOT say you are starting a "
+        "new flow or switching demos."
+    ),
+    "question_answered": (
+        "Wrap up what you just showed and ask if their question is answered. "
+        "One short sentence plus a check-in."
+    ),
     "resume": "Bridge back to the walkthrough after the detour, then continue.",
+    "resume_confirm": (
+        "They confirmed the answer helped. Say briefly you'll continue the demo "
+        "from where you paused."
+    ),
+    "resume_silence": (
+        "They were quiet after your answer. Gently assume it helped, say you'll "
+        "continue the demo, and invite questions anytime."
+    ),
     "handoff": "Say warmly that this is outside what you can show, and a human will follow up.",
     "slow_down": "Offer to slow down or re-explain. Do not add new information.",
     "skip_ahead": "Acknowledge they want to move faster and say you'll skip ahead.",
@@ -135,7 +155,7 @@ def _groq_complete(api_key: str, prompt: str) -> str:
     from groq import Groq
 
     resp = Groq(api_key=api_key).chat.completions.create(
-        model=MODEL,
+        model=_phrasing_model(),
         messages=[{"role": "user", "content": prompt}],
         # Non-zero on purpose: identical consecutive narration is the bug this
         # layer exists to fix, and temperature 0 reproduces it exactly.

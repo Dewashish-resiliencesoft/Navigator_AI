@@ -382,8 +382,9 @@ class DemoRunner:
             # Dashboard static admit-flow may pass open_meet_in_browser=True;
             # default False so API workers don't pop a browser on the server.
             open_browser = bool(kwargs.pop("open_meet_in_browser", False))
-            if "tier2_enabled" not in kwargs:
-                kwargs["tier2_enabled"] = self._product_tier2_enabled(handle.product_id)
+            live_kw = self._product_live_kwargs(handle.product_id)
+            for key, val in live_kw.items():
+                kwargs.setdefault(key, val)
             run(
                 meeting_url=handle.meeting_url,
                 graph_cfg=graph,
@@ -422,13 +423,34 @@ class DemoRunner:
             self._persist_run(handle)
 
     @staticmethod
-    def _product_tier2_enabled(product_id: str) -> bool:
-        """Read per-product Tier-2 opt-in. Missing product / DB → OFF."""
-        try:
-            from navigator.app.registry import ProductNotFound, Registry
-            from navigator.core.settings import settings
+    def _product_live_kwargs(product_id: str) -> dict:
+        """Brain config + autonomy flags for live demo."""
+        from navigator.agent.brain_config import BrainConfig
+        from navigator.app.registry import ProductNotFound, Registry
+        from navigator.core.settings import settings
 
+        try:
             with Registry(settings.db_path) as reg:
-                return bool(reg.get(product_id).tier2_enabled)
+                p = reg.get(product_id)
+                cfg = BrainConfig.from_settings(
+                    autonomy_mode=getattr(p, "autonomy_mode", None) or "guided",
+                    tier2_legacy=bool(p.tier2_enabled),
+                )
+                return {
+                    "tier2_enabled": cfg.tier2_enabled,
+                    "brain_config": cfg,
+                    "use_turn_brain": cfg.use_turn_brain,
+                    "handoff_webhook_url": getattr(p, "handoff_webhook_url", "") or "",
+                }
         except Exception:  # noqa: BLE001
-            return False
+            cfg = BrainConfig.from_settings()
+            return {
+                "tier2_enabled": False,
+                "brain_config": cfg,
+                "use_turn_brain": cfg.use_turn_brain,
+                "handoff_webhook_url": "",
+            }
+
+    @staticmethod
+    def _product_tier2_enabled(product_id: str) -> bool:
+        return bool(DemoRunner._product_live_kwargs(product_id).get("tier2_enabled"))

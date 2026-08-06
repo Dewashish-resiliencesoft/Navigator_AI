@@ -16,6 +16,7 @@ from pathlib import Path
 
 from navigator.app.registry import Registry, ProductNotFound
 from navigator.knowledge.memory.collections import get_collection
+from navigator.knowledge.hybrid_retrieval import reciprocal_rank_fusion, sparse_score
 from navigator.core.settings import settings
 
 #: Run the matched flow without asking. Measured: a direct request for a flow
@@ -128,11 +129,32 @@ def score_flows(
         return []
 
     query_vec, flow_vecs = vectors[0], vectors[1:]
-    scored = [
-        (flow_id, _cosine(query_vec, vec))
-        for flow_id, vec in zip(flow_ids, flow_vecs, strict=False)
-    ]
-    return sorted(scored, key=lambda pair: -pair[1])
+    dense = sorted(
+        [
+            (flow_id, _cosine(query_vec, vec))
+            for flow_id, vec in zip(flow_ids, flow_vecs, strict=False)
+        ],
+        key=lambda pair: -pair[1],
+    )
+    sparse = sorted(
+        [(fid, sparse_score(query, flow_texts[fid])) for fid in flow_ids],
+        key=lambda pair: -pair[1],
+    )
+    # Trigger substring boost — score 1.0 when utterance contains a listed trigger.
+    trigger_hits: list[tuple[str, float]] = []
+    q_low = query.lower()
+    for fid, text in flow_texts.items():
+        for part in text.split(" — "):
+            p = part.strip().lower()
+            if len(p) >= 3 and p in q_low:
+                trigger_hits.append((fid, 1.0))
+                break
+    lists = [dense, sparse]
+    if trigger_hits:
+        lists.append(sorted(trigger_hits, key=lambda x: -x[1]))
+    fused = reciprocal_rank_fusion(*lists)
+    dense_map = dict(dense)
+    return [(fid, dense_map.get(fid, score)) for fid, score in fused]
 
 
 def _cosine(a, b) -> float:
@@ -252,10 +274,38 @@ def retrieve_context(
                 created_at=meta.get("ingested_at", ""),
             )
             knowledge_chunks.append((chunk, similarity))
+
+        if knowledge_chunks:
+            dense = sorted(knowledge_chunks, key=lambda pair: -pair[1])
+            sparse = sorted(
+                [
+                    (pair, sparse_score(query, pair[0].text or ""))
+                    for pair in knowledge_chunks
+                ],
+                key=lambda pair: -pair[1],
+            )
+            sparse_ids = [
+                (chunk.id or chunk.summary or "chunk", score)
+                for (chunk, _), score in sparse
+            ]
+            dense_ids = [
+                (chunk.id or chunk.summary or "chunk", score)
+                for chunk, score in dense
+            ]
+            fused_ids = {
+                item_id: score for item_id, score in reciprocal_rank_fusion(dense_ids, sparse_ids)
+            }
+            by_id = {chunk.id or chunk.summary or "chunk": chunk for chunk, _ in knowledge_chunks}
+            knowledge_chunks = [
+                (by_id[item_id], fused_ids[item_id])
+                for item_id in sorted(fused_ids, key=lambda k: -fused_ids[k])
+                if item_id in by_id
+            ]
             # Track the most recent revision knowledge was tied to
-            if chunk.revision_tied_to is not None:
-                if revision_tied_to is None or chunk.revision_tied_to > revision_tied_to:
-                    revision_tied_to = chunk.revision_tied_to
+            for chunk, _ in knowledge_chunks:
+                if chunk.revision_tied_to is not None:
+                    if revision_tied_to is None or chunk.revision_tied_to > revision_tied_to:
+                        revision_tied_to = chunk.revision_tied_to
 
     # Get current published revision to check staleness
     current_revision: int | None = None

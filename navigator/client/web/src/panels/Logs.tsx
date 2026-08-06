@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { ChevronDown, ChevronRight, PhoneOff } from "lucide-react";
-import { api, ApiError, type DemoRun, type RunEvent } from "../lib/api";
+import { api, DASHBOARD_DAYS, ApiError, type DecisionTrace, type DemoRun, type RunEvent } from "../lib/api";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { soft, stagger } from "../lib/motion";
 import { BarLoader, Button, Card, CardTitle, Empty, StatusPill } from "../components/ui";
@@ -37,13 +37,15 @@ export function Logs() {
   const [runs, setRuns] = useState<DemoRun[] | null>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [decisions, setDecisions] = useState<DecisionTrace[]>([]);
+  const [runTab, setRunTab] = useState<"events" | "decisions">("events");
   const [loadingEvents, setLoadingEvents] = useState(false);
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const list = await api.listRuns(7);
+        const list = await api.listRuns(DASHBOARD_DAYS);
         if (!alive) return;
         setRuns(list);
       } catch (e) {
@@ -67,15 +69,20 @@ export function Logs() {
   useEffect(() => {
     if (!open) {
       setEvents([]);
+      setDecisions([]);
       return;
     }
     let alive = true;
     const load = async () => {
       setLoadingEvents(true);
       try {
-        const rows = await api.runEvents(open);
+        const [rows, dec] = await Promise.all([
+          api.runEvents(open),
+          api.runDecisions(open).catch(() => [] as DecisionTrace[]),
+        ]);
         if (!alive) return;
         setEvents(rows);
+        setDecisions(dec);
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 404) {
@@ -126,10 +133,10 @@ export function Logs() {
       className="grid gap-4"
     >
       <Card span="lg:col-span-2">
-        <CardTitle hint="Last 7 days. Expand for ActionLog. End stops a live session from here too.">
+        <CardTitle hint={`Last ${DASHBOARD_DAYS} days. Expand for ActionLog. End stops a live session from here too.`}>
           Demo runs
         </CardTitle>
-        {!runs.length && <Empty>No runs in the last 7 days.</Empty>}
+        {!runs.length && <Empty>No runs in the last {DASHBOARD_DAYS} days.</Empty>}
         <ul className="space-y-2">
           {runs.map((r) => {
             const expanded = open === r.session_id;
@@ -213,8 +220,59 @@ export function Logs() {
                     className="overflow-hidden border-t px-3 py-2"
                     style={{ borderColor: "var(--line)" }}
                   >
-                    {loadingEvents && !events.length ? (
+                    <div className="mb-2 flex gap-2">
+                      <button
+                        type="button"
+                        className={`rounded px-2 py-1 text-[0.72rem] ${
+                          runTab === "events" ? "bg-[var(--accent)]/10 font-medium" : "text-[var(--muted)]"
+                        }`}
+                        onClick={() => setRunTab("events")}
+                      >
+                        Action log
+                      </button>
+                      <button
+                        type="button"
+                        className={`rounded px-2 py-1 text-[0.72rem] ${
+                          runTab === "decisions" ? "bg-[var(--accent)]/10 font-medium" : "text-[var(--muted)]"
+                        }`}
+                        onClick={() => setRunTab("decisions")}
+                      >
+                        Agent decisions ({decisions.length})
+                      </button>
+                    </div>
+                    {loadingEvents && !events.length && runTab === "events" ? (
                       <BarLoader label="Loading events…" />
+                    ) : runTab === "decisions" ? (
+                      !decisions.length ? (
+                        <Empty>No agent decisions recorded for this run.</Empty>
+                      ) : (
+                        <ul className="max-h-80 space-y-2 overflow-y-auto text-[0.72rem]">
+                          {decisions.map((d) => (
+                            <li
+                              key={d.id}
+                              className="rounded border px-2 py-1.5"
+                              style={{ borderColor: "var(--line)" }}
+                            >
+                              <div className="flex flex-wrap gap-2 text-[var(--muted)]">
+                                <span>{fmtTime(d.created_at)}</span>
+                                <span className="font-medium text-[var(--text)]">{d.branch}</span>
+                                {d.chosen_flow_id && <span>flow={d.chosen_flow_id}</span>}
+                              </div>
+                              {d.utterance && (
+                                <p className="mt-1">
+                                  <span className="text-[var(--muted)]">User:</span> {d.utterance}
+                                </p>
+                              )}
+                              <p className="mt-0.5">
+                                <span className="text-[var(--muted)]">Spoke:</span> {d.spoken}
+                              </p>
+                              {d.detail && (
+                                <p className="mt-0.5 text-[var(--muted)]">{d.detail}</p>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      )
                     ) : !events.length ? (
                       <Empty>No action events yet.</Empty>
                     ) : (

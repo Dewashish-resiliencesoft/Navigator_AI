@@ -62,6 +62,11 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
     utterance = _capture_utterance(state, deps)
     if utterance:
         print(f"[listen] heard: {utterance!r}", flush=True)
+    if utterance and deps.on_user_utterance is not None:
+        try:
+            deps.on_user_utterance(utterance)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[listen] on_user_utterance skipped: {exc}", flush=True)
     last = _last_entry(state, deps)
     is_correction = False
     if last is not None:
@@ -86,21 +91,44 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
     phase = state.get("phase") or ""
     anything_else = phase == "anything_else"
     walkthrough = phase == "walkthrough"
+    awaiting_resume = phase == "awaiting_resume"
 
     if deps.audio_frames is not None:
         try:
-            timeout = SILENCE_S if anything_else else None
+            if phase == "awaiting_resume":
+                from navigator.agent.brain_config import pacing_resume_silence
+                from navigator.agent.end_policy import RESUME_SILENCE_S
+
+                cfg = getattr(deps, "brain_config", None)
+                pacing = "neutral"
+                mem = getattr(deps, "memory", None)
+                if mem is not None and getattr(mem, "pacing_history", None):
+                    pacing = mem.pacing_history[-1]
+                timeout = (
+                    pacing_resume_silence(pacing, cfg)
+                    if cfg is not None
+                    else RESUME_SILENCE_S
+                )
+            elif walkthrough:
+                cfg = getattr(deps, "brain_config", None)
+                timeout = cfg.listen_timeout_s if cfg is not None else 12.0
+            elif anything_else:
+                from navigator.agent.end_policy import SILENCE_S
+
+                timeout = SILENCE_S
+            else:
+                timeout = None
             text = _from_audio(deps, silence_timeout=timeout)
             if text:
                 return text
-            if anything_else or walkthrough:
+            if anything_else or walkthrough or awaiting_resume:
                 # Empty → planning advances walkthrough or runs silence end-policy.
                 return ""
             print("[listen] no Meet audio utterance — falling back", flush=True)
         except RuntimeError as exc:
             # Missing silero-vad/torch — do not invent a fake user question.
             print(f"[listen] STT unavailable ({exc}) — falling back", flush=True)
-            if (anything_else or walkthrough) and not deps.interactive_listen:
+            if (anything_else or walkthrough or awaiting_resume) and not deps.interactive_listen:
                 return ""
 
     if deps.interactive_listen:
@@ -116,9 +144,9 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
             typed = ""
         if typed:
             return typed
-        return "" if (anything_else or walkthrough) else SCRIPTED_UTTERANCE
+        return "" if (anything_else or walkthrough or awaiting_resume) else SCRIPTED_UTTERANCE
 
-    if anything_else or walkthrough:
+    if anything_else or walkthrough or awaiting_resume:
         return ""
     return SCRIPTED_UTTERANCE
 

@@ -3,6 +3,40 @@ export type DemoStatus = "starting" | "running" | "finished" | "failed";
 /** Who started a demo. `dashboard_test` never counts toward usage. */
 export type DemoOrigin = "dashboard_test" | "public_embed";
 
+export type AutonomyMode = "guided" | "adaptive" | "explorer";
+
+export type ReadinessCheck = {
+  id: string;
+  ok: boolean;
+  message: string;
+  blocking: boolean;
+};
+
+export type DemoReadiness = {
+  score: number;
+  autonomy_mode: AutonomyMode;
+  checks: ReadinessCheck[];
+};
+
+export type PublishChecklist = {
+  readiness: DemoReadiness;
+  eval_score_pct: number | null;
+  autonomy_recommendation: string;
+};
+
+export type DecisionTrace = {
+  id: string;
+  session_id: string;
+  utterance: string;
+  branch: string;
+  chosen_flow_id: string | null;
+  spoken: string;
+  flow_candidates: (string | number)[][];
+  knowledge_hits: (string | number)[][];
+  detail: string;
+  created_at: string;
+};
+
 export type Demo = {
   demo_id: string;
   product_id: string;
@@ -175,22 +209,34 @@ export type MetricPoint = {
 };
 
 export type Metrics = {
-  /** Test demos the Client ran from this dashboard. Excluded from the counters below. */
+  /** Rolling window length (days) for every counter below. */
+  days?: number;
+  /** Test demos the Client ran from this dashboard in the window. */
   test_sessions: number;
+  /** Demo runs started in the window (test + live). Matches Logs + Sessions chart. */
   actions: number;
   sessions: number;
+  /** Failed tool / verification steps in the window. Sum matches run fail_count column. */
   failures: number;
+  /** Demo runs whose status is ``failed`` (crash / join error). */
+  failed_runs?: number;
+  /** Demo runs with at least one failed tool step. */
+  runs_with_step_failures?: number;
   verified: number;
   passed: number;
   last_seen: string | null;
   series: MetricPoint[];
-  /** Daily demo run counts (test + live) from demo_runs. */
+  /** Same as ``series`` — kept for older clients. */
   run_series?: MetricPoint[];
-  /** All persisted demo runs in the metrics window. */
   demos?: { total: number; running: number; failed: number };
   live: { total: number; running: number; failed: number };
   test?: { total: number; running: number; failed: number };
+  /** Billable End User traffic only (excludes dashboard test demos). */
+  visitor?: { sessions: number; actions: number; failures: number };
 };
+
+/** Shared metrics + runs window for Overview and Logs. */
+export const DASHBOARD_DAYS = 14;
 
 export type DemoRun = {
   session_id: string;
@@ -415,10 +461,10 @@ export const api = {
   },
   endDemo: (id: string) => send<Demo>(`/client/api/demos/${id}/end`, "POST"),
 
-  metrics: (days = 14) => get<Metrics>(`/client/api/metrics?days=${days}`),
+  metrics: (days = DASHBOARD_DAYS) => get<Metrics>(`/client/api/metrics?days=${days}`),
   getSystemMetrics: () => get<SystemMetrics>("/client/api/system/health"),
 
-  listRuns: (days = 7) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
+  listRuns: (days = DASHBOARD_DAYS) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
   getRun: (sessionId: string) => get<DemoRun>(`/client/api/runs/${sessionId}`),
   runEvents: (sessionId: string) =>
     get<RunEvent[]>(`/client/api/runs/${sessionId}/events`),
@@ -435,6 +481,25 @@ export const api = {
   getTier2: () => get<{ enabled: boolean }>("/client/api/tier2"),
   putTier2: (enabled: boolean) =>
     send<{ ok: boolean; enabled: boolean }>("/client/api/tier2", "PUT", { enabled }),
+
+  getAutonomyMode: () =>
+    get<{ mode: AutonomyMode; tier2_enabled: boolean; handoff_webhook_url: string }>(
+      "/client/api/autonomy-mode",
+    ),
+  putAutonomyMode: (mode: AutonomyMode) =>
+    send<{ ok: boolean; mode: AutonomyMode; tier2_enabled: boolean }>(
+      "/client/api/autonomy-mode",
+      "PUT",
+      { mode },
+    ),
+
+  getDemoReadiness: (origin: DemoOrigin = "dashboard_test") =>
+    get<DemoReadiness>(`/client/api/demo-readiness?origin=${origin}`),
+
+  getPublishChecklist: () => get<PublishChecklist>("/client/api/publish-checklist"),
+
+  runDecisions: (sessionId: string) =>
+    get<DecisionTrace[]>(`/client/api/runs/${sessionId}/decisions`),
 
   getProductLogin: () =>
     get<{

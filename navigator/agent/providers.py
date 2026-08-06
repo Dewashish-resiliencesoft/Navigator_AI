@@ -28,13 +28,12 @@ class LLMProvider(Protocol):
 
 
 class GeminiProvider:
-    """Free tier: ~10 RPM / 250 RPD on 2.5 Flash, image input included."""
-
-    text_model = "gemini-2.5-flash"
-    vision_model = "gemini-2.5-flash"
+    """Free tier vision/text; models overridable via settings."""
 
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
+        self.text_model = settings.brain_vision_text_model
+        self.vision_model = settings.brain_vision_image_model
 
     def complete(self, system: str, user: str) -> str:
         from google import genai

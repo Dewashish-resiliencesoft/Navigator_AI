@@ -15,8 +15,10 @@ from navigator.meeting.intake_clean import (
     clean_company,
     clean_name,
     clean_phrase,
+    is_declined,
     summarize_need,
 )
+from navigator.core.agent_settings import AgentGender, SpokenLanguage
 from navigator.core.schemas import Persona
 from navigator.voice.tts import Speaker
 
@@ -30,36 +32,51 @@ class ProspectIntake(BaseModel):
     looking_for: str = ""
 
 
-_QUESTIONS: tuple[tuple[str, str, str], ...] = (
-    ("name", "What is your name?", "friend"),
-    ("company", "Which company are you with?", "your company"),
-    (
-        "business_type",
-        "What kind of business are you in?",
-        "your industry",
-    ),
-    (
-        "looking_for",
-        "What are you looking for today — which workflow or problem should we focus on?",
-        "seeing how the product works",
-    ),
-)
+def demo_kickoff_line(*, lang: SpokenLanguage = "en") -> str:
+    from navigator.meeting.intake_copy import demo_kickoff_line as _line
+
+    return _line(lang=lang)
 
 
-def demo_kickoff_line() -> str:
-    return "Without wasting any time, let's get started with the demo."
-
-
-def quick_greet_line(persona: Persona, prospect_name: str = "") -> str:
+def quick_greet_line(
+    persona: Persona,
+    prospect_name: str = "",
+    *,
+    lang: SpokenLanguage = "en",
+    agent_gender: AgentGender = "female",
+) -> str:
     """Short greet right after human joins — no intake Q&A."""
-    from navigator.agent.speech_safety import prospect_facing_persona
+    from navigator.meeting.intake_copy import greet_line as _greet
 
-    persona = prospect_facing_persona(persona)
-    who = prospect_name.strip() or "there"
-    return (
-        f"Hi {who}, I'm {persona.agent_name}. Thanks for joining — "
-        f"I'll share my screen and walk you through {persona.product_name} now."
+    return _greet(
+        persona,
+        prospect_name,
+        lang=lang,
+        agent_gender=agent_gender,
     )
+
+
+def greet_line(
+    persona: Persona,
+    prospect_name: str = "",
+    *,
+    lang: SpokenLanguage = "en",
+    agent_gender: AgentGender = "female",
+) -> str:
+    from navigator.meeting.intake_copy import greet_line as _greet
+
+    return _greet(
+        persona,
+        prospect_name,
+        lang=lang,
+        agent_gender=agent_gender,
+    )
+
+
+def name_ack_line(name: str, *, lang: SpokenLanguage = "en") -> str:
+    from navigator.meeting.intake_copy import name_ack_line as _ack
+
+    return _ack(name, lang=lang)
 
 
 def intake_from_prefill(
@@ -81,77 +98,35 @@ def intake_from_prefill(
     )
 
 
-def greet_line(persona: Persona, prospect_name: str = "") -> str:
-    from navigator.agent.speech_safety import prospect_facing_persona
-
-    persona = prospect_facing_persona(persona)
-    who = prospect_name.strip() or "there"
-    return (
-        f"Hi {who}, I'm {persona.agent_name}. Thanks for joining — "
-        f"I'll show you {persona.product_name} in a moment. "
-        f"First I'd love to learn a bit about you so I can tailor the walkthrough."
-    )
-
-
-def name_ack_line(name: str) -> str:
-    who = (name or "").strip() or "there"
-    return f"Nice to meet you, {who}."
-
-
 def solution_blurb(persona: Persona, looking_for: str) -> str:
-    """Map prospect need → product angle (short, spoken)."""
-    from navigator.agent.speech_safety import prospect_facing_persona
+    from navigator.meeting.intake_copy import solution_blurb as _blurb
 
-    persona = prospect_facing_persona(persona)
-    need = (looking_for or "").lower()
-    product = persona.product_name
-    if any(k in need for k in ("inbox", "chat", "message", "reply", "conversation")):
-        return (
-            f"{product} gives your team a shared WhatsApp inbox so nothing slips "
-            f"between phones — exactly for that conversation problem."
-        )
-    if any(k in need for k in ("contact", "lead", "crm", "customer", "pipeline")):
-        return (
-            f"{product} keeps every WhatsApp lead and customer in one contacts "
-            f"view so the team shares one source of truth."
-        )
-    if any(
-        k in need
-        for k in ("automat", "flow", "bot", "qualify", "24", "scale", "chatbot")
-    ):
-        return (
-            f"{product} runs chat flows that greet, qualify, and route people "
-            f"on WhatsApp without someone typing every reply."
-        )
-    if any(k in need for k in ("analytic", "report", "metric", "convert", "funnel")):
-        return (
-            f"{product} surfaces conversation analytics — volume, response time, "
-            f"what converts — so you can see the funnel clearly."
-        )
-    positioning = persona.one_liner or "WhatsApp CRM and automation for sales teams"
-    return f"{product} is {positioning} — we'll focus the walkthrough on what you asked for."
+    return _blurb(persona, looking_for)
 
 
 def pitch_line(
     persona: Persona,
     intake: ProspectIntake,
     *,
+    lang: SpokenLanguage = "en",
+    agent_gender: AgentGender = "female",
     will_share_screen: bool = True,
 ) -> str:
-    name = intake.name or "there"
-    company = intake.company or "your team"
-    biz = intake.business_type or "your business"
-    need = summarize_need(intake.looking_for) or "what matters most to you"
-    solve = solution_blurb(persona, intake.looking_for)
-    closer = (
-        "I'll share my screen and show you that live — jump in anytime."
-        if will_share_screen
-        else "I'll walk you through it live by voice — jump in anytime."
+    from navigator.meeting.intake_copy import pitch_line as _pitch
+
+    return _pitch(
+        persona,
+        intake,
+        lang=lang,
+        agent_gender=agent_gender,
+        will_share_screen=will_share_screen,
     )
-    return (
-        f"Got it, {name}. You're with {company} in {biz}, focused on {need}. "
-        f"{solve} {closer}"
-    )
+
+
+def prospect_facing_product(persona: Persona) -> str:
+    from navigator.agent.speech_safety import prospect_facing_persona
+
+    return prospect_facing_persona(persona).product_name
 
 
 def preferred_flow_id(looking_for: str) -> str | None:
@@ -205,6 +180,10 @@ def run_intake(
     listen: Callable[[str], str] | None = None,
     prefill: dict[str, str] | None = None,
     will_share_screen: bool = True,
+    spoken_language: SpokenLanguage = "en",
+    agent_gender: AgentGender = "female",
+    extra_languages: tuple[SpokenLanguage, ...] = ("hi",),
+    fast_extract: bool = False,
 ) -> ProspectIntake:
     """Ask intake questions via TTS; collect answers (STT / stdin / defaults).
 
@@ -214,57 +193,148 @@ def run_intake(
     """
     answers: dict[str, str] = {}
     prefill = {k: v.strip() for k, v in (prefill or {}).items() if v and v.strip()}
+    lang: SpokenLanguage = spoken_language
+    product = prospect_facing_product(persona)
+    questions = intake_questions(lang=lang, product_name=product)
 
-    hello = greet_line(persona, prefill.get("name", ""))
+    hello = greet_line(
+        persona,
+        prefill.get("name", ""),
+        lang=lang,
+        agent_gender=agent_gender,
+    )
+    # Warm TTS for greet + questions while we speak / listen (MeetSpeaker).
+    prefetch = getattr(speaker, "prefetch_lines", None)
+    if callable(prefetch):
+        prefetch([hello, *[q for _, q, _ in questions]])
     _say(speaker, hello)
 
-    for key, question, default in _QUESTIONS:
-        if key in prefill:
-            cleaned = _clean_field(key, prefill[key])
-            answers[key] = cleaned or default
+    for key, question, default in questions:
+        prefilled = (prefill.get(key) or "").strip()
+        if prefilled:
+            cleaned = _clean_field(key, prefilled)
+            answers[key] = _answer_or_empty(key, cleaned)
             print(f"[intake] {key}={answers[key]!r} (prefilled)", flush=True)
-            if key == "name":
-                _say(speaker, name_ack_line(answers["name"]))
+            if key == "name" and answers.get("name") and answers["name"] != "there":
+                _say(speaker, name_ack_line(answers["name"], lang=lang))
             continue
         _say(speaker, question)
         if listen is not None:
+            # Prefetch next unanswered question while STT runs.
+            if callable(prefetch):
+                nxt = [
+                    q
+                    for k, q, _ in questions
+                    if k != key
+                    and k not in answers
+                    and not (prefill.get(k) or "").strip()
+                ]
+                if nxt:
+                    prefetch(nxt[:2])
             print(f"[intake] listening for {key}…", flush=True)
             heard = ""
             try:
                 heard = (listen(question) or "").strip()
             except Exception as exc:  # noqa: BLE001
-                print(f"[intake] listen failed ({exc}) — using default", flush=True)
-            cleaned = extract_intake_entity(key, question, heard) if heard else ""
-            answers[key] = cleaned or default
-            print(
-                f"[intake] {key}={answers[key]!r}"
-                + ("" if heard else " (default)"),
-                flush=True,
-            )
+                print(f"[intake] listen failed ({exc})", flush=True)
+            if heard:
+                lang = _maybe_switch_language(
+                    speaker,
+                    heard,
+                    current=lang,
+                    extra_languages=extra_languages,
+                )
+                questions = intake_questions(lang=lang, product_name=product)
+            if is_declined(heard):
+                answers[key] = ""
+                print(f"[intake] {key} skipped (declined)", flush=True)
+            else:
+                if fast_extract:
+                    cleaned = _clean_field(key, heard) if heard else ""
+                else:
+                    cleaned = extract_intake_entity(key, question, heard) if heard else ""
+                answers[key] = _answer_or_empty(key, cleaned)
+                print(
+                    f"[intake] {key}={answers[key]!r}"
+                    + ("" if heard else " (empty)"),
+                    flush=True,
+                )
         elif interactive:
             try:
                 typed = input(f"[intake {key}] > ").strip()
             except EOFError:
                 typed = ""
-            cleaned = _clean_field(key, typed) if typed else ""
-            answers[key] = cleaned or default
+            if is_declined(typed):
+                answers[key] = ""
+            else:
+                answers[key] = _answer_or_empty(key, _clean_field(key, typed) if typed else "")
         else:
-            answers[key] = _clean_field(key, default) or default
+            answers[key] = _answer_or_empty(key, _clean_field(key, default) or default)
             print(f"[intake] (non-interactive) {key}={answers[key]!r}", flush=True)
 
-        # Short human ack right after name — hybrid C backchannel.
-        if key == "name":
-            _say(speaker, name_ack_line(answers["name"]))
+        if key == "name" and answers.get("name"):
+            _say(speaker, name_ack_line(answers["name"], lang=lang))
 
     intake = ProspectIntake(
-        name=answers["name"],
-        company=answers["company"],
-        business_type=answers["business_type"],
-        looking_for=answers["looking_for"],
+        name=answers.get("name", ""),
+        company=answers.get("company", ""),
+        business_type=answers.get("business_type", ""),
+        looking_for=answers.get("looking_for", ""),
     )
-    pitch = pitch_line(persona, intake, will_share_screen=will_share_screen)
+    pitch = pitch_line(
+        persona,
+        intake,
+        lang=lang,
+        agent_gender=agent_gender,
+        will_share_screen=will_share_screen,
+    )
     _say(speaker, pitch)
-    return intake
+    return intake, lang
+
+
+def _maybe_switch_language(
+    speaker: Speaker,
+    utterance: str,
+    *,
+    current: SpokenLanguage,
+    extra_languages: tuple[SpokenLanguage, ...],
+) -> SpokenLanguage:
+    from navigator.voice.language import apply_language_switch, apply_to_speakers
+
+    allowed = frozenset({current, *extra_languages})
+
+    def _on_switch(lang: SpokenLanguage) -> None:
+        apply_to_speakers(lang, speaker)
+        synth = getattr(speaker, "synthesizer", None)
+        local = getattr(speaker, "local", None)
+        apply_to_speakers(lang, synth, local)
+
+    new_lang, ack = apply_language_switch(
+        utterance=utterance,
+        current=current,
+        on_switch=_on_switch,
+        allowed=allowed,
+    )
+    if ack:
+        _say(speaker, ack)
+    return new_lang
+
+
+def intake_questions(
+    *, lang: SpokenLanguage = "en", product_name: str = "the product"
+) -> tuple[tuple[str, str, str], ...]:
+    from navigator.meeting.intake_copy import intake_questions as _q
+
+    return _q(lang=lang, product_name=product_name)
+
+
+def _answer_or_empty(key: str, cleaned: str) -> str:
+    """Keep empty when unknown; name alone falls back to 'there' for speak-back."""
+    if cleaned:
+        return cleaned
+    if key == "name":
+        return "there"
+    return ""
 
 
 def _clean_field(key: str, value: str) -> str:
@@ -300,9 +370,19 @@ Do not output full sentences. Only output the extracted entity. Do not use quote
         result = provider.complete(system=sys_prompt, user="Extract the entity.")
         if not result or result.strip().upper() == "NONE":
             return ""
+        if is_declined(result):
+            return ""
         return result.strip()
     except Exception as exc:
-        print(f"[intake] LLM extraction failed: {exc}", flush=True)
+        msg = str(exc)
+        if "429" in msg and "limit: 0" in msg:
+            print(
+                "[intake] Gemini quota is 0 — enable billing on your Google AI "
+                "project or set NAVIGATOR_GROQ_API_KEY; using raw STT text",
+                flush=True,
+            )
+        else:
+            print(f"[intake] LLM extraction failed: {exc}", flush=True)
         return _clean_field(key, heard)
 
 

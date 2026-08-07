@@ -36,10 +36,30 @@ class GeminiProvider:
         self.vision_model = settings.brain_vision_image_model
 
     def complete(self, system: str, user: str) -> str:
+        from navigator.core.gemini_keys import gemini_key_candidates, is_gemini_quota_error
+
+        keys = gemini_key_candidates() or [self.api_key]
+        last_exc: Exception | None = None
+        for i, key in enumerate(keys):
+            try:
+                return self._complete_with_key(key, system, user)
+            except Exception as exc:
+                last_exc = exc
+                if is_gemini_quota_error(exc) and i + 1 < len(keys):
+                    print(
+                        "[gemini] primary key quota hit — retrying with backup key",
+                        flush=True,
+                    )
+                    continue
+                raise
+        assert last_exc is not None
+        raise last_exc
+
+    def _complete_with_key(self, api_key: str, system: str, user: str) -> str:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self.api_key)
+        client = genai.Client(api_key=api_key)
         resp = client.models.generate_content(
             model=self.text_model,
             contents=user,
@@ -54,10 +74,32 @@ class GeminiProvider:
         return text
 
     def complete_with_image(self, system: str, user: str, png: bytes) -> str:
+        from navigator.core.gemini_keys import gemini_key_candidates, is_gemini_quota_error
+
+        keys = gemini_key_candidates() or [self.api_key]
+        last_exc: Exception | None = None
+        for i, key in enumerate(keys):
+            try:
+                return self._complete_with_image_key(key, system, user, png)
+            except Exception as exc:
+                last_exc = exc
+                if is_gemini_quota_error(exc) and i + 1 < len(keys):
+                    print(
+                        "[gemini] primary key quota hit — retrying vision with backup key",
+                        flush=True,
+                    )
+                    continue
+                raise
+        assert last_exc is not None
+        raise last_exc
+
+    def _complete_with_image_key(
+        self, api_key: str, system: str, user: str, png: bytes
+    ) -> str:
         from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=self.api_key)
+        client = genai.Client(api_key=api_key)
         resp = client.models.generate_content(
             model=self.vision_model,
             contents=[

@@ -69,13 +69,36 @@ def test_move_on_frame_called_many_times(page, monkeypatch):
     assert len(hits) >= 10
 
 
-def test_motion_scale_zero_single_jump(page, monkeypatch):
+def test_click_with_cursor_uses_recorded_path_coords(page, monkeypatch):
+    """With mouse_path, click the recorded point — not a CSS scroll-jump."""
     from navigator.automation.browser import cursor as cursor_mod
-    from navigator.automation.browser.cursor import install_cursor, move_cursor
+    from navigator.automation.browser.cursor import click_with_cursor
 
     monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 0.0)
-    page.set_content("<body></body>")
-    install_cursor(page)
-    hits: list[int] = []
-    move_cursor(page, 200, 200, on_frame=lambda: hits.append(1))
-    assert len(hits) <= 1
+    monkeypatch.setattr(cursor_mod, "_playback_mode", True)
+    page.set_content(
+        '<div style="height:2000px"></div>'
+        '<button id="b" style="position:fixed;left:100px;top:80px;width:40px;height:24px">Go</button>'
+    )
+    page.evaluate(
+        """() => {
+          window.__navClicks = 0;
+          window.__navClickXY = null;
+          document.getElementById('b').addEventListener('click', (ev) => {
+            window.__navClicks += 1;
+            window.__navClickXY = {x: ev.clientX, y: ev.clientY};
+          });
+        }"""
+    )
+    path = [
+        {"x": 20, "y": 20, "at_ms": 0},
+        {"x": 60, "y": 50, "at_ms": 40},
+        {"x": 110, "y": 90, "at_ms": 80},
+    ]
+    # Wrong selector on purpose — path coords must still hit the button.
+    click_with_cursor(page, "#missing", mouse_path=path, timeout=1000)
+    assert page.evaluate("window.__navClicks") >= 1
+    xy = page.evaluate("window.__navClickXY")
+    assert abs(xy["x"] - 110) <= 2
+    assert abs(xy["y"] - 90) <= 2
+

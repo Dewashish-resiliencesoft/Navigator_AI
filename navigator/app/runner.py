@@ -415,6 +415,7 @@ class DemoRunner:
                 headful=self.headful,
                 interactive_listen=False,
                 open_meet_in_browser=open_browser,
+                demo_origin=handle.origin,
                 **kwargs,
                 stop_event=handle._stop,
                 on_bot_joined=on_bot_joined,

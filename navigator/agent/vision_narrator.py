@@ -94,4 +94,7 @@ def generate_narration(
         return narration
     except Exception as exc:  # noqa: BLE001
         print(f"[narrate] vision generation failed ({exc}); using hint", flush=True)
-        return narration_hint or "Let me walk you through this."
+        from navigator.automation.narration import spoken_for_live_step
+
+        cleaned = spoken_for_live_step(narration_hint)
+        return cleaned or "Let me walk you through this."

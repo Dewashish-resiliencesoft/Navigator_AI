@@ -42,8 +42,11 @@ const PRODUCT_KEYS = new Set(["products", "about", "target_market", "key_feature
 const CONTACT_KEYS = new Set(["support_email", "social_links", "linkedin", "twitter"]);
 
 export function SiteGraph() {
-  const { ok, err } = useUi();
+  const tab = useUi((s) => s.tab);
+  const ok = useUi((s) => s.ok);
+  const err = useUi((s) => s.err);
   const epoch = useProductData((s) => s.epoch);
+  const playlist = useProductData((s) => s.playlist);
   const invalidate = useProductData((s) => s.invalidate);
   const [yaml, setYaml] = useState<string | null>(null);
   const [revision, setRevision] = useState<number | null>(null);
@@ -51,6 +54,11 @@ export function SiteGraph() {
   const [confirmPublish, setConfirmPublish] = useState(false);
   const [confirmClear, setConfirmClear] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  const playlistKey = playlist
+    .map((p) => `${p.order ?? 0}:${p.page_id ?? ""}:${p.flow_id ?? ""}`)
+    .join("|");
 
   const load = useCallback(async () => {
     try {
@@ -58,14 +66,18 @@ export function SiteGraph() {
       setYaml(d.yaml ?? "");
       setRevision(d.revision);
       setLiveRevision(d.published_revision);
+      setDirty(false);
     } catch (e) {
       err(errText(e));
     }
   }, [err]);
 
+  // Refetch when flows/explore mutate the draft, and whenever the Client opens
+  // this tab — saving playlist order on Flows must show up in demo_playlist here.
   useEffect(() => {
+    if (tab !== "graph") return;
     void load();
-  }, [load, epoch]);
+  }, [load, epoch, tab, playlistKey]);
 
   const save = async () => {
     if (yaml === null) return;
@@ -77,6 +89,7 @@ export function SiteGraph() {
       const d = await api.putSiteGraph(yaml);
       setRevision(d.revision);
       invalidate();
+      setDirty(false);
       ok(`Draft saved — revision ${d.revision}. Publish to make it live.`);
     } catch (e) {
       err(errText(e));
@@ -145,9 +158,18 @@ export function SiteGraph() {
           <BarLoader label="Loading site graph…" />
         ) : (
           <div className={`relative ${fullScreen ? "flex-1 flex flex-col min-h-0" : ""}`}>
-            <Textarea value={yaml} onChange={setYaml} rows={fullScreen ? 30 : 22} mono placeholder="version: 1" className={fullScreen ? "flex-1 resize-none h-full min-h-0 font-mono text-[0.8rem]" : "font-mono text-[0.8rem]"} />
+            <Textarea
+              value={yaml}
+              onChange={(v) => {
+                setYaml(v);
+                setDirty(true);
+              }}
+              rows={fullScreen ? 30 : 22} mono placeholder="version: 1" className={fullScreen ? "flex-1 resize-none h-full min-h-0 font-mono text-[0.8rem]" : "font-mono text-[0.8rem]"} />
             <div className="mt-2 flex items-center justify-between text-[0.7rem] text-[var(--muted)]">
-              <span>{yaml.split("\n").length} lines</span>
+              <span>
+                {yaml.split("\n").length} lines
+                {dirty ? " · unsaved edits" : ""}
+              </span>
               <span>{yaml.length} chars</span>
             </div>
           </div>

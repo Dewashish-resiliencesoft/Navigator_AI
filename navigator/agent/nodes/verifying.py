@@ -22,6 +22,7 @@ from navigator.logs.store import utcnow
 from navigator.core.schemas import ActionLogEntry, FillField, VerifyResult
 
 SESSION_STALL_LINE = "One moment."
+STRICT_STALL = "One moment — let me try that again."
 
 
 def verifying(state: CallState, deps: CallDeps) -> CallState:
@@ -68,9 +69,40 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
     )
     deps.log.append(entry)
 
+    strict = getattr(deps, "strict_playlist", False)
+    if entry.failed and strict:
+        stall = STRICT_STALL if not result.ok else (
+            "One moment — that didn't land on screen."
+        )
+        deps.speaker.say(stall)
+        hold_step = int(state.get("executing_step") or state.get("walkthrough_step") or 0)
+        return CallState(
+            entries=[entry],
+            failures=[entry],
+            walkthrough_step=hold_step,
+            phase="walkthrough",
+            narration=[stall],
+            transcript=[f"agent: {stall}"],
+            pending_calls=[],
+            last_call=None,
+            last_result=None,
+        )
+
     line = _narrate(entry, verdict)
     narration = [line] if line.strip() else []
     transcript = [f"agent: {line}"] if line.strip() else []
+    if (
+        strict
+        and verdict.passed
+        and state.get("planned_next_step") is not None
+    ):
+        return CallState(
+            entries=[entry],
+            failures=[],
+            narration=narration,
+            transcript=transcript,
+            walkthrough_step=int(state["planned_next_step"]),
+        )
     return CallState(
         entries=[entry],
         failures=[entry] if entry.failed else [],

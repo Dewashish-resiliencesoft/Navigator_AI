@@ -128,9 +128,10 @@ def transcribe(audio: bytes, api_key: str, *, model: str = "whisper-large-v3-tur
     if not audio[:4] == b"RIFF":
         payload = pcm16_to_wav_bytes(audio)
 
-    from navigator.core.groq_client import groq_client
+    from navigator.core.groq_client import transcribe_create
 
-    transcript = groq_client(api_key).audio.transcriptions.create(
+    transcript = transcribe_create(
+        api_key,
         file=("utterance.wav", payload, "audio/wav"),
         model=model,
     )

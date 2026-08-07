@@ -167,3 +167,85 @@ def test_merge_append_preserves_prior_steps(tmp_path):
     steps = doc["pages"]["dashboard"]["flows"]["tour"]
     assert len(steps) == 5
     assert len(doc["demo_playlist"]) == 1
+
+
+def test_merge_replace_overwrites_prior_steps(tmp_path):
+    base = textwrap.dedent(
+        """
+        version: 1
+        site: acme
+        base_url: https://acme.example/
+        demo_playlist:
+          - order: 1
+            name: Tour
+            page_id: dashboard
+            flow_id: tour
+        pages:
+          dashboard:
+            name: Dashboard
+            url: /
+            selectors: {body: body, a: '#a', b: '#b', c: '#c'}
+            flows:
+              tour:
+                - tool: click_element
+                  selector: a
+                  expects: {check: visible, selector: a}
+                - tool: click_element
+                  selector: b
+                  expects: {check: visible, selector: b}
+        """
+    ).strip()
+    replaced = merge_recorded_flow(
+        base,
+        flow_name="Tour",
+        flow_id="tour",
+        page_id="dashboard",
+        steps=[RecordedStep(tool="click_element", alias="c", selector="#c")],
+        product_name="Acme",
+        base_url="https://acme.example/",
+        update_existing=True,
+        replace_steps=True,
+    )
+    doc = yaml.safe_load(replaced)
+    steps = doc["pages"]["dashboard"]["flows"]["tour"]
+    assert len(steps) == 1
+    assert steps[0]["selector"] == "c"
+    assert len(doc["demo_playlist"]) == 1
+    assert doc["demo_playlist"][0]["flow_id"] == "tour"
+
+
+def test_merge_replace_dedupes_playlist_and_scrubs_ghost_page():
+    from navigator.client.content import merge_recorded_flow, resolve_flow_page_id
+
+    base = (
+        "version: 1\nsite: acme\nbase_url: https://acme.example/\n"
+        "demo_playlist:\n"
+        "  - order: 1\n    name: Tour\n    page_id: explore\n    flow_id: tour\n"
+        "  - order: 2\n    name: Tour copy\n    page_id: dashboard\n    flow_id: tour\n"
+        "pages:\n  explore:\n    name: Explore\n    url: /\n"
+        "    selectors:\n      body: body\n      old: '#old'\n"
+        "    flows:\n      tour:\n        - tool: click_element\n"
+        "          selector: old\n          expects: {check: visible, selector: old}\n"
+        "  dashboard:\n    name: Dashboard\n    url: /\n"
+        "    selectors:\n      body: body\n      old: '#old'\n"
+        "    flows:\n      tour:\n        - tool: click_element\n"
+        "          selector: old\n          expects: {check: visible, selector: old}\n"
+    )
+    assert resolve_flow_page_id(base, "tour") == "explore"
+    merged = merge_recorded_flow(
+        base,
+        flow_name="Tour",
+        flow_id="tour",
+        page_id="explore",
+        steps=[RecordedStep(tool="click_element", alias="new", selector="#new")],
+        product_name="Acme",
+        base_url="https://acme.example/",
+        update_existing=True,
+        replace_steps=True,
+    )
+    doc = yaml.safe_load(merged)
+    assert len(doc["demo_playlist"]) == 1
+    assert doc["demo_playlist"][0]["page_id"] == "explore"
+    assert "tour" not in doc["pages"]["dashboard"]["flows"]
+    assert len(doc["pages"]["explore"]["flows"]["tour"]) == 1
+    assert doc["pages"]["explore"]["flows"]["tour"][0]["selector"] == "new"

@@ -156,9 +156,11 @@ def _default_ask_text() -> Callable[[str], str] | None:
         return None
 
     def ask(prompt: str) -> str:
-        from groq import Groq
+        from navigator.core.groq_client import chat_completions_create
 
-        resp = Groq(api_key=key).chat.completions.create(
+        resp = chat_completions_create(
+            key,
+            purpose="tier2",
             model=_tier2_model(),
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,

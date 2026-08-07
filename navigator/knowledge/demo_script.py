@@ -26,10 +26,10 @@ from navigator.knowledge.site_graph import SiteGraph, SiteGraphError, parse_site
 from navigator.meeting.intake import (
     ProspectIntake,
     greet_line,
+    intake_questions,
     name_ack_line,
     pitch_line,
 )
-from navigator.meeting.intake import _QUESTIONS  # ponytail: single source for intake copy
 
 BeatKind = Literal[
     "intake", "flow_step", "live_input", "login", "speak_only", "wrap_up"
@@ -263,7 +263,9 @@ def compose_intake_beats(persona: Any) -> list[dict[str, Any]]:
             "spoken_source": "intake",
         }
     ]
-    for key, question, _default in _QUESTIONS:
+    for key, question, _default in intake_questions(
+        product_name=getattr(persona, "product_name", "") or "the product"
+    ):
         beats.append(
             {
                 "id": _beat_id("intake", key),
@@ -334,7 +336,13 @@ def compose_full_demo_script(
         beats.extend(compose_intake_beats(persona))
         sources_used.add("intake")
 
-    if include_login and not flow_id_filter:
+    from navigator.automation.login_match import playlist_has_login_flow
+
+    if (
+        include_login
+        and not flow_id_filter
+        and not playlist_has_login_flow(graph)
+    ):
         beats.append(
             {
                 "id": "login_gate",

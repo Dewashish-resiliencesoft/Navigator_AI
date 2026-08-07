@@ -15,6 +15,10 @@ def test_detect_hindi_switch():
     assert detect_language_switch("Can we talk in Hindi?") == "hi"
     assert detect_language_switch("Hindi mein baat karo") == "hi"
     assert detect_language_switch("hindi me baat karni hai") == "hi"
+    assert detect_language_switch("talk to me in hindi") == "hi"
+    assert detect_language_switch("Please speak to me in Hindi") == "hi"
+    assert detect_language_switch("say this in hindi") == "hi"
+    assert detect_language_switch("say it in Hindi please") == "hi"
 
 
 def test_detect_english_switch():
@@ -44,3 +48,18 @@ def test_sync_speaker_language():
     out = sync_speaker_language(sp, "speak hindi", current="en")
     assert out == "hi"
     assert sp.spoken_language == "hi"
+
+
+def test_poll_barge_in_language_switch():
+    from navigator.voice.language import poll_barge_in_language_switch
+
+    class Deps:
+        spoken_language = "en"
+        extra_languages = ("hi",)
+        pending_barge_in = ["Hindi mein baat karo"]
+        speaker = _FakeSpeaker()
+
+    deps = Deps()
+    assert poll_barge_in_language_switch(deps) == "hi"
+    assert deps.spoken_language == "hi"
+    assert deps.speaker.spoken_language == "hi"

@@ -372,6 +372,9 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
 
     if utterance and not _is_continue(utterance):
+        if getattr(deps, "playlist_only", False) and phase == "walkthrough":
+            if not is_goodbye(utterance):
+                return _plan_walkthrough_next(state, deps)
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
 
     return _plan_walkthrough_next(state, deps)
@@ -448,6 +451,9 @@ def _plan_interrupt(
     utterance: str,
     transcript: list[str],
 ) -> CallState:
+    if getattr(deps, "strict_playlist", False):
+        return _plan_walkthrough_next(state, deps)
+
     pending = (state.get("awaiting_confirm_flow_id") or "").strip()
     if pending:
         return _resolve_awaiting_confirm(
@@ -499,6 +505,8 @@ def _try_tier2(
     state: CallState, deps: CallDeps, *, utterance: str
 ) -> CallState | None:
     """Constrained live fallback. None when toggle off or proposer declines."""
+    if getattr(deps, "strict_playlist", False):
+        return None
     if not getattr(deps, "tier2_enabled", False):
         return None
 
@@ -624,13 +632,21 @@ def _flow_texts_for_page(deps: CallDeps, page_id: str) -> dict[str, str]:
     for item in deps.graph.demo_playlist:
         if item.page_id == page_id and item.name.strip():
             names[item.flow_id] = item.name.strip()
+    if getattr(deps, "playlist_only", False) and deps.graph.demo_playlist:
+        flow_ids = [
+            item.flow_id
+            for item in deps.graph.demo_playlist
+            if item.page_id == page_id
+        ]
+    else:
+        flow_ids = sorted(page.flows)
     return {
         fid: flow_text(
             fid,
             name=names.get(fid, ""),
             trigger_intent=_flow_intent(deps, fid),
         )
-        for fid in page.flows
+        for fid in flow_ids
         if is_offerable(deps.graph.flow_validation(fid))
     }
 
@@ -740,6 +756,9 @@ def _decide_live_turn(
     utterance: str,
 ) -> CallState | None:
     """Retrieve + confidence bands. None → caller may try turn-brain / handoff."""
+    if getattr(deps, "playlist_only", False):
+        return None
+
     from navigator.agent.brain_router import route_turn
 
     page_id = _guide_page_id(state)
@@ -1006,6 +1025,66 @@ def _decide_live_turn(
     return None
 
 
+def _walkthrough_spoken(
+    deps: CallDeps,
+    *,
+    yaml_hint: str,
+    page_id: str,
+    flow_id: str,
+    nxt: object,
+) -> str:
+    """Spoken line before a walkthrough step — short for TTS, clicks follow fast."""
+    from navigator.automation.narration import spoken_for_live_step
+
+    fallback = spoken_for_live_step(yaml_hint, max_len=200) or "Let me show you the next step."
+
+    # Playlist demos use recorded lines — skip per-step Gemini (quota + latency).
+    if getattr(deps, "playlist_only", False):
+        return fallback
+
+    if not (_use_turn_brain(deps) and deps.page is not None):
+        return fallback
+
+    try:
+        from navigator.agent.turn_brain import capture_screenshot_png
+        from navigator.agent.vision_narrator import generate_narration
+
+        png = capture_screenshot_png(deps.page)
+        screen = ""
+        if deps.screen_context is not None:
+            screen = deps.screen_context() or ""
+        intake_summary = ""
+        if deps.intake:
+            intake_summary = (
+                f"{deps.intake.name} at {deps.intake.company}, "
+                f"{deps.intake.business_type}, need={deps.intake.looking_for}"
+            )
+        tool = getattr(nxt, "tool", "") or type(nxt).__name__
+        alias = getattr(nxt, "alias", "") or getattr(nxt, "page_id", "")
+        step_action = f"{tool} {alias}".strip()
+        section_knowledge = _section_knowledge_for_step(
+            deps,
+            page_id=page_id,
+            flow_id=flow_id,
+            step_action=step_action,
+        )
+        spoken = generate_narration(
+            screenshot_png=png,
+            screen_text=screen,
+            narration_hint=yaml_hint,
+            intake_summary=intake_summary,
+            product_brief=deps.product_brief or "",
+            step_action=step_action,
+            section_knowledge=section_knowledge,
+            spoken_language=deps.spoken_language,
+            agent_gender=deps.agent_gender,
+        )
+        return spoken_for_live_step(spoken, max_len=200) or fallback
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] vision narration skipped: {exc}", flush=True)
+        return fallback
+
+
 def _use_turn_brain(deps: CallDeps) -> bool:
     if deps.decide_turn is not None:
         return True
@@ -1019,6 +1098,8 @@ def _use_turn_brain(deps: CallDeps) -> bool:
 def _try_turn_brain(
     state: CallState, deps: CallDeps, *, utterance: str
 ) -> CallState | None:
+    if getattr(deps, "strict_playlist", False):
+        return None
     if not _use_turn_brain(deps):
         return None
     from navigator.agent.turn_brain import TurnDecision, capture_screenshot_png, decide_turn
@@ -1200,6 +1281,8 @@ def _start_detour(
     **extra,
 ) -> CallState:
     """Begin a step-by-step detour; main demo bookmark preserved in resume_*."""
+    if getattr(deps, "playlist_only", False):
+        return _plan_walkthrough_next(state, deps)
     _ensure_browser_on_page(deps, page_id)
     try:
         calls = list(deps.graph.flow(page_id, flow_id))
@@ -1515,7 +1598,12 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     pacing = mem.pacing_history[-1] if mem.pacing_history else "neutral"
 
     # Coarse pacing nudge: several rushed signals → skip one step when safe.
-    if pacing == "rushed" and step + 1 < len(calls) and resume_step is None:
+    if (
+        pacing == "rushed"
+        and step + 1 < len(calls)
+        and resume_step is None
+        and not getattr(deps, "strict_playlist", False)
+    ):
         step = step + 1
         print(f"[plan] pacing=rushed; skip ahead to step {step}", flush=True)
 
@@ -1542,14 +1630,23 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
                     ) from exc
                 if calls:
                     advanced = True
-                    if _can_continue_in_place(deps, page_id, calls[0]):
+                    first = calls[0]
+                    from navigator.core.schemas import Navigate
+
+                    if _can_continue_in_place(deps, page_id, first):
                         print(
                             "[plan] playlist advance: continuing in place "
                             f"(no re-nav) → {page_id}/{flow_id}",
                             flush=True,
                         )
-                    else:
+                    elif isinstance(first, Navigate):
                         _ensure_browser_on_page(deps, page_id)
+                    else:
+                        print(
+                            "[plan] playlist advance: staying on current page "
+                            f"(no refresh) → {page_id}/{flow_id}",
+                            flush=True,
+                        )
                     print(
                         f"[plan] auto_play → next playlist flow "
                         f"{page_id}/{flow_id} ({nxt_item.name or flow_id})",
@@ -1599,49 +1696,13 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
             pacing=pacing,
         )
 
-    # Vision-first: agent looks at screen and generates narration.
-    spoken = yaml_hint  # default if vision unavailable
-    if _use_turn_brain(deps) and deps.page is not None:
-        try:
-            from navigator.agent.turn_brain import capture_screenshot_png
-            from navigator.agent.vision_narrator import generate_narration
-
-            png = capture_screenshot_png(deps.page)
-            screen = ""
-            if deps.screen_context is not None:
-                screen = deps.screen_context() or ""
-            intake_summary = ""
-            if deps.intake:
-                intake_summary = (
-                    f"{deps.intake.name} at {deps.intake.company}, "
-                    f"{deps.intake.business_type}, need={deps.intake.looking_for}"
-                )
-            # Describe what action is about to happen.
-            step_action = ""
-            tool = getattr(nxt, "tool", "") or type(nxt).__name__
-            alias = getattr(nxt, "alias", "") or getattr(nxt, "page_id", "")
-            step_action = f"{tool} {alias}".strip()
-
-            section_knowledge = _section_knowledge_for_step(
-                deps,
-                page_id=page_id,
-                flow_id=flow_id,
-                step_action=step_action,
-            )
-
-            spoken = generate_narration(
-                screenshot_png=png,
-                screen_text=screen,
-                narration_hint=yaml_hint,
-                intake_summary=intake_summary,
-                product_brief=deps.product_brief or "",
-                step_action=step_action,
-                section_knowledge=section_knowledge,
-                spoken_language=deps.spoken_language,
-                agent_gender=deps.agent_gender,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[plan] vision narration skipped: {exc}", flush=True)
+    spoken = _walkthrough_spoken(
+        deps,
+        yaml_hint=yaml_hint,
+        page_id=page_id,
+        flow_id=flow_id,
+        nxt=nxt,
+    )
 
     mem.note_spoken(spoken)
     _trace(
@@ -1653,12 +1714,15 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
         chosen_flow_id=flow_id,
         detail=f"walkthrough step {step} → {next_step}",
     )
+    strict = getattr(deps, "strict_playlist", False)
     return CallState(
         phase="walkthrough",
         page_id=page_id,
         walkthrough_page_id=page_id,
         walkthrough_flow_id=flow_id,
-        walkthrough_step=next_step,
+        walkthrough_step=next_step if not strict else step,
+        executing_step=step,
+        planned_next_step=next_step,
         resume_step=None,
         resume_page_id="",
         plan=Plan(spoken_response=spoken, tool_calls=[batch_calls[0]]),

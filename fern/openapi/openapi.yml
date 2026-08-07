@@ -3592,6 +3592,21 @@ components:
           type: boolean
           title: Narrate
           default: false
+        save_mode:
+          type: string
+          pattern: ^(new|update)$
+          title: Save Mode
+          default: new
+        target_flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Flow Id
+        target_flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Flow Name
       type: object
       required:
       - start_url

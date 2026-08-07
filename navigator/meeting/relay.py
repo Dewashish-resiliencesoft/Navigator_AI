@@ -344,7 +344,7 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 60);
+  setTimeout(tickFrame, 16);
 }
 async function tickStatus(){
   try {
@@ -511,13 +511,16 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
 
 def push_frame(handle: RelayHandle, page: Page) -> None:
     """Screenshot on the Playwright thread only (sync API is not thread-safe)."""
+    from navigator.core.settings import settings
+
+    quality = max(50, min(100, int(settings.screenshot_quality or 95)))
     try:
         data = page.screenshot(
             type="jpeg",
-            quality=92,
+            quality=quality,
             clip={"x": 0, "y": 0, "width": 1280, "height": 720},
         )
     except Exception:
-        data = page.screenshot(type="jpeg", quality=92)
+        data = page.screenshot(type="jpeg", quality=quality)
     with handle._lock:
         handle._frame = data

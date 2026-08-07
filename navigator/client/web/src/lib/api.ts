@@ -197,6 +197,9 @@ export type RecorderStatus = {
   phase?: "setup" | "capturing" | "done" | string;
   setup_discarded?: number;
   flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
+  narrate?: boolean;
+  narration_chunks?: number;
+  save_mode?: "new" | "update" | string;
 };
 
 export type ExploreQuestion = {
@@ -688,8 +691,28 @@ export const api = {
     ),
 
   recordStatus: () => get<RecorderStatus>("/client/api/record"),
-  recordStart: (start_url: string, flow_name: string) =>
-    send<unknown>("/client/api/record/start", "POST", { start_url, flow_name }),
+  recordStart: (
+    start_url: string,
+    flow_name: string,
+    opts?: {
+      narrate?: boolean;
+      save_mode?: "new" | "update";
+      target_flow_id?: string;
+      target_flow_name?: string;
+    },
+  ) =>
+    send<{ narrate?: boolean; save_mode?: string; flow_id?: string }>(
+      "/client/api/record/start",
+      "POST",
+      {
+        start_url,
+        flow_name,
+        narrate: opts?.narrate ?? false,
+        save_mode: opts?.save_mode ?? "new",
+        target_flow_id: opts?.target_flow_id,
+        target_flow_name: opts?.target_flow_name,
+      },
+    ),
   recordCapture: () =>
     send<{ ok: boolean; phase: string; setup_discarded: number; steps: number }>(
       "/client/api/record/capture",
@@ -701,6 +724,7 @@ export const api = {
       error: string | null;
       flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
       setup_discarded?: number;
+      narrated_steps?: number;
     }>("/client/api/record/stop", "POST"),
 
   exploreStatus: () => get<ExploreStatus>("/client/api/explore"),

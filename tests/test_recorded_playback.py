@@ -1,0 +1,609 @@
+"""Recorded flow scrub, step_clicks, timeline playback, strict playlist."""
+
+from __future__ import annotations
+
+import threading
+import time
+from unittest.mock import MagicMock, patch
+from uuid import uuid4
+
+import pytest
+import yaml
+
+from navigator.agent.nodes.planning import planning
+from navigator.agent.nodes.verifying import verifying
+from navigator.agent.recorded_playback import run_flow_timeline
+from navigator.agent.state import CallDeps, initial_state
+from navigator.automation.record import RecordedStep
+from navigator.automation.record_scrub import (
+    scrub_recorded_steps,
+    step_clicks_payload,
+)
+from navigator.client.content import merge_recorded_flow
+from navigator.core.schemas import ClickElement, Postcondition, ToolResult, VerifyResult
+from navigator.knowledge.site_graph import DemoPlaylistItem, PageSpec, SiteGraph, parse_site_graph
+
+
+def _click(alias: str) -> ClickElement:
+    return ClickElement(
+        tool="click_element",
+        selector=alias,
+        expects=Postcondition(check="visible", selector=alias, timeout_ms=1000),
+    )
+
+
+def _minimal_yaml() -> str:
+    return yaml.safe_dump(
+        {
+            "version": 1,
+            "site": "acme",
+            "base_url": "https://app.acme.test/",
+            "pages": {
+                "home": {
+                    "name": "Home",
+                    "url": "/",
+                    "selectors": {"signup": "text=Sign up", "dark_mode": ".theme"},
+                    "flows": {},
+                }
+            },
+            "demo_playlist": [],
+        },
+        sort_keys=False,
+    )
+
+
+def test_scrub_recorded_steps_drops_theme_toggle():
+    steps = [
+        RecordedStep(
+            tool="click_element",
+            alias="dark_mode",
+            selector="dark_mode",
+            at_ms=100,
+        ),
+        RecordedStep(
+            tool="click_element",
+            alias="signup",
+            selector="signup",
+            at_ms=5000,
+        ),
+    ]
+    cleaned = scrub_recorded_steps(steps)
+    assert len(cleaned) == 1
+    assert cleaned[0].alias == "signup"
+
+
+def test_merge_recorded_flow_scrubs_junk_before_save():
+    steps = [
+        RecordedStep(
+            tool="click_element",
+            alias="dark_mode",
+            selector="dark_mode",
+            at_ms=100,
+        ),
+        RecordedStep(
+            tool="click_element",
+            alias="signup",
+            selector="signup",
+            at_ms=5000,
+        ),
+    ]
+    merged = merge_recorded_flow(
+        _minimal_yaml(),
+        flow_name="Auth",
+        flow_id="authentication_flow",
+        page_id="home",
+        steps=steps,
+        product_name="Acme",
+        base_url="https://app.acme.test/",
+    )
+    graph = parse_site_graph(merged)
+    calls = list(graph.flow("home", "authentication_flow"))
+    assert len(calls) == 1
+    assert calls[0].selector == "signup"
+
+
+def test_step_clicks_payload_and_reader():
+    steps = [
+        RecordedStep(
+            tool="click_element",
+            alias="a",
+            selector="a",
+            at_ms=879,
+        ),
+        RecordedStep(
+            tool="click_element",
+            alias="b",
+            selector="b",
+            at_ms=20001,
+        ),
+    ]
+    payload = step_clicks_payload(steps)
+    assert payload == [{"idx": 0, "at_ms": 879}, {"idx": 1, "at_ms": 20001}]
+
+    raw = yaml.safe_dump(
+        {
+            "version": 1,
+            "site": "acme",
+            "base_url": "https://app.acme.test/",
+            "pages": {"home": {"name": "H", "url": "/", "selectors": {}, "flows": {}}},
+            "_meta": {"step_clicks": {"demo": payload}},
+        },
+        sort_keys=False,
+    )
+    graph = parse_site_graph(raw)
+    assert graph.flow_step_clicks("demo") == {0: 879, 1: 20001}
+    assert graph.has_recorded_playback("demo") is False  # no narration
+
+
+def test_has_recorded_playback_with_clicks_and_placeholders():
+    raw = {
+        "version": 1,
+        "site": "acme",
+        "base_url": "https://app.acme.test/",
+        "pages": {"home": {"name": "H", "url": "/", "selectors": {}, "flows": {}}},
+        "_meta": {
+            "narration_suggestions": {"demo": ["Here is signup."]},
+            "step_clicks": {"demo": [{"idx": 0, "at_ms": 879}]},
+        },
+    }
+    import yaml
+
+    graph = parse_site_graph(yaml.safe_dump(raw, sort_keys=False))
+    assert graph.has_recorded_playback("demo") is True
+
+
+def test_execute_call_unpacks_run_tool_tuple():
+    from navigator.agent.recorded_playback import _execute_call
+
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"signup": "text=Sign up"},
+                flows={"demo": (_click("signup"),)},
+            ),
+        },
+    )
+    ok = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+    frames: list[str] = []
+
+    def push_frame() -> None:
+        frames.append("frame")
+
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MagicMock(),
+        product_id="acme",
+        push_frame=push_frame,
+    )
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        return_value=(ok, "home"),
+    ) as run_tool_mock:
+        _call, result, page_id = _execute_call(
+            deps, _click("signup"), page_id="home"
+        )
+    assert result.ok is True
+    assert page_id == "home"
+    run_tool_mock.assert_called_once()
+    assert run_tool_mock.call_args.kwargs.get("on_frame") is push_frame
+    assert frames == ["frame", "frame"]
+
+
+def test_step_deltas_from_absolute_clicks():
+    from navigator.agent.recorded_playback import MAX_INTER_STEP_MS, step_deltas
+
+    schedule = {0: 0, 1: 12697, 2: 34809}
+    assert step_deltas(schedule, 3) == [0, MAX_INTER_STEP_MS, MAX_INTER_STEP_MS]
+
+
+def test_timeline_parallel_speech_and_click():
+    events: list[tuple[str, float]] = []
+
+    class AsyncSpeaker:
+        def say_async(self, text: str):
+            events.append(("speak", time.monotonic()))
+            handle = MagicMock()
+            handle.wait = MagicMock()
+            handle.cancel = MagicMock()
+            return handle
+
+        def say(self, text: str) -> None:
+            events.append(("say", time.monotonic()))
+
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"signup": "text=Sign up"},
+                flows={"demo": (_click("signup"),)},
+            ),
+        },
+        meta={
+            "narration_suggestions": {"demo": ["Opening signup now"]},
+            "step_clicks": {"demo": [{"idx": 0, "at_ms": 800}]},
+        },
+    )
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=AsyncSpeaker(),
+        product_id="acme",
+    )
+    ok_result = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+    click_times: list[float] = []
+
+    def _run_tool(*_a, **_k):
+        click_times.append(time.monotonic())
+        return ok_result, "home"
+
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        side_effect=_run_tool,
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ):
+        outcome = run_flow_timeline(
+            deps,
+            session_id=uuid4(),
+            page_id="home",
+            flow_id="demo",
+            strict=False,
+        )
+    assert outcome.steps_run == 1
+    assert events
+    assert click_times
+    # Speech and click start together on step 0 (relative schedule).
+    assert abs(events[0][1] - click_times[0]) < 0.15
+
+
+def test_strict_playlist_does_not_advance_step_on_plan():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"a": "text=A", "b": "text=B"},
+                flows={
+                    "demo": (_click("a"), _click("b")),
+                },
+            ),
+        },
+        demo_playlist=[
+            DemoPlaylistItem(order=1, name="Demo", page_id="home", flow_id="demo"),
+        ],
+    )
+    speaker = MagicMock()
+    speaker.bot_ended = False
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=speaker,
+        playlist_only=True,
+        strict_playlist=True,
+    )
+    state = initial_state(uuid4(), "home", walkthrough_flow_id="demo")
+    out = planning(state, deps)
+    assert out["walkthrough_step"] == 0
+    assert out.get("executing_step") == 0
+    assert out.get("planned_next_step") == 1
+
+
+def test_decide_live_turn_blocked_on_playlist():
+    from navigator.agent.nodes.planning import _decide_live_turn
+
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"signup": "text=Sign up"},
+                flows={"authentication_flow": (_click("signup"),)},
+            ),
+        },
+        demo_playlist=[
+            DemoPlaylistItem(
+                order=1,
+                name="Authentication Flow",
+                page_id="home",
+                flow_id="authentication_flow",
+            ),
+        ],
+    )
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MagicMock(),
+        playlist_only=True,
+        product_id="acme",
+    )
+    state = initial_state(
+        uuid4(),
+        "home",
+        walkthrough_flow_id="authentication_flow",
+    )
+    assert _decide_live_turn(state, deps, utterance="show billing") is None
+
+
+def test_run_flow_strict_only_yaml_steps():
+    from navigator.agent.recorded_playback import run_flow_strict
+
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"a": "text=A", "b": "text=B"},
+                flows={"demo": (_click("a"), _click("b"))},
+            ),
+        },
+    )
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MagicMock(),
+        product_id="acme",
+    )
+    ok = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        return_value=(ok, "home"),
+    ) as run_tool_mock, patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ):
+        outcome = run_flow_strict(
+            deps,
+            session_id=uuid4(),
+            page_id="home",
+            flow_id="demo",
+            strict=True,
+        )
+    assert outcome.steps_run == 2
+    assert run_tool_mock.call_count == 2
+
+
+def test_timeline_dashboard_test_continues_on_click_fail():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"a": "text=A", "b": "text=B"},
+                flows={"demo": (_click("a"), _click("b"))},
+            ),
+        },
+        meta={
+            "narration_suggestions": {"demo": ["one", "two"]},
+            "step_clicks": {
+                "demo": [{"idx": 0, "at_ms": 0}, {"idx": 1, "at_ms": 1000}],
+            },
+        },
+    )
+    speaker = MagicMock()
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=speaker,
+        product_id="acme",
+        demo_origin="dashboard_test",
+    )
+    ok = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+    fail = ToolResult(ok=False, tool="click_element", detail="timeout", duration_ms=1)
+
+    def _run_tool(_page, _graph, _page_id, call, **_k):
+        if call.selector == "a":
+            return fail, "home"
+        return ok, "home"
+
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        side_effect=_run_tool,
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ):
+        outcome = run_flow_timeline(
+            deps,
+            session_id=uuid4(),
+            page_id="home",
+            flow_id="demo",
+            strict=True,
+        )
+    assert outcome.steps_run == 2
+    assert not outcome.hard_fail
+    assert not outcome.paused
+    speaker.say.assert_any_call(
+        "Moving on — we'll skip that step for now."
+    )
+
+
+def test_timeline_skips_junk_aliases():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={
+                    "start": "text=Start Free Trial",
+                    "welcome_back": "text=Welcome back",
+                    "on": "text=on",
+                },
+                flows={
+                    "demo": (
+                        _click("welcome_back"),
+                        _click("on"),
+                        _click("start"),
+                    )
+                },
+            ),
+        },
+        meta={
+            "narration_suggestions": {"demo": ["a", "b", "c"]},
+            "step_clicks": {
+                "demo": [
+                    {"idx": 0, "at_ms": 0},
+                    {"idx": 1, "at_ms": 100},
+                    {"idx": 2, "at_ms": 200},
+                ]
+            },
+        },
+    )
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MagicMock(),
+        product_id="acme",
+        demo_origin="dashboard_test",
+    )
+    ok = ToolResult(ok=True, tool="click_element", detail="clicked", duration_ms=1)
+    ran: list[str] = []
+
+    def _run_tool(_page, _graph, _page_id, call, **_k):
+        ran.append(call.selector)
+        return ok, "home"
+
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        side_effect=_run_tool,
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ):
+        outcome = run_flow_timeline(
+            deps,
+            session_id=uuid4(),
+            page_id="home",
+            flow_id="demo",
+            strict=True,
+        )
+    assert ran == ["start"]
+    assert outcome.steps_run == 1
+
+
+def test_timeline_self_visible_click_passes_without_verify_wait():
+    """CTA click that removes the button must not FAIL + retry for 45s."""
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"start": "text=Start"},
+                flows={"demo": (_click("start"),)},
+            ),
+        },
+        meta={
+            "narration_suggestions": {"demo": ["go"]},
+            "step_clicks": {"demo": [{"idx": 0, "at_ms": 0}]},
+        },
+    )
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MagicMock(),
+        product_id="acme",
+        demo_origin="dashboard_test",
+    )
+    ok = ToolResult(ok=True, tool="click_element", detail="clicked", duration_ms=1)
+    check_mock = MagicMock(
+        return_value=VerifyResult(passed=False, actual="text=Start not found")
+    )
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        return_value=(ok, "home"),
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        check_mock,
+    ):
+        outcome = run_flow_timeline(
+            deps,
+            session_id=uuid4(),
+            page_id="home",
+            flow_id="demo",
+            strict=True,
+        )
+    assert outcome.steps_run == 1
+    assert not outcome.failures
+    assert outcome.entries[0].verify.passed
+    check_mock.assert_not_called()
+
+
+def test_strict_verifying_pauses_on_action_fail():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"a": "text=A"},
+                flows={"demo": (_click("a"),)},
+            ),
+        },
+    )
+    call = _click("a")
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MagicMock(),
+        strict_playlist=True,
+        product_id="acme",
+    )
+    state = {
+        "session_id": uuid4(),
+        "page_id": "home",
+        "last_page_id": "home",
+        "executing_step": 0,
+        "walkthrough_step": 0,
+        "planned_next_step": 1,
+        "last_call": call,
+        "last_result": ToolResult(
+            ok=False,
+            tool="click_element",
+            detail="timeout",
+            duration_ms=15000,
+        ),
+        "pending_calls": [],
+    }
+    out = verifying(state, deps)  # type: ignore[arg-type]
+    assert out["walkthrough_step"] == 0
+    assert out.get("phase") == "walkthrough"
+    assert out.get("failures")

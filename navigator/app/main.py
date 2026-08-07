@@ -51,6 +51,7 @@ from navigator.client.content import (
     recorder_status,
     recording_base_url,
     remove_flow_from_yaml,
+    resolve_flow_page_id,
     start_recorder,
     stop_recorder,
 )
@@ -256,7 +257,13 @@ Providers = Annotated[
 ]
 
 
-def _reject_login_in_yaml(product_id: str, yaml_text: str, vault: CredentialVault) -> None:
+def _reject_login_in_yaml(
+    product_id: str,
+    yaml_text: str,
+    vault: CredentialVault,
+    *,
+    allow_flows: frozenset[tuple[str, str]] | None = None,
+) -> None:
     """Save/activate gate: login steps belong in Product Login, not in flows."""
     from navigator.automation.login_match import LoginConfig, assert_no_login_in_graph
 
@@ -264,7 +271,7 @@ def _reject_login_in_yaml(product_id: str, yaml_text: str, vault: CredentialVaul
     assert_no_login_in_graph(
         graph,
         LoginConfig(login_url=vault.login_url(product_id)),
-        include_login_in_default_flow=vault.include_login_in_default_flow(product_id),
+        allow_flows=allow_flows,
     )
 
 
@@ -625,13 +632,18 @@ def _run_live_demo(
 
     page_id = spec.page_id
     flow_id = spec.flow_id
-    if not page_id or not flow_id:
+    if spec.auto_play and graph.demo_playlist:
+        primary = graph.primary_flow()
+        if primary:
+            page_id, flow_id = primary
+    elif not page_id or not flow_id:
         primary = graph.primary_flow()
         if primary:
             page_id = page_id or primary[0]
             flow_id = flow_id or primary[1]
     page_id = page_id or next(iter(graph.pages), "")
-    flow_id = flow_id or settings.live_walkthrough_flow
+    if not flow_id:
+        flow_id = settings.live_walkthrough_flow
     try:
         graph.flow(page_id, flow_id)
     except SiteGraphError as exc:
@@ -1327,6 +1339,9 @@ class RecordStartBody(BaseModel):
     page_id: str = "dashboard"
     narrate: bool = False
     """Show the mic widget in the recorded page and transcribe the walkthrough."""
+    save_mode: str = Field(default="new", pattern="^(new|update)$")
+    target_flow_id: str | None = None
+    target_flow_name: str | None = None
 
 
 @app.get("/client/api/site-graph")
@@ -1782,14 +1797,27 @@ def client_record_start(
     def _live_login_config() -> LoginConfig:
         return LoginConfig(login_url=vault.login_url(product.product_id))
 
+    mode = body.save_mode.strip().lower()
+    if mode == "update":
+        fid = (body.target_flow_id or body.flow_id or "").strip()
+        if not fid:
+            raise HTTPException(
+                422, "target_flow_id required when save_mode is update"
+            ) from None
+        fname = (body.target_flow_name or body.flow_name).strip()
+    else:
+        fid = (body.flow_id or None)
+        fname = body.flow_name.strip()
+
     try:
         job = start_recorder(
             start_url=body.start_url.strip(),
-            flow_name=body.flow_name.strip(),
-            flow_id=(body.flow_id or None),
+            flow_name=fname,
+            flow_id=fid,
             headful=settings.headful,
             login_config_fn=_live_login_config,
             narrate=body.narrate,
+            save_mode=mode,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
@@ -1800,6 +1828,7 @@ def client_record_start(
         "active": True,
         "phase": job.phase,
         "narrate": bool(job.narration is not None),
+        "save_mode": job.save_mode,
     }
 
 
@@ -1834,17 +1863,35 @@ def client_record_stop(
     try:
         rev = registry.latest_revision(product.product_id)
         persona = parse_site_graph(rev.yaml).effective_persona()
+        pid = page_id or "dashboard"
+        update = getattr(job, "save_mode", "new") == "update"
+        if update:
+            resolved = resolve_flow_page_id(rev.yaml, job.flow_id)
+            if resolved:
+                pid = resolved
         new_yaml = merge_recorded_flow(
             rev.yaml,
             flow_name=job.flow_name,
             flow_id=job.flow_id,
-            page_id=page_id or "dashboard",
+            page_id=pid,
             steps=list(job.steps),
             product_name=persona.product_name,
             base_url=recording_base_url(job.start_url),
+            update_existing=update,
+            replace_steps=update,
         )
-        new_yaml, narrated = _attach_recorded_narration(new_yaml, job)
-        _reject_login_in_yaml(product.product_id, new_yaml, vault)
+        new_yaml, narrated = _attach_recorded_narration(
+            new_yaml,
+            job,
+            update_existing=update,
+            replace_steps=update,
+        )
+        _reject_login_in_yaml(
+            product.product_id,
+            new_yaml,
+            vault,
+            allow_flows=frozenset({(pid, job.flow_id)}),
+        )
         rev = registry.put_site_graph(
             product.product_id, new_yaml, "recorded", publish=False
         )
@@ -1867,66 +1914,193 @@ def client_record_stop(
     }
 
 
-def _attach_recorded_narration(yaml_text: str, job) -> tuple[str, int]:
+def _attach_recorded_narration(
+    yaml_text: str,
+    job,
+    *,
+    update_existing: bool = False,
+    replace_steps: bool = False,
+    prior_steps: int = 0,
+) -> tuple[str, int]:
     """Transcribe the host's walkthrough onto the flow they just recorded.
 
-    Writes the same `_meta` sections explore produces, so the demo-script
-    composer reads recorded narration through its existing path.
+    Always writes step_clicks + timing + placeholder narration so timeline
+    playback can run even when STT fails. STT overwrites lines when it succeeds.
     """
     narration = getattr(job, "narration", None)
-    if narration is None:
+    if narration is None or not job.steps:
         return yaml_text, 0
+
+    from navigator.automation.explore.runner import (
+        _append_narration,
+        _append_semantics,
+        _attach_meta,
+        groq_asker,
+    )
+    from navigator.automation.narration import (
+        narrate_recording,
+        placeholder_narration_lines,
+        step_timings_from_steps,
+    )
+    from navigator.automation.record_scrub import (
+        scrub_recorded_steps,
+        step_clicks_payload,
+        step_mouse_paths_payload,
+    )
+    from navigator.core.groq_keys import groq_key_candidates
+
+    scrubbed_steps = scrub_recorded_steps(list(job.steps))
+    if not scrubbed_steps:
+        return yaml_text, 0
+
+    clicks = step_clicks_payload(scrubbed_steps)
+    mouse_paths = step_mouse_paths_payload(scrubbed_steps)
+    step_times = [int(getattr(s, "at_ms", 0) or 0) for s in scrubbed_steps]
+    lines = placeholder_narration_lines(scrubbed_steps)
+    timings = step_timings_from_steps(step_times)
+
     audio = narration.audio()
-    if not audio or not job.steps:
-        return yaml_text, 0
+    keys = groq_key_candidates()
+    if audio and keys:
+        api_key = keys[0]
+        try:
+            stt_lines, stt_timings = narrate_recording(
+                audio=audio,
+                steps=scrubbed_steps,
+                api_key=api_key,
+                ask_text=groq_asker(api_key),
+                language=getattr(narration, "language", "auto") or "auto",
+                translate_to=getattr(narration, "translate_to", "same") or "same",
+            )
+            if any(str(l).strip() for l in stt_lines):
+                lines = stt_lines
+                if stt_timings:
+                    timings = stt_timings
+        except Exception as exc:  # noqa: BLE001
+            print(f"[record] narration STT failed (using placeholders): {exc}", flush=True)
+    elif audio and not keys:
+        print("[record] narration STT skipped: no Groq API keys", flush=True)
 
-    from navigator.automation.explore.runner import _attach_meta, groq_asker
-    from navigator.automation.narration import narrate_recording
+    semantics_payload = {
+        "purpose": "",
+        "auto_name": job.flow_name,
+        "steps": [
+            {"idx": i, "description": line}
+            for i, line in enumerate(lines)
+            if line.strip()
+        ],
+    }
 
-    api_key = settings.groq_api_key
-    if not api_key:
-        print("[record] narration skipped: no Groq API key", flush=True)
-        return yaml_text, 0
-
-    try:
-        lines, timings = narrate_recording(
-            audio=audio,
-            steps=list(job.steps),
-            api_key=api_key,
-            ask_text=groq_asker(api_key),
+    if update_existing and not replace_steps:
+        yaml_text = _append_narration(yaml_text, job.flow_id, lines)
+        yaml_text = _append_semantics(
+            yaml_text, job.flow_id, semantics_payload, offset=prior_steps
         )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[record] narration failed: {exc}", flush=True)
-        return yaml_text, 0
-
-    if not any(l.strip() for l in lines):
-        return yaml_text, 0
-
-    yaml_text = _attach_meta(
-        yaml_text, "narration_suggestions", job.flow_id, lines
-    )
-    yaml_text = _attach_meta(
-        yaml_text,
-        "semantics",
-        job.flow_id,
-        {
-            "purpose": "",
-            "auto_name": job.flow_name,
-            "steps": [
-                {"idx": i, "description": line}
-                for i, line in enumerate(lines)
-                if line.strip()
-            ],
-        },
-    )
-    if timings:
-        yaml_text = _attach_meta(yaml_text, "step_timing", job.flow_id, timings)
+        if timings:
+            shifted = [
+                {**row, "idx": int(row["idx"]) + prior_steps}
+                for row in timings
+                if isinstance(row, dict)
+            ]
+            yaml_text = _append_step_timing(yaml_text, job.flow_id, shifted)
+        if clicks:
+            yaml_text = _append_step_clicks(
+                yaml_text, job.flow_id, clicks, offset=prior_steps
+            )
+        if mouse_paths:
+            yaml_text = _append_step_mouse_paths(
+                yaml_text, job.flow_id, mouse_paths, offset=prior_steps
+            )
+    else:
+        yaml_text = _attach_meta(
+            yaml_text, "narration_suggestions", job.flow_id, lines
+        )
+        yaml_text = _attach_meta(
+            yaml_text, "semantics", job.flow_id, semantics_payload
+        )
+        if timings:
+            yaml_text = _attach_meta(yaml_text, "step_timing", job.flow_id, timings)
+        if clicks:
+            yaml_text = _attach_meta(yaml_text, "step_clicks", job.flow_id, clicks)
+        if mouse_paths:
+            yaml_text = _attach_meta(
+                yaml_text, "step_mouse_paths", job.flow_id, mouse_paths
+            )
+    narrated = sum(1 for l in lines if str(l).strip())
     print(
-        f"[record] narration: {sum(1 for l in lines if l.strip())}/{len(lines)} "
-        "steps have spoken lines",
+        f"[record] narration: {narrated}/{len(lines)} steps have spoken lines",
         flush=True,
     )
-    return yaml_text, sum(1 for l in lines if l.strip())
+    return yaml_text, narrated
+
+
+def _append_step_timing(
+    yaml_text: str, flow_id: str, new_rows: list[dict[str, int]]
+) -> str:
+    """Update mode: keep prior timing rows, append new ones with shifted idx."""
+    import yaml as _yaml
+
+    from navigator.automation.explore.runner import _attach_meta
+
+    raw = _yaml.safe_load(yaml_text)
+    prior: list[dict[str, int]] = []
+    if isinstance(raw, dict):
+        bucket = ((raw.get("_meta") or {}).get("step_timing") or {})
+        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
+            prior = [r for r in bucket[flow_id] if isinstance(r, dict)]
+    return _attach_meta(yaml_text, "step_timing", flow_id, prior + new_rows)
+
+
+def _append_step_clicks(
+    yaml_text: str,
+    flow_id: str,
+    new_rows: list[dict[str, int]],
+    *,
+    offset: int = 0,
+) -> str:
+    """Update mode: keep prior click rows, append new ones with shifted idx."""
+    import yaml as _yaml
+
+    from navigator.automation.explore.runner import _attach_meta
+
+    raw = _yaml.safe_load(yaml_text)
+    prior: list[dict[str, int]] = []
+    if isinstance(raw, dict):
+        bucket = ((raw.get("_meta") or {}).get("step_clicks") or {})
+        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
+            prior = [r for r in bucket[flow_id] if isinstance(r, dict)]
+    shifted = [
+        {**row, "idx": int(row["idx"]) + offset}
+        for row in new_rows
+        if isinstance(row, dict)
+    ]
+    return _attach_meta(yaml_text, "step_clicks", flow_id, prior + shifted)
+
+
+def _append_step_mouse_paths(
+    yaml_text: str,
+    flow_id: str,
+    new_rows: list[dict],
+    *,
+    offset: int = 0,
+) -> str:
+    """Update mode: keep prior mouse-path rows, append new ones with shifted idx."""
+    import yaml as _yaml
+
+    from navigator.automation.explore.runner import _attach_meta
+
+    raw = _yaml.safe_load(yaml_text)
+    prior: list[dict] = []
+    if isinstance(raw, dict):
+        bucket = ((raw.get("_meta") or {}).get("step_mouse_paths") or {})
+        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
+            prior = [r for r in bucket[flow_id] if isinstance(r, dict)]
+    shifted = [
+        {**row, "idx": int(row["idx"]) + offset}
+        for row in new_rows
+        if isinstance(row, dict)
+    ]
+    return _attach_meta(yaml_text, "step_mouse_paths", flow_id, prior + shifted)
 
 
 # -- autonomous exploration ---------------------------------------------------

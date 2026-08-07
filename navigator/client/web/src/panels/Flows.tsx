@@ -36,6 +36,7 @@ import {
   Input,
   Select,
   StatusPill,
+  Switch,
   ConfirmDialog,
 } from "../components/ui";
 import { errText, useUi } from "../store";
@@ -87,6 +88,11 @@ export function Flows() {
   const [capturedSteps, setCapturedSteps] = useState(0);
   const [recName, setRecName] = useState("");
   const [recUrl, setRecUrl] = useState("");
+  const [recNarrate, setRecNarrate] = useState(true);
+  const [recSaveMode, setRecSaveMode] = useState<"new" | "update">("new");
+  const [recTargetFlowId, setRecTargetFlowId] = useState("");
+  const [recNarrating, setRecNarrating] = useState(false);
+  const [narrationChunks, setNarrationChunks] = useState(0);
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
@@ -115,6 +121,7 @@ export function Flows() {
       exploreStatus.flow_id &&
       rows?.some((r) => r.flow_id === exploreStatus.flow_id)
     );
+  const recordFlows = (rows ?? []).filter((f) => !!f.flow_id?.trim());
 
   const load = useCallback(async () => {
     try {
@@ -164,6 +171,8 @@ export function Flows() {
       setRecPhase(s.phase || "");
       setSetupDiscarded(s.setup_discarded ?? 0);
       setCapturedSteps(s.steps ?? 0);
+      setRecNarrating(!!s.narrate);
+      setNarrationChunks(s.narration_chunks ?? 0);
       if (!active) {
         stopPolling();
         load();
@@ -175,16 +184,37 @@ export function Flows() {
 
   const startRecord = async () => {
     if (!recUrl.trim()) return err("Enter your product start URL.");
-    if (!recName.trim()) return err("Flow name required.");
+    if (recSaveMode === "new" && !recName.trim()) return err("Flow name required.");
+    if (recSaveMode === "update" && !recTargetFlowId.trim()) {
+      return err("Pick a flow to update, or switch to Create new flow.");
+    }
+    const target = recordFlows.find((f) => f.flow_id === recTargetFlowId);
+    const flowName =
+      recSaveMode === "update" ? target?.name || recTargetFlowId : recName.trim();
     try {
-      await api.recordStart(recUrl.trim(), recName.trim());
+      const r = await api.recordStart(recUrl.trim(), flowName, {
+        narrate: recNarrate,
+        save_mode: recSaveMode,
+        target_flow_id: recSaveMode === "update" ? recTargetFlowId : undefined,
+        target_flow_name: recSaveMode === "update" ? flowName : undefined,
+      });
       setRecording(true);
       setRecPhase("setup");
       setSetupDiscarded(0);
       setCapturedSteps(0);
+      setRecNarrating(!!r.narrate);
+      setNarrationChunks(0);
       stopPolling();
       timer.current = window.setInterval(poll, 1500);
-      ok("Setup — log in and navigate to where the flow should begin, then Start capturing.");
+      ok(
+        recSaveMode === "update"
+          ? recNarrate
+            ? `Setup — replacing ${flowName}. Click Narrate (top-right in browser) when ready.`
+            : `Setup — replacing ${flowName}. Log in, then Start capturing.`
+          : recNarrate
+            ? "Setup — log in, then Start capturing. Click Narrate (top-right in browser) to speak while you click."
+            : "Setup — log in and navigate to where the flow should begin, then Start capturing.",
+      );
     } catch (e) {
       err(errText(e));
     }
@@ -212,13 +242,17 @@ export function Flows() {
       stopPolling();
       await load();
       const flagged = r.flagged?.length ?? 0;
+      const narrated = r.narrated_steps ?? 0;
       const base = r.error
         ? `Stopped with error: ${r.error}`
         : `Recorded ${r.steps} steps.`;
       const extra =
-        flagged > 0
+        (flagged > 0
           ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"} (re-record after login if unexpected).`
-          : "";
+          : "") +
+        (narrated > 0
+          ? ` Narration aligned to ${narrated} step${narrated === 1 ? "" : "s"}.`
+          : "");
       ok(base + extra);
     } catch (e) {
       err(errText(e));
@@ -246,7 +280,7 @@ export function Flows() {
       const playlist = d.playlist ?? rows;
       setRows(playlist);
       applyPlaylist(playlist);
-      ok("Flow playlist saved.");
+      ok("Flow playlist saved — open Site graph to review demo_playlist order.");
     } catch (e) {
       err(errText(e));
     }
@@ -307,7 +341,7 @@ export function Flows() {
     <motion.div variants={stagger()} initial="hidden" animate="show" className="grid gap-4">
       <Card>
         <CardTitle
-          hint="Playlist order for guided demos. The top row is the default walkthrough."
+          hint="Playlist order for guided demos. Top row runs first; demo continues down the list."
           right={
             <div className="flex gap-2">
               <Button
@@ -523,19 +557,93 @@ export function Flows() {
 
       <Card>
         <CardTitle
-          hint="Opens a browser, records your clicks, and merges them into the site graph as a new flow."
+          hint="Opens a browser, records clicks, and saves a new flow or replaces an existing one in place."
           right={<StatusPill status={recording ? "recording" : "idle"} />}
         >
           Record a flow
         </CardTitle>
         <div className="grid gap-x-3 sm:grid-cols-2">
-          <Field label="Flow name">
-            <Input value={recName} onChange={setRecName} placeholder="e.g. onboarding tour" />
+          <Field label="Save result as">
+            <div
+              className="flex rounded-lg border p-0.5"
+              style={{ borderColor: "var(--line)" }}
+            >
+              <button
+                type="button"
+                disabled={recording}
+                onClick={() => setRecSaveMode("new")}
+                className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
+                  recSaveMode === "new"
+                    ? "bg-[var(--text)] text-[var(--bg)]"
+                    : "text-[var(--muted)] hover:text-[var(--text)]"
+                }`}
+              >
+                Create new flow
+              </button>
+              <button
+                type="button"
+                disabled={recording}
+                onClick={() => setRecSaveMode("update")}
+                className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
+                  recSaveMode === "update"
+                    ? "bg-[var(--text)] text-[var(--bg)]"
+                    : "text-[var(--muted)] hover:text-[var(--text)]"
+                }`}
+              >
+                Update existing
+              </button>
+            </div>
           </Field>
-          <Field label="Start URL">
-            <Input value={recUrl} onChange={setRecUrl} placeholder="https://your-product.example/" />
-          </Field>
+          {recSaveMode === "update" ? (
+            <Field label="Flow to replace">
+              <Select
+                disabled={recording || recordFlows.length === 0}
+                value={recTargetFlowId}
+                onChange={setRecTargetFlowId}
+                options={[
+                  { value: "", label: "Select a flow…" },
+                  ...recordFlows.map((f) => ({
+                    value: f.flow_id,
+                    label: `${f.name || f.flow_id}${
+                      stepCount[f.flow_id] != null
+                        ? ` · ${stepCount[f.flow_id]} steps`
+                        : ""
+                    }`,
+                  })),
+                ]}
+              />
+              {recordFlows.length === 0 && (
+                <p className="mt-1 text-[0.68rem] text-[var(--muted)]">
+                  No flows yet — create new first.
+                </p>
+              )}
+            </Field>
+          ) : (
+            <Field label="Flow name">
+              <Input
+                value={recName}
+                onChange={setRecName}
+                disabled={recording}
+                placeholder="e.g. onboarding tour"
+              />
+            </Field>
+          )}
         </div>
+        <Field label="Start URL">
+          <Input
+            value={recUrl}
+            onChange={setRecUrl}
+            disabled={recording}
+            placeholder="https://your-product.example/"
+          />
+        </Field>
+        <Switch
+          checked={recNarrate}
+          onChange={setRecNarrate}
+          disabled={recording}
+          label="Narrate while recording"
+          description="Mic widget in browser (top-right): language, translate, record/pause/play. Script is cleaned and grammar-fixed when you stop."
+        />
         <div className="flex flex-wrap gap-2">
           <Button onClick={startRecord} disabled={recording}>
             <Circle size={13} /> Start setup
@@ -573,9 +681,22 @@ export function Flows() {
               />
               <p className="text-[0.72rem] text-[var(--muted)] leading-relaxed">
                 {recPhase === "capturing"
-                  ? "Only actions from this point are saved as the flow."
-                  : "Log in and get to the flow’s starting screen. Nothing is saved yet."}
+                  ? recNarrating
+                    ? "Only actions from this point are saved. Click Narrate in the browser (top-right) to record your voice."
+                    : recSaveMode === "update"
+                      ? "New recording replaces the selected flow from this point."
+                      : "Only actions from this point are saved as the flow."
+                  : recNarrating
+                    ? "Log in and get to the starting screen. Use the Narrate widget in the browser when you begin capturing."
+                    : recSaveMode === "update"
+                      ? "Log in and navigate to where the new walkthrough should begin. Old steps are discarded on stop."
+                      : "Log in and get to the flow’s starting screen. Nothing is saved yet."}
               </p>
+              {recNarrating && narrationChunks > 0 && (
+                <p className="text-[0.72rem] text-emerald-600 dark:text-emerald-400">
+                  Voice captured — {narrationChunks} audio chunk{narrationChunks === 1 ? "" : "s"}.
+                </p>
+              )}
             </div>
           </div>
         )}

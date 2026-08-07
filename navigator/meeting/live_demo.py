@@ -1,4 +1,4 @@
-"""Live meeting demo: bot-first join → quick greet → screenshare → demo graph.
+"""Live meeting demo: bot-first join → intake Q&A → screenshare → demo graph.
 
 Meet and Zoom: tunnel /view → enable_screenshare after join (Zoom needs web SDK).
 
@@ -6,7 +6,7 @@ Order (what the prospect experiences):
 
   1. Bot joins quietly (voice agent resources reserved)
   2. Join link shared once bot is in the meeting
-  3. Wait for human → brief settle → quick greet (no long Q&A)
+  3. Wait for human → intake greet + questions + pitch (before screen share)
   4. Browser opens on start page (or login page when login is part of the demo)
      → screenshare armed
   5. Kickoff line → visible login if opted in → agent walkthrough
@@ -41,6 +41,7 @@ from navigator.meeting.intake import (
     demo_kickoff_line,
     intake_from_prefill,
     quick_greet_line,
+    run_intake,
 )
 from navigator.meeting.meet_speaker import MeetSpeaker
 from navigator.meeting.relay import push_frame, start_relay
@@ -93,7 +94,8 @@ def _wait_meet_utterance(
     def frames():
         while time.monotonic() < deadline:
             try:
-                yield inbound.get(timeout=0.4)
+                # Tight poll — 400ms empty waits added dead air after user stopped.
+                yield inbound.get(timeout=0.05)
             except Empty:
                 continue
 
@@ -133,6 +135,10 @@ def show_login_on_screenshare(
     include_login_in_default_flow: bool,
 ) -> bool:
     """True when the prospect should see the login form before auth runs."""
+    from navigator.automation.login_match import playlist_has_login_flow
+
+    if playlist_has_login_flow(graph):
+        return False
     if include_login_in_default_flow:
         return True
     playlist = sorted(graph.demo_playlist or [], key=lambda x: x.order)
@@ -474,6 +480,7 @@ def run_live_meet_demo(
     use_turn_brain: bool | None = None,
     handoff_webhook_url: str = "",
     agent_settings=None,
+    demo_origin: str = "dashboard_test",
 ) -> str:
     """Join Meet, qualify prospect, then share screen and run demo. Returns bot id.
 
@@ -530,6 +537,11 @@ def run_live_meet_demo(
             fish_client=fish_byok,
         )
     spoken_language: str = agent_settings.default_language or settings.default_spoken_language
+    print(
+        f"[live] spoken language default={spoken_language!r} "
+        f"(extras={list(agent_settings.extra_languages)})",
+        flush=True,
+    )
     speaker = _require_tts_for_meet(
         mute=mute,
         spoken_language=spoken_language,
@@ -541,7 +553,8 @@ def run_live_meet_demo(
     # Warm synthesizer so first Meet utterance isn't cold.
     if hasattr(speaker, "synthesize_wav"):
         try:
-            speaker.synthesize_wav("Ready.")  # type: ignore[union-attr]
+            warm = "तैयार।" if spoken_language == "hi" else "Ready."
+            speaker.synthesize_wav(warm)  # type: ignore[union-attr]
             kind = type(speaker).__name__
             print(f"[live] TTS warmed ({kind})", flush=True)
         except Exception as exc:  # noqa: BLE001
@@ -740,6 +753,13 @@ def run_live_meet_demo(
             set_avatar_state=relay.set_avatar_state,
         )
         speaker_box.append(meet_speaker)
+        from navigator.voice.language import apply_to_speakers
+
+        apply_to_speakers(
+            spoken_language,  # type: ignore[arg-type]
+            speaker,
+            meet_speaker,
+        )
         if audio_bridge is not None and settings.groq_api_key:
             from navigator.meeting.barge_in import make_barge_in_checker
             from navigator.voice.stt import transcribe as _stt
@@ -775,16 +795,12 @@ def run_live_meet_demo(
                     or ""
                 )
                 print(f"[live] human joined: {human_name!r}", flush=True)
-                if merged_prefill.get("name") is None and human_name:
-                    merged_prefill["name"] = human_name
+                # Meet display name is not intake — ask unless landing page prefilled.
                 settle = max(0.0, settings.live_human_settle_s)
                 if settle:
-                    print(f"[live] settle {settle:.1f}s before greet…", flush=True)
+                    print(f"[live] settle {settle:.1f}s before intake…", flush=True)
                     time.sleep(settle)
-                relay.set_status("speaking", "Greeting…")
-                meet_speaker.say(
-                    quick_greet_line(facing, merged_prefill.get("name", human_name))
-                )
+                relay.set_status("listening", "Getting to know you…")
                 _start_human_leave_watcher(
                     client=client,
                     bot_id=bot.id,
@@ -806,21 +822,62 @@ def run_live_meet_demo(
                     input()
                 else:
                     print(
-                        "[live] no join event — quick greet anyway",
+                        "[live] no join event — running intake anyway",
                         flush=True,
                     )
-                relay.set_status("speaking", "Greeting…")
-                meet_speaker.say(quick_greet_line(facing, merged_prefill.get("name", "")))
 
-        intake = intake_from_prefill(merged_prefill, human_name=human_name)
-        print(f"[live] intake (prefill): {intake.model_dump()}", flush=True)
+        def _intake_listen(prompt: str) -> str:
+            if audio_bridge is not None and settings.groq_api_key:
+                return _wait_meet_utterance(
+                    audio_bridge.inbound,
+                    prompt=prompt,
+                    api_key=settings.groq_api_key,
+                    timeout_s=float(
+                        getattr(
+                            brain_config,
+                            "listen_timeout_s",
+                            settings.brain_listen_timeout_s,
+                        )
+                        if brain_config is not None
+                        else settings.brain_listen_timeout_s
+                    ),
+                    audio_bridge=audio_bridge,
+                )
+            if interactive_listen:
+                try:
+                    return input(f"[intake] {prompt}\n> ").strip()
+                except EOFError:
+                    return ""
+            return ""
+
+        can_listen = bool(
+            (audio_bridge is not None and settings.groq_api_key) or interactive_listen
+        )
+        extra_langs = tuple(agent_settings.extra_languages)
+        # Regex clean only — Groq extract after every answer felt stuck.
+        intake, spoken_language = run_intake(
+            persona=facing,
+            speaker=meet_speaker,
+            interactive=interactive_listen,
+            listen=_intake_listen if can_listen else None,
+            prefill=merged_prefill or None,
+            will_share_screen=True,
+            spoken_language=spoken_language,  # type: ignore[arg-type]
+            agent_gender=agent_settings.agent_gender,
+            extra_languages=extra_langs,  # type: ignore[arg-type]
+            fast_extract=True,
+        )
+        apply_to_speakers(spoken_language, speaker, meet_speaker)  # type: ignore[arg-type]
+        print(f"[live] intake ({spoken_language}): {intake.model_dump()}", flush=True)
         from navigator.meeting.intake import preferred_flow_id
 
         hint = preferred_flow_id(intake.looking_for)
         if hint:
             print(f"[live] intake suggests flow {hint!r} for looking_for", flush=True)
 
-        conversational = bool(settings.groq_api_key)
+        conversational = bool(settings.groq_api_key) and not bool(
+            auto_play and graph_cfg.demo_playlist
+        )
 
         audio_frames = None
         if audio_bridge is not None:
@@ -828,10 +885,13 @@ def run_live_meet_demo(
             print("[live] Meet audio STT armed", flush=True)
 
         session_id = session_id or uuid4()
-        live_opening_done = False
+        live_opening_done = True
         with ActionLog(settings.db_path) as log, sync_playwright() as pw:
             browser = pw.chromium.launch(headless=not headful)
-            context = browser.new_context(viewport={"width": 1280, "height": 720})
+            context = browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                device_scale_factor=1,
+            )
             page = context.new_page()
             install_cursor(page)
 
@@ -897,13 +957,23 @@ def run_live_meet_demo(
             if not (login_email and login_password):
                 login_email = settings.product_login_email
                 login_password = settings.product_login_password
+            from navigator.automation.login_match import (
+                playlist_has_login_flow,
+                same_page_path,
+            )
+
+            playlist_login = playlist_has_login_flow(graph_cfg)
+            if auto_play:
+                first = graph_cfg.primary_flow()
+                if first:
+                    page_id, flow_id = first
             start_spec = graph_cfg.page(page_id)
-            hold_url = urljoin(origin, start_spec.url.lstrip("/"))
-            from navigator.automation.login_match import same_page_path
+            hold_url = urljoin(origin, start_spec.url.lstrip("/") or "/")
 
             show_login = bool(
                 login_email
                 and login_password
+                and not playlist_login
                 and show_login_on_screenshare(
                     graph_cfg,
                     login_url=login_url or "",
@@ -911,7 +981,15 @@ def run_live_meet_demo(
                 )
             )
 
-            if login_email and login_password:
+            if playlist_login:
+                print(
+                    "[live] playlist includes a login walkthrough — "
+                    "skipping pre-demo sign-in; flows run as recorded",
+                    flush=True,
+                )
+                print(f"[live] opening start page: {hold_url}", flush=True)
+                page.goto(hold_url, wait_until="domcontentloaded", timeout=60_000)
+            elif login_email and login_password:
                 if not login_url:
                     login_url = settings.product_url.strip() or origin
                 if "fixtures" in login_url or login_url.endswith(".html"):
@@ -978,10 +1056,9 @@ def run_live_meet_demo(
 
             relay.set_status("speaking", "Starting demo…")
             try:
-                meet_speaker.say(demo_kickoff_line())
+                meet_speaker.say(demo_kickoff_line(lang=spoken_language))  # type: ignore[arg-type]
             except Exception as exc:  # noqa: BLE001
                 print(f"[live] kickoff TTS skipped: {exc}", flush=True)
-            live_opening_done = True
 
             if show_login:
                 print("[live] signing in on screenshare…", flush=True)
@@ -1105,12 +1182,25 @@ def run_live_meet_demo(
                         return ""
                 return ""
 
+            meet_speaker.stop_event = stop_event  # type: ignore[attr-defined]
+
+            strict_playlist = bool(graph_cfg.demo_playlist)
+            if strict_playlist:
+                tier2_enabled = False
+                use_turn_brain = False
+
+            playlist_demo = bool(auto_play and graph_cfg.demo_playlist)
+
             deps = CallDeps(
                 graph=graph_cfg,
                 page=page,
                 log=log,
                 speaker=meet_speaker,
-                scripted_flow=None if conversational else (page_id, flow_id),
+                scripted_flow=(
+                    None
+                    if conversational or playlist_demo
+                    else (page_id, flow_id)
+                ),
                 product_id=product_id or graph_cfg.site or "default",
                 archive_dir=Path("archives"),
                 groq_api_key=provider_keys["groq"] or None,
@@ -1144,20 +1234,66 @@ def run_live_meet_demo(
                 extra_languages=tuple(agent_settings.extra_languages),
                 agent_gender=agent_settings.agent_gender,
                 live_opening_done=live_opening_done,
+                playlist_only=bool(graph_cfg.demo_playlist),
+                auto_advance_walkthrough=bool(
+                    auto_play and graph_cfg.demo_playlist
+                ),
+                strict_playlist=strict_playlist,
+                demo_origin=(
+                    demo_origin
+                    if demo_origin in ("dashboard_test", "public_embed")
+                    else "dashboard_test"
+                ),  # type: ignore[arg-type]
             )
 
-            mode = "conversational (LLM flow / handoff)" if conversational else f"scripted {page_id}/{flow_id}"
-            print(f"[live] running demo graph ({mode})", flush=True)
-            _check_stop(stop_event)
-            final = build_graph(deps).invoke(
-                initial_state(
-                    session_id,
-                    page_id,
-                    max_turns=settings.live_max_turns,
-                    walkthrough_flow_id=flow_id or settings.live_walkthrough_flow,
-                    auto_play=auto_play,
-                )
+            from navigator.agent.recorded_playback import (
+                playlist_timeline_ready,
+                run_playlist_timeline,
             )
+
+            use_timeline = playlist_demo and playlist_timeline_ready(graph_cfg)
+            mode = (
+                "conversational (LLM flow / handoff)"
+                if conversational
+                else f"scripted {page_id}/{flow_id}"
+            )
+            if use_timeline:
+                engine_label = "timeline playback for narrated playlist"
+            elif playlist_demo:
+                engine_label = "strict YAML replay for demo playlist"
+            else:
+                engine_label = f"demo graph ({mode})"
+            print(f"[live] running demo ({mode}) engine={engine_label}", flush=True)
+            _check_stop(stop_event)
+            if use_timeline:
+                print("[live] timeline playback for narrated playlist", flush=True)
+                final = run_playlist_timeline(
+                    deps,
+                    session_id=session_id,
+                    auto_play=auto_play,
+                    strict=strict_playlist,
+                )
+            elif playlist_demo:
+                print("[live] strict YAML replay for demo playlist", flush=True)
+                from navigator.agent.recorded_playback import run_playlist_strict
+
+                final = run_playlist_strict(
+                    deps,
+                    session_id=session_id,
+                    auto_play=auto_play,
+                    strict=strict_playlist,
+                )
+            else:
+                print(f"[live] running demo graph ({mode})", flush=True)
+                final = build_graph(deps).invoke(
+                    initial_state(
+                        session_id,
+                        page_id,
+                        max_turns=settings.live_max_turns,
+                        walkthrough_flow_id=flow_id or settings.live_walkthrough_flow,
+                        auto_play=auto_play,
+                    )
+                )
             _push()
             failures = len(final.get("failures") or [])
             print(

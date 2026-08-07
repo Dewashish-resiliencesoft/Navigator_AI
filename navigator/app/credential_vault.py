@@ -193,12 +193,7 @@ class CredentialVault:
         return "" if row is None else row["login_url"]
 
     def include_login_in_default_flow(self, product_id: str) -> bool:
-        """Per-product opt-in, Default flow only.
-
-        Topic flows ignore this outright -- a Topic detour fires mid-demo, when
-        the browser is already past login, so replaying a login there would log
-        the End User out of the session they are watching.
-        """
+        """Per-product opt-in: show login on screenshare before silent sign-in."""
         row = self._row(product_id)
         return False if row is None else bool(row["include_login_in_default_flow"])
 

@@ -38,6 +38,56 @@ _DENIED_HINT = re.compile(
     re.I,
 )
 
+_LOGIN_FLOW_NAME = re.compile(
+    r"(login|log_in|sign_in|signin|auth|authentication|signup|sign_up|onboard)",
+    re.I,
+)
+
+
+def playlist_has_login_flow(graph: "SiteGraph") -> bool:
+    """True when demo_playlist already includes a recorded sign-in walkthrough.
+
+    When True, the runtime must not pre-authenticate — the recorded flow is what
+    the prospect sees, and narration must match the login UI on screen.
+    """
+    for item in sorted(graph.demo_playlist or [], key=lambda x: x.order):
+        if flow_is_login_walkthrough(graph, item.page_id, item.flow_id, item.name):
+            return True
+    return False
+
+
+def name_suggests_login_walkthrough(
+    flow_id: str = "",
+    flow_name: str = "",
+) -> bool:
+    """True when flow id/name looks like an intentional sign-in recording."""
+    fid = (flow_id or "").strip()
+    if fid and _LOGIN_FLOW_NAME.search(fid):
+        return True
+    name = (flow_name or "").strip()
+    return bool(name and _LOGIN_FLOW_NAME.search(name))
+
+
+def flow_is_login_walkthrough(
+    graph: "SiteGraph",
+    page_id: str,
+    flow_id: str,
+    flow_name: str | None = None,
+) -> bool:
+    """True when this playlist entry is an intentional recorded sign-in demo."""
+    fid = (flow_id or "").strip()
+    if not fid:
+        return False
+    if name_suggests_login_walkthrough(fid, flow_name):
+        return True
+    # Match playlist row by id even when only the name was set at record time.
+    for item in graph.demo_playlist or []:
+        if item.flow_id != fid or item.page_id != page_id:
+            continue
+        if _LOGIN_FLOW_NAME.search(item.name or ""):
+            return True
+    return False
+
 
 @dataclass(frozen=True)
 class LoginConfig:
@@ -130,23 +180,40 @@ def assert_no_login_in_graph(
     graph: SiteGraph,
     config: LoginConfig,
     *,
-    include_login_in_default_flow: bool = False,
+    allow_flows: frozenset[tuple[str, str]] | None = None,
 ) -> None:
     """Reject flows that still target login / credential fields.
 
     Raises SiteGraphError with a Client-facing message: re-record after login,
-    not a generic validation failure. Topic flows never get the Default-flow
-    exception -- a mid-demo Topic must not log the End User out.
+    not a generic validation failure. Playlist flows may include sign-in when
+    recorded intentionally; topic flows (not in demo_playlist) must not.
     """
     from navigator.core.schemas import FillField, tool_selector
     from navigator.knowledge.site_graph import SiteGraphError
 
-    default = graph.primary_flow()
     for page_id, page in graph.pages.items():
         page_url = graph.url_for(page_id)
         for flow_id, calls in page.flows.items():
-            is_default = default == (page_id, flow_id)
-            allow = include_login_in_default_flow and is_default
+            playlist_name = next(
+                (
+                    item.name
+                    for item in (graph.demo_playlist or [])
+                    if item.page_id == page_id and item.flow_id == flow_id
+                ),
+                None,
+            )
+            in_playlist = any(
+                item.page_id == page_id and item.flow_id == flow_id
+                for item in (graph.demo_playlist or [])
+            )
+            allow = (
+                flow_is_login_walkthrough(graph, page_id, flow_id, playlist_name)
+                or in_playlist
+                or (
+                    allow_flows is not None
+                    and (page_id, flow_id) in allow_flows
+                )
+            )
             for i, call in enumerate(calls):
                 sel = tool_selector(call) or ""
                 reason = looks_like_login(
@@ -176,11 +243,17 @@ def assert_no_login_in_graph(
                     if call.value == VAULT_PASSWORD_SENTINEL and not allow:
                         reason = reason or "targets a password field"
                 if reason and not allow:
-                    kind = "Default" if is_default else "Topic"
+                    kind = "Playlist" if in_playlist else "Topic"
+                    hint = (
+                        " This flow is a recorded sign-in walkthrough — keep it "
+                        "in the demo playlist with a login/auth name."
+                        if _LOGIN_FLOW_NAME.search(flow_id or "")
+                        or _LOGIN_FLOW_NAME.search(playlist_name or "")
+                        else " Re-record starting after login — login belongs "
+                        "in Product Login, not in a topic flow. Add the flow to "
+                        "the demo playlist if sign-in should be part of the demo."
+                    )
                     raise SiteGraphError(
                         f"{kind} flow {flow_id!r} on page {page_id!r} step {i} "
-                        f"{reason}. Re-record starting after login — login belongs "
-                        "in Product Login, not in the flow. "
-                        "(Default flow only: turn on 'Include login as part of the "
-                        "Default flow's demo' if you intentionally want to show it.)"
+                        f"{reason}.{hint}"
                     )

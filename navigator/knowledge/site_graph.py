@@ -64,7 +64,7 @@ class SiteGraph(BaseModel):
     persona: Persona | None = None
     """How the agent introduces this product. Defaults from `site` when absent."""
     demo_playlist: tuple[DemoPlaylistItem, ...] = ()
-    """Ordered demo flows for ops console / default walkthrough pick."""
+    """Ordered demo flows — live demo runs these one by one from the top."""
     meta: dict[str, Any] = Field(default_factory=dict, alias="_meta")
     """Generated, Client-editable side data: narration suggestions, semantics.
 
@@ -103,6 +103,117 @@ class SiteGraph(BaseModel):
             return []
         return [str(x).strip() for x in entry if str(x).strip()]
 
+    def flow_step_timing(self, flow_id: str) -> dict[int, int]:
+        """step index → how long the human spent narrating it, in ms."""
+        section = self.meta.get("step_timing")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, int] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = int(row.get("speak_ms") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def flow_narration_lines(self, flow_id: str) -> list[str]:
+        """Per-step narration lines indexed by step (empty string when silent)."""
+        section = self.meta.get("narration_suggestions")
+        if not isinstance(section, dict):
+            return []
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return []
+        return [str(x) if x is not None else "" for x in entry]
+
+    def flow_step_clicks(self, flow_id: str) -> dict[int, int]:
+        """step index → milliseconds from flow start when the click happened."""
+        section = self.meta.get("step_clicks")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, int] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = int(row.get("at_ms") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def has_recorded_playback(self, flow_id: str) -> bool:
+        """True when timeline playback can run (narration + click schedule)."""
+        lines = self.flow_narration_lines(flow_id)
+        clicks = self.flow_step_clicks(flow_id)
+        if clicks and any(str(x).strip() for x in lines):
+            return True
+        if not any(str(x).strip() for x in lines):
+            return False
+        return bool(clicks or self.flow_step_timing(flow_id))
+
+    def flow_step_mouse_paths(self, flow_id: str) -> dict[int, list[dict[str, int]]]:
+        """step index → recorded mouse path points before the action."""
+        section = self.meta.get("step_mouse_paths")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, list[dict[str, int]]] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                idx = int(row["idx"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            points = row.get("points")
+            if not isinstance(points, list):
+                continue
+            parsed: list[dict[str, int]] = []
+            for pt in points:
+                if not isinstance(pt, dict):
+                    continue
+                try:
+                    parsed.append(
+                        {
+                            "x": int(pt.get("x") or 0),
+                            "y": int(pt.get("y") or 0),
+                            "at_ms": int(pt.get("at_ms") or 0),
+                        }
+                    )
+                except (TypeError, ValueError):
+                    continue
+            if parsed:
+                out[idx] = parsed
+        return out
+
+    def flow_pending_approvals(self, flow_id: str) -> dict[int, dict[str, Any]]:
+        """step index → approval record for mutating steps never executed."""
+        section = self.meta.get("pending_approvals")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = row
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
     def demo_script_meta(self) -> dict[str, Any]:
         """Client-edited demo script beats under `_meta.demo_script`."""
         section = self.meta.get("demo_script")
@@ -133,11 +244,21 @@ class SiteGraph(BaseModel):
         return None
 
     def primary_flow(self) -> tuple[str, str] | None:
-        """First playlist entry, else None."""
+        """First demo playlist entry — where auto-play demos start."""
         if not self.demo_playlist:
             return None
         first = sorted(self.demo_playlist, key=lambda x: x.order)[0]
         return first.page_id, first.flow_id
+
+    def playlist_pairs(self) -> tuple[tuple[str, str], ...]:
+        """(page_id, flow_id) rows in demo_playlist order."""
+        return tuple(
+            (item.page_id, item.flow_id)
+            for item in sorted(self.demo_playlist or [], key=lambda x: x.order)
+        )
+
+    def flow_in_playlist(self, page_id: str, flow_id: str) -> bool:
+        return (page_id, flow_id) in self.playlist_pairs()
 
     def page(self, page_id: str) -> PageSpec:
         try:

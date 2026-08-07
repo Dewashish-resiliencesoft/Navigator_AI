@@ -114,7 +114,35 @@ def test_show_login_on_screenshare_include_toggle():
     )
 
 
-def test_show_login_on_screenshare_first_playlist_login_flow():
+def test_show_login_off_when_playlist_has_auth_flow_even_if_toggle_on():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "dashboard": PageSpec(
+                name="dash",
+                url="/",
+                selectors={},
+                flows={"authentication_flow": ()},
+            ),
+        },
+        demo_playlist=[
+            DemoPlaylistItem(
+                page_id="dashboard",
+                flow_id="authentication_flow",
+                name="Authentication Flow",
+                order=1,
+            ),
+        ],
+    )
+    assert not show_login_on_screenshare(
+        graph, login_url="https://app.acme.test/login", include_login_in_default_flow=True
+    )
+
+
+def test_show_login_off_when_first_playlist_is_login_flow():
+    """Recorded login walkthrough replaces synthetic pre-demo sign-in."""
     graph = SiteGraph(
         version=1,
         site="acme",
@@ -129,7 +157,7 @@ def test_show_login_on_screenshare_first_playlist_login_flow():
             DemoPlaylistItem(page_id="login", flow_id="login_flow", order=1),
         ],
     )
-    assert show_login_on_screenshare(
+    assert not show_login_on_screenshare(
         graph, login_url="", include_login_in_default_flow=False
     )
 

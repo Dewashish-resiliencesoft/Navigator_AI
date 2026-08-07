@@ -3117,6 +3117,24 @@ components:
           - type: string
           - type: 'null'
           title: Focus Hint
+        include_paths:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          title: Include Paths
+        exclude_paths:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          title: Exclude Paths
+        exclude_labels:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          title: Exclude Labels
       type: object
       title: ExploreStartBody
     FillField:
@@ -3570,6 +3588,25 @@ components:
           type: string
           title: Page Id
           default: dashboard
+        narrate:
+          type: boolean
+          title: Narrate
+          default: false
+        save_mode:
+          type: string
+          pattern: ^(new|update)$
+          title: Save Mode
+          default: new
+        target_flow_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Flow Id
+        target_flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Flow Name
       type: object
       required:
       - start_url

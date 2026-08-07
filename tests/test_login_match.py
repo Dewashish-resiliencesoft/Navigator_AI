@@ -24,7 +24,7 @@ def test_password_field_by_type_and_autocomplete():
 
 def test_looks_like_login_url_and_selector():
     cfg = LoginConfig(login_url="https://acme.example/login")
-    assert looks_like_login(config=cfg, url="https://acme.example/login/") 
+    assert looks_like_login(config=cfg, url="https://acme.example/login/")
     assert looks_like_login(config=cfg, selector="#password")
     assert looks_like_login(config=cfg, element={"type": "password"})
     assert looks_like_login(config=cfg, url="https://acme.example/inbox") is None
@@ -71,18 +71,14 @@ demo_playlist:
 """.replace("{sentinel}", VAULT_PASSWORD_SENTINEL)
 
 
-def test_assert_rejects_topic_login_even_with_toggle():
+def test_assert_rejects_topic_login():
     graph = parse_site_graph(_GRAPH)
     cfg = LoginConfig(login_url="https://acme.example/login")
     with pytest.raises(SiteGraphError, match="Topic flow"):
-        assert_no_login_in_graph(
-            graph, cfg, include_login_in_default_flow=True
-        )
+        assert_no_login_in_graph(graph, cfg)
 
 
-def test_assert_allows_default_with_toggle():
-    yaml = _GRAPH.replace("topic_search", "default_walkthrough", 1)
-    # Make the password step the default flow instead.
+def test_assert_allows_playlist_login_rejects_same_flow_off_playlist():
     yaml = """
 version: 1
 site: acme
@@ -101,12 +97,122 @@ pages:
           expects: {check: visible, selector: password, timeout_ms: 1000}
 demo_playlist:
   - order: 1
-    name: Default
+    name: Walkthrough
     page_id: main
     flow_id: default_walkthrough
 """
     graph = parse_site_graph(yaml)
     cfg = LoginConfig(login_url="https://acme.example/login")
-    assert_no_login_in_graph(graph, cfg, include_login_in_default_flow=True)
-    with pytest.raises(SiteGraphError, match="Default flow"):
-        assert_no_login_in_graph(graph, cfg, include_login_in_default_flow=False)
+    assert_no_login_in_graph(graph, cfg)
+    yaml_no_playlist = yaml.replace(
+        "demo_playlist:\n  - order: 1\n    name: Walkthrough\n    page_id: main\n    flow_id: default_walkthrough\n",
+        "",
+    )
+    graph_no_playlist = parse_site_graph(yaml_no_playlist)
+    with pytest.raises(SiteGraphError, match="Topic flow"):
+        assert_no_login_in_graph(graph_no_playlist, cfg)
+
+
+def test_assert_allows_recorded_authentication_flow_without_toggle():
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      already_have_an_account_sign_in: "text=Sign in"
+    flows:
+      authentication_flow:
+        - tool: click_element
+          selector: already_have_an_account_sign_in
+          expects: {check: visible, selector: already_have_an_account_sign_in, timeout_ms: 5000}
+demo_playlist:
+  - order: 1
+    name: Authentication Flow
+    page_id: dashboard
+    flow_id: authentication_flow
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(graph, cfg)
+
+
+def test_assert_allows_onboarding_flow_sign_in_without_toggle():
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      sign_in: "text=Sign in"
+    flows:
+      onboarding_flow:
+        - tool: click_element
+          selector: sign_in
+          expects: {check: visible, selector: sign_in, timeout_ms: 5000}
+demo_playlist:
+  - order: 1
+    name: Onboarding
+    page_id: dashboard
+    flow_id: onboarding_flow
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(graph, cfg)
+
+
+def test_assert_allows_sign_in_when_flow_explicitly_allowed():
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      sign_in: "text=Sign in"
+    flows:
+      onboarding_flow:
+        - tool: click_element
+          selector: sign_in
+          expects: {check: visible, selector: sign_in, timeout_ms: 5000}
+demo_playlist: []
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(
+        graph,
+        cfg,
+        allow_flows=frozenset({("dashboard", "onboarding_flow")}),
+    )
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      sign_in: "text=Sign in"
+    flows:
+      getting_started:
+        - tool: click_element
+          selector: sign_in
+          expects: {check: visible, selector: sign_in, timeout_ms: 5000}
+demo_playlist:
+  - order: 1
+    name: Getting started
+    page_id: dashboard
+    flow_id: getting_started
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(graph, cfg)

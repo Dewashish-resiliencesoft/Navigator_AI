@@ -99,6 +99,10 @@ class _GeminiLiveEngine:
         try:
             return fut.result(timeout=90)
         except Exception as exc:  # noqa: BLE001
+            from navigator.core.gemini_keys import is_gemini_quota_error
+
+            if is_gemini_quota_error(exc):
+                raise
             print(f"[speak] gemini live failed: {exc}", flush=True)
             return None
 
@@ -219,16 +223,33 @@ class GeminiLiveSpeaker:
         voice_name: str = DEFAULT_VOICE,
         spoken_language: SpokenLanguage = "en",
     ) -> None:
-        self.api_key = (api_key or "").strip()
+        from navigator.core.gemini_keys import gemini_key_candidates
+
+        keys = gemini_key_candidates()
+        primary = (api_key or "").strip()
+        if primary and primary not in keys:
+            keys = [primary, *keys]
+        elif primary and not keys:
+            keys = [primary]
+        self._api_keys = keys
+        self._key_idx = 0
         self.model = model or DEFAULT_MODEL
         self.voice_name = voice_name or DEFAULT_VOICE
         self.spoken_language: SpokenLanguage = spoken_language
         self._engine: _GeminiLiveEngine | None = None
+        self._synth_lock = threading.Lock()
+
+    def _close_engine(self) -> None:
+        if self._engine is not None:
+            self._engine.close()
+            self._engine = None
 
     def _ensure_engine(self) -> _GeminiLiveEngine | None:
-        if self._engine is None and self.available():
+        if not self._api_keys or self._key_idx >= len(self._api_keys):
+            return None
+        if self._engine is None:
             self._engine = _GeminiLiveEngine(
-                self.api_key,
+                self._api_keys[self._key_idx],
                 model=self.model,
                 voice_name=self.voice_name,
                 spoken_language=self.spoken_language,
@@ -236,7 +257,7 @@ class GeminiLiveSpeaker:
         return self._engine
 
     def available(self) -> bool:
-        return bool(self.api_key)
+        return bool(self._api_keys)
 
     def set_language(self, lang: SpokenLanguage) -> None:
         if lang not in ("en", "hi"):
@@ -249,16 +270,63 @@ class GeminiLiveSpeaker:
     def synthesize_wav(self, text: str) -> bytes | None:
         if not text.strip():
             return None
-        engine = self._ensure_engine()
-        if engine is None:
-            return None
-        return engine.synthesize(text, spoken_language=self.spoken_language)
+        from navigator.core.gemini_keys import is_gemini_quota_error
 
+        # One Live session — concurrent recv from prefetch + say_async crashes.
+        with self._synth_lock:
+            while self._key_idx < len(self._api_keys):
+                engine = self._ensure_engine()
+                if engine is None:
+                    return None
+                try:
+                    wav = engine.synthesize(
+                        text, spoken_language=self.spoken_language
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    if is_gemini_quota_error(exc) and self._key_idx + 1 < len(
+                        self._api_keys
+                    ):
+                        print(
+                            "[speak] gemini live quota hit — switching to backup key",
+                            flush=True,
+                        )
+                        self._close_engine()
+                        self._key_idx += 1
+                        continue
+                    print(f"[speak] gemini live failed: {exc}", flush=True)
+                    wav = None
+                if wav:
+                    return wav
+                # Dead websocket / empty audio — rebuild session once, then next key.
+                print(
+                    "[speak] gemini live silent — resetting session",
+                    flush=True,
+                )
+                self._close_engine()
+                engine = self._ensure_engine()
+                if engine is not None:
+                    try:
+                        wav = engine.synthesize(
+                            text, spoken_language=self.spoken_language
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[speak] gemini live retry failed: {exc}", flush=True)
+                        wav = None
+                    if wav:
+                        return wav
+                if self._key_idx + 1 < len(self._api_keys):
+                    print(
+                        "[speak] gemini live still silent — next API key",
+                        flush=True,
+                    )
+                    self._close_engine()
+                    self._key_idx += 1
+                    continue
+                return None
+            return None
     def say(self, text: str) -> None:
         print(f"[speak] {text}", flush=True)
         _ = self.synthesize_wav(text)
 
     def close(self) -> None:
-        if self._engine is not None:
-            self._engine.close()
-            self._engine = None
+        self._close_engine()

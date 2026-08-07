@@ -134,6 +134,7 @@ def heuristic_pick(
     product_base: str = "",
     page_url: str = "",
     focus_hint: str = "",
+    skip: Callable[[dict[str, Any]], bool] | None = None,
 ) -> Choice | None:
     """Pick clear unvisited navigation without an LLM call.
 
@@ -148,6 +149,8 @@ def heuristic_pick(
         if product_base and element_is_external(el, product_base, page_url=page_url):
             continue
         if targets_visited_path(el, visited_paths):
+            continue
+        if skip is not None and skip(el):
             continue
         ranked.append((i, el))
     if not ranked:
@@ -175,6 +178,7 @@ def choose_next(
     known_bad: dict[str, int] | None = None,
     product_base: str = "",
     focus_hint: str = "",
+    skip: Callable[[dict[str, Any]], bool] | None = None,
     ask_text: Callable[[str], str] | None = None,
     ask_vision: Callable[[str, str], str] | None = None,
     screenshot: str = "",
@@ -192,6 +196,7 @@ def choose_next(
             product_base=product_base,
             page_url=url,
             focus_hint=focus_hint,
+            skip=skip,
         )
         if fast is not None:
             return fast
@@ -219,6 +224,7 @@ def choose_next(
         and not (
             product_base and element_is_external(e, product_base, page_url=url)
         )
+        and not (skip is not None and skip(e))
     ]
     # Deprioritize twice-failed keys in the LLM menu too, without removing them
     # entirely — an empty menu would force a stall when only known-bad remains.
@@ -263,6 +269,7 @@ def choose_next(
         known_bad=known_bad,
         product_base=product_base,
         page_url=url,
+        skip=skip,
     )
     if fast is not None:
         return fast

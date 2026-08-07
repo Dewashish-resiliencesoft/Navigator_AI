@@ -29,6 +29,16 @@ def _aborted(deps: CallDeps) -> bool:
     return ev is not None and getattr(ev, "is_set", lambda: False)()
 
 
+def _want_classify(deps: CallDeps) -> bool:
+    # Playlist / auto-advance: corrections rare; Groq classify after every
+    # utterance adds hundreds of ms before the next reply.
+    if getattr(deps, "playlist_only", False) or getattr(deps, "strict_playlist", False):
+        return False
+    if getattr(deps, "auto_advance_walkthrough", False):
+        return False
+    return True
+
+
 def listening(state: CallState, deps: CallDeps) -> CallState:
     if _aborted(deps) or getattr(deps.speaker, "bot_ended", False):
         return CallState(finished=True, phase="ending")
@@ -45,7 +55,7 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
             sync_call_language(deps, utterance)
             last = _last_entry(state, deps)
             is_correction = False
-            if last is not None:
+            if last is not None and _want_classify(deps):
                 try:
                     is_correction = classify_correction(
                         utterance,
@@ -72,7 +82,7 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
             print(f"[listen] on_user_utterance skipped: {exc}", flush=True)
     last = _last_entry(state, deps)
     is_correction = False
-    if last is not None:
+    if last is not None and _want_classify(deps):
         try:
             is_correction = classify_correction(
                 utterance,
@@ -95,6 +105,22 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
     anything_else = phase == "anything_else"
     walkthrough = phase == "walkthrough"
     awaiting_resume = phase == "awaiting_resume"
+
+    if walkthrough and getattr(deps, "auto_advance_walkthrough", False):
+        from navigator.voice.language import (
+            detect_language_switch,
+            poll_barge_in_language_switch,
+            sync_call_language,
+        )
+
+        poll_barge_in_language_switch(deps)
+        if deps.audio_frames is not None:
+            text = _from_audio(deps, silence_timeout=2.5)
+            if text:
+                sync_call_language(deps, text)
+                if detect_language_switch(text) is not None:
+                    return text
+        return ""
 
     if deps.audio_frames is not None:
         try:

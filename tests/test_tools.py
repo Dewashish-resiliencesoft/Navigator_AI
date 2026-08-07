@@ -17,7 +17,7 @@ def test_navigate_moves_page_id(page, site_graph):
     result, next_page = execute(page, site_graph, "inbox", call)
     assert result.ok
     assert next_page == "inbox"
-    assert "crm_dashboard.html" in result.detail
+    assert page.url == site_graph.url_for("inbox")
 
 
 def test_fill_field_writes_value(page, site_graph):

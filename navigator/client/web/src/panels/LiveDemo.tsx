@@ -402,7 +402,7 @@ export function LiveDemo() {
         >
           <Switch
             label="Show login during demo"
-            description="Share the login page on screenshare — visitors watch email fill in, password as dots, then Sign in. Off = silent sign-in before screen share."
+            description="When a login/auth flow is in your playlist, Navigator runs that recording instead of auto sign-in. Toggle only adds a synthetic login beat when no auth flow exists."
             checked={includeLogin}
             disabled={savingIncludeLogin || !loginUser.trim()}
             onChange={(v) => void saveIncludeLogin(v)}

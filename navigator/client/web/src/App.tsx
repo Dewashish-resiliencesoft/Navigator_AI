@@ -6,6 +6,7 @@ import { Overview } from "./panels/Overview";
 import { LiveDemo } from "./panels/LiveDemo";
 import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
+import { Execution } from "./panels/Execution";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
 import { Settings } from "./panels/Settings";
 import { ResourceMonitor } from "./panels/ResourceMonitor";
@@ -38,6 +39,7 @@ const PANELS: Record<string, () => React.ReactElement> = {
   demo: LiveDemo,
   logs: Logs,
   flows: Flows,
+  execution: Execution,
   graph: SiteGraph,
   knowledge: Knowledge,
   bio: Bio,
@@ -246,6 +248,7 @@ export default function App() {
     demo: "Start and monitor headful browser sessions in real-time.",
     logs: "Detailed action logs and transcripts for all demos.",
     flows: "Configure automated steps and sequences.",
+    execution: "Explore scope and mutating-step approvals before live demo.",
     graph: "Edit the site graph and page topology.",
     knowledge: "Manage knowledge snippets available to the agent.",
     bio: "Define company identity and product details.",

@@ -74,7 +74,7 @@ def test_session_token_expired(client, registry, monkeypatch):
     token = res.json()["token"]
     
     # Time travel
-    import navigator.app.session_tokens as st
+    import navigator.auth.session_tokens as st
     def fake_now(tz):
         from datetime import timedelta
         return datetime.now(timezone.utc) + timedelta(seconds=100)

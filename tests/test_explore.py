@@ -381,7 +381,8 @@ def test_explored_steps_merge_through_the_recorder_path():
     assert any(f.name.startswith("Explored") for f in graph.demo_playlist)
 
 
-def test_merge_update_existing_replaces_flow_without_dup_playlist():
+def test_merge_update_existing_appends_without_dup_playlist():
+    """Update mode extends the flow. Replacing it drops the earlier run's steps."""
     from navigator.client.content import merge_recorded_flow
     from navigator.knowledge.site_graph import parse_site_graph
     from navigator.automation.record import RecordedStep
@@ -392,10 +393,11 @@ def test_merge_update_existing_replaces_flow_without_dup_playlist():
         "    selectors:\n      body: body\n      inbox: '#inbox'\n"
         "    flows:\n      tour:\n        - tool: click_element\n"
         "          selector: inbox\n"
+        "          expects:\n            check: visible\n            selector: inbox\n"
         "demo_playlist:\n  - order: 1\n    name: Old Tour\n"
         "    page_id: explore\n    flow_id: tour\n"
     )
-    steps = [RecordedStep(tool="click_element", alias="inbox", selector="#inbox")]
+    steps = [RecordedStep(tool="click_element", alias="kanban", selector="#kanban")]
     once = merge_recorded_flow(
         base,
         flow_name="Updated Tour",
@@ -409,6 +411,7 @@ def test_merge_update_existing_replaces_flow_without_dup_playlist():
     graph = parse_site_graph(once)
     assert len([p for p in graph.demo_playlist if p.flow_id == "tour"]) == 1
     assert next(p for p in graph.demo_playlist if p.flow_id == "tour").name == "Updated Tour"
+    assert [c.selector for c in graph.flow("explore", "tour")] == ["inbox", "kanban"]
 
 
 def test_backtrack_to_same_path_not_added_to_demo_flow(monkeypatch):

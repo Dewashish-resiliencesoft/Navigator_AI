@@ -17,6 +17,7 @@ from navigator.knowledge.product_brief import load_product_brief, save_product_b
 from navigator.knowledge.site_graph import SiteGraph, SiteGraphError, parse_site_graph
 from navigator.automation.record import (
     CaptureGate,
+    NarrationCapture,
     RecordedStep,
     draft_site_graph,
     record_session,
@@ -223,6 +224,73 @@ def _slug_flow(name: str) -> str:
     return (s[:40] or "recorded_flow")
 
 
+def _is_stub_step(step: Any) -> bool:
+    """The `wait_for body` placeholder an empty recording leaves behind."""
+    if not isinstance(step, dict):
+        return False
+    return step.get("tool") == "wait_for" and step.get("selector") == "body"
+
+
+def resolve_flow_page_id(yaml_text: str, flow_id: str) -> str | None:
+    """Where a flow lives in the site graph — playlist first, then page scan."""
+    fid = (flow_id or "").strip()
+    if not fid:
+        return None
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        return None
+    for row in raw.get("demo_playlist") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("flow_id") or "").strip() != fid:
+            continue
+        pid = str(row.get("page_id") or "").strip()
+        if pid:
+            return pid
+    pages = raw.get("pages") or {}
+    if isinstance(pages, dict):
+        for pid, page in pages.items():
+            if not isinstance(page, dict):
+                continue
+            flows = page.get("flows")
+            if isinstance(flows, dict) and fid in flows:
+                return str(pid)
+    return None
+
+
+def _scrub_flow_from_other_pages(
+    pages: dict[str, Any], flow_id: str, *, keep_page_id: str
+) -> None:
+    """Drop ghost copies when a replace lands on the canonical page."""
+    fid = (flow_id or "").strip()
+    if not fid:
+        return
+    for pid, page in list(pages.items()):
+        if pid == keep_page_id or not isinstance(page, dict):
+            continue
+        flows = page.get("flows")
+        if isinstance(flows, dict) and fid in flows:
+            del flows[fid]
+
+
+def existing_flow_step_count(yaml_text: str, page_id: str, flow_id: str) -> int:
+    """Real (non-stub) steps already saved for a flow. 0 when absent.
+
+    Update-mode callers need this to offset appended `_meta` indices so beat
+    numbering stays aligned with the concatenated flow.
+    """
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        return 0
+    page = (raw.get("pages") or {}).get(page_id)
+    if not isinstance(page, dict):
+        return 0
+    steps = (page.get("flows") or {}).get(flow_id)
+    if not isinstance(steps, list):
+        return 0
+    return sum(1 for s in steps if not _is_stub_step(s))
+
+
 def merge_recorded_flow(
     yaml_text: str,
     *,
@@ -233,12 +301,16 @@ def merge_recorded_flow(
     product_name: str,
     base_url: str,
     update_existing: bool = False,
+    replace_steps: bool = False,
 ) -> str:
     raw = yaml.safe_load(yaml_text)
     if not isinstance(raw, dict):
         raise SiteGraphError("site graph must be a mapping")
+    from navigator.automation.record_scrub import scrub_recorded_steps
+
+    cleaned = scrub_recorded_steps(list(steps))
     draft = draft_site_graph(
-        base_url=base_url, product_name=product_name, steps=steps
+        base_url=base_url, product_name=product_name, steps=cleaned
     )
     draft_pages = draft.get("pages") or {}
     if not draft_pages:
@@ -276,18 +348,55 @@ def merge_recorded_flow(
                 "expects": {"check": "visible", "selector": "body"},
             }
         ]
+    # Explore update APPENDS. Manual record update REPLACES the whole flow.
+    existing = flows.get(flow_id) if update_existing else None
+    if (
+        update_existing
+        and not replace_steps
+        and isinstance(existing, list)
+        and existing
+    ):
+        prior = [s for s in existing if not _is_stub_step(s)]
+        calls = prior + calls
     flows[flow_id] = calls
+    if update_existing and replace_steps:
+        _scrub_flow_from_other_pages(pages, flow_id, keep_page_id=page_id)
 
     playlist = list(raw.get("demo_playlist") or [])
     if update_existing:
-        updated = False
+        seen = False
+        deduped: list[dict[str, Any]] = []
         for entry in playlist:
-            if entry.get("flow_id") == flow_id:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("flow_id") or "").strip() != flow_id:
+                deduped.append(entry)
+                continue
+            if not seen:
                 entry["name"] = flow_name
                 entry["page_id"] = page_id
-                updated = True
+                deduped.append(entry)
+                seen = True
+        if not seen:
+            next_order = max([int(p.get("order") or 0) for p in deduped] + [0]) + 1
+            deduped.append(
+                {
+                    "order": next_order,
+                    "name": flow_name,
+                    "page_id": page_id,
+                    "flow_id": flow_id,
+                }
+            )
+        playlist = deduped
+    else:
+        replaced = False
+        for entry in playlist:
+            if isinstance(entry, dict) and entry.get("flow_id") == flow_id:
+                entry["name"] = flow_name
+                entry["page_id"] = page_id
+                replaced = True
                 break
-        if not updated:
+        if not replaced:
             next_order = max([int(p.get("order") or 0) for p in playlist] + [0]) + 1
             playlist.append(
                 {
@@ -297,16 +406,6 @@ def merge_recorded_flow(
                     "flow_id": flow_id,
                 }
             )
-    else:
-        next_order = max([int(p.get("order") or 0) for p in playlist] + [0]) + 1
-        playlist.append(
-            {
-                "order": next_order,
-                "name": flow_name,
-                "page_id": page_id,
-                "flow_id": flow_id,
-            }
-        )
     raw["demo_playlist"] = playlist
     parse_site_graph(yaml.safe_dump(raw), origin="<ops-record-merge>")
     return yaml.safe_dump(raw, sort_keys=False)
@@ -328,6 +427,8 @@ class RecorderJob:
     setup_discarded: int = 0
     flagged: list[dict[str, Any]] = field(default_factory=list)
     gate: CaptureGate | None = None
+    narration: NarrationCapture | None = None
+    save_mode: str = "new"  # new | update
 
 
 _recorder_lock = threading.Lock()
@@ -353,6 +454,11 @@ def recorder_status() -> dict[str, Any]:
             "phase": _active.phase if not _active.done else "done",
             "setup_discarded": _active.setup_discarded,
             "flagged": list(_active.flagged),
+            "narrate": _active.narration is not None,
+            "save_mode": _active.save_mode,
+            "narration_chunks": (
+                len(_active.narration.chunks) if _active.narration else 0
+            ),
         }
 
 
@@ -364,14 +470,28 @@ def start_recorder(
     headful: bool = True,
     out_dir: Path | None = None,
     login_config_fn: Any = None,
+    narrate: bool = False,
+    save_mode: str = "new",
 ) -> RecorderJob:
     global _active
+    mode = (save_mode or "new").strip().lower()
+    if mode not in {"new", "update"}:
+        raise RuntimeError("save_mode must be 'new' or 'update'")
+    if mode == "update" and not (flow_id or "").strip():
+        raise RuntimeError("flow_id required when save_mode is update")
     fid = (flow_id or _slug_flow(flow_name)).strip() or "recorded_flow"
     with _recorder_lock:
         if _active is not None and not _active.done:
             raise RuntimeError("a recording session is already running")
         out = (out_dir or Path("archives") / "recordings") / f"{fid}.yaml"
-        gate = CaptureGate(phase="setup", login_config_fn=login_config_fn)
+        from navigator.automation.login_match import name_suggests_login_walkthrough
+
+        gate = CaptureGate(
+            phase="setup",
+            login_config_fn=login_config_fn,
+            allow_login_steps=name_suggests_login_walkthrough(fid, flow_name),
+        )
+        narration = NarrationCapture() if narrate else None
         job = RecorderJob(
             job_id=str(uuid4()),
             flow_name=flow_name,
@@ -380,6 +500,8 @@ def start_recorder(
             out_path=out,
             phase="setup",
             gate=gate,
+            narration=narration,
+            save_mode=mode,
         )
         _active = job
 
@@ -393,6 +515,7 @@ def start_recorder(
                 stop_event=job.stop,
                 steps_out=job.steps,
                 gate=gate,
+                narration=narration,
             )
         except Exception as exc:  # noqa: BLE001
             job.error = str(exc)

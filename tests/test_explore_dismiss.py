@@ -6,7 +6,7 @@ from navigator.automation.explore.explorer import ExplorerDeps, explore
 from navigator.automation.explore.repair import click_postcondition, looks_like_dismiss
 from navigator.automation.explore.session import ExplorationBudget
 from navigator.core.schemas import Postcondition, ToolResult, VerifyResult
-from tests.test_explore import FakePage, _el, _session
+from test_explore import FakePage, _el, _session
 
 
 def test_looks_like_dismiss_close():

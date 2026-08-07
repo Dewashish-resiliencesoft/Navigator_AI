@@ -26,6 +26,65 @@ class Speaker(Protocol):
     def say(self, text: str) -> None: ...
 
 
+class CascadeSpeaker:
+    """Try TTS backends in order until one returns audio.
+
+    Gemini Live often dies mid-demo (keepalive timeout) and then returns empty
+    forever — without a cascade, Meet goes silent while clicks keep running.
+    """
+
+    def __init__(self, speakers: list) -> None:
+        self._speakers = [s for s in speakers if s is not None]
+        self._active = 0
+
+    def available(self) -> bool:
+        return any(
+            getattr(s, "available", lambda: True)() for s in self._speakers
+        )
+
+    def set_language(self, lang: SpokenLanguage) -> None:
+        for s in self._speakers:
+            fn = getattr(s, "set_language", None)
+            if callable(fn):
+                fn(lang)
+
+    def synthesize_wav(self, text: str) -> bytes | None:
+        if not text.strip() or not self._speakers:
+            return None
+        n = len(self._speakers)
+        for offset in range(n):
+            i = (self._active + offset) % n
+            s = self._speakers[i]
+            name = type(s).__name__
+            try:
+                wav = s.synthesize_wav(text)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[speak] {name} failed: {exc}", flush=True)
+                wav = None
+            if wav:
+                if i != self._active:
+                    print(f"[speak] cascaded TTS → {name}", flush=True)
+                self._active = i
+                return wav
+            if offset == 0 and n > 1:
+                nxt = type(self._speakers[(i + 1) % n]).__name__
+                print(f"[speak] {name} silent — trying {nxt}", flush=True)
+        return None
+
+    def say(self, text: str) -> None:
+        print(f"[speak] {text}", flush=True)
+        self.synthesize_wav(text)
+
+    def close(self) -> None:
+        for s in self._speakers:
+            fn = getattr(s, "close", None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:  # noqa: BLE001
+                    pass
+
+
 def make_speaker(
     *,
     mute: bool = False,
@@ -45,10 +104,12 @@ def make_speaker(
     if mute:
         return PrintSpeaker()
     provider = (tts_provider or "auto").strip().lower()
-    want_gemini = provider == "gemini" or (
-        provider == "auto" and bool((gemini_api_key or "").strip())
+    chain: list = []
+
+    want_gemini = provider in ("gemini", "auto") and bool(
+        (gemini_api_key or "").strip()
     )
-    if want_gemini:
+    if want_gemini or provider == "gemini":
         gemini = GeminiLiveSpeaker(
             gemini_api_key,
             model=gemini_live_model,
@@ -56,15 +117,15 @@ def make_speaker(
             spoken_language=spoken_language,
         )
         if gemini.available():
-            return gemini
-        if provider == "gemini" and require_audio:
+            chain.append(gemini)
+        elif provider == "gemini" and require_audio and not chain:
             raise RuntimeError(
                 "NAVIGATOR_TTS_PROVIDER=gemini but NAVIGATOR_GEMINI_API_KEY is empty."
             )
-    want_fish = provider == "fish" or (
-        provider == "auto" and bool((fish_api_key or "").strip())
-    )
-    if want_fish:
+
+    want_fish = provider in ("fish", "auto") and bool((fish_api_key or "").strip())
+    # Emergency fallback even when provider=gemini — silent Meet is worse.
+    if want_fish or (provider == "gemini" and (fish_api_key or "").strip()):
         fish = FishSpeaker(
             fish_api_key,
             reference_id=fish_reference_id
@@ -72,25 +133,30 @@ def make_speaker(
             model=fish_model or "s2.1-pro-free",
         )
         if fish.available():
-            return fish
-        if provider == "fish" and require_audio:
+            chain.append(fish)
+        elif provider == "fish" and require_audio and not chain:
             raise RuntimeError(
                 "NAVIGATOR_TTS_PROVIDER=fish but NAVIGATOR_FISH_API_KEY is empty. "
                 "Get a key at https://fish.audio/app/"
             )
+
     piper = PiperSpeaker(piper_voice, piper_data_dir)
     if piper.available():
-        return piper
-    if require_audio:
-        raise RuntimeError(
-            "No TTS available for Meet. Set NAVIGATOR_GEMINI_API_KEY "
-            "(Gemini Live, preferred) or NAVIGATOR_FISH_API_KEY or install Piper:\n"
-            f"  .venv/bin/pip install 'piper-tts>=1.4'\n"
-            f"  .venv/bin/python -m piper.download_voices {piper_voice} "
-            f"--data-dir {piper_data_dir}"
-        )
-    return PrintSpeaker()
+        chain.append(piper)
 
+    if not chain:
+        if require_audio:
+            raise RuntimeError(
+                "No TTS available for Meet. Set NAVIGATOR_GEMINI_API_KEY "
+                "(Gemini Live, preferred) or NAVIGATOR_FISH_API_KEY or install Piper:\n"
+                f"  .venv/bin/pip install 'piper-tts>=1.4'\n"
+                f"  .venv/bin/python -m piper.download_voices {piper_voice} "
+                f"--data-dir {piper_data_dir}"
+            )
+        return PrintSpeaker()
+    if len(chain) == 1:
+        return chain[0]
+    return CascadeSpeaker(chain)
 
 class PiperSpeaker:
     def __init__(

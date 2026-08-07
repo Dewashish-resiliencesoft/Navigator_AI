@@ -70,6 +70,26 @@ def _minimal_graph_yaml() -> str:
     ).strip()
 
 
+def test_compose_skips_synthetic_login_when_playlist_has_auth_flow():
+    raw = yaml.safe_load(_minimal_graph_yaml())
+    raw["demo_playlist"] = [
+        {
+            "order": 1,
+            "name": "Authentication Flow",
+            "page_id": "home",
+            "flow_id": "authentication_flow",
+        }
+    ]
+    raw["pages"]["home"]["flows"]["authentication_flow"] = raw["pages"]["home"]["flows"][
+        "tour"
+    ]
+    graph = parse_site_graph(yaml.safe_dump(raw))
+    script = compose_full_demo_script(graph, intake_enabled=False, include_login=True)
+    kinds = [b["kind"] for b in script["beats"]]
+    assert "login" not in kinds
+    assert any(b.get("flow_id") == "authentication_flow" for b in script["beats"])
+
+
 def test_compose_includes_intake_and_wrap():
     graph = parse_site_graph(_minimal_graph_yaml())
     script = compose_full_demo_script(graph, intake_enabled=True)

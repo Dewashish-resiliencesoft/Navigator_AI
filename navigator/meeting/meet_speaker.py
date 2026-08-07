@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import io
+import threading
 import time
 import wave
 from collections.abc import Callable
 from typing import Protocol
 
 from navigator.meeting.attendee import AttendeeClient
+from navigator.meeting.playback_handle import PlaybackHandle
 from navigator.voice.tts import Speaker
 
 
@@ -58,8 +60,8 @@ class MeetSpeaker:
         also_chat: bool = False,
         after_speak: Callable[[], None] | None = None,
         set_avatar_state: Callable[[str], None] | None = None,
-        playback_pad_s: float = 0.35,
-        short_pad_s: float = 0.12,
+        playback_pad_s: float = 0.08,
+        short_pad_s: float = 0.04,
         short_chars: int = 72,
         check_barge_in: Callable[[], bool] | None = None,
     ) -> None:
@@ -77,8 +79,83 @@ class MeetSpeaker:
         self.last_spoken = ""
         self.interrupted = False
         self.bot_ended = False
+        self.stop_event: threading.Event | None = None
+        self._wav_cache: dict[str, bytes] = {}
+        self._cache_lock = threading.Lock()
+        self._speak_lock = threading.Lock()
+
+    def prefetch_lines(self, lines: list[str]) -> None:
+        """Pre-synthesize narration in a background thread for lower latency."""
+        texts = [t.strip() for t in lines if (t or "").strip()]
+        if not texts:
+            return
+
+        def _worker() -> None:
+            synth = self.synthesizer
+            if synth is None and hasattr(self.local, "synthesize_wav"):
+                synth = self.local  # type: ignore[assignment]
+            if synth is None:
+                return
+            for text in texts:
+                with self._cache_lock:
+                    if text in self._wav_cache:
+                        continue
+                try:
+                    # Serialize with live speak so Gemini Live never double-recvs.
+                    with self._speak_lock:
+                        with self._cache_lock:
+                            if text in self._wav_cache:
+                                continue
+                        wav = synth.synthesize_wav(text)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[speak] prefetch failed: {exc}", flush=True)
+                    continue
+                if wav:
+                    with self._cache_lock:
+                        self._wav_cache[text] = wav
+
+        threading.Thread(target=_worker, name="tts-prefetch", daemon=True).start()
+
+    def _cached_wav(self, text: str) -> bytes | None:
+        with self._cache_lock:
+            return self._wav_cache.get(text.strip())
+
+    def set_language(self, lang: str) -> None:
+        from navigator.voice.language import apply_to_speakers
+
+        apply_to_speakers(lang, self.local, self.synthesizer)  # type: ignore[arg-type]
+        # Cached WAVs are language-specific; stale EN audio after HI switch.
+        with self._cache_lock:
+            self._wav_cache.clear()
+        print(f"[speak] language → {lang}", flush=True)
 
     def say(self, text: str) -> None:
+        self._speak_blocking(text)
+
+    def say_async(self, text: str) -> PlaybackHandle:
+        """Start TTS on a background thread; caller overlaps with browser work."""
+        handle = PlaybackHandle()
+        handle._thread = threading.Thread(
+            target=self._speak_async_worker,
+            args=(text, handle),
+            daemon=True,
+        )
+        handle._thread.start()
+        return handle
+
+    def _speak_async_worker(self, text: str, handle: PlaybackHandle) -> None:
+        try:
+            if handle.cancelled:
+                return
+            self._speak_blocking(text, cancel_event=handle._cancel)
+        except Exception as exc:  # noqa: BLE001
+            handle.error = str(exc)
+        finally:
+            handle._finish()
+
+    def _speak_blocking(
+        self, text: str, *, cancel_event: threading.Event | None = None
+    ) -> None:
         # Print only — do NOT local.say() (that plays Piper on host AND Meet).
         print(f"[speak] {text}", flush=True)
         self.last_spoken = text
@@ -99,7 +176,13 @@ class MeetSpeaker:
                 )
             return
         try:
-            wav = synth.synthesize_wav(text)
+            with self._speak_lock:
+                wav = self._cached_wav(text)
+                if wav is None:
+                    wav = synth.synthesize_wav(text)
+                    if wav:
+                        with self._cache_lock:
+                            self._wav_cache[text.strip()] = wav
             if wav:
                 if self.set_avatar_state is not None:
                     self.set_avatar_state("speaking")
@@ -112,7 +195,7 @@ class MeetSpeaker:
                         else self.playback_pad_s
                     )
                     wait = wav_duration_s(wav) + pad
-                    self._wait_playback(wait)
+                    self._wait_playback(wait, cancel_event=cancel_event)
                     if self.after_speak is not None:
                         self.after_speak()
                 finally:
@@ -121,21 +204,30 @@ class MeetSpeaker:
             else:
                 print("[speak] WARNING: synthesize_wav returned empty", flush=True)
         except Exception as exc:  # noqa: BLE001
-            msg = str(exc)
-            if "state ended" in msg.lower() or "cannot play media" in msg.lower():
+            msg = str(exc).lower()
+            if "state ended" in msg or "cannot play media" in msg:
                 self.bot_ended = True
                 print("[speak] bot ended — stopping further Meet TTS", flush=True)
-            print(f"[speak] Meet audio failed: {exc}", flush=True)
+            else:
+                print(f"[speak] Meet audio failed (continuing demo): {exc}", flush=True)
 
-    def _wait_playback(self, wait_s: float) -> None:
+    def _wait_playback(
+        self, wait_s: float, *, cancel_event: threading.Event | None = None
+    ) -> None:
         """Sleep for playback; poll barge-in so continuous user speech can cut in."""
         if wait_s <= 0:
             return
         deadline = time.monotonic() + wait_s
         # Ignore barge-in during the first slice — bot audio just started.
-        ignore_until = time.monotonic() + min(0.45, wait_s * 0.35)
+        ignore_until = time.monotonic() + min(0.2, wait_s * 0.25)
         while time.monotonic() < deadline:
-            slice_s = min(0.15, deadline - time.monotonic())
+            if cancel_event is not None and cancel_event.is_set():
+                self.interrupted = True
+                return
+            if self.stop_event is not None and self.stop_event.is_set():
+                self.interrupted = True
+                return
+            slice_s = min(0.05, deadline - time.monotonic())
             if slice_s <= 0:
                 break
             time.sleep(slice_s)

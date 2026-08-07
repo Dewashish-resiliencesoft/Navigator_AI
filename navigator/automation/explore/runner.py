@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from uuid import uuid4
 
 from navigator.automation.explore import semantics
@@ -268,6 +268,10 @@ def vision_asker() -> Callable[[str, str], str] | None:
 # -- run ----------------------------------------------------------------------
 
 
+def _clean_list(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(v.strip() for v in values if str(v).strip())
+
+
 def start_exploration(
     *,
     product_id: str,
@@ -280,6 +284,9 @@ def start_exploration(
     target_flow_name: str = "",
     new_flow_name: str = "",
     focus_hint: str = "",
+    include_paths: Sequence[str] = (),
+    exclude_paths: Sequence[str] = (),
+    exclude_labels: Sequence[str] = (),
     on_complete: Callable[[ExplorationSession], None] | None = None,
 ) -> ExplorationSession:
     """Launch a run on a daemon thread. Raises if one is already active."""
@@ -312,7 +319,23 @@ def start_exploration(
             target_flow_name=(target_flow_name or "").strip(),
             new_flow_name=(new_flow_name or "").strip(),
             focus_hint=(focus_hint or "").strip(),
+            include_paths=_clean_list(include_paths),
+            exclude_paths=_clean_list(exclude_paths),
+            exclude_labels=_clean_list(exclude_labels),
         )
+        if session.include_paths or session.exclude_paths or session.exclude_labels:
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        "scope: "
+                        + (f"only {list(session.include_paths)}; " if session.include_paths else "")
+                        + (f"never {list(session.exclude_paths)}; " if session.exclude_paths else "")
+                        + (f"skip labels {list(session.exclude_labels)}" if session.exclude_labels else "")
+                    ).rstrip("; "),
+                }
+            )
         if mode == "update":
             session.emit(
                 {
@@ -566,7 +589,11 @@ def _persist(
     """
     from navigator.app.main import get_registry
     from navigator.automation.explore.segment import Segment, segment_steps
-    from navigator.client.content import merge_recorded_flow, _slug_flow
+    from navigator.client.content import (
+        existing_flow_step_count,
+        merge_recorded_flow,
+        _slug_flow,
+    )
 
     if not session.steps:
         session.emit(
@@ -622,6 +649,12 @@ def _persist(
             )
         if not update and session.new_flow_name and i > 0:
             flow_id = f"{flow_id}_{i + 1}"
+        # Read the pre-append count so appended _meta indices line up.
+        prior_steps = (
+            existing_flow_step_count(new_yaml, EXPLORE_PAGE_ID, flow_id)
+            if update
+            else 0
+        )
         new_yaml = merge_recorded_flow(
             new_yaml,
             flow_name=flow_name,
@@ -638,7 +671,11 @@ def _persist(
         elif seg.labels:
             seg_narr = [str(x).strip() for x in seg.labels[: len(seg.steps)]]
         if seg_narr:
-            new_yaml = _attach_narration(new_yaml, flow_id, seg_narr)
+            new_yaml = (
+                _append_narration(new_yaml, flow_id, seg_narr)
+                if update
+                else _attach_narration(new_yaml, flow_id, seg_narr)
+            )
         narr_offset += len(seg.steps)
         if seg.semantics.purpose or seg.labels:
             payload = seg.semantics.as_dict()
@@ -647,7 +684,11 @@ def _persist(
                 for j, label in enumerate(seg.labels)
                 if label
             ]
-            new_yaml = _attach_meta(new_yaml, "semantics", flow_id, payload)
+            new_yaml = (
+                _append_semantics(new_yaml, flow_id, payload, offset=prior_steps)
+                if update
+                else _attach_meta(new_yaml, "semantics", flow_id, payload)
+            )
         live_hints = [
             d.as_dict()
             for d in session.field_decisions
@@ -655,6 +696,14 @@ def _persist(
         ]
         if live_hints:
             new_yaml = _attach_meta(new_yaml, "live_input_hints", flow_id, live_hints)
+        # Mutating steps recorded but never run. Parked in _meta because extra
+        # keys on a ToolCall are silently dropped by the schema, which would
+        # lose the flag and let an unapproved click reach a live demo.
+        approvals = _approvals_for_segment(session, seg, offset=prior_steps)
+        if approvals:
+            new_yaml = _attach_meta(
+                new_yaml, "pending_approvals", flow_id, approvals
+            )
         flow_ids.append(flow_id)
 
     rev = registry.put_site_graph(
@@ -687,6 +736,26 @@ def _persist(
         print(f"[explore] product map sync failed: {exc}", flush=True)
 
 
+def _approvals_for_segment(
+    session: ExplorationSession, seg: Any, *, offset: int
+) -> list[dict[str, Any]]:
+    """Per-flow approval entries, indexed against the saved step list."""
+    out: list[dict[str, Any]] = []
+    for i, step in enumerate(seg.steps):
+        if not getattr(step, "needs_approval", False):
+            continue
+        out.append(
+            {
+                "idx": i + offset,
+                "alias": step.alias,
+                "selector": step.selector,
+                "reason": step.approval_reason,
+                "approved": False,
+            }
+        )
+    return out
+
+
 def _attach_meta(yaml_text: str, section: str, flow_id: str, value: Any) -> str:
     """Park per-flow generated data under `_meta.<section>[flow_id]`.
 
@@ -713,6 +782,54 @@ def _attach_meta(yaml_text: str, section: str, flow_id: str, value: Any) -> str:
 def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:
     """Narration suggestions for one flow, for the review UI."""
     return _attach_meta(yaml_text, "narration_suggestions", flow_id, narration)
+
+
+def _append_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:
+    """Update mode: keep the prior run's lines, then add this run's."""
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(yaml_text)
+    prior: list[Any] = []
+    if isinstance(raw, dict):
+        bucket = ((raw.get("_meta") or {}).get("narration_suggestions") or {})
+        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
+            prior = list(bucket[flow_id])
+    return _attach_meta(
+        yaml_text, "narration_suggestions", flow_id, prior + narration
+    )
+
+
+def _append_semantics(
+    yaml_text: str, flow_id: str, payload: dict[str, Any], *, offset: int
+) -> str:
+    """Update mode: merge step descriptions, shifting new ones past the old.
+
+    A wrong offset silently misaligns every spoken line with the click it
+    describes, so this shifts explicitly rather than renumbering later.
+    """
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(yaml_text)
+    prior_steps: list[Any] = []
+    prior: dict[str, Any] = {}
+    if isinstance(raw, dict):
+        bucket = ((raw.get("_meta") or {}).get("semantics") or {})
+        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), dict):
+            prior = dict(bucket[flow_id])
+            if isinstance(prior.get("steps"), list):
+                prior_steps = list(prior["steps"])
+    shifted = [
+        {**s, "idx": int(s.get("idx", 0)) + offset}
+        for s in payload.get("steps", [])
+        if isinstance(s, dict)
+    ]
+    merged = {**prior, **{k: v for k, v in payload.items() if k != "steps"}}
+    merged["steps"] = prior_steps + shifted
+    # Keep the original purpose/name when the new run did not produce one.
+    for key in ("purpose", "auto_name"):
+        if not merged.get(key) and prior.get(key):
+            merged[key] = prior[key]
+    return _attach_meta(yaml_text, "semantics", flow_id, merged)
 
 
 def stop_exploration() -> dict[str, Any]:

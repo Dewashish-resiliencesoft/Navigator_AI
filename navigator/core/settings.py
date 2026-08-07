@@ -35,8 +35,15 @@ class Settings(BaseSettings):
 
     # Phase 2+
     groq_api_key: str = ""
+    #: Comma-separated Groq keys for controller/STT/phrasing rotation.
+    groq_api_keys: str = ""
+    #: Optional separate pool for analysis workloads; falls back to groq_api_keys.
+    groq_api_keys_analysis: str = ""
     reflect_provider: Literal["gemini", "openai"] = "gemini"
     gemini_api_key: str = ""
+    gemini_api_key_backup: str = ""
+    #: Comma-separated Gemini keys (vision, Live TTS, reflection).
+    gemini_api_keys: str = ""
     openai_api_key: str = ""
     chroma_path: Path = Path("chroma")
     #: Self-hosted Attendee. Not 8000 (Navigator's own API) and not 8001
@@ -109,11 +116,11 @@ class Settings(BaseSettings):
     #: Bot joins Meet first; link shared only after Navigator is inside.
     live_bot_first: bool = True
     #: Seconds after human join before first spoken greet.
-    live_human_settle_s: float = 3.0
-    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier, but
-    #: below ~300 an ordinary mid-sentence pause ends the turn and the agent
-    #: replies to half a question.
-    live_stt_min_silence_ms: int = 400
+    #: Keep low — 3s felt like the bot was stuck before saying hello.
+    live_human_settle_s: float = 0.35
+    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier.
+    #: ~200ms is aggressive; mid-sentence pauses can cut a turn early.
+    live_stt_min_silence_ms: int = 200
     #: Max wait for Attendee audio websocket before starting demo anyway.
     live_audio_ws_wait_s: float = 12.0
     #: Attendee signed-in Google Meet bot (needs Bot Logins in Attendee dashboard).
@@ -124,6 +131,10 @@ class Settings(BaseSettings):
     redis_url: str = ""
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
+    #: Screenshare relay target frame rate (16 ms ≈ 60 fps).
+    target_fps: int = 60
+    #: JPEG quality for Meet screenshare frames (1–100).
+    screenshot_quality: int = 95
 
 
 settings = Settings()

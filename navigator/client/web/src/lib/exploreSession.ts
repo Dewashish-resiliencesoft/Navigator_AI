@@ -63,6 +63,17 @@ function clearTimers() {
   }
 }
 
+function loadScope(key: string): string[] {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 type ExploreFrame = { mime: string; data: string };
 
 type ExploreSession = {
@@ -78,6 +89,9 @@ type ExploreSession = {
   targetFlowName: string;
   newFlowName: string;
   focusHint: string;
+  includePaths: string[];
+  excludePaths: string[];
+  excludeLabels: string[];
   /** Wall-clock anchor for elapsed display — not overwritten every poll. */
   elapsedAnchorMs: number | null;
   showMeter: boolean;
@@ -90,6 +104,9 @@ type ExploreSession = {
   setTargetFlowName: (v: string) => void;
   setNewFlowName: (v: string) => void;
   setFocusHint: (v: string) => void;
+  setIncludePaths: (v: string[]) => void;
+  setExcludePaths: (v: string[]) => void;
+  setExcludeLabels: (v: string[]) => void;
   setOnFlowDrafted: (cb: (() => void) | null) => void;
   /** Prefill baseUrl from Product Login URL, else Product Domain (if untouched). */
   syncProductUrl: () => Promise<string>;
@@ -132,6 +149,9 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   targetFlowName: "",
   newFlowName: "",
   focusHint: "",
+  includePaths: loadScope("nav-explore-include-paths"),
+  excludePaths: loadScope("nav-explore-exclude-paths"),
+  excludeLabels: loadScope("nav-explore-exclude-labels"),
   elapsedAnchorMs: null,
   showMeter: false,
   latestFrame: null,
@@ -143,6 +163,9 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
   setTargetFlowName: (targetFlowName) => set({ targetFlowName }),
   setNewFlowName: (newFlowName) => set({ newFlowName }),
   setFocusHint: (focusHint) => set({ focusHint }),
+  setIncludePaths: (includePaths) => set({ includePaths }),
+  setExcludePaths: (excludePaths) => set({ excludePaths }),
+  setExcludeLabels: (excludeLabels) => set({ excludeLabels }),
   setOnFlowDrafted: (cb) => {
     onFlowDrafted = cb;
   },
@@ -398,6 +421,9 @@ export const useExploreSession = create<ExploreSession>((set, get) => ({
         new_flow_name:
           mode === "new" ? get().newFlowName.trim() || null : null,
         focus_hint: get().focusHint.trim() || null,
+        include_paths: get().includePaths,
+        exclude_paths: get().excludePaths,
+        exclude_labels: get().excludeLabels,
       });
       set((prev) => ({
         status: { ...prev.status, ...s, active: true },

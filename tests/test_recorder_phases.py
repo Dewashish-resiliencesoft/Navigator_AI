@@ -7,8 +7,9 @@ from navigator.automation.login_match import (
     VAULT_PASSWORD_SENTINEL,
     is_password_field,
 )
-from navigator.automation.record import CaptureGate, _step_from_payload
+from navigator.automation.record import CaptureGate, NarrationCapture, _step_from_payload
 from navigator.client.content import RecorderJob, begin_capture, recorder_status
+import navigator.client.content as content
 
 
 def test_password_fill_becomes_sentinel():
@@ -74,3 +75,28 @@ def test_capturing_flags_login_url_steps():
     gate.flagged.append({"tool": step.tool, "reason": reason})
     assert steps == []
     assert len(gate.flagged) == 1
+
+
+def test_recorder_status_exposes_narrate_flag():
+    job = RecorderJob(job_id="t1", flow_name="demo", flow_id="demo", narration=NarrationCapture())
+    content._active = job
+    try:
+        st = recorder_status()
+        assert st["narrate"] is True
+        assert st["narration_chunks"] == 0
+        assert st["save_mode"] == "new"
+    finally:
+        content._active = None
+
+
+def test_start_recorder_update_requires_flow_id():
+    import pytest
+
+    with pytest.raises(RuntimeError, match="flow_id required"):
+        from navigator.client.content import start_recorder
+
+        start_recorder(
+            start_url="https://acme.example/",
+            flow_name="Tour",
+            save_mode="update",
+        )

@@ -16,7 +16,7 @@ import pytest
 
 from navigator.logs.store import ActionLog
 from test_action_log import TS, entry
-from test_api import ACME, register
+from test_api import ACME_LIVE as ACME, register
 from test_client_dashboard import _client, _cleanup
 
 

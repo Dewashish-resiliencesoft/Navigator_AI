@@ -5,7 +5,9 @@
 `/status` — JSON status for the overlay poller.
 `/frame.jpg` — latest Playwright JPEG.
 
-ponytail: JPEG poll ~10fps. Ceiling: soft under motion. Upgrade: CDP screencast WS.
+ponytail: JPEG poll ~16fps. The demo pushes a frame per cursor micro-step
+(see browser/cursor.py FRAME_STEPS), so motion survives the poll. Real ceiling
+is still the poll itself. Upgrade: CDP screencast WS.
 """
 
 from __future__ import annotations
@@ -342,7 +344,7 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 100);
+  setTimeout(tickFrame, 16);
 }
 async function tickStatus(){
   try {
@@ -509,13 +511,16 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
 
 def push_frame(handle: RelayHandle, page: Page) -> None:
     """Screenshot on the Playwright thread only (sync API is not thread-safe)."""
+    from navigator.core.settings import settings
+
+    quality = max(50, min(100, int(settings.screenshot_quality or 95)))
     try:
         data = page.screenshot(
             type="jpeg",
-            quality=92,
+            quality=quality,
             clip={"x": 0, "y": 0, "width": 1280, "height": 720},
         )
     except Exception:
-        data = page.screenshot(type="jpeg", quality=92)
+        data = page.screenshot(type="jpeg", quality=quality)
     with handle._lock:
         handle._frame = data

@@ -72,6 +72,8 @@ class CallDeps:
     voice_agent_url: str | None = None
     #: Optional: push a Meet screen-share frame (Playwright thread only).
     push_frame: Callable[[], None] | None = None
+    #: Relay `/view` poll counter — speaking uses this to avoid frozen frames.
+    get_frame_hits: Callable[[], int] | None = None
     #: When True, LISTENING prompts on stdin for what the prospect said.
     interactive_listen: bool = False
     #: Live Meet bot id (handoff chat + speak into call).
@@ -145,6 +147,14 @@ class CallDeps:
     tier2_propose: Callable[..., object] | None = None
     #: Injected guardrail classify. Defaults to explore.guardrail.classify_action.
     tier2_classify: Callable[..., object] | None = None
+    #: When True, only demo_playlist flows may run — no detours or handoffs.
+    playlist_only: bool = False
+    #: Walkthrough: skip STT wait and advance steps immediately (playlist demos).
+    auto_advance_walkthrough: bool = False
+    #: Guided playlist: no tier2/turn-brain detours; pause on step failure.
+    strict_playlist: bool = False
+    #: Set at auth boundary — controls hard-stop vs continue on click failures.
+    demo_origin: Literal["dashboard_test", "public_embed"] = "dashboard_test"
 
 
 def append_only(existing: list, new: list) -> list:
@@ -213,6 +223,10 @@ class CallState(TypedDict, total=False):
     detour_step: int
     #: Single-action detour (tier-2 / turn-brain); awaiting_resume after it runs.
     detour_one_shot: bool
+    #: Step currently executing (strict playlist — advance only after verify).
+    executing_step: int
+    #: Next walkthrough index after the current step succeeds.
+    planned_next_step: int
     #: Knowledge answer spoken; next turn asks if the question is answered.
     resume_checkin_pending: bool
 

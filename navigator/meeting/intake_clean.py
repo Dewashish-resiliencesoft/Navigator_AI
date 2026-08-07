@@ -24,6 +24,8 @@ _FILLER_NAMES = frozenset(
         "uh",
         "so",
         "well",
+        "thank you",
+        "thanks",
     }
 )
 _COMPANY_PREFIX = re.compile(
@@ -45,6 +47,20 @@ _NEED_LEAD = re.compile(
     r"^(?:we(?:'re| are)|i(?:'m| am)|we need|i need|looking for|need)\s+",
     re.I,
 )
+_DECLINE = re.compile(
+    r"\b("
+    r"don'?t know|do not know|not sure|no idea|"
+    r"don'?t have(?: one)?|do not have(?: one)?|"
+    r"no company|without company|"
+    r"none|n/?a|nothing|skip|prefer not"
+    r")\b",
+    re.I,
+)
+
+
+def is_declined(raw: str) -> bool:
+    """True when prospect opts out of answering (skip field in pitch)."""
+    return bool(_DECLINE.search((raw or "").strip()))
 
 
 def clean_name(raw: str) -> str:

@@ -155,6 +155,16 @@ class ExplorationSession:
     new_flow_name: str = ""
     #: Tab / section / feature name to prioritize (e.g. "Billing", "Inbox").
     focus_hint: str = ""
+    #: Explore ONLY these URL paths when non-empty (prefix match).
+    include_paths: tuple[str, ...] = ()
+    #: Never visit these URL paths.
+    exclude_paths: tuple[str, ...] = ()
+    #: Never click controls whose label contains one of these (case-insensitive).
+    exclude_labels: tuple[str, ...] = ()
+    #: Mutating steps recorded but not executed, awaiting Client approval.
+    pending_approvals: list[dict[str, Any]] = field(default_factory=list)
+    #: One PagePlan per visited state — re-entry must not re-pay the vision call.
+    page_plans: dict[StateFingerprint, Any] = field(default_factory=dict)
     started_at: float = field(default_factory=time.monotonic)
     consecutive_no_new: int = 0
     #: Why the loop ended (budget / client stop / dead end) — for dashboard summary.
@@ -213,6 +223,61 @@ class ExplorationSession:
 
     def mark_tried(self, fp: StateFingerprint, el: dict[str, Any]) -> None:
         self.visited.setdefault(fp, set()).add(element_key(el))
+
+    def out_of_scope(self, el: dict[str, Any], url: str = "") -> str | None:
+        """Why this element is off-limits for this run, or None to proceed.
+
+        One place for the Client's include/exclude config, consulted both when
+        ranking candidates and again in the executor -- a scope rule that only
+        filtered the menu would still be reachable via a dead-end escape.
+        """
+        blob = " ".join(
+            str(el.get(k) or "")
+            for k in ("text", "label", "aria_label", "title", "name", "testid")
+        ).lower()
+        for word in self.exclude_labels:
+            needle = word.strip().lower()
+            if needle and needle in blob:
+                return f"excluded label {word!r}"
+
+        href = str(el.get("href") or "").strip()
+        target = urlparse(href).path if href else ""
+        # Relative hrefs give a path directly; anything else we cannot judge
+        # until after the click, where the URL check below catches it.
+        if target:
+            if any(target.startswith(p) for p in self.exclude_paths if p.strip()):
+                return f"excluded path {target!r}"
+            if self.include_paths and not any(
+                target.startswith(p) for p in self.include_paths if p.strip()
+            ):
+                return f"outside include_paths ({target!r})"
+        return None
+
+    def path_in_scope(self, url: str) -> bool:
+        """False when a URL the browser landed on is outside the Client's scope."""
+        path = urlparse(url or "").path or "/"
+        if any(path.startswith(p) for p in self.exclude_paths if p.strip()):
+            return False
+        if self.include_paths:
+            return any(path.startswith(p) for p in self.include_paths if p.strip())
+        return True
+
+    def note_pending_approval(
+        self, *, alias: str, label: str, selector: str, url: str, reason: str
+    ) -> None:
+        """A mutating step recorded for the demo script but never executed."""
+        with self._lock:
+            if any(p["selector"] == selector for p in self.pending_approvals):
+                return
+            self.pending_approvals.append(
+                {
+                    "alias": alias,
+                    "label": label,
+                    "selector": selector,
+                    "url": url,
+                    "reason": reason,
+                }
+            )
 
     def is_allowed(self, el: dict[str, Any], css: str = "") -> bool:
         """True if the Client allowed this element for the current explore."""

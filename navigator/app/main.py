@@ -1325,6 +1325,8 @@ class RecordStartBody(BaseModel):
     flow_name: str = Field(min_length=1)
     flow_id: str | None = None
     page_id: str = "dashboard"
+    narrate: bool = False
+    """Show the mic widget in the recorded page and transcribe the walkthrough."""
 
 
 @app.get("/client/api/site-graph")
@@ -1787,6 +1789,7 @@ def client_record_start(
             flow_id=(body.flow_id or None),
             headful=settings.headful,
             login_config_fn=_live_login_config,
+            narrate=body.narrate,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
@@ -1796,6 +1799,7 @@ def client_record_start(
         "flow_name": job.flow_name,
         "active": True,
         "phase": job.phase,
+        "narrate": bool(job.narration is not None),
     }
 
 
@@ -1839,6 +1843,7 @@ def client_record_stop(
             product_name=persona.product_name,
             base_url=recording_base_url(job.start_url),
         )
+        new_yaml, narrated = _attach_recorded_narration(new_yaml, job)
         _reject_login_in_yaml(product.product_id, new_yaml, vault)
         rev = registry.put_site_graph(
             product.product_id, new_yaml, "recorded", publish=False
@@ -1858,7 +1863,70 @@ def client_record_stop(
         "flagged": list(getattr(job, "flagged", []) or []),
         "setup_discarded": int(getattr(job, "setup_discarded", 0) or 0),
         "phase": getattr(job, "phase", "done"),
+        "narrated_steps": narrated,
     }
+
+
+def _attach_recorded_narration(yaml_text: str, job) -> tuple[str, int]:
+    """Transcribe the host's walkthrough onto the flow they just recorded.
+
+    Writes the same `_meta` sections explore produces, so the demo-script
+    composer reads recorded narration through its existing path.
+    """
+    narration = getattr(job, "narration", None)
+    if narration is None:
+        return yaml_text, 0
+    audio = narration.audio()
+    if not audio or not job.steps:
+        return yaml_text, 0
+
+    from navigator.automation.explore.runner import _attach_meta, groq_asker
+    from navigator.automation.narration import narrate_recording
+
+    api_key = settings.groq_api_key
+    if not api_key:
+        print("[record] narration skipped: no Groq API key", flush=True)
+        return yaml_text, 0
+
+    try:
+        lines, timings = narrate_recording(
+            audio=audio,
+            steps=list(job.steps),
+            api_key=api_key,
+            ask_text=groq_asker(api_key),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] narration failed: {exc}", flush=True)
+        return yaml_text, 0
+
+    if not any(l.strip() for l in lines):
+        return yaml_text, 0
+
+    yaml_text = _attach_meta(
+        yaml_text, "narration_suggestions", job.flow_id, lines
+    )
+    yaml_text = _attach_meta(
+        yaml_text,
+        "semantics",
+        job.flow_id,
+        {
+            "purpose": "",
+            "auto_name": job.flow_name,
+            "steps": [
+                {"idx": i, "description": line}
+                for i, line in enumerate(lines)
+                if line.strip()
+            ],
+        },
+    )
+    if timings:
+        yaml_text = _attach_meta(yaml_text, "step_timing", job.flow_id, timings)
+    print(
+        f"[record] narration: {sum(1 for l in lines if l.strip())}/{len(lines)} "
+        "steps have spoken lines",
+        flush=True,
+    )
+    return yaml_text, sum(1 for l in lines if l.strip())
 
 
 # -- autonomous exploration ---------------------------------------------------
@@ -1884,6 +1952,12 @@ class ExploreStartBody(BaseModel):
     """Display name (and flow_id slug) when save_mode is new."""
     focus_hint: str | None = None
     """Tab, nav label, or feature area to explore first (e.g. Inbox, Billing)."""
+    include_paths: list[str] = Field(default_factory=list, max_length=50)
+    """When non-empty, explore ONLY URL paths starting with one of these."""
+    exclude_paths: list[str] = Field(default_factory=list, max_length=50)
+    """URL paths the explorer must never open."""
+    exclude_labels: list[str] = Field(default_factory=list, max_length=50)
+    """Control labels the explorer must never click (e.g. Logout, Billing)."""
 
 
 class ExploreAnswerBody(BaseModel):
@@ -1977,6 +2051,9 @@ def client_explore_start(
             target_flow_name=(body.target_flow_name or "").strip(),
             new_flow_name=(body.new_flow_name or "").strip(),
             focus_hint=(body.focus_hint or "").strip(),
+            include_paths=body.include_paths,
+            exclude_paths=body.exclude_paths,
+            exclude_labels=body.exclude_labels,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None

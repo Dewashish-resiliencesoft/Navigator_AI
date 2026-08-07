@@ -103,6 +103,42 @@ class SiteGraph(BaseModel):
             return []
         return [str(x).strip() for x in entry if str(x).strip()]
 
+    def flow_step_timing(self, flow_id: str) -> dict[int, int]:
+        """step index → how long the human spent narrating it, in ms."""
+        section = self.meta.get("step_timing")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, int] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = int(row.get("speak_ms") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def flow_pending_approvals(self, flow_id: str) -> dict[int, dict[str, Any]]:
+        """step index → approval record for mutating steps never executed."""
+        section = self.meta.get("pending_approvals")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = row
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
     def demo_script_meta(self) -> dict[str, Any]:
         """Client-edited demo script beats under `_meta.demo_script`."""
         section = self.meta.get("demo_script")

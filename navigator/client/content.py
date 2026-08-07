@@ -17,6 +17,7 @@ from navigator.knowledge.product_brief import load_product_brief, save_product_b
 from navigator.knowledge.site_graph import SiteGraph, SiteGraphError, parse_site_graph
 from navigator.automation.record import (
     CaptureGate,
+    NarrationCapture,
     RecordedStep,
     draft_site_graph,
     record_session,
@@ -223,6 +224,31 @@ def _slug_flow(name: str) -> str:
     return (s[:40] or "recorded_flow")
 
 
+def _is_stub_step(step: Any) -> bool:
+    """The `wait_for body` placeholder an empty recording leaves behind."""
+    if not isinstance(step, dict):
+        return False
+    return step.get("tool") == "wait_for" and step.get("selector") == "body"
+
+
+def existing_flow_step_count(yaml_text: str, page_id: str, flow_id: str) -> int:
+    """Real (non-stub) steps already saved for a flow. 0 when absent.
+
+    Update-mode callers need this to offset appended `_meta` indices so beat
+    numbering stays aligned with the concatenated flow.
+    """
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        return 0
+    page = (raw.get("pages") or {}).get(page_id)
+    if not isinstance(page, dict):
+        return 0
+    steps = (page.get("flows") or {}).get(flow_id)
+    if not isinstance(steps, list):
+        return 0
+    return sum(1 for s in steps if not _is_stub_step(s))
+
+
 def merge_recorded_flow(
     yaml_text: str,
     *,
@@ -276,6 +302,13 @@ def merge_recorded_flow(
                 "expects": {"check": "visible", "selector": "body"},
             }
         ]
+    # Update mode APPENDS. A Client who explores three tabs, then runs update to
+    # add two more, expects five steps in one flow -- assigning here would drop
+    # the first three and break the live demo mid-walkthrough.
+    existing = flows.get(flow_id) if update_existing else None
+    if isinstance(existing, list) and existing:
+        prior = [s for s in existing if not _is_stub_step(s)]
+        calls = prior + calls
     flows[flow_id] = calls
 
     playlist = list(raw.get("demo_playlist") or [])
@@ -328,6 +361,7 @@ class RecorderJob:
     setup_discarded: int = 0
     flagged: list[dict[str, Any]] = field(default_factory=list)
     gate: CaptureGate | None = None
+    narration: NarrationCapture | None = None
 
 
 _recorder_lock = threading.Lock()
@@ -353,6 +387,9 @@ def recorder_status() -> dict[str, Any]:
             "phase": _active.phase if not _active.done else "done",
             "setup_discarded": _active.setup_discarded,
             "flagged": list(_active.flagged),
+            "narration_chunks": (
+                len(_active.narration.chunks) if _active.narration else 0
+            ),
         }
 
 
@@ -364,6 +401,7 @@ def start_recorder(
     headful: bool = True,
     out_dir: Path | None = None,
     login_config_fn: Any = None,
+    narrate: bool = False,
 ) -> RecorderJob:
     global _active
     fid = (flow_id or _slug_flow(flow_name)).strip() or "recorded_flow"
@@ -372,6 +410,7 @@ def start_recorder(
             raise RuntimeError("a recording session is already running")
         out = (out_dir or Path("archives") / "recordings") / f"{fid}.yaml"
         gate = CaptureGate(phase="setup", login_config_fn=login_config_fn)
+        narration = NarrationCapture() if narrate else None
         job = RecorderJob(
             job_id=str(uuid4()),
             flow_name=flow_name,
@@ -380,6 +419,7 @@ def start_recorder(
             out_path=out,
             phase="setup",
             gate=gate,
+            narration=narration,
         )
         _active = job
 
@@ -393,6 +433,7 @@ def start_recorder(
                 stop_event=job.stop,
                 steps_out=job.steps,
                 gate=gate,
+                narration=narration,
             )
         except Exception as exc:  # noqa: BLE001
             job.error = str(exc)

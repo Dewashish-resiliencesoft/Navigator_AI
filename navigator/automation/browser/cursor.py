@@ -6,6 +6,8 @@ module constants (MOTION_SCALE=0 makes tests instant).
 
 from __future__ import annotations
 
+from typing import Callable
+
 from playwright.sync_api import Page
 
 # -- timing (tune after watching real demos) ---------------------------------
@@ -93,10 +95,51 @@ def _wait_ms(page: Page, ms: float) -> None:
         page.wait_for_timeout(t)
 
 
-def move_cursor(page: Page, x: float, y: float, steps: int = 8) -> None:
-    """Animate overlay to (x, y). ``steps`` kept for call-compat; unused."""
+#: Micro-steps per move when a frame pusher is supplied. The screenshare is a
+#: JPEG poll, so a CSS animation inside the page is invisible to the viewer --
+#: only pushed frames are. ~20 hops over a 800-1600ms move is 12-25fps.
+FRAME_STEPS = 20
+
+
+def _paced_wait(
+    page: Page, ms: float, on_frame: Callable[[], None] | None
+) -> None:
+    """Wait, pushing frames through it so a pause is not a frozen screen."""
+    if on_frame is None:
+        _wait_ms(page, ms)
+        return
+    total = _scaled_ms(ms)
+    if total <= 0:
+        on_frame()
+        return
+    hops = max(1, int(total // 60))
+    slice_ms = total / hops
+    for _ in range(hops):
+        on_frame()
+        if slice_ms >= 1:
+            page.wait_for_timeout(int(slice_ms))
+    on_frame()
+
+
+def move_cursor(
+    page: Page,
+    x: float,
+    y: float,
+    steps: int = 8,
+    *,
+    on_frame: Callable[[], None] | None = None,
+) -> None:
+    """Animate overlay to (x, y). ``steps`` kept for call-compat; unused.
+
+    With ``on_frame`` the move is driven from Python in ``FRAME_STEPS`` hops
+    along the same curve, pushing a frame after each one. Without it the page
+    animates itself in one call (cheaper, correct for a local/headless demo).
+    """
     _ = steps
     install_cursor(page)
+    if on_frame is not None:
+        _move_stepped(page, x, y, on_frame)
+        return
     page.evaluate(
         """async ([x, y, shortMs, longMs, shortD, longD, ease, scale]) => {
           const c = document.getElementById('nav-cursor');
@@ -148,6 +191,54 @@ def move_cursor(page: Page, x: float, y: float, steps: int = 8) -> None:
     )
 
 
+def _move_stepped(
+    page: Page, x: float, y: float, on_frame: Callable[[], None]
+) -> None:
+    """Walk the cursor to (x, y) in Python, pushing a frame per hop."""
+    x0, y0 = page.evaluate(
+        """() => {
+          const c = document.getElementById('nav-cursor');
+          if (!c) return [0, 0];
+          return [parseFloat(c.style.left) || 0, parseFloat(c.style.top) || 0];
+        }"""
+    )
+    dist = ((x - x0) ** 2 + (y - y0) ** 2) ** 0.5
+    duration = _scaled_ms(move_duration_ms(dist))
+    if duration <= 0 or dist < 0.5:
+        _place_cursor(page, x, y)
+        on_frame()
+        return
+
+    # Same quadratic mid-point the in-page animation uses, without the jitter --
+    # a hand-off between Python hops looks smoother on a straight-ish curve.
+    ctrl_x = x0 + (x - x0) * 0.5
+    ctrl_y = y0 + (y - y0) * 0.5
+    hop_ms = duration / FRAME_STEPS
+    for i in range(1, FRAME_STEPS + 1):
+        t = i / FRAME_STEPS
+        # Ease-in-out so the start and end are slower, like a real hand.
+        e = 2 * t * t if t < 0.5 else 1 - ((-2 * t + 2) ** 2) / 2
+        inv = 1 - e
+        px = inv * inv * x0 + 2 * inv * e * ctrl_x + e * e * x
+        py = inv * inv * y0 + 2 * inv * e * ctrl_y + e * e * y
+        _place_cursor(page, px, py)
+        on_frame()
+        if hop_ms >= 1:
+            page.wait_for_timeout(int(hop_ms))
+
+
+def _place_cursor(page: Page, x: float, y: float) -> None:
+    page.evaluate(
+        """([x, y]) => {
+          const c = document.getElementById('nav-cursor');
+          if (!c) return;
+          c.style.left = x + 'px';
+          c.style.top = y + 'px';
+        }""",
+        [x, y],
+    )
+
+
 def _highlight_box(page: Page, box: dict[str, float]) -> None:
     """Highlight from a Playwright bounding box — never querySelector.
 
@@ -183,6 +274,7 @@ def guide_to(
     timeout: float = 5000,
     *,
     highlight: bool = True,
+    on_frame: Callable[[], None] | None = None,
 ) -> tuple[float, float]:
     """Smooth-scroll if needed, highlight, ease cursor to center, pause before action.
 
@@ -196,7 +288,7 @@ def guide_to(
     # Playwright scroll — works for :has-text / role selectors (not CSS-only).
     try:
         loc.scroll_into_view_if_needed(timeout=timeout)
-        _wait_ms(page, SCROLL_MS)
+        _paced_wait(page, SCROLL_MS, on_frame)
     except Exception:  # noqa: BLE001
         pass
 
@@ -208,14 +300,22 @@ def guide_to(
 
     if highlight:
         _highlight_box(page, box)
-    move_cursor(page, x, y)
-    _wait_ms(page, PAUSE_BEFORE_CLICK_MS)
+    move_cursor(page, x, y, on_frame=on_frame)
+    _paced_wait(page, PAUSE_BEFORE_CLICK_MS, on_frame)
     return x, y
 
 
-def click_with_cursor(page: Page, selector: str, timeout: float = 5000) -> None:
+def click_with_cursor(
+    page: Page,
+    selector: str,
+    timeout: float = 5000,
+    *,
+    on_frame: Callable[[], None] | None = None,
+) -> None:
     """Human-paced move → pause → visual click synced with Playwright click."""
-    x, y = guide_to(page, selector, timeout=timeout, highlight=True)
+    x, y = guide_to(
+        page, selector, timeout=timeout, highlight=True, on_frame=on_frame
+    )
     loc = page.locator(selector).first
 
     page.evaluate(
@@ -254,8 +354,8 @@ def click_with_cursor(page: Page, selector: str, timeout: float = 5000) -> None:
         [x, y, RIPPLE_MS, PRESS_MS, MOTION_SCALE],
     )
     # Real click at press peak — synced with visual land
-    _wait_ms(page, PRESS_MS / 2.0)
+    _paced_wait(page, PRESS_MS / 2.0, on_frame)
     loc.click(timeout=timeout)
-    _wait_ms(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0))
+    _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0), on_frame)
     _clear_highlight(page)
-    _wait_ms(page, PAUSE_AFTER_CLICK_MS)
+    _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)

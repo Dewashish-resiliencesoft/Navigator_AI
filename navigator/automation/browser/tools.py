@@ -29,18 +29,26 @@ from navigator.core.schemas import (
 
 
 def execute(
-    page: Page, graph: SiteGraph, page_id: str, call: ToolCall
+    page: Page,
+    graph: SiteGraph,
+    page_id: str,
+    call: ToolCall,
+    *,
+    on_frame: Callable[[], None] | None = None,
 ) -> tuple[ToolResult, str]:
     """Run one tool call.
 
     Returns the result plus the page_id in effect afterwards -- a navigate moves
     the agent, and VERIFYING needs to resolve its postcondition against wherever
     it landed.
+
+    ``on_frame`` is the live-demo frame pusher. Handlers that animate the cursor
+    call it per micro-step so the screenshare shows motion, not a teleport.
     """
     handler = _HANDLERS[call.tool]
     started = time.perf_counter()
     try:
-        detail, next_page_id = handler(page, graph, page_id, call)
+        detail, next_page_id = handler(page, graph, page_id, call, on_frame=on_frame)
         ok = True
     except (PlaywrightError, SiteGraphError) as exc:
         detail, next_page_id, ok = _describe(exc), page_id, False
@@ -73,37 +81,52 @@ def _action_timeout(ms: int) -> int:
 
 
 def click_element(
-    page: Page, graph: SiteGraph, page_id: str, call: ClickElement
+    page: Page,
+    graph: SiteGraph,
+    page_id: str,
+    call: ClickElement,
+    *,
+    on_frame: Callable[[], None] | None = None,
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
     timeout = _action_timeout(call.expects.timeout_ms)
     from navigator.automation.browser.cursor import click_with_cursor
 
-    click_with_cursor(page, css, timeout=timeout)
+    click_with_cursor(page, css, timeout=timeout, on_frame=on_frame)
     return f"clicked {call.selector} ({css})", page_id
 
 
 def fill_field(
-    page: Page, graph: SiteGraph, page_id: str, call: FillField
+    page: Page,
+    graph: SiteGraph,
+    page_id: str,
+    call: FillField,
+    *,
+    on_frame: Callable[[], None] | None = None,
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
     timeout = _action_timeout(call.expects.timeout_ms)
     from navigator.automation.browser.cursor import (
         PAUSE_AFTER_CLICK_MS,
         _clear_highlight,
-        _wait_ms,
+        _paced_wait,
         guide_to,
     )
 
-    guide_to(page, css, timeout=timeout, highlight=True)
+    guide_to(page, css, timeout=timeout, highlight=True, on_frame=on_frame)
     page.locator(css).first.fill(call.value, timeout=timeout)
     _clear_highlight(page)
-    _wait_ms(page, PAUSE_AFTER_CLICK_MS)
+    _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)
     return f"filled {call.selector} with {call.value!r} (source={call.source})", page_id
 
 
 def navigate(
-    page: Page, graph: SiteGraph, page_id: str, call: Navigate
+    page: Page,
+    graph: SiteGraph,
+    page_id: str,
+    call: Navigate,
+    *,
+    on_frame: Callable[[], None] | None = None,
 ) -> tuple[str, str]:
     url = graph.url_for(call.page_id)
     from navigator.automation.login_match import same_page_path
@@ -121,11 +144,18 @@ def navigate(
         install_cursor(page)
     except Exception:  # noqa: BLE001
         pass
+    if on_frame is not None:
+        on_frame()
     return f"navigated to {call.page_id} ({url})", call.page_id
 
 
 def wait_for(
-    page: Page, graph: SiteGraph, page_id: str, call: WaitFor
+    page: Page,
+    graph: SiteGraph,
+    page_id: str,
+    call: WaitFor,
+    *,
+    on_frame: Callable[[], None] | None = None,
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
     page.wait_for_selector(

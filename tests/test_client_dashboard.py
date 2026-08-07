@@ -89,7 +89,9 @@ def test_client_api_start_uses_server_key(tmp_path):
     bundle = _client(tmp_path, client_api_key="")
     client, prev, registry, log, auth_store = bundle
     try:
-        p = register(client, "Acme Inbox", ACME)
+        from test_api import ACME_LIVE
+
+        p = register(client, "Acme Inbox", ACME_LIVE)
         # register() returns headers with Token; extract key
         key = p["headers"]["Authorization"].split(None, 1)[1]
         

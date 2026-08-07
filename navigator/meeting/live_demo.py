@@ -1119,6 +1119,7 @@ def run_live_meet_demo(
                 bot_id=bot.id,
                 voice_agent_url=public_agent,
                 push_frame=_push,
+                get_frame_hits=lambda: relay.frame_hits,
                 interactive_listen=interactive_listen,
                 audio_frames=audio_frames,
                 intake=intake,

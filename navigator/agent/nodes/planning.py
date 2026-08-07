@@ -230,6 +230,29 @@ def _ensure_browser_on_page(deps: CallDeps, page_id: str) -> None:
         print(f"[plan] resume re-nav failed: {exc}", flush=True)
 
 
+def _can_continue_in_place(deps: CallDeps, page_id: str, first_call: object) -> bool:
+    """True when the next flow's first step is already actionable right here.
+
+    Re-navigating between playlist flows reloads the shared screen mid-demo. If
+    the element the next flow starts with is present, the browser is already
+    where it needs to be and the demo should flow straight into it.
+    """
+    from navigator.core.schemas import ClickElement, FillField, WaitFor
+
+    if deps.page is None:
+        return False
+    if not isinstance(first_call, (ClickElement, FillField, WaitFor)):
+        return False
+    try:
+        css = deps.graph.selector(page_id, first_call.selector)
+    except SiteGraphError:
+        return False
+    try:
+        return deps.page.locator(css).first.is_visible(timeout=1500)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _step_narration_hint(
     deps: CallDeps,
     *,
@@ -1519,7 +1542,14 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
                     ) from exc
                 if calls:
                     advanced = True
-                    _ensure_browser_on_page(deps, page_id)
+                    if _can_continue_in_place(deps, page_id, calls[0]):
+                        print(
+                            "[plan] playlist advance: continuing in place "
+                            f"(no re-nav) → {page_id}/{flow_id}",
+                            flush=True,
+                        )
+                    else:
+                        _ensure_browser_on_page(deps, page_id)
                     print(
                         f"[plan] auto_play → next playlist flow "
                         f"{page_id}/{flow_id} ({nxt_item.name or flow_id})",

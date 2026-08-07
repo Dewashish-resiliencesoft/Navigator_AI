@@ -188,9 +188,14 @@ def resolve_flow_step_spoken(
     if spoken:
         return spoken, "yaml"
 
+    # A human narrated this flow while recording it. Same _meta sections as
+    # explore writes, so timing is what tells the two apart -- and the Client
+    # should see that this line is their own words, not a model's.
+    narrated = step_index in graph.flow_step_timing(flow_id)
+
     sem_labels = _semantics_step_labels(graph, flow_id)
     if step_index in sem_labels:
-        return sem_labels[step_index], "semantics"
+        return sem_labels[step_index], "recorded" if narrated else "semantics"
 
     narr = graph.flow_narration_suggestions(flow_id)
     # ponytail: explore narration only when length matches — merged flows drift indices
@@ -200,7 +205,7 @@ def resolve_flow_step_spoken(
         and step_index < len(narr)
         and narr[step_index]
     ):
-        return narr[step_index], "explore"
+        return narr[step_index], "recorded" if narrated else "explore"
 
     derived = spoken_from_action(graph, page_id, call)
     if derived:
@@ -390,6 +395,10 @@ def compose_full_demo_script(
             page_name = item.page_id
 
         step_count = len(calls)
+        timing = graph.flow_step_timing(item.flow_id)
+        approvals = graph.flow_pending_approvals(item.flow_id)
+        if approvals:
+            sources_used.add("approvals")
         for step_index, call in enumerate(calls):
             on_screen, action = _describe_action(graph, item.page_id, call)
             step_action = f"{action.get('tool', '')} {tool_selector(call) or action.get('target', '')}".strip()
@@ -420,12 +429,8 @@ def compose_full_demo_script(
             )
             if isinstance(call, WaitFor) and not spoken:
                 continue
-            if spoken_source == "yaml":
-                sources_used.add("yaml")
-            elif spoken_source == "explore":
-                sources_used.add("explore")
-            elif spoken_source == "manual":
-                sources_used.add("manual")
+            if spoken_source in {"yaml", "explore", "manual", "recorded"}:
+                sources_used.add(spoken_source)
 
             if isinstance(call, FillField) and needs_live_input(call):
                 example = str(call.value or "").strip()
@@ -456,21 +461,30 @@ def compose_full_demo_script(
                 )
                 continue
 
-            beats.append(
-                {
-                    "id": beat_id,
-                    "kind": "flow_step",
-                    "flow_id": item.flow_id,
-                    "page_id": item.page_id,
-                    "step_index": step_index,
-                    "action": action,
-                    "on_screen": on_screen,
-                    "spoken": spoken,
-                    "asks_visitor": False,
-                    "spoken_source": spoken_source,
-                    "knowledge_refs": knowledge_refs,
-                }
-            )
+            beat: dict[str, Any] = {
+                "id": beat_id,
+                "kind": "flow_step",
+                "flow_id": item.flow_id,
+                "page_id": item.page_id,
+                "step_index": step_index,
+                "action": action,
+                "on_screen": on_screen,
+                "spoken": spoken,
+                "asks_visitor": False,
+                "spoken_source": spoken_source,
+                "knowledge_refs": knowledge_refs,
+            }
+            if step_index in timing:
+                beat["speak_ms"] = timing[step_index]
+            approval = approvals.get(step_index)
+            if approval is not None:
+                # Recorded but never run. Rendered read-only until the Client
+                # approves it in the Execution tab -- a live demo must not click
+                # Save on a prospect's real data by accident.
+                beat["kind"] = "pending_approval"
+                beat["needs_approval"] = not bool(approval.get("approved"))
+                beat["approval_reason"] = str(approval.get("reason") or "")
+            beats.append(beat)
 
     if not flow_id_filter:
         beats.append(

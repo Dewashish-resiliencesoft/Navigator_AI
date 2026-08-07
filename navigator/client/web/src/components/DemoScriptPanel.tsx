@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ChevronDown, MessageSquare, Monitor, RefreshCw, Save, UserCircle } from "lucide-react";
+import { ChevronDown, MessageSquare, Monitor, RefreshCw, Save, ShieldAlert, UserCircle } from "lucide-react";
 import { api, type DemoScriptBeat, type DemoScriptResponse } from "../lib/api";
 import { BarLoader, Button, Card, CardTitle, Empty, Textarea } from "./ui";
 import { errText, useUi } from "../store";
@@ -11,6 +11,7 @@ function sourceBadge(source?: string) {
     yaml: "YAML",
     explore: "Explore",
     semantics: "Semantics",
+    recorded: "Recorded",
     intake: "Intake",
     knowledge: "Knowledge",
   };
@@ -29,6 +30,9 @@ function sourceBadge(source?: string) {
 }
 
 function beatIcon(kind: string) {
+  if (kind === "pending_approval") {
+    return <ShieldAlert size={14} className="text-amber-600 dark:text-amber-400" />;
+  }
   if (kind === "intake" || kind === "live_input") {
     return <UserCircle size={14} className="text-amber-600 dark:text-amber-400" />;
   }
@@ -105,9 +109,16 @@ function BeatRow({
   return (
     <div
       className={`rounded-lg border px-3 py-2.5 ${
-        beat.asks_visitor ? "border-amber-500/40 bg-amber-500/[0.04]" : ""
+        beat.asks_visitor
+          ? "border-amber-500/40 bg-amber-500/[0.04]"
+          : beat.kind === "pending_approval"
+            ? "border-amber-500/30 bg-amber-500/[0.03]"
+            : ""
       }`}
-      style={{ borderColor: beat.asks_visitor ? undefined : "var(--line)" }}
+      style={{
+        borderColor:
+          beat.asks_visitor || beat.kind === "pending_approval" ? undefined : "var(--line)",
+      }}
     >
       <div className="flex items-start gap-2">
         <span className="mt-0.5 shrink-0">{beatIcon(beat.kind)}</span>
@@ -124,8 +135,22 @@ function BeatRow({
                 Asks visitor
               </span>
             )}
+            {beat.kind === "pending_approval" && beat.needs_approval !== false && (
+              <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[0.62rem] font-medium text-amber-800 dark:text-amber-300">
+                Needs approval
+              </span>
+            )}
+            {typeof beat.speak_ms === "number" && beat.speak_ms > 0 && (
+              <span className="text-[0.62rem] text-[var(--muted)]">
+                ~{Math.round(beat.speak_ms / 1000)}s pacing
+              </span>
+            )}
             {sourceBadge(beat.spoken_source)}
           </div>
+
+          {beat.kind === "pending_approval" && beat.approval_reason && (
+            <p className="mt-1 text-[0.72rem] text-[var(--muted)]">{beat.approval_reason}</p>
+          )}
 
           <label className="mt-2 block">
             <span className="mb-1 block text-[0.65rem] font-medium uppercase tracking-wide text-[var(--muted)]">
@@ -133,11 +158,32 @@ function BeatRow({
             </span>
             <Textarea
               value={beat.spoken ?? ""}
-              onChange={(v) => onPatch(beat.id, { spoken: v })}
+              onChange={(v) => {
+                if (beat.kind === "pending_approval" && beat.needs_approval !== false) return;
+                onPatch(beat.id, { spoken: v });
+              }}
               rows={beat.spoken && beat.spoken.length > 120 ? 3 : 2}
-              className="text-[0.78rem] leading-snug"
+              className={`text-[0.78rem] leading-snug ${
+                beat.kind === "pending_approval" && beat.needs_approval !== false
+                  ? "pointer-events-none opacity-70"
+                  : ""
+              }`}
             />
           </label>
+
+          {beat.kind === "pending_approval" && beat.needs_approval !== false && (
+            <p className="mt-1 text-[0.65rem] text-[var(--muted)]">
+              Approve or drop in the{" "}
+              <button
+                type="button"
+                className="font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+                onClick={() => useUi.getState().setTab("execution")}
+              >
+                Execution
+              </button>{" "}
+              tab before this click runs live.
+            </p>
+          )}
 
           {beat.uses_intake_tokens && (
             <p className="mt-1 text-[0.65rem] text-[var(--muted)]">
@@ -386,7 +432,12 @@ export function DemoScriptPanel({
           <div className="max-h-[32rem] space-y-2 overflow-y-auto pr-1">
             {sections.map((section) => {
               const open = openSections[section.key] ?? !section.collapsible;
-              const stepBeats = section.beats.filter((b) => b.kind === "flow_step" || b.kind === "live_input");
+              const stepBeats = section.beats.filter(
+                (b) =>
+                  b.kind === "flow_step" ||
+                  b.kind === "live_input" ||
+                  b.kind === "pending_approval",
+              );
               return (
                 <div
                   key={section.key}

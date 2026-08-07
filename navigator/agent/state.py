@@ -72,6 +72,8 @@ class CallDeps:
     voice_agent_url: str | None = None
     #: Optional: push a Meet screen-share frame (Playwright thread only).
     push_frame: Callable[[], None] | None = None
+    #: Relay `/view` poll counter — speaking uses this to avoid frozen frames.
+    get_frame_hits: Callable[[], int] | None = None
     #: When True, LISTENING prompts on stdin for what the prospect said.
     interactive_listen: bool = False
     #: Live Meet bot id (handoff chat + speak into call).

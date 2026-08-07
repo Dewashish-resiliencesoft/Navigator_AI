@@ -52,3 +52,30 @@ def test_click_with_cursor_supports_has_text(page, monkeypatch):
     )
     click_with_cursor(page, 'button:has-text("Sign in")')
     assert page.evaluate("window.__navClicks") == 1
+
+
+def test_move_on_frame_called_many_times(page, monkeypatch):
+    from navigator.automation.browser import cursor as cursor_mod
+    from navigator.automation.browser.cursor import install_cursor, move_cursor
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 1.0)
+    monkeypatch.setattr(cursor_mod, "FRAME_STEPS", 12)
+    page.set_content("<body></body>")
+    page.wait_for_timeout = lambda _ms: None  # type: ignore[method-assign]
+    install_cursor(page)
+    hits: list[int] = []
+
+    move_cursor(page, 120, 80, on_frame=lambda: hits.append(1))
+    assert len(hits) >= 10
+
+
+def test_motion_scale_zero_single_jump(page, monkeypatch):
+    from navigator.automation.browser import cursor as cursor_mod
+    from navigator.automation.browser.cursor import install_cursor, move_cursor
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 0.0)
+    page.set_content("<body></body>")
+    install_cursor(page)
+    hits: list[int] = []
+    move_cursor(page, 200, 200, on_frame=lambda: hits.append(1))
+    assert len(hits) <= 1

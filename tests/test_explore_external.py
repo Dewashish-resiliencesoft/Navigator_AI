@@ -5,7 +5,7 @@ from __future__ import annotations
 from navigator.automation.explore.explorer import ExplorerDeps, explore
 from navigator.automation.explore.session import ExplorationBudget
 from navigator.core.schemas import ToolResult, VerifyResult
-from tests.test_explore import FakePage, _el, _session
+from test_explore import FakePage, _el, _session
 
 
 def test_external_link_not_added_to_demo_steps():

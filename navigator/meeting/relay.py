@@ -5,7 +5,9 @@
 `/status` — JSON status for the overlay poller.
 `/frame.jpg` — latest Playwright JPEG.
 
-ponytail: JPEG poll ~10fps. Ceiling: soft under motion. Upgrade: CDP screencast WS.
+ponytail: JPEG poll ~16fps. The demo pushes a frame per cursor micro-step
+(see browser/cursor.py FRAME_STEPS), so motion survives the poll. Real ceiling
+is still the poll itself. Upgrade: CDP screencast WS.
 """
 
 from __future__ import annotations
@@ -342,7 +344,7 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 100);
+  setTimeout(tickFrame, 60);
 }
 async function tickStatus(){
   try {

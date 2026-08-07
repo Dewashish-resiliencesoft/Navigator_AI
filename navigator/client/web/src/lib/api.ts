@@ -155,6 +155,9 @@ export type DemoScriptBeat = {
   example_value?: string;
   knowledge_refs?: string[];
   uses_intake_tokens?: boolean;
+  speak_ms?: number;
+  needs_approval?: boolean;
+  approval_reason?: string;
 };
 
 export type DemoScriptResponse = {
@@ -703,7 +706,7 @@ export const api = {
   exploreStatus: () => get<ExploreStatus>("/client/api/explore"),
   exploreFrame: () =>
     get<{ mime: string; data: string }>("/client/api/explore/frame"),
-    exploreStart: (body: {
+  exploreStart: (body: {
     base_url?: string | null;
     max_pages?: number;
     max_steps?: number;
@@ -713,6 +716,9 @@ export const api = {
     target_flow_name?: string | null;
     new_flow_name?: string | null;
     focus_hint?: string | null;
+    include_paths?: string[];
+    exclude_paths?: string[];
+    exclude_labels?: string[];
   }) => send<ExploreStatus>("/client/api/explore/start", "POST", body),
   exploreStop: () => send<ExploreStatus>("/client/api/explore/stop", "POST"),
   exploreAnswer: (qid: string, value: string, skip = false) =>

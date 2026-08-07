@@ -20,7 +20,7 @@ from typing import Any, Callable
 from urllib.parse import urlparse
 from uuid import uuid4
 
-from navigator.automation.explore import history, perceive, reason, semantics
+from navigator.automation.explore import history, page_plan, perceive, reason, semantics
 from navigator.automation.external_links import (
     element_is_external,
     is_external_url,
@@ -202,6 +202,27 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
                 }
             )
 
+        if not session.path_in_scope(url):
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": f"{fp.url_path} is outside the configured scope — backing out",
+                }
+            )
+            if not _leave_out_of_scope(session, deps):
+                session.stop_reason = f"out of scope at {fp.url_path}"
+                session.emit(
+                    {"type": "log", "level": "info",
+                     "msg": f"stopping: {session.stop_reason}"}
+                )
+                break
+            continue
+
+        # PAGE PLAN: on a screen we have not planned yet, ask the vision model
+        # for the whole demo-worthy sequence instead of one nav click at a time.
+        _plan_state(session, deps, fp, elements, url)
+
         untried = session.untried(fp, elements)
         if not untried:
             if fp.url_path in {"blank", "/blank"} or not is_product_surface(
@@ -228,22 +249,26 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
 
         session.consecutive_no_new = 0
 
-        choice = reason.choose_next(
-            url=url,
-            elements=untried,
-            corrections=deps.corrections,
-            visited_paths=visited_paths,
-            known_bad=deps.known_bad or None,
-            product_base=session.base_url,
-            focus_hint=session.focus_hint,
-            ask_text=deps.ask_text,
-            ask_vision=deps.ask_vision,
-            screenshot=(
-                perceive.screenshot_b64(deps.page)
-                if reason.needs_vision(untried)
-                else ""
-            ),
-        )
+        choice, planned_kind = _next_from_plan(session, fp, elements, untried, url)
+        if choice is None:
+            planned_kind = ""
+            choice = reason.choose_next(
+                url=url,
+                elements=untried,
+                corrections=deps.corrections,
+                visited_paths=visited_paths,
+                known_bad=deps.known_bad or None,
+                product_base=session.base_url,
+                focus_hint=session.focus_hint,
+                skip=lambda el: session.out_of_scope(el, url) is not None,
+                ask_text=deps.ask_text,
+                ask_vision=deps.ask_vision,
+                screenshot=(
+                    perceive.screenshot_b64(deps.page)
+                    if reason.needs_vision(untried)
+                    else ""
+                ),
+            )
         if session.stop_event.is_set():
             session.stop_reason = "stopped by client"
             session.emit({"type": "log", "level": "info", "msg": "stopping: stopped by client"})
@@ -267,7 +292,10 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
         el = untried[choice.index]
         session.mark_tried(fp, el)
         try:
-            _step(session, deps, graph, el, url, choice, execute, verify)
+            _step(
+                session, deps, graph, el, url, choice, execute, verify,
+                planned_kind=planned_kind,
+            )
         except RuntimeError as exc:
             if "stopped by client" in str(exc).lower():
                 session.stop_reason = "stopped by client"
@@ -286,6 +314,99 @@ def explore(session: ExplorationSession, deps: ExplorerDeps) -> list[RecordedSte
         session.phase = "stopped"
         session.stop_reason = session.stop_reason or "stopped by client"
     return session.steps
+
+
+def _plan_state(
+    session: ExplorationSession,
+    deps: ExplorerDeps,
+    fp: Any,
+    elements: list[dict[str, Any]],
+    url: str,
+) -> None:
+    """Build (once) the demo-worthy action sequence for this screen."""
+    if fp in session.page_plans:
+        return
+    if deps.ask_vision is None and deps.ask_text is None:
+        session.page_plans[fp] = page_plan.PagePlan()
+        return
+
+    visited_paths = tuple(dict.fromkeys(p.url_path for p in session.visited))
+    try:
+        plan = page_plan.plan_page(
+            url=url,
+            elements=elements,
+            screenshot_b64=perceive.screenshot_b64(deps.page),
+            ask_vision=deps.ask_vision,
+            ask_text=deps.ask_text,
+            visited_paths=visited_paths,
+            focus_hint=session.focus_hint,
+            corrections=deps.corrections,
+        )
+    except RuntimeError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        print(f"[explore] page plan failed: {exc}", flush=True)
+        plan = page_plan.PagePlan()
+
+    session.page_plans[fp] = plan
+    if plan:
+        session.emit(
+            {
+                "type": "log",
+                "level": "info",
+                "msg": (
+                    f"planned {len(plan.actions)} action(s) on {fp.url_path}"
+                    + (f" — {plan.purpose}" if plan.purpose else "")
+                ),
+            }
+        )
+
+
+def _next_from_plan(
+    session: ExplorationSession,
+    fp: Any,
+    elements: list[dict[str, Any]],
+    untried: list[dict[str, Any]],
+    url: str,
+) -> tuple[reason.Choice | None, str]:
+    """Pop the next planned action that is still untried and in scope.
+
+    Returns (choice indexed into `untried`, planned kind). (None, "") means the
+    plan is spent or unusable and the caller should fall back to reason.
+    """
+    plan = session.page_plans.get(fp)
+    if not plan:
+        return None, ""
+
+    untried_keys = {element_key(e): i for i, e in enumerate(untried)}
+    for action in plan.actions:
+        if not 0 <= action.element_index < len(elements):
+            continue
+        el = elements[action.element_index]
+        idx = untried_keys.get(element_key(el))
+        if idx is None:
+            continue  # already tried this run
+        if session.out_of_scope(el, url) is not None:
+            session.mark_tried(fp, el)
+            continue
+        if not action.demo_worthy and action.kind != "commit":
+            session.mark_tried(fp, el)
+            continue
+        return (
+            reason.Choice(idx, action.why or "page plan", action.narration),
+            action.kind,
+        )
+    return None, ""
+
+
+def _leave_out_of_scope(session: ExplorationSession, deps: ExplorerDeps) -> bool:
+    """Back out of a page the Client excluded. False when we cannot."""
+    before = _current_url(deps.page)
+    try:
+        deps.page.go_back(timeout=8000)
+    except Exception:  # noqa: BLE001
+        return False
+    return _current_url(deps.page) != before
 
 
 def _try_dead_end_escape(
@@ -463,6 +584,7 @@ def _step(
     choice: reason.Choice,
     execute: Callable[..., tuple[ToolResult, str]],
     verify: Callable[..., Any],
+    planned_kind: str = "",
 ) -> None:
     if session.stop_event.is_set():
         return
@@ -471,6 +593,13 @@ def _step(
     junk = junk_record_reason(el, alias=alias, selector=css)
     if junk:
         session.emit({"type": "log", "level": "debug", "msg": f"skip {alias}: {junk}"})
+        return
+
+    scope = session.out_of_scope(el, url)
+    if scope:
+        session.emit(
+            {"type": "log", "level": "info", "msg": f"skip {alias}: {scope}"}
+        )
         return
 
     fillable = perceive.is_fillable(el)
@@ -508,6 +637,11 @@ def _step(
             )
             if session.note_flagged(flag):
                 session.emit({"type": "flagged", **flag.as_dict()})
+            # A form the plan wanted to submit: the fills before it are real
+            # demo material, so record the commit as a step the Client can
+            # approve. It is NOT executed here -- no live data is mutated.
+            if planned_kind == "commit" and not fillable:
+                _record_pending_commit(session, graph, el, alias, css, url, verdict.reason)
             return
 
     if session.stop_event.is_set():
@@ -734,7 +868,15 @@ def _step(
                     ),
                 }
             )
-        elif after_path not in session.flow_paths:
+        elif after_path not in session.flow_paths or (
+            path_before == after_path and fp_before != fp_after
+        ):
+            # A new path, OR the same path with a changed DOM -- a dialog opened,
+            # a row expanded, a filter applied. The old path-only rule discarded
+            # every in-page interaction, which is what made demos a tab tour.
+            # Landing back on an already-covered path stays excluded: that is a
+            # backtrack, not a new thing to show.
+            new_path = after_path not in session.flow_paths
             session.flow_paths.add(after_path)
             session.steps.append(step)
             session.consecutive_no_new = 0
@@ -751,8 +893,9 @@ def _step(
                     "type": "log",
                     "level": "info",
                     "msg": (
-                        f"demo step +{alias} → {after_path} — "
-                        f"{choice.why or 'ok'}"
+                        f"demo step +{alias} "
+                        f"{'→ ' + after_path if new_path else f'(in-page on {after_path})'}"
+                        f" — {choice.why or 'ok'}"
                     ),
                 }
             )
@@ -771,6 +914,43 @@ def _step(
 
     if deps.on_action is not None:
         deps.on_action(step, result, verify_result)
+
+
+def _record_pending_commit(
+    session: ExplorationSession,
+    graph: _LiveGraph,
+    el: dict[str, Any],
+    alias: str,
+    css: str,
+    url: str,
+    reason_text: str,
+) -> None:
+    """Save the mutating click as an unapproved step. Never executes it."""
+    graph.add(alias, css)
+    step = RecordedStep(
+        tool="click_element",
+        alias=alias,
+        selector=css,
+        needs_approval=True,
+        approval_reason=reason_text,
+    )
+    step.postcondition = guess_postcondition(step)
+    session.steps.append(step)
+    session.step_labels.append(
+        f"Completes the form by choosing {_label(el)!r}."
+    )
+    session.note_pending_approval(
+        alias=alias, label=_label(el), selector=css, url=url, reason=reason_text
+    )
+    session.emit(
+        {
+            "type": "log",
+            "level": "info",
+            "msg": (
+                f"recorded (not run) {alias} — needs approval: {reason_text}"
+            ),
+        }
+    )
 
 
 def _mark_live_input_step(

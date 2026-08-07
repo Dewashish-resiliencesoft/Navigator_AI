@@ -76,7 +76,11 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         _trace_live_input(deps, state, call, live_detail)
 
     ran_on = state["page_id"]
-    result, next_page_id = run_tool(deps.page, deps.graph, ran_on, call)
+    # Frames pushed *during* the action, not just after it: the screenshare is a
+    # JPEG poll, so cursor motion is only visible if we push through the move.
+    result, next_page_id = run_tool(
+        deps.page, deps.graph, ran_on, call, on_frame=deps.push_frame
+    )
     if is_external_url(deps.page.url, deps.graph.base_url):
         revert_external_navigation(deps.page, product_base=deps.graph.base_url)
         try:

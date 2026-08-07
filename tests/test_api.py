@@ -21,13 +21,20 @@ from navigator.logs.store import ActionLog
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def graph_yaml(site: str, product_name: str, fixture: str, button: str) -> str:
+def graph_yaml(
+    site: str,
+    product_name: str,
+    fixture: str,
+    button: str,
+    base_url: str | None = None,
+) -> str:
     """A minimal but real site graph pointed at a local fixture."""
+    base_url = base_url or f"{FIXTURES.as_uri()}/"
     return textwrap.dedent(
         f"""
         version: 1
         site: {site}
-        base_url: {FIXTURES.as_uri()}/
+        base_url: {base_url}
         persona:
           product_name: {product_name}
           one_liner: a test product
@@ -70,6 +77,15 @@ def graph_yaml(site: str, product_name: str, fixture: str, button: str) -> str:
 
 ACME = graph_yaml("acme-inbox", "Acme Inbox", "crm_dashboard.html", "#send-btn")
 GLOBEX = graph_yaml("globex-desk", "Globex Desk", "crm_dashboard.html", "#send-btn")
+
+# Demo-start tests fake the runner, so no page is ever loaded — but the live
+# readiness gate rejects fixture URLs, so those tests need a product-shaped graph.
+ACME_LIVE = graph_yaml(
+    "acme-inbox", "Acme Inbox", "inbox", "#send-btn", base_url="https://acme.example.com/"
+)
+GLOBEX_LIVE = graph_yaml(
+    "globex-desk", "Globex Desk", "inbox", "#send-btn", base_url="https://globex.example.com/"
+)
 
 
 @pytest.fixture

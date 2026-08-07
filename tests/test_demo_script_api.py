@@ -8,7 +8,7 @@ from navigator.app import main as app_module
 from navigator.app.auth_store import AuthStore
 from navigator.app.registry import Registry
 from navigator.logs.store import ActionLog
-from tests.test_client_dashboard import _cleanup, _client
+from test_client_dashboard import _cleanup, _client
 from test_api import ACME, register
 
 

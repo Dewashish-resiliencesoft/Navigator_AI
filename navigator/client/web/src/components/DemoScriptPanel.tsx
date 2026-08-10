@@ -40,10 +40,24 @@ function beatIcon(kind: string) {
   return <MessageSquare size={14} className="text-[var(--accent)]" />;
 }
 
-type Section =
-  | { key: string; title: string; beats: DemoScriptBeat[]; collapsible: boolean };
+/** mm:ss — same format the narrate widget's counter shows while recording. */
+function fmtMs(ms: number) {
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+}
 
-function buildSections(beats: DemoScriptBeat[]): Section[] {
+type Section = {
+  key: string;
+  title: string;
+  beats: DemoScriptBeat[];
+  collapsible: boolean;
+  totalMs?: number;
+};
+
+function buildSections(
+  beats: DemoScriptBeat[],
+  flowTotalMs?: Record<string, number>,
+): Section[] {
   const sections: Section[] = [];
   let intake: DemoScriptBeat[] = [];
   let login: DemoScriptBeat[] = [];
@@ -86,6 +100,7 @@ function buildSections(beats: DemoScriptBeat[]): Section[] {
       title: title || fid.replace(/_/g, " "),
       beats: flowBeats,
       collapsible: flowBeats.length > 6,
+      totalMs: flowTotalMs?.[fid],
     });
   }
   if (wrap.length) {
@@ -140,11 +155,32 @@ function BeatRow({
                 Needs approval
               </span>
             )}
-            {typeof beat.speak_ms === "number" && beat.speak_ms > 0 && (
-              <span className="text-[0.62rem] text-[var(--muted)]">
-                ~{Math.round(beat.speak_ms / 1000)}s pacing
+            {typeof beat.speak_at_ms === "number" && (
+              <span
+                className="font-mono text-[0.62rem] text-[var(--muted)]"
+                title="When this line is spoken during the demo"
+              >
+                {fmtMs(beat.speak_at_ms)}
+                {typeof beat.speak_ms === "number" && beat.speak_ms > 0
+                  ? ` → ${fmtMs(beat.speak_at_ms + beat.speak_ms)}`
+                  : ""}
               </span>
             )}
+            {typeof beat.act_at_ms === "number" && (
+              <span
+                className="font-mono text-[0.62rem] text-[var(--muted)]"
+                title="When this step's action runs"
+              >
+                ⏱ {fmtMs(beat.act_at_ms)}
+              </span>
+            )}
+            {typeof beat.speak_at_ms !== "number" &&
+              typeof beat.speak_ms === "number" &&
+              beat.speak_ms > 0 && (
+                <span className="text-[0.62rem] text-[var(--muted)]">
+                  ~{Math.round(beat.speak_ms / 1000)}s pacing
+                </span>
+              )}
             {sourceBadge(beat.spoken_source)}
           </div>
 
@@ -278,7 +314,10 @@ export function DemoScriptPanel({
     void load();
   }, [load, epoch, revision]);
 
-  const sections = useMemo(() => buildSections(beats), [beats]);
+  const sections = useMemo(
+    () => buildSections(beats, data?.flow_total_ms),
+    [beats, data?.flow_total_ms],
+  );
 
   useEffect(() => {
     setOpenSections((prev) => {
@@ -462,6 +501,14 @@ export function DemoScriptPanel({
                     {stepBeats.length > 0 && (
                       <span className="font-normal text-[var(--muted)]">
                         · {stepBeats.length} steps
+                      </span>
+                    )}
+                    {typeof section.totalMs === "number" && section.totalMs > 0 && (
+                      <span
+                        className="font-mono text-[0.7rem] font-normal text-[var(--muted)]"
+                        title="Recorded length of this flow"
+                      >
+                        · {fmtMs(section.totalMs)}
                       </span>
                     )}
                   </button>

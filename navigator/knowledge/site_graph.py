@@ -149,6 +149,29 @@ class SiteGraph(BaseModel):
                 continue
         return out
 
+    def flow_step_speech(self, flow_id: str) -> dict[int, tuple[int, int]]:
+        """step index → (ms narration started, ms it ended) during recording.
+
+        Absent for a silent step, and for flows recorded before this was
+        captured — playback falls back to the click schedule.
+        """
+        section = self.meta.get("step_speech")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, tuple[int, int]] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                start = int(row["start_ms"])
+                out[int(row["idx"])] = (start, max(start, int(row["end_ms"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
     def has_recorded_playback(self, flow_id: str) -> bool:
         """True when timeline playback can run (narration + click schedule)."""
         lines = self.flow_narration_lines(flow_id)

@@ -14,6 +14,7 @@ from typing import Any, Literal
 import yaml
 
 from navigator.agent.live_input import live_prompt, needs_live_input
+from navigator.agent.playback_schedule import build_schedule
 from navigator.core.schemas import (
     ClickElement,
     FillField,
@@ -367,6 +368,7 @@ def compose_full_demo_script(
     if knowledge_md.strip() and not flow_id_filter:
         context_bits.append(knowledge_md.strip()[:400])
 
+    flow_total_ms: dict[str, int] = {}
     flow_index = 0
     for item in playlist:
         if flow_id_filter and item.flow_id != flow_id_filter:
@@ -404,6 +406,26 @@ def compose_full_demo_script(
 
         step_count = len(calls)
         timing = graph.flow_step_timing(item.flow_id)
+        # Recorded schedule, so the Client sees the timing they performed. TTS
+        # durations are a playback-time concern and unavailable here.
+        cues, flow_len_ms = build_schedule(
+            n_steps=step_count,
+            clicks=graph.flow_step_clicks(item.flow_id),
+            speech=graph.flow_step_speech(item.flow_id),
+            lines=graph.flow_narration_lines(item.flow_id),
+            timing=timing,
+            tts_ms=lambda _text: None,
+        )
+        speak_at = {c.idx: c.at_ms for c in cues if c.kind == "speak"}
+        act_at = {c.idx: c.at_ms for c in cues if c.kind == "act"}
+        # How long the host actually talked, where we know it. `step_timing` is
+        # the click-to-click gap, which overstates a short line before a pause.
+        spoken_len = {
+            idx: end - start
+            for idx, (start, end) in graph.flow_step_speech(item.flow_id).items()
+        }
+        if flow_len_ms:
+            flow_total_ms[item.flow_id] = flow_len_ms
         approvals = graph.flow_pending_approvals(item.flow_id)
         if approvals:
             sources_used.add("approvals")
@@ -482,8 +504,16 @@ def compose_full_demo_script(
                 "spoken_source": spoken_source,
                 "knowledge_refs": knowledge_refs,
             }
-            if step_index in timing:
+            if step_index in spoken_len:
+                beat["speak_ms"] = spoken_len[step_index]
+            elif step_index in timing:
                 beat["speak_ms"] = timing[step_index]
+            # When each cue fires on the flow clock, so the script can show
+            # timecodes matching what playback will do.
+            if step_index in speak_at:
+                beat["speak_at_ms"] = speak_at[step_index]
+            if step_index in act_at:
+                beat["act_at_ms"] = act_at[step_index]
             approval = approvals.get(step_index)
             if approval is not None:
                 # Recorded but never run. Rendered read-only until the Client
@@ -531,6 +561,7 @@ def compose_full_demo_script(
         "beats": beats,
         "context": "\n".join(context_bits[:4]),
         "sources_used": sorted(sources_used),
+        "flow_total_ms": flow_total_ms,
         "stats": {
             "beat_count": len(beats),
             "asks_visitor_count": sum(1 for b in beats if b.get("asks_visitor")),

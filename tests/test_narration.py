@@ -105,7 +105,7 @@ def test_narrate_recording_end_to_end():
     def ask(_prompt: str) -> str:
         return '{"lines": ["First clean.", "Second clean."]}'
 
-    lines, timings = narration.narrate_recording(
+    lines, timings, windows = narration.narrate_recording(
         audio=b"fake",
         steps=steps,
         api_key="test",
@@ -119,3 +119,33 @@ def test_narrate_recording_end_to_end():
     assert any("Second" in l for l in lines)
     assert timings[0]["idx"] == 0
     assert timings[0]["speak_ms"] == 5000
+    # Windows are the raw speech times, not the refined wording.
+    assert windows == [(500, 1500), (5500, 6500), None]
+
+
+def test_speech_windows_span_segments_and_skip_silence():
+    segs = [
+        narration.Segment(500, 1500, "one"),
+        narration.Segment(1800, 2400, "still one"),
+        narration.Segment(9000, 9900, "three"),
+    ]
+    # Step 1 (at 5000) gets nothing: seg at 1800+2500 lead-in < 5000, and the
+    # 9000 segment belongs to step 2.
+    assert narration.speech_windows(segs, [0, 5000, 8000]) == [
+        (500, 2400),
+        None,
+        (9000, 9900),
+    ]
+
+
+def test_speech_windows_payload_omits_silent_steps():
+    windows = [(100, 200), None, (900, 1000)]
+    assert narration.speech_windows_payload(windows) == [
+        {"idx": 0, "start_ms": 100, "end_ms": 200},
+        {"idx": 2, "start_ms": 900, "end_ms": 1000},
+    ]
+
+
+def test_align_unchanged_by_assign_extraction():
+    segs = [narration.Segment(0, 900, "a"), narration.Segment(1000, 1900, "b")]
+    assert narration.align(segs, [0, 6000]) == ["a b", ""]

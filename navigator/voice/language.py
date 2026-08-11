@@ -117,7 +117,8 @@ def sync_call_language(deps: object, utterance: str) -> SpokenLanguage:
         speaker = getattr(deps, "speaker", None)
         synth = getattr(speaker, "synthesizer", None) if speaker is not None else None
         local = getattr(speaker, "local", None) if speaker is not None else None
-        apply_to_speakers(lang, speaker, synth, local)
+        live = getattr(deps, "live_agent", None)
+        apply_to_speakers(lang, speaker, synth, local, live)
 
     new_lang, _ = apply_language_switch(
         utterance=utterance,
@@ -161,7 +162,8 @@ def poll_barge_in_language_switch(deps: object) -> SpokenLanguage | None:
         setattr(deps, "spoken_language", lang)
         synth = getattr(speaker, "synthesizer", None) if speaker is not None else None
         local = getattr(speaker, "local", None) if speaker is not None else None
-        apply_to_speakers(lang, speaker, synth, local)
+        live = getattr(deps, "live_agent", None)
+        apply_to_speakers(lang, speaker, synth, local, live)
 
     while pending:
         raw = pending.pop(0)

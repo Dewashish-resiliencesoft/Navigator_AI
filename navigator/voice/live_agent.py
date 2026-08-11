@@ -181,6 +181,24 @@ class LiveAgent:
         if (text or "").strip():
             self._cmds.put(_Cmd(kind="context", text=text))
 
+    def set_language(self, lang: SpokenLanguage) -> None:
+        """Switch spoken language for later turns (soft — no session reconnect).
+
+        ``speech_config.language_code`` is fixed at connect; we update cfg +
+        inject a hard context so the model stops refusing and answers in-lang.
+        """
+        if lang == self.cfg.language:
+            return
+        self.cfg.language = lang
+        label = "Hindi" if lang == "hi" else "English"
+        self.add_context(
+            f"The person asked you to speak {label} from now on. Speak only "
+            f"{label} until told otherwise. Never refuse a language switch and "
+            f"never say you can only speak another language in this demo. "
+            f"Acknowledge briefly in {label}, then continue."
+        )
+        print(f"[speak] live language → {lang}", flush=True)
+
     def wait_until_idle(self, *, silence_s: float, timeout_s: float = 30.0) -> None:
         """Block until the model has been quiet for `silence_s`.
 
@@ -396,7 +414,9 @@ class LiveAgent:
             if cmd.kind == "close":
                 return
             try:
-                await session.send_realtime_input(text=_prompt_for(cmd))
+                await session.send_realtime_input(
+                    text=_prompt_for(cmd, language=self.cfg.language)
+                )
             except Exception as exc:  # noqa: BLE001
                 self._emit(LiveEvent(kind="error", text=f"send text: {exc}"))
                 self._turn_done.set()
@@ -411,8 +431,9 @@ class LiveAgent:
             print(f"[live] event handler failed: {exc}", flush=True)
 
 
-def _prompt_for(cmd: _Cmd) -> str:
+def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
     """Turn a director command into an instruction the model will not read aloud."""
+    lang_hint = " in Hindi" if language == "hi" else " in English"
     if cmd.kind == "context":
         return (
             "[Context, do not say this out loud and do not acknowledge it] "
@@ -420,15 +441,15 @@ def _prompt_for(cmd: _Cmd) -> str:
         )
     if cmd.kind == "nudge":
         return (
-            "[Say this brief working ack aloud once, then stop. Do not elaborate "
-            f"or narrate what you are doing] {cmd.text}"
+            f"[Say this brief working ack aloud once{lang_hint}, then stop. Do not "
+            f"elaborate or narrate what you are doing] {cmd.text}"
         )
     if cmd.mode == "natural":
         return (
-            "[Say the following to the person now, in your own words, in one or "
-            f"two sentences, then stop] {cmd.text}"
+            f"[Say the following to the person now{lang_hint}, in your own words, "
+            f"in one or two sentences, then stop] {cmd.text}"
         )
     return (
-        "[Say the following to the person now, word for word, then stop] "
+        f"[Say the following to the person now{lang_hint}, word for word, then stop] "
         f"{cmd.text}"
     )

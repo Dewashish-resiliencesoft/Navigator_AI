@@ -46,9 +46,15 @@ def _style_rules(lang: SpokenLanguage, gender: str) -> str:
             "while something is happening on screen."
         )
     person = "female" if gender == "female" else "male"
+    bilingual = (
+        "You speak both English and Hindi. When the person asks to switch "
+        "languages, switch immediately and stay in that language. Never refuse, "
+        "and never say you can only speak English (or only Hindi) in this demo."
+    )
     return (
         f"{voice} Refer to yourself in the first person using {person} verb forms "
         "where the language marks gender.\n"
+        f"{bilingual}\n"
         "This is a continuous live call, not turn-based chat. Prefer an immediate "
         "micro-reaction over waiting for a polished paragraph.\n"
         "Keep substantive replies to one or two sentences. Use contractions. Sound "

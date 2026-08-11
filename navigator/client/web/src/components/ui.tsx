@@ -1,5 +1,6 @@
 import { motion, useMotionTemplate, useMotionValue } from "motion/react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "../lib/cn";
 import { cardHover, rise, soft } from "../lib/motion";
 
@@ -422,19 +423,40 @@ export function ConfirmDialog({
   confirmLabel?: string;
   danger?: boolean;
 }) {
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+  // Portal to body: Card uses overflow-hidden + backdrop-blur, which makes
+  // position:fixed resolve inside the card and clips the dialog.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4 backdrop-blur-md"
+      role="presentation"
+      onClick={onCancel}
+    >
       <motion.div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="nav-confirm-title"
+        aria-describedby="nav-confirm-message"
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={soft}
         className="w-full max-w-[400px] overflow-hidden rounded-xl border bg-[var(--panel)] shadow-xl"
         style={{ borderColor: "var(--line)" }}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="p-6">
-          <h3 className="mb-2 text-[1.1rem] font-semibold tracking-tight">{title}</h3>
-          <p className="text-[0.85rem] leading-relaxed text-[var(--muted)]">{message}</p>
+          <h3
+            id="nav-confirm-title"
+            className="mb-2 text-[1.1rem] font-semibold tracking-tight"
+          >
+            {title}
+          </h3>
+          <p
+            id="nav-confirm-message"
+            className="text-[0.85rem] leading-relaxed text-[var(--muted)]"
+          >
+            {message}
+          </p>
         </div>
         <div
           className="flex justify-end gap-2 border-t bg-black/[0.02] p-4 dark:bg-white/[0.02]"
@@ -448,6 +470,7 @@ export function ConfirmDialog({
           </Button>
         </div>
       </motion.div>
-    </div>
+    </div>,
+    document.body,
   );
 }

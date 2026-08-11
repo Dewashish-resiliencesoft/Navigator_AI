@@ -52,6 +52,7 @@ docs/**/*.html
 !fern/**/*.mdx
 
 # Standing rules every contributor and coding agent must read
+!README.md
 !CLAUDE.md
 !AGENTS.md
 !docs/PRODUCT_MODEL.md

@@ -132,6 +132,21 @@ def test_unknown_tts_duration_does_not_stretch():
     assert [c.at_ms for c in known] == [c.at_ms for c in unknown]
 
 
+def test_unknown_tts_long_line_stretches_like_measured():
+    """Prefetch miss must still push later cues when the line is long."""
+    long = " ".join(["word"] * 40)  # ~16s estimate vs 700ms recorded window
+    cues, _ = build_schedule(
+        n_steps=2,
+        clicks={0: 1200, 1: 3000},
+        speech={0: (300, 1000), 1: (2100, 2900)},
+        lines=[long, "Next."],
+        timing={},
+        tts_ms=_no_tts,
+    )
+    assert _at(cues, 1, "speak") > 2100
+    assert _at(cues, 1, "act") - _at(cues, 1, "speak") == 3000 - 2100
+
+
 def test_cues_are_non_decreasing_and_total_covers_last_line():
     cues, total = build_schedule(
         n_steps=3,

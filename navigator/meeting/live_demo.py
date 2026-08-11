@@ -165,6 +165,52 @@ def _start_live_agent(
     return agent
 
 
+def _talk_speaker(meet_speaker, live_box: list):
+    """Route say/say_async through Live when the session is up."""
+
+    class _Talk:
+        @property
+        def last_spoken(self) -> str:
+            live = live_box[0] if live_box else None
+            if live is not None:
+                return getattr(live, "last_spoken", "") or ""
+            return getattr(meet_speaker, "last_spoken", "") or ""
+
+        def say(self, text: str) -> None:
+            live = live_box[0] if live_box else None
+            if live is not None:
+                live.say(text, mode="natural")
+                return
+            meet_speaker.say(text)
+
+        def say_async(self, text: str):
+            live = live_box[0] if live_box else None
+            if live is not None:
+                from navigator.meeting.playback_handle import PlaybackHandle
+
+                handle = PlaybackHandle()
+
+                def _worker() -> None:
+                    try:
+                        live.say(text, mode="natural")
+                    except Exception as exc:  # noqa: BLE001
+                        handle.error = str(exc)
+                    finally:
+                        handle._finish()
+
+                handle._thread = threading.Thread(
+                    target=_worker, name="live-talk-say", daemon=True
+                )
+                handle._thread.start()
+                return handle
+            return meet_speaker.say_async(text)
+
+        def __getattr__(self, name: str):
+            return getattr(meet_speaker, name)
+
+    return _Talk()
+
+
 def _log_live_event(event) -> None:
     if event.kind == "said" and event.text.strip():
         print(f"[live] said: {event.text.strip()}", flush=True)
@@ -872,6 +918,9 @@ def run_live_meet_demo(
                 pending_barge_in=pending_barge_in,
             )
 
+        talk = _talk_speaker(meet_speaker, live_box)
+        speaker_box[0] = talk
+
         merged_prefill = dict(intake_prefill or {})
 
         from navigator.agent.speech_safety import prospect_facing_persona
@@ -924,7 +973,40 @@ def run_live_meet_demo(
                         flush=True,
                     )
 
+        # Conversational Live owns mic+mouth from intake onward.
+        if settings.live_conversational and not live_box:
+            early_live = _start_live_agent(
+                audio_bridge=audio_bridge,
+                graph_cfg=graph_cfg,
+                product_id=product_id,
+                intake=None,
+                spoken_language=spoken_language,
+                agent_gender=agent_settings.agent_gender,
+                heard_sink=pending_barge_in,
+            )
+            if early_live is None:
+                raise LiveDemoStopped(
+                    "Live conversational mode is on but the Live session failed "
+                    "to start — refusing MeetSpeaker TTS fallback"
+                )
+            live_box.append(early_live)
+            meet_speaker.check_barge_in = None
+
         def _intake_listen(prompt: str) -> str:
+            if live_box:
+                live = live_box[0]
+                if hasattr(live, "drain_heard"):
+                    live.drain_heard()
+                timeout_s = float(
+                    getattr(
+                        brain_config,
+                        "listen_timeout_s",
+                        settings.brain_listen_timeout_s,
+                    )
+                    if brain_config is not None
+                    else settings.brain_listen_timeout_s
+                )
+                return live.wait_for_heard(timeout_s=timeout_s)
             if audio_bridge is not None and settings.groq_api_key:
                 return _wait_meet_utterance(
                     audio_bridge.inbound,
@@ -949,13 +1031,15 @@ def run_live_meet_demo(
             return ""
 
         can_listen = bool(
-            (audio_bridge is not None and settings.groq_api_key) or interactive_listen
+            live_box
+            or (audio_bridge is not None and settings.groq_api_key)
+            or interactive_listen
         )
         extra_langs = tuple(agent_settings.extra_languages)
         # Regex clean only — Groq extract after every answer felt stuck.
         intake, spoken_language = run_intake(
             persona=facing,
-            speaker=meet_speaker,
+            speaker=talk,
             interactive=interactive_listen,
             listen=_intake_listen if can_listen else None,
             prefill=merged_prefill or None,
@@ -967,6 +1051,10 @@ def run_live_meet_demo(
         )
         apply_to_speakers(spoken_language, speaker, meet_speaker)  # type: ignore[arg-type]
         print(f"[live] intake ({spoken_language}): {intake.model_dump()}", flush=True)
+        if live_box:
+            summary = _intake_summary(intake)
+            if summary:
+                live_box[0].add_context(f"About the person you are talking to: {summary}")
         from navigator.meeting.intake import preferred_flow_id
 
         hint = preferred_flow_id(intake.looking_for)
@@ -1297,27 +1385,34 @@ def run_live_meet_demo(
 
             playlist_demo = bool(auto_play and graph_cfg.demo_playlist)
 
-            live_agent = _start_live_agent(
-                audio_bridge=audio_bridge,
-                graph_cfg=graph_cfg,
-                product_id=product_id,
-                intake=intake,
-                spoken_language=spoken_language,
-                agent_gender=agent_settings.agent_gender,
-                heard_sink=pending_barge_in,
-            )
-            if live_agent is not None:
+            live_agent = live_box[0] if live_box else None
+            if live_agent is None and settings.live_conversational:
+                # Started after Playwright only if early start was skipped
+                # (should not happen when the flag is on).
+                live_agent = _start_live_agent(
+                    audio_bridge=audio_bridge,
+                    graph_cfg=graph_cfg,
+                    product_id=product_id,
+                    intake=intake,
+                    spoken_language=spoken_language,
+                    agent_gender=agent_settings.agent_gender,
+                    heard_sink=pending_barge_in,
+                )
+                if live_agent is None:
+                    raise LiveDemoStopped(
+                        "Live conversational mode is on but the Live session "
+                        "failed to start — refusing MeetSpeaker TTS fallback"
+                    )
                 live_box.append(live_agent)
-                # Live owns barge-in now: it hears the prospect directly and
-                # reports `interrupted`. The Whisper poller would fight it for
-                # the same inbound queue.
+                meet_speaker.check_barge_in = None
+            elif live_agent is not None:
                 meet_speaker.check_barge_in = None
 
             deps = CallDeps(
                 graph=graph_cfg,
                 page=page,
                 log=log,
-                speaker=meet_speaker,
+                speaker=talk,
                 scripted_flow=(
                     None
                     if conversational or playlist_demo
@@ -1335,7 +1430,7 @@ def run_live_meet_demo(
                 interactive_listen=interactive_listen,
                 audio_frames=audio_frames,
                 intake=intake,
-                is_bot_echo=lambda t: _is_likely_echo(t, meet_speaker.last_spoken),
+                is_bot_echo=lambda t: _is_likely_echo(t, talk.last_spoken),
                 set_status=lambda mode, label=None: relay.set_status(mode, label),
                 set_avatar_state=relay.set_avatar_state,
                 screen_context=lambda: screen_snapshot(page),

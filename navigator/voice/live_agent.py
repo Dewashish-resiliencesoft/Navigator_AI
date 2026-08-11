@@ -38,6 +38,9 @@ DEFAULT_VOICE = "Sulafat"
 OUTPUT_SAMPLE_RATE = 24_000
 #: Attendee's mixed meeting audio.
 INPUT_SAMPLE_RATE = 16_000
+#: Longest ``say`` will wait for queued audio to finish playing. A stuck or
+#: mis-scaled counter must not be able to stall the walkthrough.
+MAX_DRAIN_S = 10.0
 
 SayMode = Literal["verbatim", "natural"]
 
@@ -52,7 +55,7 @@ class LiveEvent:
 
 @dataclass
 class _Cmd:
-    kind: Literal["say", "context", "close"]
+    kind: Literal["say", "nudge", "context", "close"]
     text: str = ""
     mode: SayMode = "verbatim"
 
@@ -66,7 +69,7 @@ class LiveAgentConfig:
     language: SpokenLanguage = "en"
     #: Silence before Live ends the human's turn. Google's own default is ~800ms;
     #: below ~300ms mid-sentence pauses get treated as end-of-turn.
-    vad_silence_ms: int = 500
+    vad_silence_ms: int = 400
     vad_prefix_padding_ms: int = 20
     on_event: Callable[[LiveEvent], None] | None = None
     #: Extra fields for LiveConnectConfig, for forward-compat with preview flags.
@@ -85,6 +88,7 @@ class LiveAgent:
         self.bot_ended = False
 
         self._cmds: queue.Queue[_Cmd] = queue.Queue()
+        self._heard: queue.Queue[str] = queue.Queue()
         self._loop = asyncio.new_event_loop()
         self._ready = threading.Event()
         self._failed: str | None = None
@@ -124,7 +128,7 @@ class LiveAgent:
     # ---- director API -------------------------------------------------
 
     def say(self, text: str, *, mode: SayMode = "verbatim") -> None:
-        """Speak a scripted line and block until the model stops talking.
+        """Speak a scripted line and block until the meeting has heard it.
 
         Matches ``MeetSpeaker.say`` so SPEAKING can call either one.
         """
@@ -133,11 +137,44 @@ class LiveAgent:
         self.last_spoken = text
         self.interrupted = False
         self._turn_done.clear()
+        started = time.monotonic()
+        sent_at_start = self._audio_s_sent()
         self._cmds.put(_Cmd(kind="say", text=text, mode=mode))
         print(f"[speak] {text}", flush=True)
         # Generous ceiling: this is a stuck-session guard, not pacing. Normal
         # turns end on turn_complete or on the human interrupting.
         self._turn_done.wait(timeout=90)
+        self._wait_for_playback(started, sent_at_start)
+
+    def _audio_s_sent(self) -> float:
+        """Seconds of bot audio the bridge has handed to the meeting so far."""
+        return float(getattr(self.bridge, "audio_s_sent", 0.0) or 0.0)
+
+    def _wait_for_playback(self, started: float, sent_at_start: float) -> None:
+        """Hold until the audio for this turn has had time to play.
+
+        ``turn_complete`` only means the model stopped *generating*. Attendee
+        and the browser are still several buffers behind it, so returning here
+        would let EXECUTING click while the line is still being heard — and the
+        gap widens with every sentence.
+        """
+        if self.interrupted:
+            # Barge-in flushed the queue; that audio will never play.
+            return
+        slack = self._audio_s_sent() - sent_at_start - (time.monotonic() - started)
+        if slack > 0:
+            self._stop.wait(min(slack, MAX_DRAIN_S))
+
+    def nudge(self, text: str) -> None:
+        """Fire-and-forget short ack. Does not wait for turn_complete.
+
+        Used while the director runs browser work so the call never goes dead.
+        """
+        if not (text or "").strip():
+            return
+        self.last_spoken = text
+        self._cmds.put(_Cmd(kind="nudge", text=text))
+        print(f"[speak] nudge: {text}", flush=True)
 
     def add_context(self, text: str) -> None:
         """Tell the model what just happened on screen. Never spoken aloud."""
@@ -160,6 +197,29 @@ class LiveAgent:
                     time.sleep(0.05)
                 else:
                     return
+
+    def wait_for_heard(self, *, timeout_s: float = 30.0) -> str:
+        """Next prospect utterance from Live input transcription, or \"\"."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while time.monotonic() < deadline:
+            try:
+                text = self._heard.get(timeout=0.1)
+            except queue.Empty:
+                if self._stop.is_set():
+                    return ""
+                continue
+            text = (text or "").strip()
+            if text:
+                return text
+        return ""
+
+    def drain_heard(self) -> None:
+        """Drop buffered transcripts (e.g. before an intake question)."""
+        while True:
+            try:
+                self._heard.get_nowait()
+            except queue.Empty:
+                return
 
     # ---- asyncio side -------------------------------------------------
 
@@ -314,7 +374,12 @@ class LiveAgent:
                 self._emit(LiveEvent(kind="said", text=out.text))
             heard = getattr(sc, "input_transcription", None)
             if heard is not None and getattr(heard, "text", ""):
-                self._emit(LiveEvent(kind="heard", text=heard.text))
+                text = heard.text
+                try:
+                    self._heard.put_nowait(text)
+                except queue.Full:
+                    pass
+                self._emit(LiveEvent(kind="heard", text=text))
             if getattr(sc, "turn_complete", False):
                 self.speaking = False
                 self._turn_done.set()
@@ -352,6 +417,11 @@ def _prompt_for(cmd: _Cmd) -> str:
         return (
             "[Context, do not say this out loud and do not acknowledge it] "
             f"{cmd.text}"
+        )
+    if cmd.kind == "nudge":
+        return (
+            "[Say this brief working ack aloud once, then stop. Do not elaborate "
+            f"or narrate what you are doing] {cmd.text}"
         )
     if cmd.mode == "natural":
         return (

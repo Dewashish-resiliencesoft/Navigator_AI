@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     live_conversational_model: str = "gemini-3.1-flash-live-preview"
     #: Silence before Live ends the human's turn. Google's default is ~800ms;
     #: under ~300ms a mid-sentence pause reads as end-of-turn.
-    live_vad_silence_ms: int = 500
+    live_vad_silence_ms: int = 400
     #: Quiet time after an interruption before the walkthrough resumes.
     live_resume_silence_s: float = 0.8
     default_spoken_language: Literal["en", "hi"] = "en"
@@ -143,8 +143,10 @@ class Settings(BaseSettings):
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
     #: Screenshare relay target frame rate (16 ms ≈ 60 fps).
     target_fps: int = 60
-    #: JPEG quality for Meet screenshare frames (1–100).
-    screenshot_quality: int = 95
+    #: JPEG quality for Meet screenshare frames (1–100). Meet re-encodes the
+    #: share anyway, and the encode runs in the same process as the audio
+    #: bridge — a lower number buys real headroom for smooth voice.
+    screenshot_quality: int = 70
 
 
 settings = Settings()

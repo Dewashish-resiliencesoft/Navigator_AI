@@ -376,6 +376,143 @@ def test_timeline_slip_shifts_later_cues_and_keeps_lead_in():
     assert 0.15 < clicks[1] - speaks[1] < 0.55
 
 
+def test_timeline_holds_later_act_until_prior_speech_ends():
+    """Prefetch miss + click-before-talk metadata: long step-0 audio must gate later clicks.
+
+    Real demos often schedule act N before speak N (host clicked, then talked). When
+    TTS duration is unknown the schedule does not stretch, so act 1 fires while
+    speak 0 is still describing later UI — voice ahead of the screen.
+    """
+    from navigator.meeting.playback_handle import PlaybackHandle
+
+    meta = {
+        "narration_suggestions": {
+            "demo": [
+                "Long tour of signup login google password and terms.",
+                "Now the email field.",
+            ]
+        },
+        # Cue order: speak0 → act0 → act1 → speak1 (act before speak on step 1).
+        "step_clicks": {"demo": [{"idx": 0, "at_ms": 100}, {"idx": 1, "at_ms": 300}]},
+        "step_speech": {
+            "demo": [
+                {"idx": 0, "start_ms": 0, "end_ms": 80},
+                {"idx": 1, "start_ms": 500, "end_ms": 580},
+            ]
+        },
+    }
+    speech_done: list[float] = []
+    clicks: list[float] = []
+
+    class SlowAsyncSpeaker:
+        def say_async(self, text: str):
+            handle = PlaybackHandle()
+
+            def worker() -> None:
+                time.sleep(0.4)
+                speech_done.append(time.monotonic())
+                handle._finish()
+
+            threading.Thread(target=worker, daemon=True).start()
+            return handle
+
+        def say(self, text: str) -> None:
+            pass
+
+    deps = CallDeps(
+        graph=_lead_in_graph(meta),
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=SlowAsyncSpeaker(),
+        product_id="acme",
+    )
+    ok_result = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+
+    def _run_tool(*_a, **_k):
+        clicks.append(time.monotonic())
+        return ok_result, "home"
+
+    with patch(
+        "navigator.agent.recorded_playback.run_tool", side_effect=_run_tool
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ):
+        run_flow_timeline(
+            deps, session_id=uuid4(), page_id="home", flow_id="demo", strict=False
+        )
+
+    assert len(clicks) == 2 and len(speech_done) >= 1
+    # Same-step lead-in still overlaps: first click may land during speech 0.
+    assert clicks[0] < speech_done[0]
+    # Later step must not click while the prior line is still talking.
+    assert clicks[1] >= speech_done[0] - 0.05
+
+
+def test_timeline_uses_live_say_when_live_agent_present():
+    """Conversational mode: recorded lines go through Live, not MeetSpeaker WAV."""
+    from navigator.meeting.playback_handle import PlaybackHandle
+
+    meta = {
+        "narration_suggestions": {"demo": ["Opening the signup form."]},
+        "step_clicks": {"demo": [{"idx": 0, "at_ms": 200}]},
+        "step_speech": {"demo": [{"idx": 0, "start_ms": 0, "end_ms": 150}]},
+    }
+    said: list[str] = []
+    async_calls: list[str] = []
+
+    class LiveStub:
+        def say(self, text: str, *, mode: str = "verbatim") -> None:
+            said.append(f"{mode}:{text}")
+            time.sleep(0.05)
+
+    class MeetSpeakerStub:
+        def say_async(self, text: str):
+            async_calls.append(text)
+            handle = PlaybackHandle()
+            handle._finish()
+            return handle
+
+        def say(self, text: str) -> None:
+            pass
+
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"signup": "text=Sign up"},
+                flows={"demo": (_click("signup"),)},
+            ),
+        },
+        meta=meta,
+    )
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MeetSpeakerStub(),
+        live_agent=LiveStub(),
+        product_id="acme",
+    )
+    ok = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+    with patch(
+        "navigator.agent.recorded_playback.run_tool", return_value=(ok, "home")
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ):
+        run_flow_timeline(
+            deps, session_id=uuid4(), page_id="home", flow_id="demo", strict=False
+        )
+    assert async_calls == []
+    assert said and said[0].startswith("natural:")
+    assert "signup" in said[0].lower() or "Opening" in said[0]
+
+
 def test_strict_playlist_does_not_advance_step_on_plan():
     graph = SiteGraph(
         version=1,

@@ -11,6 +11,7 @@ LangGraph speak-then-click walkthrough is the fallback when metadata is missing.
 
 from __future__ import annotations
 
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
@@ -132,6 +133,26 @@ def _start_speech(deps: CallDeps, line: str) -> PlaybackHandle | None:
     text = spoken_for_live_step(line)
     if not text.strip():
         return None
+    live = getattr(deps, "live_agent", None)
+    if live is not None and hasattr(live, "say"):
+        # Live replaces MeetSpeaker WAV when conversational mode is on.
+        # Background thread keeps same-step speak/act lead-in overlap.
+        handle = PlaybackHandle()
+
+        def _worker() -> None:
+            try:
+                live.say(text, mode="natural")  # type: ignore[call-arg]
+            except Exception as exc:  # noqa: BLE001
+                handle.error = str(exc)
+                print(f"[timeline] live.say failed: {exc}", flush=True)
+            finally:
+                handle._finish()
+
+        handle._thread = threading.Thread(
+            target=_worker, name="live-say", daemon=True
+        )
+        handle._thread.start()
+        return handle
     speaker = deps.speaker
     if hasattr(speaker, "say_async"):
         return speaker.say_async(text)  # type: ignore[union-attr]
@@ -323,6 +344,11 @@ def _run_flow_timeline_inner(
 
     current_page = page_id
     speech: PlaybackHandle | None = None
+    #: Step index of the line currently playing (async). Used so a later act
+    #: cannot fire while an earlier sentence is still describing another screen
+    #: — which is what happens when TTS prefetch misses and the schedule never
+    #: stretches (see live log: act 1 at 00:56 while speak 0 still running).
+    speech_idx: int | None = None
     skipped: set[int] = set()
     t0 = time.monotonic()
     #: Runtime slip (retries, slow pages) and TTS overrun both land here, so a
@@ -371,7 +397,16 @@ def _run_flow_timeline_inner(
                 flush=True,
             )
             speech = _start_speech(deps, cue.text)
+            speech_idx = cue.idx if speech is not None else None
             continue
+
+        # Same-step lead-in still overlaps (speak N + act N). A *later* act must
+        # not run under an earlier line — prefetch miss leaves the schedule too
+        # short, and click-before-talk metadata puts act N+1 ahead of speak N+1.
+        if speech is not None and speech_idx is not None and speech_idx < cue.idx:
+            _wait_speech(speech)
+            speech = None
+            speech_idx = None
 
         print(f"[timeline] {fmt_ms(elapsed_ms())} act step {cue.idx}", flush=True)
         entry, current_page = _run_step(
@@ -613,8 +648,11 @@ def _prefetch_playlist_narration(deps: CallDeps, graph) -> None:
     their exact durations.
 
     On timeout the schedule falls back to recorded window lengths — a slightly
-    looser demo beats a demo that never starts.
+    looser demo beats a demo that never starts. Skipped when Live owns speech
+    (no WAV cache / line_duration_ms).
     """
+    if getattr(deps, "live_agent", None) is not None:
+        return
     speaker = deps.speaker
     prefetch = getattr(speaker, "prefetch_lines", None)
     if prefetch is None:

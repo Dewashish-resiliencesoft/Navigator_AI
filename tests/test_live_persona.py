@@ -52,6 +52,20 @@ def test_hindi_switches_spoken_language():
     assert "Hindi" in text
 
 
+def test_allows_human_backchannels_not_corporate_filler():
+    text = build_live_instruction(graph=_graph(), product_brief="A CRM.")
+    assert "hmm" in text.lower()
+    assert "yeah" in text.lower() or "mm-hmm" in text.lower()
+    assert "checking that" in text.lower()
+    assert "corporate filler" in text.lower() or "I'd be happy to" in text
+    assert "continuous live call" in text.lower()
+
+
+def test_hindi_includes_backchannel_examples():
+    text = build_live_instruction(graph=_graph(), product_brief="A CRM.", language="hi")
+    assert "haan" in text.lower() or "ek second" in text.lower()
+
+
 def test_placeholder_product_name_falls_back_to_site_slug():
     text = build_live_instruction(graph=_graph(site="acme-crm"), product_brief="")
     assert "Acme Crm" in text or "acme crm" in text.lower()

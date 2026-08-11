@@ -15,6 +15,11 @@ from queue import Empty, Queue
 from typing import Any
 
 
+def _pcm_seconds(pcm: bytes, sample_rate: int) -> float:
+    """Playback duration of a 16-bit mono PCM chunk."""
+    return len(pcm) / float(max(1, sample_rate) * 2)
+
+
 class AudioBridge:
     """Receives Attendee realtime_audio chunks into ``inbound`` queue."""
 
@@ -33,6 +38,11 @@ class AudioBridge:
         self.clients_connected = 0
         self.chunks_received = 0
         self.chunks_sent = 0
+        #: Seconds of bot audio actually handed to Attendee. Callers compare
+        #: this against wall-clock to tell whether a line has finished playing —
+        #: Gemini's turn_complete only says generation stopped, and the meeting
+        #: is still several buffers behind at that point.
+        self.audio_s_sent = 0.0
 
     @property
     def local_url(self) -> str:
@@ -131,6 +141,10 @@ class AudioBridge:
                 }
             ):
                 self.chunks_sent += 1
+                # Counted on the send, not on the queue put: chunks a barge-in
+                # drops or a dead socket refuses are never heard, so callers
+                # must not wait them out.
+                self.audio_s_sent += _pcm_seconds(pcm, rate)
 
     def frames(self, *, timeout_s: float | None = None) -> Iterator[bytes]:
         while not self._stop.is_set():

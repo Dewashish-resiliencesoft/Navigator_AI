@@ -27,6 +27,9 @@ from typing import Literal
 
 #: Spacing assumed when a flow has neither click times nor narration timing.
 DEFAULT_STEP_MS = 3000
+#: Conversational TTS pace used when the WAV is not cached yet (~150 wpm).
+_ESTIMATE_MS_PER_WORD = 400
+_ESTIMATE_FLOOR_MS = 600
 
 CueKind = Literal["speak", "act"]
 
@@ -46,6 +49,14 @@ def fmt_ms(ms: int) -> str:
     """``mm:ss`` -- same format the narrate widget's counter shows while recording."""
     total_s = max(0, int(ms)) // 1000
     return f"{total_s // 60:02d}:{total_s % 60:02d}"
+
+
+def estimate_spoken_ms(text: str) -> int:
+    """Rough spoken length when exact WAV duration is not available yet."""
+    words = len((text or "").split())
+    if words <= 0:
+        return 0
+    return max(_ESTIMATE_FLOOR_MS, words * _ESTIMATE_MS_PER_WORD)
 
 
 def _act_times(
@@ -89,8 +100,9 @@ def build_schedule(
     """Cues sorted by time, plus total flow length in ms.
 
     ``tts_ms`` gives the exact duration of a synthesized line, or None when it
-    has not been synthesized yet -- then the recorded window length stands in and
-    nothing is stretched.
+    has not been synthesized yet — then ``max(recorded window, word estimate)``
+    is used so a long line still stretches later cues instead of letting clicks
+    race ahead of still-playing narration.
     """
     if n_steps <= 0:
         return [], 0
@@ -103,13 +115,19 @@ def build_schedule(
     narrated = [bool(_line(lines, i).strip()) for i in range(n_steps)]
 
     def duration(i: int) -> int:
-        spoken = tts_ms(_line(lines, i))
+        line = _line(lines, i)
+        spoken = tts_ms(line)
         if spoken is not None and spoken > 0:
             return int(spoken)
         window = speech.get(i)
         if window is not None:
-            return max(0, window[1] - window[0])
-        return max(0, int(timing.get(i, 0) or 0))
+            recorded = max(0, window[1] - window[0])
+        else:
+            recorded = max(0, int(timing.get(i, 0) or 0))
+        # Prefetch miss / cold cache: never schedule a long line as if it were
+        # the short host window — later acts would click while the line still
+        # describes another screen.
+        return max(recorded, estimate_spoken_ms(line))
 
     def next_narrated(i: int) -> int | None:
         return next((j for j in range(i + 1, n_steps) if narrated[j]), None)

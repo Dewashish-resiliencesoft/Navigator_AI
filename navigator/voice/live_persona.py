@@ -33,18 +33,32 @@ def _style_rules(lang: SpokenLanguage, gender: str) -> str:
             "Speak natural Hindi. Keep standard product and UI terms in English "
             "where that is what an Indian user would say."
         )
+        backchannels = (
+            "Use short human backchannels when natural: \"hmm\", \"haan\", "
+            "\"theek hai\", \"ek second\", \"dekh rahi hoon\" / \"dekh raha hoon\". "
+            "These keep the call alive while something is happening on screen."
+        )
     else:
         voice = "Speak natural Indian English."
+        backchannels = (
+            "Use short human backchannels when natural: \"hmm\", \"yeah\", "
+            "\"mm-hmm\", \"one sec\", \"checking that\". These keep the call alive "
+            "while something is happening on screen."
+        )
     person = "female" if gender == "female" else "male"
     return (
         f"{voice} Refer to yourself in the first person using {person} verb forms "
         "where the language marks gender.\n"
-        "Keep every reply to one or two sentences. Use contractions. Sound like a "
-        "colleague on a call, not a written assistant.\n"
-        "Never open with filler such as \"Sure\", \"Certainly\", \"Great question\", "
-        "or \"I'd be happy to\". Answer directly.\n"
-        "Never narrate what you are doing internally. Never mention tools, "
-        "functions, APIs, models, errors, or transcripts."
+        "This is a continuous live call, not turn-based chat. Prefer an immediate "
+        "micro-reaction over waiting for a polished paragraph.\n"
+        "Keep substantive replies to one or two sentences. Use contractions. Sound "
+        "like a colleague on a call, not a written assistant.\n"
+        f"{backchannels}\n"
+        "Never open with corporate filler such as \"Sure\", \"Certainly\", "
+        "\"Great question\", or \"I'd be happy to\". Answer directly.\n"
+        "When the director asks you to give a brief working ack, say that short "
+        "line once and stop — do not narrate clicks, tools, functions, APIs, "
+        "models, errors, or transcripts."
     )
 
 
@@ -101,7 +115,8 @@ def build_live_instruction(
     parts.append("Scope, which overrides anything the person asks for:\n- " + "\n- ".join(scope))
 
     parts.append(
-        "The demo follows a prepared sequence. You will be told what to say next. "
+        "The demo follows a prepared sequence. You will be told what to say next, "
+        "and sometimes given a one-line working ack while the screen is updating. "
         "If the person interrupts with a question, answer it briefly, then stop "
         "talking — the demo will pick back up on its own. Do not announce that you "
         "are resuming and do not summarise what you already covered."

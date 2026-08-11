@@ -57,16 +57,9 @@ from navigator.voice.tts import PiperSpeaker, PrintSpeaker, make_speaker
 
 def _is_likely_echo(heard: str, bot_text: str) -> bool:
     """True when STT likely captured the bot's own TTS, not the prospect."""
-    h = " ".join((heard or "").lower().split())
-    b = " ".join((bot_text or "").lower().split())
-    if len(h) < 3 or not b:
-        return False
-    if h in b or b in h:
-        return True
-    hw, bw = set(h.split()), set(b.split())
-    if len(hw) < 2:
-        return h in b
-    return len(hw & bw) / len(hw) >= 0.65
+    from navigator.meeting.intake_clean import is_likely_bot_echo
+
+    return is_likely_bot_echo(heard, bot_text)
 
 
 def _drain_inbound(queue) -> int:
@@ -177,6 +170,54 @@ def _start_live_agent(
     return agent
 
 
+def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
+    """When Live owns audio, block MeetSpeaker Piper/Fish TTS (dual-path breaks Meet)."""
+    if getattr(meet_speaker, "_live_owns_audio", False):
+        return
+    from navigator.meeting.playback_handle import PlaybackHandle
+
+    orig_say = meet_speaker.say
+    orig_async = getattr(meet_speaker, "say_async", None)
+
+    def _say(text: str) -> None:
+        live = live_box[0] if live_box else None
+        if live is not None:
+            live.say(text, mode="natural")
+            return
+        orig_say(text)
+
+    def _say_async(text: str):
+        live = live_box[0] if live_box else None
+        if live is None:
+            if orig_async is not None:
+                return orig_async(text)
+            orig_say(text)
+            handle = PlaybackHandle()
+            handle._finish()
+            return handle
+        handle = PlaybackHandle()
+
+        def _worker() -> None:
+            try:
+                live.say(text, mode="natural")
+            except Exception as exc:  # noqa: BLE001
+                handle.error = str(exc)
+            finally:
+                handle._finish()
+
+        handle._thread = threading.Thread(
+            target=_worker, name="live-own-say", daemon=True
+        )
+        handle._thread.start()
+        return handle
+
+    meet_speaker.say = _say  # type: ignore[method-assign]
+    if orig_async is not None:
+        meet_speaker.say_async = _say_async  # type: ignore[method-assign]
+    meet_speaker._live_owns_audio = True  # type: ignore[attr-defined]
+    print("[live] MeetSpeaker TTS disabled — Live owns mic+mouth", flush=True)
+
+
 def _talk_speaker(meet_speaker, live_box: list):
     """Route say/say_async through Live when the session is up."""
 
@@ -247,6 +288,7 @@ def _wait_meet_utterance(
     api_key: str,
     timeout_s: float = 60.0,
     audio_bridge=None,
+    bot_spoken: str = "",
 ) -> str:
     """Block until prospect utterance (not bot echo), or timeout → \"\"."""
     deadline = time.monotonic() + timeout_s
@@ -265,7 +307,10 @@ def _wait_meet_utterance(
         text = (transcribe(pcm, api_key) or "").strip()
         if not text:
             continue
-        if _is_likely_echo(text, prompt):
+        # Match against the question AND the last TTS line (greeting / ack).
+        # Without last_spoken, "I'm Navigator AI" from the greet becomes the
+        # prospect's "name".
+        if _is_likely_echo(text, prompt) or _is_likely_echo(text, bot_spoken):
             print(f"[intake] ignoring echo: {text!r}", flush=True)
             continue
         return text
@@ -1009,37 +1054,47 @@ def run_live_meet_demo(
                 )
             live_box.append(early_live)
             meet_speaker.check_barge_in = None
+            _own_meet_tts_when_live(meet_speaker, live_box)
 
         def _intake_listen(prompt: str) -> str:
+            bot_spoken = (
+                getattr(talk, "last_spoken", "")
+                or getattr(meet_speaker, "last_spoken", "")
+                or ""
+            )
+            timeout_s = float(
+                getattr(
+                    brain_config,
+                    "listen_timeout_s",
+                    settings.brain_listen_timeout_s,
+                )
+                if brain_config is not None
+                else settings.brain_listen_timeout_s
+            )
             if live_box:
                 live = live_box[0]
                 if hasattr(live, "drain_heard"):
                     live.drain_heard()
-                timeout_s = float(
-                    getattr(
-                        brain_config,
-                        "listen_timeout_s",
-                        settings.brain_listen_timeout_s,
-                    )
-                    if brain_config is not None
-                    else settings.brain_listen_timeout_s
-                )
-                return live.wait_for_heard(timeout_s=timeout_s)
+                # Keep listening past bot-echo transcripts until timeout.
+                deadline = time.monotonic() + timeout_s
+                while time.monotonic() < deadline:
+                    remaining = max(0.05, deadline - time.monotonic())
+                    text = (live.wait_for_heard(timeout_s=remaining) or "").strip()
+                    if not text:
+                        return ""
+                    if _is_likely_echo(text, prompt) or _is_likely_echo(text, bot_spoken):
+                        print(f"[intake] ignoring echo: {text!r}", flush=True)
+                        continue
+                    return text
+                return ""
             if audio_bridge is not None and settings.groq_api_key:
                 return _wait_meet_utterance(
                     audio_bridge.inbound,
                     prompt=prompt,
                     api_key=settings.groq_api_key,
-                    timeout_s=float(
-                        getattr(
-                            brain_config,
-                            "listen_timeout_s",
-                            settings.brain_listen_timeout_s,
-                        )
-                        if brain_config is not None
-                        else settings.brain_listen_timeout_s
-                    ),
+                    timeout_s=timeout_s,
                     audio_bridge=audio_bridge,
+                    bot_spoken=bot_spoken,
                 )
             if interactive_listen:
                 try:
@@ -1261,25 +1316,26 @@ def run_live_meet_demo(
 
             relay.set_status("speaking", "Starting demo…")
             try:
-                meet_speaker.say(demo_kickoff_line(lang=spoken_language))  # type: ignore[arg-type]
+                # Live owns mouth when conversational — never Piper/MeetSpeaker here.
+                talk.say(demo_kickoff_line(lang=spoken_language))  # type: ignore[arg-type]
             except Exception as exc:  # noqa: BLE001
-                print(f"[live] kickoff TTS skipped: {exc}", flush=True)
+                print(f"[live] kickoff speak skipped: {exc}", flush=True)
 
             if show_login:
                 print("[live] signing in on screenshare…", flush=True)
                 relay.set_status("speaking", "Signing in…")
                 try:
-                    meet_speaker.say(
+                    talk.say(
                         "Signing into your product with the saved demo credentials."
                     )
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[live] login intro TTS skipped: {exc}", flush=True)
+                    print(f"[live] login intro speak skipped: {exc}", flush=True)
                 gate = run_login_gate(
                     login_fn=_do_login,
                     url=login_url,
                     email=login_email,
                     password=login_password,
-                    speaker=meet_speaker,
+                    speaker=talk,
                     attendee=None,
                     bot_id=None,
                 )
@@ -1424,8 +1480,10 @@ def run_live_meet_demo(
                     )
                 live_box.append(live_agent)
                 meet_speaker.check_barge_in = None
+                _own_meet_tts_when_live(meet_speaker, live_box)
             elif live_agent is not None:
                 meet_speaker.check_barge_in = None
+                _own_meet_tts_when_live(meet_speaker, live_box)
 
             deps = CallDeps(
                 graph=graph_cfg,

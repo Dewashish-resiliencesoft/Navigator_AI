@@ -14,7 +14,10 @@ from typing import Literal
 SpokenLanguage = Literal["en", "hi"]
 
 _EN = (
+    "Um…",
     "Yeah…",
+    "Mhm…",
+    "Yes…",
     "One sec…",
     "Checking that…",
     "Hmm…",
@@ -22,9 +25,10 @@ _EN = (
 )
 _HI = (
     "Haan…",
+    "Hmm…",
+    "Ji…",
     "Ek second…",
     "Dekh rahi hoon…",
-    "Hmm…",
     "Theek hai…",
 )
 

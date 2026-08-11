@@ -41,9 +41,9 @@ def _style_rules(lang: SpokenLanguage, gender: str) -> str:
     else:
         voice = "Speak natural Indian English."
         backchannels = (
-            "Use short human backchannels when natural: \"hmm\", \"yeah\", "
-            "\"mm-hmm\", \"one sec\", \"checking that\". These keep the call alive "
-            "while something is happening on screen."
+            "Use short human backchannels when natural: \"um\", \"hmm\", \"yeah\", "
+            "\"mhm\", \"yes\", \"one sec\", \"checking that\". These keep the call "
+            "alive while something is happening on screen."
         )
     person = "female" if gender == "female" else "male"
     bilingual = (

@@ -22,6 +22,16 @@ def test_clean_name_rejects_filler_yeah():
     assert clean_name("yes") == ""
 
 
+def test_clean_name_rejects_agent_and_platform_names():
+    """STT often echoes the bot greeting ('Hi, I'm Navigator AI')."""
+    assert clean_name("Navigator AI") == ""
+    assert clean_name("navigator") == ""
+    assert clean_name("I'm Navigator AI") == ""
+    assert clean_name("Hi there I'm Navigator") == ""
+    assert clean_name("Resiliohub Agent", reserved=frozenset({"resiliohub agent"})) == ""
+    assert clean_name("Dewashish", reserved=frozenset({"navigator ai"})) == "Dewashish"
+
+
 def test_clean_phrase_keeps_short():
     out = clean_phrase(
         "I want my work to be automated using the WhatsApp CRM."

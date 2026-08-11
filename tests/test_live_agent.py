@@ -119,12 +119,33 @@ def test_verbatim_and_natural_prompts_differ():
     assert "word for word" in verbatim
     assert "your own words" in natural
     assert "Hi there" in verbatim and "Hi there" in natural
+    assert "in English" in verbatim
+
+
+def test_prompt_for_hindi_language_hint():
+    text = _prompt_for(
+        _Cmd(kind="say", text="Namaste", mode="natural"), language="hi"
+    )
+    assert "in Hindi" in text
+    assert "Namaste" in text
+
+
+def test_set_language_queues_context():
+    agent = _agent(FakeBridge())
+    agent.set_language("hi")
+    assert agent.cfg.language == "hi"
+    cmd = agent._cmds.get_nowait()
+    assert cmd.kind == "context"
+    assert "Hindi" in cmd.text
+    agent.set_language("hi")  # no-op
+    assert agent._cmds.empty()
 
 
 def test_context_prompt_is_not_spoken():
     text = _prompt_for(_Cmd(kind="context", text="now on Deals page"))
     assert "do not say this out loud" in text
     assert "now on Deals page" in text
+    assert "in English" not in text  # context stays language-neutral
 
 
 def test_resumption_handle_is_kept():

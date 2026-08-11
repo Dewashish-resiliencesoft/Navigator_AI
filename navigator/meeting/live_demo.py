@@ -128,10 +128,20 @@ def _start_live_agent(
         _log_live_event(event)
         # PLANNING still routes flows and drives the browser, so it needs to
         # know what the prospect asked. LISTENING drains this list first.
-        if event.kind == "heard" and heard_sink is not None:
-            text = (event.text or "").strip()
-            if text:
-                heard_sink.append(text)
+        text = (event.text or "").strip() if event.kind == "heard" else ""
+        if text and heard_sink is not None:
+            heard_sink.append(text)
+        # Switch Live language as soon as we hear the request — before the
+        # model finishes an English-only refuse (MeetSpeaker was updated alone).
+        if text and agent_box:
+            from navigator.voice.language import detect_language_switch
+
+            target = detect_language_switch(text)
+            if target is not None:
+                try:
+                    agent_box[0].set_language(target)
+                except Exception:  # noqa: BLE001
+                    pass
 
     try:
         from navigator.voice.live_agent import LiveAgent, LiveAgentConfig
@@ -144,6 +154,7 @@ def _start_live_agent(
             language=spoken_language,  # type: ignore[arg-type]
             gender=agent_gender,
         )
+        agent_box: list = []
         agent = LiveAgent(
             LiveAgentConfig(
                 api_key=keys[0],
@@ -156,6 +167,7 @@ def _start_live_agent(
             ),
             audio_bridge,
         )
+        agent_box.append(agent)
     except Exception as exc:  # noqa: BLE001
         print(f"[live] conversational setup failed ({exc}) — using TTS", flush=True)
         return None
@@ -204,6 +216,12 @@ def _talk_speaker(meet_speaker, live_box: list):
                 handle._thread.start()
                 return handle
             return meet_speaker.say_async(text)
+
+        def set_language(self, lang) -> None:
+            meet_speaker.set_language(lang)
+            live = live_box[0] if live_box else None
+            if live is not None and hasattr(live, "set_language"):
+                live.set_language(lang)
 
         def __getattr__(self, name: str):
             return getattr(meet_speaker, name)
@@ -1049,12 +1067,13 @@ def run_live_meet_demo(
             extra_languages=extra_langs,  # type: ignore[arg-type]
             fast_extract=True,
         )
-        apply_to_speakers(spoken_language, speaker, meet_speaker)  # type: ignore[arg-type]
+        live_now = live_box[0] if live_box else None
+        apply_to_speakers(spoken_language, speaker, meet_speaker, live_now)  # type: ignore[arg-type]
         print(f"[live] intake ({spoken_language}): {intake.model_dump()}", flush=True)
-        if live_box:
+        if live_now is not None:
             summary = _intake_summary(intake)
             if summary:
-                live_box[0].add_context(f"About the person you are talking to: {summary}")
+                live_now.add_context(f"About the person you are talking to: {summary}")
         from navigator.meeting.intake import preferred_flow_id
 
         hint = preferred_flow_id(intake.looking_for)

@@ -102,3 +102,19 @@ def test_click_with_cursor_uses_recorded_path_coords(page, monkeypatch):
     assert abs(xy["x"] - 110) <= 2
     assert abs(xy["y"] - 90) <= 2
 
+
+def test_playback_mode_scales_durations(monkeypatch):
+    """Timeline replay must actually speed motion — not only cut frame hops."""
+    from navigator.automation.browser import cursor as cursor_mod
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 1.0)
+    cursor_mod.set_playback_mode(False)
+    normal = cursor_mod._scaled_ms(1000)
+    cursor_mod.set_playback_mode(True)
+    try:
+        fast = cursor_mod._scaled_ms(1000)
+        assert fast < normal
+        assert abs(fast - 220.0) < 0.01
+    finally:
+        cursor_mod.set_playback_mode(False)
+

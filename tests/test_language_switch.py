@@ -19,6 +19,29 @@ def test_detect_hindi_switch():
     assert detect_language_switch("Please speak to me in Hindi") == "hi"
     assert detect_language_switch("say this in hindi") == "hi"
     assert detect_language_switch("say it in Hindi please") == "hi"
+    assert detect_language_switch("Hey navigator, could you speak me with Hindi?") == "hi"
+
+
+def test_sync_call_language_notifies_live_agent():
+    from navigator.voice.language import sync_call_language
+
+    class Live:
+        def __init__(self) -> None:
+            self.lang = "en"
+
+        def set_language(self, lang: str) -> None:
+            self.lang = lang
+
+    class Deps:
+        spoken_language = "en"
+        extra_languages = ("hi",)
+        speaker = None
+        live_agent = Live()
+
+    deps = Deps()
+    assert sync_call_language(deps, "talk in hindi") == "hi"
+    assert deps.spoken_language == "hi"
+    assert deps.live_agent.lang == "hi"
 
 
 def test_detect_english_switch():

@@ -52,6 +52,12 @@ def test_hindi_switches_spoken_language():
     assert "Hindi" in text
 
 
+def test_never_refuses_language_switch():
+    text = build_live_instruction(graph=_graph(), product_brief="A CRM.")
+    assert "Never refuse" in text
+    assert "English and Hindi" in text or "both English and Hindi" in text
+
+
 def test_allows_human_backchannels_not_corporate_filler():
     text = build_live_instruction(graph=_graph(), product_brief="A CRM.")
     assert "hmm" in text.lower()

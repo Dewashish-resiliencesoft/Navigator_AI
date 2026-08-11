@@ -125,12 +125,44 @@ def fill_field(
         x, y = replay_mouse_path(page, mouse_path, on_frame=on_frame)
         # Focus the recorded point first so fill lands where the Client typed.
         page.mouse.click(x, y)
+        # Duplicate ids (signup #email + sign-in #email) are common. After the
+        # recorded click, type into :focus — not locator(css).first, which hits
+        # the wrong form.
+        target = _fill_target_after_point(page, css, timeout=timeout)
     else:
         guide_to(page, css, timeout=timeout, highlight=True, on_frame=on_frame)
-    page.locator(css).first.fill(call.value, timeout=timeout)
+        target = _visible_locator(page, css)
+    target.fill(call.value, timeout=timeout)
     _clear_highlight(page)
     _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)
     return f"filled {call.selector} with {call.value!r} (source={call.source})", page_id
+
+
+def _visible_locator(page: Page, css: str):
+    """Prefer a visible match when the alias hits several DOM nodes."""
+    loc = page.locator(css)
+    n = loc.count()
+    for i in range(n):
+        el = loc.nth(i)
+        try:
+            if el.is_visible():
+                return el
+        except Exception:  # noqa: BLE001
+            continue
+    return loc.first
+
+
+def _fill_target_after_point(page: Page, css: str, *, timeout: float):
+    """Element that should receive the typed value after a recorded click."""
+    focused = page.locator(":focus")
+    try:
+        if focused.count() > 0:
+            tag = (focused.evaluate("e => (e.tagName || '').toLowerCase()") or "")
+            if tag in {"input", "textarea", "select"}:
+                return focused
+    except Exception:  # noqa: BLE001
+        pass
+    return _visible_locator(page, css)
 
 
 def navigate(

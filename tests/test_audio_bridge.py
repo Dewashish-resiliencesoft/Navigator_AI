@@ -96,3 +96,32 @@ def test_clear_outbound_drops_pending_chunks():
     bridge.push_outbound_pcm(b"\x00" * 10)
     assert bridge.clear_outbound() == 2
     assert bridge.clear_outbound() == 0
+
+
+def test_audio_s_sent_counts_playback_seconds():
+    """Callers time actions against this, so it must be real playback seconds."""
+    bridge = AudioBridge().start()
+    try:
+
+        async def client() -> None:
+            import websockets
+
+            async with websockets.connect(
+                f"ws://127.0.0.1:{bridge.port}", open_timeout=5
+            ) as ws:
+                # 24000 samples of 16-bit mono at 24 kHz = exactly 1.0s.
+                bridge.push_outbound_pcm(b"\x00\x01" * 24000, sample_rate=24000)
+                await asyncio.wait_for(ws.recv(), timeout=5)
+
+        asyncio.run(client())
+        assert bridge.audio_s_sent == 1.0
+    finally:
+        bridge.stop()
+
+
+def test_dropped_audio_is_never_counted():
+    """Flushed chunks are never heard, so waiting them out would stall the demo."""
+    bridge = AudioBridge()  # not started - nothing drains the queue
+    bridge.push_outbound_pcm(b"\x00\x01" * 24000, sample_rate=24000)
+    bridge.clear_outbound()
+    assert bridge.audio_s_sent == 0.0

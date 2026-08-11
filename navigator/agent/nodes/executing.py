@@ -18,6 +18,15 @@ from navigator.automation.external_links import (
 from navigator.automation.login_match import VAULT_PASSWORD_SENTINEL
 from navigator.core.schemas import FillField
 from navigator.core.settings import settings
+from navigator.voice.live_acks import maybe_nudge_live
+
+
+def _nudge_working(deps: CallDeps) -> None:
+    """Keep the Live call alive while Playwright works."""
+    lang = getattr(deps, "spoken_language", "en") or "en"
+    if lang not in ("en", "hi"):
+        lang = "en"
+    maybe_nudge_live(deps.live_agent, language=lang)  # type: ignore[arg-type]
 
 
 def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
@@ -28,6 +37,8 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
     """
     live = deps.live_agent
     if live is None or not getattr(result, "ok", False):
+        return
+    if not hasattr(live, "add_context"):
         return
     try:
         name = deps.graph.page(page_id).name
@@ -42,6 +53,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         from navigator.automation.browser.nav_click import click_nav_label
         from navigator.core.schemas import ToolResult
 
+        _nudge_working(deps)
         try:
             click_nav_label(deps.page, label)
             detail = f"clicked nav {label!r}"
@@ -94,6 +106,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
     ran_on = state["page_id"]
     # Frames pushed *during* the action, not just after it: the screenshare is a
     # JPEG poll, so cursor motion is only visible if we push through the move.
+    _nudge_working(deps)
     result, next_page_id = run_tool(
         deps.page, deps.graph, ran_on, call, on_frame=deps.push_frame
     )

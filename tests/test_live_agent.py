@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
+from navigator.voice import live_agent as live_agent_mod
 from navigator.voice.live_agent import (
+    MAX_DRAIN_S,
     OUTPUT_SAMPLE_RATE,
     LiveAgent,
     LiveAgentConfig,
@@ -135,3 +138,90 @@ def test_resumption_handle_is_kept():
     )
     agent._handle_server_message(msg)
     assert agent._resumption_handle == "tok-1"
+
+
+def test_wait_for_heard_returns_input_transcription():
+    agent = _agent(FakeBridge())
+    sc = SimpleNamespace(
+        interrupted=False,
+        model_turn=None,
+        turn_complete=False,
+        output_transcription=None,
+        input_transcription=SimpleNamespace(text="Devashish"),
+    )
+    agent._handle_server_message(SimpleNamespace(server_content=sc, data=None))
+    assert agent.wait_for_heard(timeout_s=0.2) == "Devashish"
+
+
+def test_wait_for_heard_times_out_empty():
+    agent = _agent(FakeBridge())
+    assert agent.wait_for_heard(timeout_s=0.05) == ""
+
+
+def test_nudge_prompt_is_brief_ack():
+    text = _prompt_for(_Cmd(kind="nudge", text="One sec…"))
+    assert "brief working ack" in text
+    assert "One sec…" in text
+    assert "Do not elaborate" in text
+
+
+def test_nudge_does_not_block_on_turn_done():
+    bridge = FakeBridge()
+    agent = _agent(bridge)
+    agent._turn_done.clear()
+    agent.nudge("Yeah…")
+    # Fire-and-forget: must return even while turn_done is still clear.
+    assert not agent._turn_done.is_set()
+    cmd = agent._cmds.get_nowait()
+    assert cmd.kind == "nudge"
+    assert cmd.text == "Yeah…"
+
+
+def _drain_wait(
+    agent: LiveAgent, monkeypatch, *, sent_s: float, elapsed_s: float
+) -> float:
+    """How long ``_wait_for_playback`` holds, without actually holding.
+
+    The clock is pinned so the assertions can be exact.
+    """
+    waited: list[float] = []
+    if sent_s is not None:
+        agent.bridge.audio_s_sent = sent_s
+    monkeypatch.setattr(live_agent_mod.time, "monotonic", lambda: 1000.0)
+    agent._stop = SimpleNamespace(wait=waited.append)  # type: ignore[assignment]
+    agent._wait_for_playback(1000.0 - elapsed_s, 0.0)
+    return waited[0] if waited else 0.0
+
+
+def test_say_waits_out_audio_the_meeting_has_not_heard_yet(monkeypatch):
+    """turn_complete means generation stopped, not that playback finished."""
+    agent = _agent(FakeBridge())
+    # 3s of audio sent, only 1s of wall-clock spent: 2s still in flight.
+    assert _drain_wait(agent, monkeypatch, sent_s=3.0, elapsed_s=1.0) == 2.0
+
+
+def test_no_wait_once_playback_has_caught_up(monkeypatch):
+    agent = _agent(FakeBridge())
+    assert _drain_wait(agent, monkeypatch, sent_s=1.0, elapsed_s=4.0) == 0.0
+
+
+def test_drain_wait_is_capped(monkeypatch):
+    """A mis-scaled counter must not be able to stall the walkthrough."""
+    agent = _agent(FakeBridge())
+    assert _drain_wait(agent, monkeypatch, sent_s=900.0, elapsed_s=0.0) == MAX_DRAIN_S
+
+
+def test_barge_in_skips_the_drain_wait(monkeypatch):
+    """The queue was flushed — that audio will never play, so do not wait."""
+    agent = _agent(FakeBridge())
+    agent.interrupted = True
+    assert _drain_wait(agent, monkeypatch, sent_s=3.0, elapsed_s=0.0) == 0.0
+
+
+def test_bridge_without_the_counter_still_works():
+    """MeetSpeaker-shaped bridges in older paths have no audio_s_sent."""
+    agent = _agent(FakeBridge())
+    waited: list[float] = []
+    agent._stop = SimpleNamespace(wait=waited.append)  # type: ignore[assignment]
+    agent._wait_for_playback(-1.0, 0.0)
+    assert waited == []

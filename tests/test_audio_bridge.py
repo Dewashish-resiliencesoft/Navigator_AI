@@ -36,3 +36,63 @@ def test_audio_bridge_accepts_and_queues_pcm():
         assert bridge.inbound.get(timeout=1)[:2] == b"\x00\x01"
     finally:
         bridge.stop()
+
+
+def test_outbound_pcm_sends_without_any_inbound_traffic():
+    """Bot audio must go out on its own, not only when the meeting sends us something.
+
+    The old handler flushed _outbound inside the inbound read loop, so a silent
+    meeting meant a silent bot.
+    """
+    bridge = AudioBridge().start()
+    got: list[dict] = []
+    try:
+
+        async def client() -> None:
+            import websockets
+
+            async with websockets.connect(
+                f"ws://127.0.0.1:{bridge.port}", open_timeout=5
+            ) as ws:
+                # Deliberately send nothing. Only listen.
+                bridge.push_outbound_pcm(b"\x02\x03" * 40, sample_rate=24000)
+                raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                got.append(json.loads(raw))
+
+        asyncio.run(client())
+        assert got, "no bot_output frame received"
+        assert got[0]["trigger"] == "realtime_audio.bot_output"
+        assert got[0]["data"]["sample_rate"] == 24000
+        assert base64.b64decode(got[0]["data"]["chunk"])[:2] == b"\x02\x03"
+    finally:
+        bridge.stop()
+
+
+def test_flush_bot_output_drops_queue_and_signals_attendee():
+    bridge = AudioBridge().start()
+    got: list[dict] = []
+    try:
+
+        async def client() -> None:
+            import websockets
+
+            async with websockets.connect(
+                f"ws://127.0.0.1:{bridge.port}", open_timeout=5
+            ) as ws:
+                await asyncio.sleep(0.1)
+                bridge.flush_bot_output()
+                raw = await asyncio.wait_for(ws.recv(), timeout=5)
+                got.append(json.loads(raw))
+
+        asyncio.run(client())
+        assert got[0]["trigger"] == "realtime_audio.bot_output_clear"
+    finally:
+        bridge.stop()
+
+
+def test_clear_outbound_drops_pending_chunks():
+    bridge = AudioBridge()  # not started - nothing drains the queue
+    bridge.push_outbound_pcm(b"\x00" * 10)
+    bridge.push_outbound_pcm(b"\x00" * 10)
+    assert bridge.clear_outbound() == 2
+    assert bridge.clear_outbound() == 0

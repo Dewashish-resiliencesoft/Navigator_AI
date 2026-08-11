@@ -84,11 +84,15 @@ class MeetSpeaker:
         self._cache_lock = threading.Lock()
         self._speak_lock = threading.Lock()
 
-    def prefetch_lines(self, lines: list[str]) -> None:
-        """Pre-synthesize narration in a background thread for lower latency."""
+    def prefetch_lines(self, lines: list[str]) -> threading.Thread | None:
+        """Pre-synthesize narration in a background thread for lower latency.
+
+        Returns the worker so timeline playback can wait for exact durations
+        before it builds its schedule.
+        """
         texts = [t.strip() for t in lines if (t or "").strip()]
         if not texts:
-            return
+            return None
 
         def _worker() -> None:
             synth = self.synthesizer
@@ -114,11 +118,20 @@ class MeetSpeaker:
                     with self._cache_lock:
                         self._wav_cache[text] = wav
 
-        threading.Thread(target=_worker, name="tts-prefetch", daemon=True).start()
+        worker = threading.Thread(target=_worker, name="tts-prefetch", daemon=True)
+        worker.start()
+        return worker
 
     def _cached_wav(self, text: str) -> bytes | None:
         with self._cache_lock:
             return self._wav_cache.get(text.strip())
+
+    def line_duration_ms(self, text: str) -> int | None:
+        """Exact ms of an already-synthesized line. None when not cached yet."""
+        wav = self._cached_wav(text or "")
+        if not wav:
+            return None
+        return round(wav_duration_s(wav) * 1000) or None
 
     def set_language(self, lang: str) -> None:
         from navigator.voice.language import apply_to_speakers

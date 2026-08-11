@@ -196,11 +196,20 @@ def test_execute_call_unpacks_run_tool_tuple():
     assert frames == ["frame", "frame"]
 
 
-def test_step_deltas_from_absolute_clicks():
-    from navigator.agent.recorded_playback import MAX_INTER_STEP_MS, step_deltas
+def test_recorded_gaps_are_not_clamped():
+    """Long recorded gaps used to collapse to 1.2s. They now replay verbatim."""
+    from navigator.agent.playback_schedule import build_schedule
 
-    schedule = {0: 0, 1: 12697, 2: 34809}
-    assert step_deltas(schedule, 3) == [0, MAX_INTER_STEP_MS, MAX_INTER_STEP_MS]
+    cues, _total = build_schedule(
+        n_steps=3,
+        clicks={0: 0, 1: 12697, 2: 34809},
+        speech={},
+        lines=["a", "b", "c"],
+        timing={},
+        tts_ms=lambda _t: None,
+    )
+    acts = [c.at_ms for c in cues if c.kind == "act"]
+    assert acts == [0, 12697, 34809]
 
 
 def test_timeline_parallel_speech_and_click():
@@ -265,8 +274,106 @@ def test_timeline_parallel_speech_and_click():
     assert outcome.steps_run == 1
     assert events
     assert click_times
-    # Speech and click start together on step 0 (relative schedule).
+    # No recorded speech window, so speech and click stay together on step 0.
     assert abs(events[0][1] - click_times[0]) < 0.15
+
+
+def _lead_in_graph(meta: dict) -> SiteGraph:
+    return SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"signup": "text=Sign up", "confirm": "text=Confirm"},
+                flows={"demo": (_click("signup"), _click("confirm"))},
+            ),
+        },
+        meta=meta,
+    )
+
+
+def _run_lead_in_flow(meta: dict, *, slow_first_click_s: float = 0.0):
+    """Run a 2-step flow, returning (speak times, click times) as monotonic secs."""
+    speaks: list[float] = []
+    clicks: list[float] = []
+
+    class AsyncSpeaker:
+        def say_async(self, text: str):
+            speaks.append(time.monotonic())
+            handle = MagicMock()
+            handle.wait = MagicMock()
+            return handle
+
+        def say(self, text: str) -> None:
+            pass
+
+    deps = CallDeps(
+        graph=_lead_in_graph(meta),
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=AsyncSpeaker(),
+        product_id="acme",
+    )
+    ok_result = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+
+    def _run_tool(*_a, **_k):
+        if slow_first_click_s and not clicks:
+            time.sleep(slow_first_click_s)
+        clicks.append(time.monotonic())
+        return ok_result, "home"
+
+    with patch(
+        "navigator.agent.recorded_playback.run_tool", side_effect=_run_tool
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ):
+        run_flow_timeline(
+            deps, session_id=uuid4(), page_id="home", flow_id="demo", strict=False
+        )
+    return speaks, clicks
+
+
+def test_timeline_reproduces_recorded_lead_in():
+    """The host talked before clicking. Playback must do the same, per step."""
+    meta = {
+        "narration_suggestions": {"demo": ["Opening signup", "Now confirm"]},
+        "step_clicks": {"demo": [{"idx": 0, "at_ms": 400}, {"idx": 1, "at_ms": 900}]},
+        "step_speech": {
+            "demo": [
+                {"idx": 0, "start_ms": 100, "end_ms": 350},
+                {"idx": 1, "start_ms": 600, "end_ms": 850},
+            ]
+        },
+    }
+    speaks, clicks = _run_lead_in_flow(meta)
+    assert len(speaks) == 2 and len(clicks) == 2
+    # Recorded lead-in is 300ms on both steps.
+    assert 0.15 < clicks[0] - speaks[0] < 0.55
+    assert 0.15 < clicks[1] - speaks[1] < 0.55
+
+
+def test_timeline_slip_shifts_later_cues_and_keeps_lead_in():
+    """A slow step pushes what follows instead of desyncing speech from action."""
+    meta = {
+        "narration_suggestions": {"demo": ["Opening signup", "Now confirm"]},
+        "step_clicks": {"demo": [{"idx": 0, "at_ms": 300}, {"idx": 1, "at_ms": 700}]},
+        "step_speech": {
+            "demo": [
+                {"idx": 0, "start_ms": 0, "end_ms": 250},
+                {"idx": 1, "start_ms": 400, "end_ms": 650},
+            ]
+        },
+    }
+    speaks, clicks = _run_lead_in_flow(meta, slow_first_click_s=0.6)
+    assert len(speaks) == 2 and len(clicks) == 2
+    # Step 1's narration waits out the overrun rather than firing on schedule.
+    assert speaks[1] > clicks[0]
+    # And its 300ms lead-in survives the shift — the invariant that matters.
+    assert 0.15 < clicks[1] - speaks[1] < 0.55
 
 
 def test_strict_playlist_does_not_advance_step_on_plan():

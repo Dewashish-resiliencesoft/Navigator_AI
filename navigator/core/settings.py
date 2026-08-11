@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
     #: Warm female voice for English + Hindi (Gemini Live prebuilt).
     gemini_live_voice: str = "Sulafat"
+    #: Bidirectional Live conversation instead of text→TTS. Off by default:
+    #: the model is preview, and the old path stays byte-for-byte when unset.
+    live_conversational: bool = False
+    #: Live conversational model. Audio in/out, native VAD, sync tools only.
+    live_conversational_model: str = "gemini-3.1-flash-live-preview"
+    #: Silence before Live ends the human's turn. Google's default is ~800ms;
+    #: under ~300ms a mid-sentence pause reads as end-of-turn.
+    live_vad_silence_ms: int = 500
+    #: Quiet time after an interruption before the walkthrough resumes.
+    live_resume_silence_s: float = 0.8
     default_spoken_language: Literal["en", "hi"] = "en"
 
     # Phase 2+

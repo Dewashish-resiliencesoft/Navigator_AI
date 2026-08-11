@@ -169,14 +169,16 @@ def parse_segments(raw: Any) -> list[Segment]:
     return out
 
 
-def align(segments: Sequence[Segment], step_times_ms: Sequence[int]) -> list[str]:
-    """Assign each spoken segment to the step it was describing.
+def _assign(
+    segments: Sequence[Segment], step_times_ms: Sequence[int]
+) -> list[list[Segment]]:
+    """Bucket each spoken segment into the step it was describing.
 
     A segment belongs to the last step that started at or before it, with a
     lead-in window so narration spoken just *before* the click still lands on
     that click. Speech before the first click belongs to the first step.
     """
-    lines: list[list[str]] = [[] for _ in step_times_ms]
+    buckets: list[list[Segment]] = [[] for _ in step_times_ms]
     if not step_times_ms:
         return []
 
@@ -187,9 +189,51 @@ def align(segments: Sequence[Segment], step_times_ms: Sequence[int]) -> list[str
                 idx = i
             else:
                 break
-        lines[idx].append(seg.text)
+        buckets[idx].append(seg)
 
-    return [" ".join(parts).strip() for parts in lines]
+    return buckets
+
+
+def align(segments: Sequence[Segment], step_times_ms: Sequence[int]) -> list[str]:
+    """Spoken text per step -- what was said while step N was happening."""
+    return [
+        " ".join(seg.text for seg in bucket).strip()
+        for bucket in _assign(segments, step_times_ms)
+    ]
+
+
+def speech_windows(
+    segments: Sequence[Segment], step_times_ms: Sequence[int]
+) -> list[tuple[int, int] | None]:
+    """When narration for each step actually started and ended, in ms.
+
+    This is what makes playback a copy rather than an approximation: the host
+    usually starts talking *before* they click, and that lead-in is per-step.
+    ``None`` for a step nobody narrated.
+    """
+    out: list[tuple[int, int] | None] = []
+    for bucket in _assign(segments, step_times_ms):
+        if not bucket:
+            out.append(None)
+            continue
+        out.append(
+            (
+                min(seg.start_ms for seg in bucket),
+                max(seg.end_ms for seg in bucket),
+            )
+        )
+    return out
+
+
+def speech_windows_payload(
+    windows: Sequence[tuple[int, int] | None],
+) -> list[dict[str, int]]:
+    """`_meta.step_speech` rows. Silent steps are omitted, not zero-filled."""
+    return [
+        {"idx": i, "start_ms": int(win[0]), "end_ms": int(win[1])}
+        for i, win in enumerate(windows)
+        if win is not None
+    ]
 
 
 _REFINE_PROMPT = """You are a professional demo script editor polishing raw speech-to-text from a live product walkthrough.
@@ -361,14 +405,14 @@ def narrate_recording(
     transcribe_verbose: Callable[..., Any] | None = None,
     language: str = "auto",
     translate_to: str = "same",
-) -> tuple[list[str], list[dict[str, int]]]:
-    """Full pipeline: audio + steps → (spoken line per step, timing hints).
+) -> tuple[list[str], list[dict[str, int]], list[tuple[int, int] | None]]:
+    """Full pipeline: audio + steps → (line per step, timing hints, speech windows).
 
     Returns empty lists when there was no narration, so callers can fall through
     to the existing generated-narration path unchanged.
     """
     if not audio or not steps:
-        return [], []
+        return [], [], []
 
     step_times = [int(getattr(s, "at_ms", 0) or 0) for s in steps]
     segments = transcribe_timed(
@@ -378,9 +422,12 @@ def narrate_recording(
         transcribe_verbose=transcribe_verbose,
     )
     if not segments:
-        return [], []
+        return [], [], []
 
     lines = align(segments, step_times)
+    # Taken before refine/translate rewrite the text -- the *timing* of what the
+    # host said does not change when the wording is cleaned up.
+    windows = speech_windows(segments, step_times)
     try:
         lines = refine(lines, ask_text=ask_text, language=language)
     except Exception as exc:  # noqa: BLE001
@@ -392,7 +439,7 @@ def narrate_recording(
             lines = translate_lines(lines, target=tgt, ask_text=ask_text)
         except Exception as exc:  # noqa: BLE001
             print(f"[narrate] translate skipped: {exc}", flush=True)
-    return lines, step_timings(step_times, lines)
+    return lines, step_timings(step_times, lines), windows
 
 
 def _groq_verbose(

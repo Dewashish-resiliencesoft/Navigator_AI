@@ -73,3 +73,26 @@ def test_attach_recorded_narration_saves_clicks_when_stt_fails(
     assert narrated == 1
     paths = graph.flow_step_mouse_paths("demo")
     assert paths[0][0]["x"] == 10
+    # No STT means no idea when the host spoke — absent, not zero-filled.
+    assert graph.flow_step_speech("demo") == {}
+
+
+def test_attach_recorded_narration_saves_speech_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "navigator.automation.narration.narrate_recording",
+        lambda **_kwargs: (["Click sign up."], [{"idx": 0, "speak_ms": 900}], [(300, 1100)]),
+    )
+    monkeypatch.setattr(
+        "navigator.core.groq_keys.groq_key_candidates",
+        lambda **_: ["test-key"],
+    )
+
+    yaml_out, narrated = _attach_recorded_narration(_minimal_yaml(), _Job())
+    graph = parse_site_graph(yaml_out)
+    assert narrated == 1
+    # Host started talking at 300ms and clicked at 1200ms — a 900ms lead-in that
+    # playback must reproduce.
+    assert graph.flow_step_speech("demo") == {0: (300, 1100)}
+    assert graph.flow_step_clicks("demo") == {0: 1200}

@@ -1940,6 +1940,7 @@ def _attach_recorded_narration(
     from navigator.automation.narration import (
         narrate_recording,
         placeholder_narration_lines,
+        speech_windows_payload,
         step_timings_from_steps,
     )
     from navigator.automation.record_scrub import (
@@ -1958,13 +1959,16 @@ def _attach_recorded_narration(
     step_times = [int(getattr(s, "at_ms", 0) or 0) for s in scrubbed_steps]
     lines = placeholder_narration_lines(scrubbed_steps)
     timings = step_timings_from_steps(step_times)
+    # Only STT knows when the host actually spoke. Placeholders have no window,
+    # so playback falls back to the click schedule for them.
+    speech: list[dict[str, int]] = []
 
     audio = narration.audio()
     keys = groq_key_candidates()
     if audio and keys:
         api_key = keys[0]
         try:
-            stt_lines, stt_timings = narrate_recording(
+            stt_lines, stt_timings, stt_windows = narrate_recording(
                 audio=audio,
                 steps=scrubbed_steps,
                 api_key=api_key,
@@ -1976,6 +1980,7 @@ def _attach_recorded_narration(
                 lines = stt_lines
                 if stt_timings:
                     timings = stt_timings
+                speech = speech_windows_payload(stt_windows)
         except Exception as exc:  # noqa: BLE001
             print(f"[record] narration STT failed (using placeholders): {exc}", flush=True)
     elif audio and not keys:
@@ -1996,21 +2001,16 @@ def _attach_recorded_narration(
         yaml_text = _append_semantics(
             yaml_text, job.flow_id, semantics_payload, offset=prior_steps
         )
-        if timings:
-            shifted = [
-                {**row, "idx": int(row["idx"]) + prior_steps}
-                for row in timings
-                if isinstance(row, dict)
-            ]
-            yaml_text = _append_step_timing(yaml_text, job.flow_id, shifted)
-        if clicks:
-            yaml_text = _append_step_clicks(
-                yaml_text, job.flow_id, clicks, offset=prior_steps
-            )
-        if mouse_paths:
-            yaml_text = _append_step_mouse_paths(
-                yaml_text, job.flow_id, mouse_paths, offset=prior_steps
-            )
+        for section, rows in (
+            ("step_timing", timings),
+            ("step_clicks", clicks),
+            ("step_speech", speech),
+            ("step_mouse_paths", mouse_paths),
+        ):
+            if rows:
+                yaml_text = _append_meta_rows(
+                    yaml_text, section, job.flow_id, rows, offset=prior_steps
+                )
     else:
         yaml_text = _attach_meta(
             yaml_text, "narration_suggestions", job.flow_id, lines
@@ -2018,14 +2018,14 @@ def _attach_recorded_narration(
         yaml_text = _attach_meta(
             yaml_text, "semantics", job.flow_id, semantics_payload
         )
-        if timings:
-            yaml_text = _attach_meta(yaml_text, "step_timing", job.flow_id, timings)
-        if clicks:
-            yaml_text = _attach_meta(yaml_text, "step_clicks", job.flow_id, clicks)
-        if mouse_paths:
-            yaml_text = _attach_meta(
-                yaml_text, "step_mouse_paths", job.flow_id, mouse_paths
-            )
+        for section, rows in (
+            ("step_timing", timings),
+            ("step_clicks", clicks),
+            ("step_speech", speech),
+            ("step_mouse_paths", mouse_paths),
+        ):
+            if rows:
+                yaml_text = _attach_meta(yaml_text, section, job.flow_id, rows)
     narrated = sum(1 for l in lines if str(l).strip())
     print(
         f"[record] narration: {narrated}/{len(lines)} steps have spoken lines",
@@ -2034,57 +2034,15 @@ def _attach_recorded_narration(
     return yaml_text, narrated
 
 
-def _append_step_timing(
-    yaml_text: str, flow_id: str, new_rows: list[dict[str, int]]
-) -> str:
-    """Update mode: keep prior timing rows, append new ones with shifted idx."""
-    import yaml as _yaml
-
-    from navigator.automation.explore.runner import _attach_meta
-
-    raw = _yaml.safe_load(yaml_text)
-    prior: list[dict[str, int]] = []
-    if isinstance(raw, dict):
-        bucket = ((raw.get("_meta") or {}).get("step_timing") or {})
-        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
-            prior = [r for r in bucket[flow_id] if isinstance(r, dict)]
-    return _attach_meta(yaml_text, "step_timing", flow_id, prior + new_rows)
-
-
-def _append_step_clicks(
+def _append_meta_rows(
     yaml_text: str,
-    flow_id: str,
-    new_rows: list[dict[str, int]],
-    *,
-    offset: int = 0,
-) -> str:
-    """Update mode: keep prior click rows, append new ones with shifted idx."""
-    import yaml as _yaml
-
-    from navigator.automation.explore.runner import _attach_meta
-
-    raw = _yaml.safe_load(yaml_text)
-    prior: list[dict[str, int]] = []
-    if isinstance(raw, dict):
-        bucket = ((raw.get("_meta") or {}).get("step_clicks") or {})
-        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
-            prior = [r for r in bucket[flow_id] if isinstance(r, dict)]
-    shifted = [
-        {**row, "idx": int(row["idx"]) + offset}
-        for row in new_rows
-        if isinstance(row, dict)
-    ]
-    return _attach_meta(yaml_text, "step_clicks", flow_id, prior + shifted)
-
-
-def _append_step_mouse_paths(
-    yaml_text: str,
+    section: str,
     flow_id: str,
     new_rows: list[dict],
     *,
     offset: int = 0,
 ) -> str:
-    """Update mode: keep prior mouse-path rows, append new ones with shifted idx."""
+    """Update mode: keep prior `idx` rows for this flow, append new ones shifted."""
     import yaml as _yaml
 
     from navigator.automation.explore.runner import _attach_meta
@@ -2092,7 +2050,7 @@ def _append_step_mouse_paths(
     raw = _yaml.safe_load(yaml_text)
     prior: list[dict] = []
     if isinstance(raw, dict):
-        bucket = ((raw.get("_meta") or {}).get("step_mouse_paths") or {})
+        bucket = (raw.get("_meta") or {}).get(section) or {}
         if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
             prior = [r for r in bucket[flow_id] if isinstance(r, dict)]
     shifted = [
@@ -2100,7 +2058,7 @@ def _append_step_mouse_paths(
         for row in new_rows
         if isinstance(row, dict)
     ]
-    return _attach_meta(yaml_text, "step_mouse_paths", flow_id, prior + shifted)
+    return _attach_meta(yaml_text, section, flow_id, prior + shifted)
 
 
 # -- autonomous exploration ---------------------------------------------------

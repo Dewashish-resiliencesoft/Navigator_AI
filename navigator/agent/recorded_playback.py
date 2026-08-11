@@ -1,8 +1,12 @@
 """Timeline playback for recorded narrated flows.
 
-Replays clicks at recorded inter-step pacing while TTS runs in parallel — the
-same overlap the Client had during capture. LangGraph speak-then-click walkthrough
-is the fallback when metadata is missing.
+Replays a recording as a copy of itself: every cue sits at an absolute time on
+the flow's clock, and playback waits until that time rather than sleeping
+between steps. Narration therefore starts at the same offset relative to its
+click as it did during capture — never before, never after. See
+`navigator.agent.playback_schedule` for the timing rules.
+
+LangGraph speak-then-click walkthrough is the fallback when metadata is missing.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from navigator.agent.live_input import needs_live_input, resolve_live_fill
+from navigator.agent.playback_schedule import build_schedule, fmt_ms
 from navigator.agent.state import CallDeps
 from navigator.automation.browser.tools import execute as run_tool
 from navigator.automation.login_match import VAULT_PASSWORD_SENTINEL
@@ -26,9 +31,8 @@ if TYPE_CHECKING:
     from navigator.meeting.meet_speaker import MeetSpeaker
 
 
-LIVE_LEAD_IN_MS = 0
-# Cap recorded idle gaps so speech/action stay in sync on Meet.
-MAX_INTER_STEP_MS = 1200
+#: How long to wait for TTS pre-synthesis before scheduling off recorded windows.
+PREFETCH_WAIT_S = 20.0
 
 PAUSE_LINE = "One moment — let me get that step right."
 SKIP_LINE = "Moving on — we'll skip that step for now."
@@ -70,14 +74,14 @@ def _hard_stop_on_click_fail(deps: CallDeps, *, strict: bool) -> bool:
     return strict and _demo_origin(deps) == "public_embed"
 
 
-def _wait_ms(ms: float, deps: CallDeps) -> None:
-    """Sleep up to ``ms``, pumping screenshare frames when a pusher is wired."""
+def _wait_until(deps: CallDeps, deadline: float) -> None:
+    """Wait for the monotonic ``deadline``, pumping screenshare frames meanwhile.
+
+    Absolute deadline, not a duration — a cue that is already late fires at once
+    and the caller shifts the rest of the schedule to match.
+    """
     from navigator.voice.language import poll_barge_in_language_switch
 
-    if ms <= 0:
-        return
-    ms = min(float(ms), float(MAX_INTER_STEP_MS))
-    deadline = time.monotonic() + ms / 1000.0
     push = deps.push_frame
     # ~12 fps during waits — 60fps JPEG spam freezes Chromium mid-demo.
     slice_s = 0.08
@@ -97,33 +101,31 @@ def _wait_ms(ms: float, deps: CallDeps) -> None:
         time.sleep(min(slice_s, remaining))
 
 
-def _click_schedule(graph, flow_id: str, n_steps: int) -> dict[int, int]:
-    clicks = graph.flow_step_clicks(flow_id)
-    if clicks:
-        return clicks
-    timing = graph.flow_step_timing(flow_id)
-    if not timing:
-        return {i: i * 3000 for i in range(n_steps)}
-    cumulative = 0
-    out: dict[int, int] = {}
-    for i in range(n_steps):
-        cumulative += int(timing.get(i, 0) or 0)
-        out[i] = cumulative
-    return out
+def _tts_duration_fn(deps: CallDeps):
+    """Exact synthesized length per line, when the speaker can tell us."""
+    measure = getattr(deps.speaker, "line_duration_ms", None)
+    if measure is None:
+        return lambda _text: None
+
+    def _ms(text: str) -> int | None:
+        try:
+            # int() also rejects mocks/None from speakers that only duck-type it.
+            return int(measure(spoken_for_live_step(text)))
+        except Exception:  # noqa: BLE001
+            return None
+
+    return _ms
 
 
-def step_deltas(schedule: dict[int, int], n_steps: int) -> list[int]:
-    """Inter-step wait ms derived from absolute recorded click times."""
-    deltas: list[int] = []
-    prev_at = 0
-    for i in range(n_steps):
-        at = int(schedule.get(i, i * 3000) or 0)
-        if i == 0:
-            deltas.append(0)
-        else:
-            deltas.append(min(MAX_INTER_STEP_MS, max(0, at - prev_at)))
-        prev_at = at
-    return deltas
+def _flow_schedule(deps: CallDeps, flow_id: str, lines: list[str], n_steps: int):
+    return build_schedule(
+        n_steps=n_steps,
+        clicks=deps.graph.flow_step_clicks(flow_id),
+        speech=deps.graph.flow_step_speech(flow_id),
+        lines=lines,
+        timing=deps.graph.flow_step_timing(flow_id),
+        tts_ms=_tts_duration_fn(deps),
+    )
 
 
 def _start_speech(deps: CallDeps, line: str) -> PlaybackHandle | None:
@@ -311,47 +313,81 @@ def _run_flow_timeline_inner(
     lines = deps.graph.flow_narration_lines(flow_id)
     while len(lines) < len(calls):
         lines.append("")
-    schedule = _click_schedule(deps.graph, flow_id, len(calls))
-    deltas = step_deltas(schedule, len(calls))
+
+    cues, total_ms = _flow_schedule(deps, flow_id, lines, len(calls))
+    print(
+        f"[timeline] {flow_id!r}: {len(calls)} steps, {len(cues)} cues, "
+        f"length {fmt_ms(total_ms)}",
+        flush=True,
+    )
 
     current_page = page_id
     speech: PlaybackHandle | None = None
+    skipped: set[int] = set()
+    t0 = time.monotonic()
+    #: Runtime slip (retries, slow pages) and TTS overrun both land here, so a
+    #: late step moves narration AND action together instead of desyncing them.
+    shift_ms = 0
 
-    for step, call in enumerate(calls):
+    def elapsed_ms() -> int:
+        return int((time.monotonic() - t0) * 1000)
+
+    for cue in cues:
+        if _stopped(deps):
+            break
+        if cue.idx in skipped:
+            continue
+
+        due_ms = cue.at_ms + shift_ms
+        _wait_until(deps, t0 + due_ms / 1000.0)
         if _stopped(deps):
             break
 
-        if step > 0:
-            _wait_ms(float(deltas[step]), deps)
-            if _stopped(deps):
-                break
-
+        call = calls[cue.idx]
+        # Checked at whichever cue for this step lands first, so a junk step
+        # drops its narration too instead of talking about a skipped click.
         junk = _junk_playback_call(deps, call, page_id=current_page)
         if junk:
             print(
-                f"[timeline] skip junk step {step} on {flow_id!r}: {junk}",
+                f"[timeline] skip junk step {cue.idx} on {flow_id!r}: {junk}",
                 flush=True,
             )
+            skipped.add(cue.idx)
             continue
 
-        # Mid-demo "talk in Hindi" / settings already hi — apply before next line.
-        from navigator.voice.language import poll_barge_in_language_switch
+        if cue.kind == "speak":
+            # Mid-demo "talk in Hindi" / settings already hi — apply before the line.
+            from navigator.voice.language import poll_barge_in_language_switch
 
-        poll_barge_in_language_switch(deps)
+            # A switch clears the WAV cache, so the durations this schedule was
+            # built from no longer hold. No rebuild needed: the guard below
+            # absorbs the overrun, which makes this step's action late, which
+            # shifts the rest — narration and action stay together.
+            poll_barge_in_language_switch(deps)
+            # Guard only: the schedule is what keeps lines from overlapping.
+            _wait_speech(speech)
+            print(
+                f"[timeline] {fmt_ms(elapsed_ms())} speak step {cue.idx}",
+                flush=True,
+            )
+            speech = _start_speech(deps, cue.text)
+            continue
 
-        # One narration line at a time — overlap speech with THIS click only.
-        _wait_speech(speech)
-        line = lines[step] if step < len(lines) else ""
-        speech = _start_speech(deps, line)
-
+        print(f"[timeline] {fmt_ms(elapsed_ms())} act step {cue.idx}", flush=True)
         entry, current_page = _run_step(
             deps,
             call,
             page_id=current_page,
             session_id=session_id,
-            step_index=step,
+            step_index=cue.idx,
             flow_id=flow_id,
         )
+        # Retries and slow pages push the rest of the flow back rather than
+        # letting later cues fire early to "catch up".
+        late = elapsed_ms() - due_ms
+        if late > 0:
+            shift_ms += late
+
         outcome.entries.append(entry)
         outcome.steps_run += 1
         if not entry.failed:
@@ -366,7 +402,7 @@ def _run_flow_timeline_inner(
                 outcome.hard_fail = True
                 return outcome
             print(
-                f"[timeline] click miss step {step} on {flow_id!r}, continuing: "
+                f"[timeline] click miss step {cue.idx} on {flow_id!r}, continuing: "
                 f"{entry.actual_result.detail}",
                 flush=True,
             )
@@ -375,7 +411,7 @@ def _run_flow_timeline_inner(
             continue
 
         print(
-            f"[timeline] verify miss step {step} on {flow_id!r}, continuing: "
+            f"[timeline] verify miss step {cue.idx} on {flow_id!r}, continuing: "
             f"{entry.verify.actual}",
             flush=True,
         )
@@ -573,7 +609,12 @@ def run_playlist_strict(
 
 
 def _prefetch_playlist_narration(deps: CallDeps, graph) -> None:
-    """Warm TTS cache for timeline lines before playback starts."""
+    """Synthesize timeline lines up front, then wait so the schedule can use
+    their exact durations.
+
+    On timeout the schedule falls back to recorded window lengths — a slightly
+    looser demo beats a demo that never starts.
+    """
     speaker = deps.speaker
     prefetch = getattr(speaker, "prefetch_lines", None)
     if prefetch is None:
@@ -586,8 +627,18 @@ def _prefetch_playlist_narration(deps: CallDeps, graph) -> None:
             text = spoken_for_live_step(line)
             if text.strip():
                 lines.append(text)
-    if lines:
-        prefetch(lines)
+    if not lines:
+        return
+    worker = prefetch(lines)
+    if worker is None or not hasattr(worker, "join"):
+        return
+    worker.join(timeout=PREFETCH_WAIT_S)
+    if worker.is_alive():
+        print(
+            f"[timeline] TTS prefetch still running after {PREFETCH_WAIT_S:.0f}s — "
+            "scheduling off recorded pacing",
+            flush=True,
+        )
 
 
 def run_playlist_timeline(

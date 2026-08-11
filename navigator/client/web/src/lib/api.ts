@@ -156,6 +156,10 @@ export type DemoScriptBeat = {
   knowledge_refs?: string[];
   uses_intake_tokens?: boolean;
   speak_ms?: number;
+  /** Ms into the flow when this narration starts during playback. */
+  speak_at_ms?: number;
+  /** Ms into the flow when this step's action fires. */
+  act_at_ms?: number;
   needs_approval?: boolean;
   approval_reason?: string;
 };
@@ -167,6 +171,8 @@ export type DemoScriptResponse = {
   beats: DemoScriptBeat[];
   context?: string;
   sources_used?: string[];
+  /** Recorded length of each flow in ms, keyed by flow_id. */
+  flow_total_ms?: Record<string, number>;
   stats?: {
     beat_count: number;
     asks_visitor_count: number;

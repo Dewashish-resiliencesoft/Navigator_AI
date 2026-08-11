@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 from collections.abc import Iterator
 from queue import Empty, Queue
 from typing import Any
@@ -23,11 +24,15 @@ class AudioBridge:
         self.inbound: Queue[bytes] = Queue()
         self._outbound: Queue[tuple[bytes, int]] = Queue()
         self._thread: threading.Thread | None = None
+        self._sender: threading.Thread | None = None
         self._server: Any = None
+        self._ws: Any = None
+        self._send_lock = threading.Lock()
         self._stop = threading.Event()
         self._ready = threading.Event()
         self.clients_connected = 0
         self.chunks_received = 0
+        self.chunks_sent = 0
 
     @property
     def local_url(self) -> str:
@@ -40,6 +45,10 @@ class AudioBridge:
         self._thread.start()
         if not self._ready.wait(timeout=15):
             raise RuntimeError("AudioBridge failed to start")
+        self._sender = threading.Thread(
+            target=self._run_sender, name="audio-bridge-out", daemon=True
+        )
+        self._sender.start()
         return self
 
     def stop(self) -> None:
@@ -52,11 +61,76 @@ class AudioBridge:
                 pass
         if self._thread is not None:
             self._thread.join(timeout=5)
+        if self._sender is not None:
+            self._sender.join(timeout=5)
         self._thread = None
+        self._sender = None
         self._server = None
+        self._ws = None
 
     def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
         self._outbound.put((pcm, sample_rate))
+
+    def clear_outbound(self) -> int:
+        """Drop queued bot audio we have not sent yet. Returns how many chunks."""
+        dropped = 0
+        while True:
+            try:
+                self._outbound.get_nowait()
+            except Empty:
+                return dropped
+            dropped += 1
+
+    def flush_bot_output(self) -> None:
+        """Barge-in: drop our queue, then tell Attendee to drop its own.
+
+        Ours alone is not enough — Attendee has already buffered chunks and the
+        browser has scheduled them into the future.
+        """
+        dropped = self.clear_outbound()
+        self._send_json({"trigger": "realtime_audio.bot_output_clear", "data": {}})
+        print(f"[audio] bot output flushed (dropped {dropped} chunk(s))", flush=True)
+
+    def _send_json(self, payload: dict) -> bool:
+        ws = self._ws
+        if ws is None:
+            return False
+        try:
+            with self._send_lock:
+                ws.send(json.dumps(payload))
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _run_sender(self) -> None:
+        """Push bot audio as soon as it is queued.
+
+        Previously outbound was only flushed inside the inbound read loop, so
+        bot audio could not go out unless the meeting happened to be sending us
+        something — silence in, silence out.
+        """
+        while not self._stop.is_set():
+            try:
+                pcm, rate = self._outbound.get(timeout=0.2)
+            except Empty:
+                continue
+            # Audio can be queued a beat before Attendee's socket registers.
+            # Hold it briefly rather than dropping the start of an utterance.
+            deadline = time.monotonic() + 2.0
+            while self._ws is None and not self._stop.is_set():
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(0.01)
+            if self._send_json(
+                {
+                    "trigger": "realtime_audio.bot_output",
+                    "data": {
+                        "chunk": base64.b64encode(pcm).decode(),
+                        "sample_rate": rate,
+                    },
+                }
+            ):
+                self.chunks_sent += 1
 
     def frames(self, *, timeout_s: float | None = None) -> Iterator[bytes]:
         while not self._stop.is_set():
@@ -76,6 +150,7 @@ class AudioBridge:
 
         def handler(ws: Any) -> None:
             self.clients_connected += 1
+            self._ws = ws
             print(
                 f"[audio] Attendee websocket connected (clients={self.clients_connected})",
                 flush=True,
@@ -85,28 +160,11 @@ class AudioBridge:
                     if self._stop.is_set():
                         break
                     self._handle_message(raw)
-                    # Flush any pending bot_output (rarely used; speak uses HTTP).
-                    while True:
-                        try:
-                            pcm, rate = self._outbound.get_nowait()
-                        except Empty:
-                            break
-                        try:
-                            ws.send(
-                                json.dumps(
-                                    {
-                                        "trigger": "realtime_audio.bot_output",
-                                        "data": {
-                                            "chunk": base64.b64encode(pcm).decode(),
-                                            "sample_rate": rate,
-                                        },
-                                    }
-                                )
-                            )
-                        except Exception:  # noqa: BLE001
-                            return
             except Exception:  # noqa: BLE001
                 return
+            finally:
+                if self._ws is ws:
+                    self._ws = None
 
         try:
             with sync_serve(handler, self.host, self.port) as server:

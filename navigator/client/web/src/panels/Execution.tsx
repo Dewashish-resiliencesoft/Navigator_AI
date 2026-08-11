@@ -170,6 +170,11 @@ function dropInYaml(yamlText: string, flowId: string, pageId: string, idx: numbe
 
   shiftIdxList("pending_approvals");
   shiftIdxList("step_timing");
+  // These drive timeline playback — leaving them unshifted silently pins every
+  // later narration line to the wrong action.
+  shiftIdxList("step_clicks");
+  shiftIdxList("step_speech");
+  shiftIdxList("step_mouse_paths");
 
   const semBucket = (meta.semantics ?? {}) as Record<string, unknown>;
   const sem = semBucket[flowId];

@@ -155,6 +155,9 @@ class CallDeps:
     strict_playlist: bool = False
     #: Set at auth boundary — controls hard-stop vs continue on click failures.
     demo_origin: Literal["dashboard_test", "public_embed"] = "dashboard_test"
+    #: Bidirectional Gemini Live session (navigator.voice.live_agent.LiveAgent).
+    #: When set, SPEAKING talks through it and the prospect can interrupt.
+    live_agent: object | None = None
 
 
 def append_only(existing: list, new: list) -> list:

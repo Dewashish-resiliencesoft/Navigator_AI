@@ -20,6 +20,22 @@ from navigator.core.schemas import FillField
 from navigator.core.settings import settings
 
 
+def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
+    """Keep the Live session aware of the screen without sending it video.
+
+    Video input would cap the session at two minutes, so the model gets a short
+    text note instead. This is what lets it answer "what am I looking at?".
+    """
+    live = deps.live_agent
+    if live is None or not getattr(result, "ok", False):
+        return
+    try:
+        name = deps.graph.page(page_id).name
+    except Exception:  # noqa: BLE001
+        return
+    live.add_context(f"The screen now shows: {name}.")
+
+
 def executing(state: CallState, deps: CallDeps) -> CallState:
     label = state.get("nav_click_label")
     if label:
@@ -100,6 +116,8 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         )
     if deps.push_frame is not None:
         deps.push_frame()
+
+    _tell_live_where_we_are(deps, next_page_id, result)
 
     return CallState(
         pending_calls=rest,

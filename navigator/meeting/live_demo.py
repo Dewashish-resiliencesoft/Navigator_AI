@@ -79,6 +79,103 @@ def _drain_inbound(queue) -> int:
             return n
 
 
+def _intake_summary(intake) -> str:
+    """One line about the prospect, from what intake actually captured."""
+    if intake is None:
+        return ""
+    bits = []
+    for label, attr in (
+        ("Name", "name"),
+        ("Company", "company"),
+        ("Business", "business_type"),
+        ("Looking for", "looking_for"),
+    ):
+        val = (getattr(intake, attr, "") or "").strip()
+        if val:
+            bits.append(f"{label}: {val}")
+    return " | ".join(bits)
+
+
+def _start_live_agent(
+    *,
+    audio_bridge,
+    graph_cfg,
+    product_id: str,
+    intake,
+    spoken_language: str,
+    agent_gender: str,
+    heard_sink: list[str] | None = None,
+):
+    """Open the bidirectional Live session, or return None to keep the TTS path.
+
+    Off unless NAVIGATOR_LIVE_CONVERSATIONAL is set. Any failure here degrades
+    to the existing MeetSpeaker path rather than killing the demo.
+    """
+    if not settings.live_conversational:
+        return None
+    if audio_bridge is None:
+        print("[live] conversational mode needs the audio bridge — using TTS", flush=True)
+        return None
+
+    from navigator.core.gemini_keys import gemini_key_candidates
+
+    keys = gemini_key_candidates()
+    if not keys:
+        print("[live] conversational mode needs a Gemini key — using TTS", flush=True)
+        return None
+
+    def _on_event(event) -> None:
+        _log_live_event(event)
+        # PLANNING still routes flows and drives the browser, so it needs to
+        # know what the prospect asked. LISTENING drains this list first.
+        if event.kind == "heard" and heard_sink is not None:
+            text = (event.text or "").strip()
+            if text:
+                heard_sink.append(text)
+
+    try:
+        from navigator.voice.live_agent import LiveAgent, LiveAgentConfig
+        from navigator.voice.live_persona import build_live_instruction
+
+        instruction = build_live_instruction(
+            graph=graph_cfg,
+            product_brief=load_agent_context(product_id or graph_cfg.site),
+            intake_summary=_intake_summary(intake),
+            language=spoken_language,  # type: ignore[arg-type]
+            gender=agent_gender,
+        )
+        agent = LiveAgent(
+            LiveAgentConfig(
+                api_key=keys[0],
+                system_instruction=instruction,
+                model=settings.live_conversational_model,
+                voice_name=settings.gemini_live_voice,
+                language=spoken_language,  # type: ignore[arg-type]
+                vad_silence_ms=settings.live_vad_silence_ms,
+                on_event=_on_event,
+            ),
+            audio_bridge,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[live] conversational setup failed ({exc}) — using TTS", flush=True)
+        return None
+
+    if not agent.start():
+        return None
+    return agent
+
+
+def _log_live_event(event) -> None:
+    if event.kind == "said" and event.text.strip():
+        print(f"[live] said: {event.text.strip()}", flush=True)
+    elif event.kind == "heard" and event.text.strip():
+        print(f"[live] heard: {event.text.strip()}", flush=True)
+    elif event.kind == "interrupted":
+        print("[live] barge-in — prospect is speaking", flush=True)
+    elif event.kind == "error":
+        print(f"[live] ERROR {event.text}", flush=True)
+
+
 def _wait_meet_utterance(
     inbound,
     *,
@@ -743,6 +840,7 @@ def run_live_meet_demo(
 
         pending_barge_in: list[str] = []
         speaker_box: list = []
+        live_box: list = []
         meet_speaker: MeetSpeaker | PrintSpeaker | PiperSpeaker | FishSpeaker = MeetSpeaker(
             speaker,
             client,
@@ -1159,7 +1257,8 @@ def run_live_meet_demo(
                 from types import SimpleNamespace
 
                 print(f"[live_input] {prompt}", flush=True)
-                if audio_frames is not None:
+                live = live_box[0] if live_box else None
+                if live is not None or audio_frames is not None:
                     from navigator.agent.nodes.listening import _from_audio
 
                     try:
@@ -1168,6 +1267,13 @@ def run_live_meet_demo(
                                 SimpleNamespace(
                                     audio_frames=audio_frames,
                                     transcribe_audio=None,
+                                    live_agent=live,
+                                    pending_barge_in=pending_barge_in,
+                                    is_bot_echo=lambda t: _is_likely_echo(
+                                        t, meet_speaker.last_spoken
+                                    ),
+                                    stop_event=stop_event,
+                                    speaker=meet_speaker,
                                 ),
                                 silence_timeout=12.0,
                             )
@@ -1190,6 +1296,22 @@ def run_live_meet_demo(
                 use_turn_brain = False
 
             playlist_demo = bool(auto_play and graph_cfg.demo_playlist)
+
+            live_agent = _start_live_agent(
+                audio_bridge=audio_bridge,
+                graph_cfg=graph_cfg,
+                product_id=product_id,
+                intake=intake,
+                spoken_language=spoken_language,
+                agent_gender=agent_settings.agent_gender,
+                heard_sink=pending_barge_in,
+            )
+            if live_agent is not None:
+                live_box.append(live_agent)
+                # Live owns barge-in now: it hears the prospect directly and
+                # reports `interrupted`. The Whisper poller would fight it for
+                # the same inbound queue.
+                meet_speaker.check_barge_in = None
 
             deps = CallDeps(
                 graph=graph_cfg,
@@ -1244,6 +1366,7 @@ def run_live_meet_demo(
                     if demo_origin in ("dashboard_test", "public_embed")
                     else "dashboard_test"
                 ),  # type: ignore[arg-type]
+                live_agent=live_agent,
             )
 
             from navigator.agent.recorded_playback import (
@@ -1319,6 +1442,11 @@ def run_live_meet_demo(
                     )
             except Exception as exc:  # noqa: BLE001
                 print(f"[live] leave failed: {exc}", flush=True)
+        for _live in live_box:
+            try:
+                _live.close()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] Live session close skipped: {exc}", flush=True)
         if audio_tunnel is not None:
             audio_tunnel.stop()
         if audio_bridge is not None:

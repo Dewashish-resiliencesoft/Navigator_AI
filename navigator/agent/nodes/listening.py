@@ -191,7 +191,34 @@ def _frames_until_deadline(
         yield frame
 
 
+def _from_live(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
+    """Wait for Live's input transcript via pending_barge_in.
+
+    `_pump_in` already owns the inbound PCM queue. Silero/Whisper here would
+    starve it. Live's `heard` events land on `pending_barge_in`.
+    """
+    pending = deps.pending_barge_in
+    if pending is None:
+        return ""
+    deadline = None if silence_timeout is None else time.monotonic() + silence_timeout
+    while not _aborted(deps) and not getattr(deps.speaker, "bot_ended", False):
+        if pending:
+            text = pending.pop(0).strip()
+            if not text:
+                continue
+            if deps.is_bot_echo is not None and deps.is_bot_echo(text):
+                print(f"[listen] ignoring bot echo: {text!r}", flush=True)
+                continue
+            return text
+        if deadline is not None and time.monotonic() >= deadline:
+            return ""
+        time.sleep(0.05)
+    return ""
+
+
 def _from_audio(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
+    if deps.live_agent is not None:
+        return _from_live(deps, silence_timeout=silence_timeout)
     assert deps.audio_frames is not None
     frames: Iterator[bytes] = deps.audio_frames
     if silence_timeout is not None:

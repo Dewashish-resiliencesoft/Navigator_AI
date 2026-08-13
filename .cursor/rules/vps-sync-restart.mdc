@@ -44,7 +44,14 @@ sshpass -e rsync -az -e "$RSYNC_SSH" \
   "${NAVIGATOR_VPS_USER}@${NAVIGATOR_VPS_HOST}:${NAVIGATOR_VPS_PATH}/<rel-path>"
 ```
 
-Exclude: `.venv/`, `graphify-out/`, `graphify/`, `__pycache__/`, `.git/`, `*.pyc`. Do not clobber remote `.env` unless user asked.
+Exclude: `.venv/`, `graphify-out/`, `graphify/`, `__pycache__/`, `.git/`, `*.pyc`,
+`*.db`, `*.db-wal`, `*.db-shm`. Do not clobber remote `.env` unless user asked.
+
+**Never rsync SQLite while uvicorn is running.** Copying `navigator.db` without
+stopping the server (or without `-wal`/`-shm`) corrupts the file → dashboard
+`/client/api/metrics` 500 (`database disk image is malformed`). If DBs must
+move: stop uvicorn → copy db+wal+shm together → start. Password/user fixes:
+SQL on both sides, not a live db overwrite.
 
 ## Restart pattern
 

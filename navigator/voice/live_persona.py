@@ -47,9 +47,11 @@ def _style_rules(lang: SpokenLanguage, gender: str) -> str:
         )
     person = "female" if gender == "female" else "male"
     bilingual = (
-        "You speak both English and Hindi. When the person asks to switch "
-        "languages, switch immediately and stay in that language. Never refuse, "
-        "and never say you can only speak English (or only Hindi) in this demo."
+        "You speak both English and Hindi. Reply in the same language the person "
+        "is currently speaking: if they speak Hindi, answer in Hindi; if English, "
+        "answer in English — mirror them and switch the instant they switch, "
+        "whether or not they explicitly ask. Never refuse a language, and never "
+        "say you can only speak English (or only Hindi) in this demo."
     )
     return (
         f"{voice} Refer to yourself in the first person using {person} verb forms "

@@ -83,6 +83,30 @@ def test_flattened_data_used_when_no_parts():
     assert bridge.sent == [(b"zz", OUTPUT_SAMPLE_RATE)]
 
 
+def test_listen_only_transcribes_but_stays_silent():
+    """Intake window: Live must hear the human (transcript) but not speak back."""
+    bridge = FakeBridge()
+    events: list = []
+    agent = _agent(bridge, events)
+    agent.set_listen_only(True)
+    assert bridge.flushes == 1  # any in-flight audio dropped on enable
+
+    heard = SimpleNamespace(
+        interrupted=False,
+        model_turn=SimpleNamespace(parts=[_audio_part(b"selftalk")]),
+        turn_complete=True,
+        output_transcription=None,
+        input_transcription=SimpleNamespace(text="my name is Dewa"),
+    )
+    agent._handle_server_message(SimpleNamespace(server_content=heard, data=b"selftalk"))
+    assert bridge.sent == []  # no self-answer audio reached the meeting
+    assert any(e.kind == "heard" and e.text == "my name is Dewa" for e in events)
+
+    agent.set_listen_only(False)
+    agent._handle_server_message(_msg(parts=[_audio_part(b"ok")]))
+    assert bridge.sent == [(b"ok", OUTPUT_SAMPLE_RATE)]
+
+
 def test_interrupted_flushes_downstream_audio():
     bridge = FakeBridge()
     events: list = []

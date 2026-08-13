@@ -26,6 +26,13 @@ _AVATAR_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "avatar
 # Prefer the file the operator dropped; keep legacy name as fallback.
 _AVATAR_CANDIDATES = ("female_avatar.glb", "navigator_avatar.glb")
 
+#: Meet `/view` JPEG poll cadence. 30fps looks smooth without the JPEG spam that
+#: froze Chromium at 60fps. Viable now that Attendee's ffmpeg recorder is off.
+#: ponytail: 30fps ceiling. Bump toward 16ms only if the box has headroom.
+VIEW_FRAME_MS = 33
+#: CDP screencast every repaint (60fps source) — cursor motion stays fluid.
+SCREENCAST_EVERY_NTH_FRAME = 1
+
 
 def resolve_avatar_glb() -> Path | None:
     for name in _AVATAR_CANDIDATES:
@@ -346,7 +353,7 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 16);
+  setTimeout(tickFrame, 33);
 }
 async function tickStatus(){
   try {
@@ -552,7 +559,7 @@ def start_screencast(handle: RelayHandle, page: Page):
                 "quality": quality,
                 "maxWidth": 1280,
                 "maxHeight": 720,
-                "everyNthFrame": 1,
+                "everyNthFrame": SCREENCAST_EVERY_NTH_FRAME,
             },
         )
     except Exception as exc:  # noqa: BLE001

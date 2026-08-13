@@ -26,7 +26,7 @@ from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
 
-from navigator.agent.graph import build_graph
+from navigator.agent.graph import anything_else_entry_state, build_graph
 from navigator.agent.state import CallDeps, initial_state
 from navigator.automation.browser.cursor import install_cursor, set_screencast_mode
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
@@ -1081,18 +1081,29 @@ def run_live_meet_demo(
                 live = live_box[0]
                 if hasattr(live, "drain_heard"):
                     live.drain_heard()
-                # Keep listening past bot-echo transcripts until timeout.
-                deadline = time.monotonic() + timeout_s
-                while time.monotonic() < deadline:
-                    remaining = max(0.05, deadline - time.monotonic())
-                    text = (live.wait_for_heard(timeout_s=remaining) or "").strip()
-                    if not text:
-                        return ""
-                    if _is_likely_echo(text, prompt) or _is_likely_echo(text, bot_spoken):
-                        print(f"[intake] ignoring echo: {text!r}", flush=True)
-                        continue
-                    return text
-                return ""
+                # Native-audio Live would answer the human itself here. Mute its
+                # mouth for the listen window; transcription still flows.
+                set_lo = getattr(live, "set_listen_only", None)
+                if set_lo is not None:
+                    set_lo(True)
+                try:
+                    # Keep listening past bot-echo transcripts until timeout.
+                    deadline = time.monotonic() + timeout_s
+                    while time.monotonic() < deadline:
+                        remaining = max(0.05, deadline - time.monotonic())
+                        text = (live.wait_for_heard(timeout_s=remaining) or "").strip()
+                        if not text:
+                            return ""
+                        if _is_likely_echo(text, prompt) or _is_likely_echo(
+                            text, bot_spoken
+                        ):
+                            print(f"[intake] ignoring echo: {text!r}", flush=True)
+                            continue
+                        return text
+                    return ""
+                finally:
+                    if set_lo is not None:
+                        set_lo(False)
             if audio_bridge is not None and settings.groq_api_key:
                 return _wait_meet_utterance(
                     audio_bridge.inbound,
@@ -1608,8 +1619,22 @@ def run_live_meet_demo(
                 f"failures={failures}",
                 flush=True,
             )
-            # Let final Meet TTS finish playing before we tear the bot down.
-            time.sleep(0.6)
+            stopped = stop_event is not None and stop_event.is_set()
+            if not stopped and (use_timeline or playlist_demo):
+                qa_page = page_id
+                if graph_cfg.demo_playlist:
+                    qa_page = max(
+                        graph_cfg.demo_playlist, key=lambda item: item.order
+                    ).page_id
+                print("[live] post-demo Q&A", flush=True)
+                qa_state = anything_else_entry_state(
+                    session_id,
+                    qa_page,
+                    max_turns=settings.live_max_turns,
+                    walkthrough_flow_id=flow_id or settings.live_walkthrough_flow,
+                )
+                final = build_graph(deps, entry="speaking").invoke(qa_state)
+                _push()
 
             context.close()
             browser.close()

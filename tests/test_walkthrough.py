@@ -6,9 +6,9 @@ from uuid import uuid4
 
 import pytest
 
-from navigator.agent.end_policy import ANYTHING_ELSE, WRAP_UP
+from navigator.agent.end_policy import ANYTHING_ELSE, OFF_TOPIC, WRAP_UP
 from navigator.agent.nodes.planning import planning
-from navigator.agent.planner import FlowChoice, HANDOFF_SPOKEN
+from navigator.agent.planner import FlowChoice
 from navigator.agent.state import CallDeps, initial_state
 from navigator.voice.tts import PrintSpeaker
 
@@ -207,7 +207,7 @@ def test_anything_else_goodbye_ends(site_graph, page, log, tmp_path, state):
     assert out["pending_calls"] == []
 
 
-def test_anything_else_silence_reask_then_leave(site_graph, page, log, tmp_path):
+def test_anything_else_silence_leaves_immediately(site_graph, page, log, tmp_path):
     state = initial_state(uuid4(), "inbox")
     state["phase"] = "anything_else"
     state["silence_rounds"] = 0
@@ -221,30 +221,14 @@ def test_anything_else_silence_reask_then_leave(site_graph, page, log, tmp_path)
         lambda **k: (_ for _ in ()).throw(AssertionError("no chooser")),
     )
     out = planning(state, deps)
-    assert out["phase"] == "anything_else"
-    assert out["silence_rounds"] == 1
-    assert ANYTHING_ELSE in out["narration"][0]
-
-    state_mid = initial_state(uuid4(), "inbox")
-    state_mid["phase"] = "anything_else"
-    state_mid["silence_rounds"] = 1
-    state_mid["transcript"] = ["user: "]
-    out_mid = planning(state_mid, deps)
-    assert out_mid["phase"] == "anything_else"
-    assert out_mid["silence_rounds"] == 2
-
-    state2 = initial_state(uuid4(), "inbox")
-    state2["phase"] = "anything_else"
-    state2["silence_rounds"] = 2
-    state2["transcript"] = ["user: "]
-    out2 = planning(state2, deps)
-    assert out2["phase"] == "ending"
-    assert WRAP_UP in out2["narration"][0]
+    assert out["phase"] == "ending"
+    assert WRAP_UP in out["narration"][0]
+    assert out["pending_calls"] == []
 
 
-def test_anything_else_handoff_stays_in_phase(site_graph, page, log, tmp_path, state):
+def test_anything_else_off_topic_stays_in_phase(site_graph, page, log, tmp_path, state):
     state["phase"] = "anything_else"
-    state["transcript"] = ["user: show me the billing admin panel"]
+    state["transcript"] = ["user: what's the weather in paris"]
 
     def fake(**kwargs) -> FlowChoice:
         return FlowChoice(flow_id=None, spoken_response="ignored")
@@ -252,8 +236,43 @@ def test_anything_else_handoff_stays_in_phase(site_graph, page, log, tmp_path, s
     deps = _walkthrough_deps(site_graph, page, log, tmp_path, fake)
     out = planning(state, deps)
     assert out["phase"] == "anything_else"
-    assert out["plan"].spoken_response == HANDOFF_SPOKEN
+    assert out["plan"].spoken_response == OFF_TOPIC
     assert out["pending_calls"] == []
+
+
+def test_anything_else_knowledge_voice_only(site_graph, page, log, tmp_path, state, monkeypatch):
+    state["phase"] = "anything_else"
+    state["transcript"] = ["user: how do whatsapp campaigns work"]
+
+    def fake(**kwargs) -> FlowChoice:
+        return FlowChoice(flow_id=None, spoken_response="ignored")
+
+    monkeypatch.setattr(
+        "navigator.agent.nodes.planning.retrieve_product_knowledge",
+        lambda *a, **k: ["Campaigns let you broadcast to opted-in contacts."],
+    )
+    deps = _walkthrough_deps(site_graph, page, log, tmp_path, fake)
+    out = planning(state, deps)
+    assert out["phase"] == "anything_else"
+    assert out["pending_calls"] == []
+    assert "broadcast" in out["narration"][0].lower()
+
+
+def test_anything_else_flow_drives_ui(site_graph, page, log, tmp_path, state):
+    state["phase"] = "anything_else"
+    state["transcript"] = ["user: show me how to search for a contact"]
+
+    def fake(**kwargs) -> FlowChoice:
+        return FlowChoice(
+            flow_id="search_contact",
+            spoken_response="Sure, let me show you search.",
+        )
+
+    deps = _walkthrough_deps(site_graph, page, log, tmp_path, fake)
+    out = planning(state, deps)
+    assert out["phase"] == "anything_else"
+    assert out["pending_calls"]
+    assert "search" in out["narration"][0].lower()
 
 
 def test_walkthrough_missing_flow_id_raises(site_graph, page, log, tmp_path, state):

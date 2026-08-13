@@ -20,7 +20,13 @@ from navigator.automation.record_scrub import (
     step_clicks_payload,
 )
 from navigator.client.content import merge_recorded_flow
-from navigator.core.schemas import ClickElement, Postcondition, ToolResult, VerifyResult
+from navigator.core.schemas import (
+    ClickElement,
+    FillField,
+    Postcondition,
+    ToolResult,
+    VerifyResult,
+)
 from navigator.knowledge.site_graph import DemoPlaylistItem, PageSpec, SiteGraph, parse_site_graph
 
 
@@ -851,3 +857,93 @@ def test_strict_verifying_pauses_on_action_fail():
     assert out["walkthrough_step"] == 0
     assert out.get("phase") == "walkthrough"
     assert out.get("failures")
+
+
+def test_timeline_verify_miss_skips_that_step_speak():
+    """Act-before-talk + verify miss must not narrate a screen that never appeared."""
+
+    def _fill(alias: str, url: str) -> FillField:
+        return FillField(
+            tool="fill_field",
+            selector=alias,
+            value="x@y.z",
+            expects=Postcondition(
+                check="url_matches", expected=url, timeout_ms=100
+            ),
+        )
+
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"email": "#email", "next": "#next"},
+                flows={"demo": (_fill("email", "/home"), _fill("next", "/dash"))},
+            ),
+        },
+        meta={
+            "narration_suggestions": {
+                "demo": ["Opening signup", "Now the dashboard"],
+            },
+            "step_clicks": {
+                "demo": [{"idx": 0, "at_ms": 0}, {"idx": 1, "at_ms": 40}],
+            },
+            "step_speech": {
+                "demo": [
+                    {"idx": 0, "start_ms": 0, "end_ms": 20},
+                    {"idx": 1, "start_ms": 200, "end_ms": 240},
+                ],
+            },
+        },
+    )
+    spoken: list[str] = []
+
+    class AsyncSpeaker:
+        def say_async(self, text: str):
+            spoken.append(text)
+            handle = MagicMock()
+            handle.wait = MagicMock()
+            return handle
+
+        def say(self, text: str) -> None:
+            spoken.append(text)
+
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=AsyncSpeaker(),
+        product_id="acme",
+        demo_origin="dashboard_test",
+    )
+    ok = ToolResult(ok=True, tool="fill_field", detail="ok", duration_ms=1)
+    checks = iter(
+        [
+            VerifyResult(passed=True, actual="ok"),
+            VerifyResult(passed=False, actual="/dash missing"),
+        ]
+    )
+
+    def _check(*_a, **_k):
+        try:
+            return next(checks)
+        except StopIteration:
+            return VerifyResult(passed=False, actual="/dash missing")
+
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        return_value=(ok, "home"),
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        side_effect=_check,
+    ):
+        run_flow_timeline(
+            deps, session_id=uuid4(), page_id="home", flow_id="demo", strict=False
+        )
+
+    joined = " ".join(spoken).lower()
+    assert "opening signup" in joined
+    assert "dashboard" not in joined

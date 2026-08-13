@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from navigator.agent.graph import after_speaking, after_turn, build_graph
+from navigator.agent.graph import (
+    after_speaking,
+    after_turn,
+    anything_else_entry_state,
+    build_graph,
+)
 from navigator.agent.nodes.executing import executing
 from navigator.agent.nodes.introducing import introducing, render_intro
 from navigator.agent.nodes.planning import planning
@@ -167,6 +172,17 @@ def test_turn_routing_respects_max_turns():
 def test_turn_routing_ends_when_phase_ending():
     assert after_turn({"turns": 0, "max_turns": 50, "phase": "ending"}) == "ending"
     assert after_turn({"turns": 0, "max_turns": 50, "finished": True}) == "ending"
+
+
+def test_anything_else_entry_speaks_opening(deps):
+    from navigator.agent.end_policy import ANYTHING_ELSE
+
+    state = anything_else_entry_state(uuid4(), "inbox", max_turns=1)
+    assert state["phase"] == "anything_else"
+    assert ANYTHING_ELSE in state["narration"]
+    final = build_graph(deps, entry="speaking").invoke(state)
+    assert ANYTHING_ELSE in deps.speaker.said
+    assert final.get("finished") or final.get("phase") == "ending"
 
 
 # --- the whole loop ----------------------------------------------------------

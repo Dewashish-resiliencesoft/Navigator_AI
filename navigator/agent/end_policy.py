@@ -11,9 +11,12 @@ _GOODBYE = re.compile(
     re.I,
 )
 
-ANYTHING_ELSE = "Anything else you'd like to see before we wrap up?"
-WRAP_UP = "Thanks for your time — I'll leave the call now. Take care!"
-SILENCE_S = 45.0
+ANYTHING_ELSE = "That's the walkthrough — any questions before we wrap up?"
+WRAP_UP = "I think everything is clear. I'll leave the call now."
+OFF_TOPIC = (
+    "I can only cover this product in the demo. Anything else you'd like to see here?"
+)
+SILENCE_S = 60.0
 #: After a question detour, wait this long for a reply before auto-resuming.
 RESUME_SILENCE_S = 10.0
 QUESTION_ANSWERED = (
@@ -33,5 +36,5 @@ def is_goodbye(utterance: str) -> bool:
 
 
 def next_silence_action(*, silence_rounds: int) -> str:
-    """0–1 → reask; ≥2 → leave. Gives prospect more time to answer."""
-    return "reask" if silence_rounds < 2 else "leave"
+    """First silent wait after Q&A prompt → wrap. ``silence_rounds`` kept for callers."""
+    return "leave"

@@ -8,11 +8,15 @@ from typing import Literal
 
 SpokenLanguage = Literal["en", "hi"]
 
-#: BCP-47 codes for Gemini Live speech_config.
+#: BCP-47 codes for Gemini Live speech_config. English is Indian English (en-IN)
+#: so the prebuilt voice lands on an Indian accent, not a US/British one.
 LANGUAGE_CODES: dict[SpokenLanguage, str] = {
-    "en": "en-US",
+    "en": "en-IN",
     "hi": "hi-IN",
 }
+
+#: Any Devanagari code point → the person is speaking Hindi, keyword or not.
+_DEVANAGARI = re.compile(r"[\u0900-\u097F]")
 
 #: One-line acknowledgment when the prospect switches language.
 SWITCH_ACK: dict[SpokenLanguage, str] = {
@@ -68,7 +72,31 @@ def detect_language_switch(utterance: str) -> SpokenLanguage | None:
 
 
 def language_code(lang: SpokenLanguage) -> str:
-    return LANGUAGE_CODES.get(lang, "en-US")
+    return LANGUAGE_CODES.get(lang, "en-IN")
+
+
+def detect_spoken_language(utterance: str) -> SpokenLanguage | None:
+    """Infer the language actually being spoken, without a switch keyword.
+
+    Devanagari in the transcript → ``hi`` right away: that is the reliable
+    signal and the whole reason "speak Hindi and it still replies English"
+    happened — the old detector only fired on the literal word "hindi". A
+    multi-word Latin sentence → ``en``. Short or ambiguous fragments return
+    None so a one-word backchannel ("haan", "ok") can't thrash the language
+    mid-demo.
+
+    ponytail: script heuristic. Ceiling: romanized Hindi ("dikhao") reads as
+    Latin and is missed. Upgrade path: a real language-id model on the
+    transcript if romanized Hindi becomes common.
+    """
+    text = (utterance or "").strip()
+    if not text:
+        return None
+    if _DEVANAGARI.search(text):
+        return "hi"
+    if len(re.findall(r"[A-Za-z]{2,}", text)) >= 3:
+        return "en"
+    return None
 
 
 def is_language_switch_only(utterance: str) -> bool:
@@ -138,6 +166,9 @@ def apply_language_switch(
 ) -> tuple[SpokenLanguage, str | None]:
     """Apply a language switch. Returns (language, optional ack line)."""
     target = detect_language_switch(utterance)
+    if target is None:
+        # No explicit "talk in X" — mirror the language they are actually speaking.
+        target = detect_spoken_language(utterance)
     if target is None or target == current:
         return current, None
     if allowed is not None and target not in allowed:

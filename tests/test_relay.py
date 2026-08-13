@@ -4,7 +4,19 @@ from __future__ import annotations
 
 from urllib.request import urlopen
 
-from navigator.meeting.relay import resolve_avatar_glb, start_relay
+from navigator.meeting.relay import (
+    SCREENCAST_EVERY_NTH_FRAME,
+    VIEW_FRAME_MS,
+    resolve_avatar_glb,
+    start_relay,
+)
+
+
+def test_view_and_screencast_tuned_for_smoothness():
+    # 30fps view swap + every-frame screencast: smooth once the CPU hog
+    # (Attendee's ffmpeg recording) is disabled.
+    assert VIEW_FRAME_MS == 33
+    assert SCREENCAST_EVERY_NTH_FRAME == 1
 
 
 def test_view_returns_html():
@@ -15,6 +27,7 @@ def test_view_returns_html():
             assert resp.status == 200
         assert "getUserMedia" not in body  # screenshare page — no mic requirement
         assert "/frame.jpg" in body
+        assert "setTimeout(tickFrame, 33)" in body
         assert 'id=badge' in body or 'id="badge"' in body
         assert "/status" in body
         with urlopen(relay.agent_url, timeout=5) as resp:

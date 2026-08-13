@@ -86,6 +86,9 @@ class LiveAgent:
         self.speaking = False
         self.last_spoken = ""
         self.bot_ended = False
+        #: When True, keep transcribing the human but drop the model's own audio
+        #: so it doesn't talk over / answer itself (used during intake Q&A).
+        self.listen_only = False
 
         self._cmds: queue.Queue[_Cmd] = queue.Queue()
         self._heard: queue.Queue[str] = queue.Queue()
@@ -180,6 +183,21 @@ class LiveAgent:
         """Tell the model what just happened on screen. Never spoken aloud."""
         if (text or "").strip():
             self._cmds.put(_Cmd(kind="context", text=text))
+
+    def set_listen_only(self, on: bool) -> None:
+        """Silence the model's mouth while still hearing the human.
+
+        Native-audio Live auto-answers every turn it detects. During intake that
+        means it replies to the human's answer (and to its own echo) — the demo
+        "asks a question then answers itself". Gating outbound audio keeps the
+        input transcription flowing for intake while stopping the self-answer.
+        """
+        self.listen_only = on
+        if on:
+            try:
+                self.bridge.flush_bot_output()
+            except Exception:  # noqa: BLE001
+                pass
 
     def set_language(self, lang: SpokenLanguage) -> None:
         """Switch spoken language for later turns (soft — no session reconnect).
@@ -374,7 +392,7 @@ class LiveAgent:
         for part in getattr(model_turn, "parts", None) or []:
             inline = getattr(part, "inline_data", None)
             data = getattr(inline, "data", None) if inline is not None else None
-            if data:
+            if data and not self.listen_only:
                 self.speaking = True
                 self.bridge.push_outbound_pcm(
                     data, sample_rate=OUTPUT_SAMPLE_RATE
@@ -382,7 +400,11 @@ class LiveAgent:
 
         # `msg.data` is the SDK's flattened view of the same audio; only use it
         # when parts gave us nothing, or the audio plays twice.
-        if not (getattr(model_turn, "parts", None) or []) and getattr(msg, "data", None):
+        if (
+            not self.listen_only
+            and not (getattr(model_turn, "parts", None) or [])
+            and getattr(msg, "data", None)
+        ):
             self.speaking = True
             self.bridge.push_outbound_pcm(msg.data, sample_rate=OUTPUT_SAMPLE_RATE)
 

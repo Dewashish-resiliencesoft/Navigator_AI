@@ -18,6 +18,7 @@ from __future__ import annotations
 from navigator.agent.call_memory import CallMemory
 from navigator.agent.end_policy import (
     ANYTHING_ELSE,
+    OFF_TOPIC,
     QUESTION_ANSWERED,
     RESUME_AFTER_QUESTION,
     RESUME_AFTER_SILENCE,
@@ -403,44 +404,57 @@ def _plan_anything_else(
 
     if not utterance.strip():
         silence_rounds = int(state.get("silence_rounds") or 0)
-        action = next_silence_action(silence_rounds=silence_rounds)
-        if action == "reask":
+        if next_silence_action(silence_rounds=silence_rounds) == "leave":
             return CallState(
-                phase="anything_else",
-                silence_rounds=silence_rounds + 1,
-                plan=Plan(spoken_response=ANYTHING_ELSE, tool_calls=[]),
+                phase="ending",
+                plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
                 pending_calls=[],
-                narration=[ANYTHING_ELSE],
-                transcript=[f"agent: {ANYTHING_ELSE}"],
+                narration=[WRAP_UP],
+                transcript=[f"agent: {WRAP_UP}"],
             )
         return CallState(
-            phase="ending",
-            plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
+            phase="anything_else",
+            silence_rounds=silence_rounds + 1,
+            plan=Plan(spoken_response=ANYTHING_ELSE, tool_calls=[]),
             pending_calls=[],
-            narration=[WRAP_UP],
-            transcript=[f"agent: {WRAP_UP}"],
+            narration=[ANYTHING_ELSE],
+            transcript=[f"agent: {ANYTHING_ELSE}"],
         )
 
     choice = _resolve_flow_choice(state, deps, transcript=transcript)
-    if choice.flow_id is None:
-        return _plan_handoff(
+    if choice.flow_id is not None:
+        page_id = _guide_page_id(state)
+        page = deps.graph.page(page_id)
+        if choice.flow_id not in page.flows:
+            flow_ids = sorted(page.flows)
+            raise ValueError(f"flow_id {choice.flow_id!r} not in allowed {flow_ids}")
+        return _plan_from_flow(
             deps,
-            query=utterance,
-            spoken=HANDOFF_SPOKEN,
+            page_id,
+            choice.flow_id,
+            spoken=choice.spoken_response,
             phase="anything_else",
-            session_id=str(state["session_id"]),
         )
-    page_id = _guide_page_id(state)
-    page = deps.graph.page(page_id)
-    if choice.flow_id not in page.flows:
-        flow_ids = sorted(page.flows)
-        raise ValueError(f"flow_id {choice.flow_id!r} not in allowed {flow_ids}")
-    return _plan_from_flow(
-        deps,
-        page_id,
-        choice.flow_id,
-        spoken=choice.spoken_response,
+
+    chroma_path = (
+        deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
+    )
+    try:
+        chunks = retrieve_product_knowledge(
+            deps.product_id, utterance, k=2, path=chroma_path
+        )
+    except Exception:  # noqa: BLE001
+        chunks = []
+    spoken = (chunks[0] or "").strip()[:280] if chunks else ""
+    if not spoken:
+        spoken = OFF_TOPIC
+    return CallState(
         phase="anything_else",
+        silence_rounds=0,
+        plan=Plan(spoken_response=spoken, tool_calls=[]),
+        pending_calls=[],
+        narration=[spoken],
+        transcript=[f"agent: {spoken}"],
     )
 
 

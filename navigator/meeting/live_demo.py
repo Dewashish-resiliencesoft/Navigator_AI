@@ -28,7 +28,7 @@ from playwright.sync_api import sync_playwright
 
 from navigator.agent.graph import build_graph
 from navigator.agent.state import CallDeps, initial_state
-from navigator.automation.browser.cursor import install_cursor
+from navigator.automation.browser.cursor import install_cursor, set_screencast_mode
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
 from navigator.automation.browser.product_login import login_product, open_login_page
 from navigator.automation.browser.screen_context import screen_snapshot
@@ -44,7 +44,12 @@ from navigator.meeting.intake import (
     run_intake,
 )
 from navigator.meeting.meet_speaker import MeetSpeaker
-from navigator.meeting.relay import push_frame, start_relay
+from navigator.meeting.relay import (
+    push_frame,
+    start_relay,
+    start_screencast,
+    stop_screencast,
+)
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
 from navigator.meeting.tunnel import start_tunnel
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
@@ -779,6 +784,7 @@ def run_live_meet_demo(
     tunnel = None
     audio_bridge = None
     audio_tunnel = None
+    screencast = None
     bot_id: str | None = None
 
     try:
@@ -1299,6 +1305,12 @@ def run_live_meet_demo(
                 _push()
                 time.sleep(0.08)
 
+            # Stream repaints instead of polling screenshots: the cursor then
+            # animates in-page at ~60fps and the audio thread stops paying ~30ms
+            # per hop. Falls back to _push automatically if CDP is unavailable.
+            screencast = start_screencast(relay, page)
+            set_screencast_mode(screencast is not None)
+
             baseline_hits = relay.frame_hits
             print("[live] enabling screen share…", flush=True)
             relay.set_status("thinking", "Sharing screen…")
@@ -1625,6 +1637,8 @@ def run_live_meet_demo(
             audio_bridge.stop()
         if tunnel is not None:
             tunnel.stop()
+        stop_screencast(screencast)
+        set_screencast_mode(False)
         relay.stop()
         if hasattr(speaker, "close"):
             try:

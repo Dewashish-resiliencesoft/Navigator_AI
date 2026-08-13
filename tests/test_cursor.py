@@ -118,3 +118,61 @@ def test_playback_mode_scales_durations(monkeypatch):
     finally:
         cursor_mod.set_playback_mode(False)
 
+
+def test_screencast_playback_does_not_crush_motion_scale(monkeypatch):
+    """Meet sees CSS animation — playback 0.22x would look like a teleport."""
+    from navigator.automation.browser import cursor as cursor_mod
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 1.0)
+    cursor_mod.set_playback_mode(True)
+    cursor_mod.set_screencast_mode(True)
+    try:
+        assert abs(cursor_mod._motion_scale() - 1.0) < 0.01
+    finally:
+        cursor_mod.set_screencast_mode(False)
+        cursor_mod.set_playback_mode(False)
+
+
+def test_trail_playback_uses_approach_not_full_recording(monkeypatch):
+    """A 46s recorded wander must replay as a ~1s glide to the click, not 350ms."""
+    from navigator.automation.browser import cursor as cursor_mod
+    from navigator.automation.browser.cursor import (
+        TRAIL_MAX_FRAMES,
+        TRAIL_MAX_MS,
+        TRAIL_MIN_MS,
+        _trail_playback,
+    )
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 1.0)
+
+    # ~46s of host wandering then a click — same shape as onboarding step 1.
+    points = [
+        {"x": 100 + i, "y": 50 + (i % 7), "at_ms": i * 80} for i in range(576)
+    ]
+    frames, dur = _trail_playback(points)
+    assert TRAIL_MIN_MS <= dur <= TRAIL_MAX_MS
+    assert 2 <= len(frames) <= TRAIL_MAX_FRAMES
+    assert frames[0]["offset"] == 0.0
+    assert frames[-1]["offset"] == 1.0
+    assert frames[-1]["x"] == points[-1]["x"]
+    assert frames[-1]["y"] == points[-1]["y"]
+    # Approach only — first keyframe is near the end, not the start of the wander.
+    assert frames[0]["x"] > points[0]["x"] + 200
+
+
+def test_trail_playback_short_path_keeps_start(monkeypatch):
+    from navigator.automation.browser import cursor as cursor_mod
+    from navigator.automation.browser.cursor import _trail_playback
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 1.0)
+
+    points = [
+        {"x": 10, "y": 10, "at_ms": 0},
+        {"x": 40, "y": 20, "at_ms": 200},
+        {"x": 80, "y": 40, "at_ms": 500},
+    ]
+    frames, dur = _trail_playback(points)
+    assert dur >= 700
+    assert frames[0]["x"] == 10
+    assert frames[-1]["x"] == 80
+

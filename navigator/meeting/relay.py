@@ -5,13 +5,15 @@
 `/status` — JSON status for the overlay poller.
 `/frame.jpg` — latest Playwright JPEG.
 
-ponytail: JPEG poll ~16fps. The demo pushes a frame per cursor micro-step
-(see browser/cursor.py FRAME_STEPS), so motion survives the poll. Real ceiling
-is still the poll itself. Upgrade: CDP screencast WS.
+ponytail: frames come from CDP Page.screencast (see start_screencast) — Chromium
+pushes a JPEG whenever the page repaints, so in-page CSS animation reaches Meet
+at ~60fps and an idle page costs nothing. push_frame stays for seeding the first
+paint and for demos with no screencast attached.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import threading
 from dataclasses import dataclass, field
@@ -376,6 +378,7 @@ class RelayHandle:
     _lock: threading.Lock = field(default_factory=threading.Lock)
     frame_hits: int = 0
     view_hits: int = 0
+    screencast: bool = False
     status_mode: str = "demo"
     status_label: str = "Demo"
     avatar_state: str = "idle"
@@ -406,7 +409,7 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
     holder: dict[str, RelayHandle] = {}
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args) -> None:  # noqa: A003
+        def log_message(self, *_args: object, **_kwargs: object) -> None:
             return
 
         def do_GET(self) -> None:  # noqa: N802
@@ -509,10 +512,79 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
     return handle
 
 
+def start_screencast(handle: RelayHandle, page: Page):
+    """Stream repaints into ``handle`` via CDP instead of polling screenshots.
+
+    A `page.screenshot()` costs ~30ms of the Playwright thread — the same thread
+    that has to keep 24kHz PCM flowing — so the old per-hop push capped motion at
+    ~12fps and overran its own timing by ~1.5x. Chromium pushes screencast frames
+    on repaint for free, so an in-page CSS animation arrives at ~60fps.
+
+    Returns the CDP session, or None if screencast is unavailable (the caller
+    then keeps using push_frame).
+    """
+    from navigator.core.settings import settings
+
+    quality = max(1, min(100, int(settings.screenshot_quality or 70)))
+    try:
+        cdp = page.context.new_cdp_session(page)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[live] screencast unavailable, using screenshots: {exc}", flush=True)
+        return None
+
+    def _on_frame(event: dict) -> None:
+        data = event.get("data")
+        if data:
+            with handle._lock:
+                handle._frame = base64.b64decode(data)
+        # Chromium stops sending until the frame is acked.
+        try:
+            cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
+        cdp.on("Page.screencastFrame", _on_frame)
+        cdp.send(
+            "Page.startScreencast",
+            {
+                "format": "jpeg",
+                "quality": quality,
+                "maxWidth": 1280,
+                "maxHeight": 720,
+                "everyNthFrame": 1,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[live] startScreencast failed, using screenshots: {exc}", flush=True)
+        return None
+    print(f"[live] screencast=on quality={quality}", flush=True)
+    handle.screencast = True
+    return cdp
+
+
+def stop_screencast(cdp) -> None:
+    if cdp is None:
+        return
+    try:
+        cdp.send("Page.stopScreencast")
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def push_frame(handle: RelayHandle, page: Page) -> None:
     """Screenshot on the Playwright thread only (sync API is not thread-safe)."""
     from navigator.core.settings import settings
 
+    # Screencast already encoded the repaint; the frame just has to be collected.
+    # Playwright's sync client only dispatches CDP events while it is inside a
+    # call, so yield to it briefly (~2ms) instead of taking a ~30ms screenshot.
+    if handle.screencast:
+        try:
+            page.wait_for_timeout(1)
+        except Exception:  # noqa: BLE001
+            pass
+        return
     quality = max(50, min(100, int(settings.screenshot_quality or 95)))
     try:
         data = page.screenshot(

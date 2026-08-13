@@ -24,6 +24,11 @@ PRESS_MS = 120
 SCROLL_MS = 450
 # Tests / CI: set to 0 so waits and animations collapse.
 MOTION_SCALE = 1.0
+# Screencast trail replay: last N ms of recorded motion, visible duration clamp.
+TRAIL_APPROACH_MS = 1500.0
+TRAIL_MIN_MS = 700.0
+TRAIL_MAX_MS = 1800.0
+TRAIL_MAX_FRAMES = 24
 # Timeline replay uses faster motion (see set_playback_mode).
 _playback_mode = False
 
@@ -37,8 +42,22 @@ def set_playback_mode(enabled: bool) -> None:
     _playback_mode = enabled
 
 
+#: True once the screenshare streams CDP screencast frames. Then the viewer sees
+#: in-page repaints directly, so stepping the cursor from Python (a screenshot
+#: per hop) is pure overhead — the page animates itself at 60fps instead.
+_screencast_mode = False
+
+
+def set_screencast_mode(enabled: bool) -> None:
+    global _screencast_mode
+    _screencast_mode = enabled
+
+
 def _motion_scale() -> float:
-    # Playback must keep up with Live narration (was 0.4 but _scaled_ms ignored it).
+    # JPEG hop path needs 0.22x so screenshot encodes keep up with narration.
+    # Screencast already streams CSS at 60fps — crushing duration looks like a teleport.
+    if _screencast_mode:
+        return MOTION_SCALE
     return 0.22 if _playback_mode else MOTION_SCALE
 
 
@@ -135,7 +154,9 @@ def _paced_wait(
     page: Page, ms: float, on_frame: Callable[[], None] | None
 ) -> None:
     """Wait, pushing frames through it so a pause is not a frozen screen."""
-    if on_frame is None:
+    # Under screencast a plain wait already streams repaints; slicing it into
+    # hops would only add screenshot cost and drift past the intended duration.
+    if on_frame is None or _screencast_mode:
         _wait_ms(page, ms)
         return
     total = _scaled_ms(ms)
@@ -167,7 +188,7 @@ def move_cursor(
     """
     _ = steps
     install_cursor(page)
-    if on_frame is not None:
+    if on_frame is not None and not _screencast_mode:
         _move_stepped(page, x, y, on_frame)
         return
     page.evaluate(
@@ -258,6 +279,106 @@ def _move_stepped(
             page.wait_for_timeout(int(hop_ms))
 
 
+def _trail_playback(
+    points: list[dict[str, int]],
+) -> tuple[list[dict[str, float]], float]:
+    """Keyframe a recorded mouse trail for screencast replay.
+
+    Host recordings include tens of seconds of wandering while talking. Replay
+    only the last ``TRAIL_APPROACH_MS`` of motion, subsampled, duration clamped
+    so Meet sees a connected glide — not a 350ms scribble.
+    """
+    parsed: list[tuple[float, float, float]] = []
+    for p in points:
+        x = float(p.get("x") or 0)
+        y = float(p.get("y") or 0)
+        try:
+            t = float(p.get("at_ms") or 0)
+        except (TypeError, ValueError):
+            t = 0.0
+        parsed.append((x, y, t))
+    if not parsed:
+        return [], 0.0
+    if MOTION_SCALE <= 0 or len(parsed) < 2:
+        x, y, _ = parsed[-1]
+        return [{"x": x, "y": y, "offset": 1.0}], 0.0
+
+    t0, t1 = parsed[0][2], parsed[-1][2]
+    span = t1 - t0
+    if span > TRAIL_APPROACH_MS:
+        cutoff = t1 - TRAIL_APPROACH_MS
+        approach = [pt for pt in parsed if pt[2] >= cutoff]
+        parsed = approach if len(approach) >= 2 else parsed[-2:]
+        t0, t1 = parsed[0][2], parsed[-1][2]
+        span = t1 - t0
+
+    if len(parsed) > TRAIL_MAX_FRAMES:
+        last_i = len(parsed) - 1
+        step = last_i / (TRAIL_MAX_FRAMES - 1)
+        idxs: list[int] = []
+        seen: set[int] = set()
+        for i in range(TRAIL_MAX_FRAMES - 1):
+            idx = int(round(i * step))
+            if idx not in seen:
+                seen.add(idx)
+                idxs.append(idx)
+        if last_i not in seen:
+            idxs.append(last_i)
+        parsed = [parsed[i] for i in idxs]
+
+    if span <= 0:
+        dist = sum(
+            ((parsed[i][0] - parsed[i - 1][0]) ** 2 + (parsed[i][1] - parsed[i - 1][1]) ** 2)
+            ** 0.5
+            for i in range(1, len(parsed))
+        )
+        duration = float(move_duration_ms(dist))
+    else:
+        duration = float(span)
+    duration = max(TRAIL_MIN_MS, min(TRAIL_MAX_MS, duration))
+
+    t0 = parsed[0][2]
+    denom = max(parsed[-1][2] - t0, 1.0)
+    frames: list[dict[str, float]] = []
+    last_i = len(parsed) - 1
+    for i, (x, y, t) in enumerate(parsed):
+        if i == 0:
+            off = 0.0
+        elif i == last_i:
+            off = 1.0
+        else:
+            off = min(1.0, max(0.0, (t - t0) / denom))
+        frames.append({"x": x, "y": y, "offset": off})
+    return frames, duration
+
+
+def _animate_path(page: Page, points: list[dict[str, int]]) -> None:
+    """Animate the cursor through a subsampled recorded trail in one CSS run."""
+    frames, duration = _trail_playback(points)
+    if not frames:
+        return
+    if duration <= 0 or len(frames) < 2:
+        last = frames[-1]
+        _place_cursor(page, last["x"], last["y"])
+        return
+    page.evaluate(
+        """async ([frames, duration]) => {
+          const c = document.getElementById('nav-cursor');
+          if (!c) return;
+          const kf = frames.map(f => ({
+            left: f.x + 'px', top: f.y + 'px', offset: f.offset,
+          }));
+          const anim = c.animate(kf, {duration, easing: 'linear', fill: 'forwards'});
+          try { await anim.finished; } catch (e) {}
+          const last = frames[frames.length - 1];
+          c.style.left = last.x + 'px';
+          c.style.top = last.y + 'px';
+          try { anim.cancel(); } catch (e) {}
+        }""",
+        [frames, duration],
+    )
+
+
 def _place_cursor(page: Page, x: float, y: float) -> None:
     page.evaluate(
         """([x, y]) => {
@@ -336,6 +457,11 @@ def replay_mouse_path(
     x1 = float(end.get("x") or 0)
     y1 = float(end.get("y") or 0)
     _snap_cursor(page, x0, y0)
+    if _screencast_mode:
+        # Screencast makes the whole recorded trail affordable — one in-page
+        # animation through every point, instead of 3 keypoints via screenshots.
+        _animate_path(page, points)
+        return x1, y1
     if on_frame is not None:
         on_frame()
     # Mid keypoint keeps a hint of the real trail without N screenshots.

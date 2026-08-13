@@ -1938,14 +1938,15 @@ def _attach_recorded_narration(
         groq_asker,
     )
     from navigator.automation.narration import (
+        compact_timeline,
         narrate_recording,
         placeholder_narration_lines,
+        rebuild_flow_narration,
         speech_windows_payload,
-        step_timings_from_steps,
+        step_timings,
     )
     from navigator.automation.record_scrub import (
         scrub_recorded_steps,
-        step_clicks_payload,
         step_mouse_paths_payload,
     )
     from navigator.core.groq_keys import groq_key_candidates
@@ -1954,21 +1955,22 @@ def _attach_recorded_narration(
     if not scrubbed_steps:
         return yaml_text, 0
 
-    clicks = step_clicks_payload(scrubbed_steps)
     mouse_paths = step_mouse_paths_payload(scrubbed_steps)
     step_times = [int(getattr(s, "at_ms", 0) or 0) for s in scrubbed_steps]
     lines = placeholder_narration_lines(scrubbed_steps)
-    timings = step_timings_from_steps(step_times)
-    # Only STT knows when the host actually spoke. Placeholders have no window,
-    # so playback falls back to the click schedule for them.
     speech: list[dict[str, int]] = []
+    used_stt = False
+    hints = [
+        str(getattr(s, "alias", "") or "").replace("_", " ").strip()
+        for s in scrubbed_steps
+    ]
 
     audio = narration.audio()
     keys = groq_key_candidates()
     if audio and keys:
         api_key = keys[0]
         try:
-            stt_lines, stt_timings, stt_windows = narrate_recording(
+            stt_lines, _stt_timings, _stt_windows = narrate_recording(
                 audio=audio,
                 steps=scrubbed_steps,
                 api_key=api_key,
@@ -1978,13 +1980,24 @@ def _attach_recorded_narration(
             )
             if any(str(l).strip() for l in stt_lines):
                 lines = stt_lines
-                if stt_timings:
-                    timings = stt_timings
-                speech = speech_windows_payload(stt_windows)
+                used_stt = True
         except Exception as exc:  # noqa: BLE001
             print(f"[record] narration STT failed (using placeholders): {exc}", flush=True)
     elif audio and not keys:
         print("[record] narration STT skipped: no Groq API keys", flush=True)
+
+    if not used_stt:
+        lines, timings, windows, click_ms = rebuild_flow_narration(
+            lines=lines,
+            step_times_ms=step_times,
+            hints=hints,
+            ask_text=None,
+        )
+    else:
+        click_ms, windows = compact_timeline(lines)
+        timings = step_timings(click_ms, lines)
+    speech = speech_windows_payload(windows)
+    clicks = [{"idx": i, "at_ms": int(t)} for i, t in enumerate(click_ms)]
 
     semantics_payload = {
         "purpose": "",

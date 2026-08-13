@@ -79,6 +79,38 @@ def test_silent_step_has_act_cue_only_and_stays_on_time():
     assert _at(cues, 1, "act") == 4000
 
 
+def test_silent_click_burst_is_spaced_for_watchability():
+    # Real recording: 4 clicks in ~2s, steps 1-3 have no narration. Playback
+    # must not fire them back-to-back — space the silent ones apart.
+    cues, _total = build_schedule(
+        n_steps=4,
+        clicks={0: 0, 1: 1000, 2: 1500, 3: 2000},
+        speech={0: (0, 800)},
+        lines=["Intro line.", "", "", ""],
+        timing={},
+        tts_ms=_no_tts,
+    )
+    acts = [_at(cues, i, "act") for i in range(4)]
+    assert acts[0] == 0
+    assert acts[1] - acts[0] >= 2500
+    assert acts[2] - acts[1] >= 2500
+    assert acts[3] - acts[2] >= 2500
+
+
+def test_narrated_steps_keep_recorded_pacing_not_spaced():
+    # A narrated step with a short recorded gap must NOT be pushed by the burst
+    # spacer — that would break the recorded lead-in invariant.
+    cues, _total = build_schedule(
+        n_steps=2,
+        clicks={0: 0, 1: 900},
+        speech={0: (0, 400), 1: (600, 850)},
+        lines=["One.", "Two."],
+        timing={},
+        tts_ms=_no_tts,
+    )
+    assert _at(cues, 1, "act") == 900
+
+
 def test_legacy_flow_without_step_speech_falls_back_to_clicks():
     # Every flow recorded before step_speech existed. No invented lead-in, but
     # pacing is honoured rather than clamped.

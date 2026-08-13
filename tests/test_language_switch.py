@@ -13,8 +13,9 @@ from navigator.voice.language import (
 )
 
 
-def test_english_uses_indian_accent_code():
-    assert language_code("en") == "en-IN"
+def test_language_codes_are_model_supported():
+    # Native-audio model rejects en-IN (1007); en-US + hi-IN are accepted.
+    assert language_code("en") == "en-US"
     assert language_code("hi") == "hi-IN"
 
 

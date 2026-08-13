@@ -8,10 +8,11 @@ from typing import Literal
 
 SpokenLanguage = Literal["en", "hi"]
 
-#: BCP-47 codes for Gemini Live speech_config. English is Indian English (en-IN)
-#: so the prebuilt voice lands on an Indian accent, not a US/British one.
+#: BCP-47 codes for Gemini Live speech_config. The native-audio model rejects
+#: en-IN (1007 Unsupported language code), so English stays en-US; the Indian
+#: accent comes from the voice + the "speak natural Indian English" instruction.
 LANGUAGE_CODES: dict[SpokenLanguage, str] = {
-    "en": "en-IN",
+    "en": "en-US",
     "hi": "hi-IN",
 }
 
@@ -72,7 +73,7 @@ def detect_language_switch(utterance: str) -> SpokenLanguage | None:
 
 
 def language_code(lang: SpokenLanguage) -> str:
-    return LANGUAGE_CODES.get(lang, "en-IN")
+    return LANGUAGE_CODES.get(lang, "en-US")
 
 
 def detect_spoken_language(utterance: str) -> SpokenLanguage | None:

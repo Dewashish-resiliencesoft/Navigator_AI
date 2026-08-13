@@ -291,6 +291,77 @@ def existing_flow_step_count(yaml_text: str, page_id: str, flow_id: str) -> int:
     return sum(1 for s in steps if not _is_stub_step(s))
 
 
+def rebuild_yaml_narration(
+    yaml_text: str,
+    *,
+    flow_id: str,
+    ask_text: Any = None,
+    product_name: str = "",
+) -> str:
+    """Split monologues + fill silent clicks on an already-saved flow.
+
+    Used after record-stop (next recording) and as a one-shot on a published
+    graph so live playback does not freeze on a 45s step-0 dump.
+    """
+    from navigator.automation.explore.runner import _attach_meta
+    from navigator.automation.narration import (
+        rebuild_flow_narration,
+        speech_windows_payload,
+    )
+    from navigator.core.schemas import tool_selector
+
+    fid = (flow_id or "").strip()
+    page_id = resolve_flow_page_id(yaml_text, fid)
+    if not page_id:
+        raise SiteGraphError(f"flow {fid!r} not found in site graph")
+    graph = parse_site_graph(yaml_text)
+    calls = graph.flow(page_id, fid)
+    n = len(calls)
+    if n <= 0:
+        return yaml_text
+    lines = list(graph.flow_narration_lines(fid))
+    while len(lines) < n:
+        lines.append("")
+    lines = lines[:n]
+    clicks = graph.flow_step_clicks(fid)
+    if clicks:
+        times = [int(clicks.get(i, 0) or 0) for i in range(n)]
+    else:
+        timing = graph.flow_step_timing(fid)
+        acc = 0
+        times = []
+        for i in range(n):
+            times.append(acc)
+            acc += max(0, int(timing.get(i, 0) or 0))
+    hints = []
+    for call in calls:
+        sel = tool_selector(call)
+        if sel:
+            hints.append(str(sel).replace("_", " ").strip())
+        else:
+            hints.append(str(getattr(call, "page_id", "") or "").replace("_", " ").strip())
+    new_lines, timings, windows, clicks = rebuild_flow_narration(
+        lines=lines,
+        step_times_ms=times,
+        hints=hints,
+        ask_text=ask_text,
+        product_name=product_name,
+    )
+    yaml_text = _attach_meta(yaml_text, "narration_suggestions", fid, new_lines)
+    if timings:
+        yaml_text = _attach_meta(yaml_text, "step_timing", fid, timings)
+    yaml_text = _attach_meta(
+        yaml_text, "step_speech", fid, speech_windows_payload(windows)
+    )
+    yaml_text = _attach_meta(
+        yaml_text,
+        "step_clicks",
+        fid,
+        [{"idx": i, "at_ms": int(t)} for i, t in enumerate(clicks)],
+    )
+    return yaml_text
+
+
 def merge_recorded_flow(
     yaml_text: str,
     *,

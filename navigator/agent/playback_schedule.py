@@ -27,6 +27,10 @@ from typing import Literal
 
 #: Spacing assumed when a flow has neither click times nor narration timing.
 DEFAULT_STEP_MS = 3000
+#: Floor between consecutive browser actions. Recordings often capture bursts
+#: (e.g. 4 clicks in 6s with no narration) that are impossible to follow on a
+#: screenshare; space them so each action reads as its own beat.
+MIN_ACT_GAP_MS = 2500
 #: Conversational TTS pace used when the WAV is not cached yet (~150 wpm).
 _ESTIMATE_MS_PER_WORD = 400
 _ESTIMATE_FLOOR_MS = 600
@@ -143,6 +147,11 @@ def build_schedule(
         # survives every stretch. This is the sync invariant.
         at_speak = max(speak[i] + shift, prev_speak)
         at_act = max(act[i] + shift, prev_act)
+        # Silent recorded bursts (several clicks in a second, no narration) are
+        # unwatchable on a screenshare. Space only the un-narrated ones so each
+        # click reads as its own beat; narrated steps keep their recorded pacing.
+        if i > 0 and not narrated[i] and at_act - prev_act < MIN_ACT_GAP_MS:
+            at_act = prev_act + MIN_ACT_GAP_MS
 
         if narrated[i]:
             spoken_ms = duration(i)

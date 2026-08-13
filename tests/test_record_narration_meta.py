@@ -67,14 +67,16 @@ def test_attach_recorded_narration_saves_clicks_when_stt_fails(
 
     yaml_out, narrated = _attach_recorded_narration(_minimal_yaml(), _Job())
     graph = parse_site_graph(yaml_out)
-    assert graph.flow_step_clicks("demo") == {0: 1200}
     assert graph.flow_narration_lines("demo") == ["Here is signup."]
+    assert 0 in graph.flow_step_clicks("demo")
     assert graph.has_recorded_playback("demo") is True
     assert narrated == 1
     paths = graph.flow_step_mouse_paths("demo")
     assert paths[0][0]["x"] == 10
-    # No STT means no idea when the host spoke — absent, not zero-filled.
-    assert graph.flow_step_speech("demo") == {}
+    # Placeholder still gets a paced window so playback speaks then clicks.
+    speech = graph.flow_step_speech("demo")
+    assert 0 in speech
+    assert graph.flow_step_clicks("demo")[0] <= speech[0][1]
 
 
 def test_attach_recorded_narration_saves_speech_windows(
@@ -92,7 +94,73 @@ def test_attach_recorded_narration_saves_speech_windows(
     yaml_out, narrated = _attach_recorded_narration(_minimal_yaml(), _Job())
     graph = parse_site_graph(yaml_out)
     assert narrated == 1
-    # Host started talking at 300ms and clicked at 1200ms — a 900ms lead-in that
-    # playback must reproduce.
-    assert graph.flow_step_speech("demo") == {0: (300, 1100)}
-    assert graph.flow_step_clicks("demo") == {0: 1200}
+    # Compact demo clock: click lands during the spoken line.
+    speech = graph.flow_step_speech("demo")
+    clicks = graph.flow_step_clicks("demo")
+    assert 0 in speech and 0 in clicks
+    assert speech[0][0] <= clicks[0] <= speech[0][1]
+
+
+def test_rebuild_yaml_narration_splits_monologue_and_fills_silent_clicks():
+    from navigator.client.content import rebuild_yaml_narration
+
+    mono = (
+        "Welcome to the dashboard where you can see every conversation at a glance. "
+        "From here the team tracks replies, tags, and assignments in one place. "
+        "Click campaigns to open the list of running outreach. "
+        "Then create a new one and pick the audience you want to reach. "
+        "Fill in the name and the message template before you continue. "
+        "Save when you are done and watch it go live for the team."
+    )
+    yaml_in = (
+        "version: 1\n"
+        "site: acme\n"
+        "base_url: https://app.acme.test/\n"
+        "pages:\n"
+        "  home:\n"
+        "    name: Home\n"
+        "    url: /\n"
+        "    selectors:\n"
+        "      body: body\n"
+        "      dashboard: text=Dashboard\n"
+        "      campaigns: text=Campaigns\n"
+        "      create: text=Create\n"
+        "    flows:\n"
+        "      demo:\n"
+        "        - tool: click_element\n"
+        "          selector: dashboard\n"
+        "          expects: {check: visible, selector: body}\n"
+        "        - tool: click_element\n"
+        "          selector: campaigns\n"
+        "          expects: {check: visible, selector: body}\n"
+        "        - tool: click_element\n"
+        "          selector: create\n"
+        "          expects: {check: visible, selector: body}\n"
+        "_meta:\n"
+        "  narration_suggestions:\n"
+        "    demo:\n"
+        "      - |\n"
+        f"        {mono}\n"
+        "      - ''\n"
+        "      - ''\n"
+        "  step_clicks:\n"
+        "    demo:\n"
+        "      - {idx: 0, at_ms: 500}\n"
+        "      - {idx: 1, at_ms: 4000}\n"
+        "      - {idx: 2, at_ms: 8000}\n"
+        "  step_speech:\n"
+        "    demo:\n"
+        "      - {idx: 0, start_ms: 0, end_ms: 45000}\n"
+    )
+    yaml_out = rebuild_yaml_narration(yaml_in, flow_id="demo")
+    graph = parse_site_graph(yaml_out)
+    lines = graph.flow_narration_lines("demo")
+    assert len(lines) == 3
+    assert all(l.strip() for l in lines)
+    assert all(len(l.split()) <= 50 for l in lines)
+    speech = graph.flow_step_speech("demo")
+    assert 0 in speech and 1 in speech and 2 in speech
+    assert speech[0][1] - speech[0][0] < 30_000
+    clicks = graph.flow_step_clicks("demo")
+    assert clicks[2] < 60_000
+

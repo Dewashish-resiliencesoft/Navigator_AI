@@ -18,6 +18,17 @@ from typing import Any, Callable, Sequence
 #: Speech that lands this long before a click still belongs to it -- people say
 #: "now I'll open the inbox" and *then* click.
 LEAD_IN_MS = 2500
+#: Watchable spoken line: ~2–3 sentences (~14s at 150 wpm). Longer dumps freeze
+#: the screenshare on one click while TTS finishes the monologue.
+TARGET_WORDS = 35
+MAX_WORDS = 50
+#: Keep in sync with ``playback_schedule._ESTIMATE_MS_PER_WORD``.
+_MS_PER_WORD = 400
+_SPOKEN_FLOOR_MS = 600
+#: After a line finishes, brief beat before the next speak. Keep in sync with
+#: ``playback_schedule.MIN_ACT_GAP_MS`` for silent clicks.
+_SETTLE_MS = 500
+_SILENT_GAP_MS = 2500
 
 _LANG_NAMES: dict[str, str] = {
     "en": "English",
@@ -366,6 +377,251 @@ def _parse_lines_json(raw: str | None, *, expected: int) -> list[str] | None:
     return [str(x) for x in cleaned]
 
 
+_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _sentences(text: str) -> list[str]:
+    parts = _SENTENCE_RE.split((text or "").strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _word_count(text: str) -> int:
+    return len((text or "").split())
+
+
+def _hint_line(hint: str) -> str:
+    label = (hint or "").replace("_", " ").strip()
+    return f"Here is {label}." if label else ""
+
+
+def _pack_sentences(sentences: Sequence[str]) -> list[str]:
+    """Group sentences into ~TARGET_WORDS chunks, never above MAX_WORDS unless one sentence is."""
+    chunks: list[str] = []
+    buf: list[str] = []
+    buf_words = 0
+    for sent in sentences:
+        sw = _word_count(sent)
+        if buf and buf_words + sw > TARGET_WORDS:
+            chunks.append(" ".join(buf))
+            buf = [sent]
+            buf_words = sw
+        else:
+            buf.append(sent)
+            buf_words += sw
+    if buf:
+        chunks.append(" ".join(buf))
+    out: list[str] = []
+    for chunk in chunks:
+        words = chunk.split()
+        if len(words) <= MAX_WORDS:
+            out.append(chunk)
+            continue
+        for i in range(0, len(words), TARGET_WORDS):
+            out.append(" ".join(words[i : i + TARGET_WORDS]))
+    return out
+
+
+def pace_lines(
+    lines: Sequence[str],
+    hints: Sequence[str] | None = None,
+) -> list[str]:
+    """One watchable line per step.
+
+    Long monologues spill onto following empty steps. Remaining empties get a
+    hint-based placeholder. Already-short narrated lines stay put.
+    """
+    n = len(lines)
+    hint_list = [str(h or "") for h in (hints or [])]
+    while len(hint_list) < n:
+        hint_list.append("")
+    result = [""] * n
+    overflow: list[str] = []
+
+    for i in range(n):
+        text = str(lines[i] or "").strip()
+        if not text:
+            if overflow:
+                result[i] = overflow.pop(0)
+            continue
+        if _word_count(text) <= TARGET_WORDS:
+            result[i] = text
+            continue
+        chunks = _pack_sentences(_sentences(text)) or [text]
+        result[i] = chunks[0]
+        overflow.extend(chunks[1:])
+
+    for i in range(n):
+        if result[i].strip():
+            continue
+        if overflow:
+            result[i] = overflow.pop(0)
+            continue
+        result[i] = _hint_line(hint_list[i])
+
+    if overflow and n:
+        extra = " ".join(overflow).strip()
+        last = max((i for i in range(n) if result[i].strip()), default=n - 1)
+        result[last] = f"{result[last]} {extra}".strip() if result[last] else extra
+    return result
+
+
+_MERGE_PROMPT = """You are writing spoken lines for a live product demo (screen share + voice).
+
+Each numbered item has what the host said (recorded) and what is on screen (UI hint).
+Merge them into ONE spoken line per step: 2-3 short sentences, detailed enough that a
+prospect understands the screen, short enough to say while the click happens (about
+{target}-{maxw} words). Natural Indian English. Warm colleague, not a brochure.
+Do not invent features. Keep real UI labels from the hint or the recording.
+
+If recorded is empty, write a detailed line from the hint only.
+If hint is empty, polish the recorded text into 2-3 sentences.
+Empty recorded AND empty hint → return "".
+
+Items:
+{items}
+
+Reply with JSON only: {{"lines": ["<line 1>", "<line 2>", ...]}}
+The "lines" array MUST have exactly {count} entries, in the same order."""
+
+
+def merge_demo_lines(
+    recorded: Sequence[str],
+    hints: Sequence[str],
+    *,
+    ask_text: Callable[[str], str] | None,
+    product_name: str = "",
+) -> list[str]:
+    """LLM: recorded fragment + UI hint → one detailed 2–3 sentence line."""
+    original = [str(x or "").strip() for x in recorded]
+    if ask_text is None or not original:
+        return list(original)
+    hint_list = [str(h or "").replace("_", " ").strip() for h in hints]
+    while len(hint_list) < len(original):
+        hint_list.append("")
+    if not any(original) and not any(hint_list):
+        return list(original)
+
+    items = []
+    for i, rec in enumerate(original):
+        hint = hint_list[i]
+        product = f" Product: {product_name}." if product_name else ""
+        items.append(
+            f"{i + 1}.{product} Recorded: {rec or '(silence)'} | UI hint: {hint or '(none)'}"
+        )
+    prompt = _MERGE_PROMPT.format(
+        items="\n".join(items),
+        count=len(original),
+        target=TARGET_WORDS,
+        maxw=MAX_WORDS,
+    )
+    try:
+        raw = ask_text(prompt)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[narrate] merge failed: {exc}", flush=True)
+        return list(original)
+
+    cleaned = _parse_lines_json(raw, expected=len(original))
+    if cleaned is None:
+        return list(original)
+
+    merged: list[str] = []
+    for new, old, hint in zip(cleaned, original, hint_list):
+        text = str(new).strip()
+        if not text:
+            merged.append(old or _hint_line(hint))
+            continue
+        words = text.split()
+        if len(words) > MAX_WORDS:
+            text = " ".join(words[:MAX_WORDS])
+        if old and _word_count(text) < max(3, int(_word_count(old) * 0.4)):
+            merged.append(old)
+            continue
+        merged.append(text)
+    return merged
+
+
+def _spoken_ms(text: str) -> int:
+    words = _word_count(text)
+    if words <= 0:
+        return 0
+    return max(_SPOKEN_FLOOR_MS, words * _MS_PER_WORD)
+
+
+def paced_speech_windows(
+    lines: Sequence[str],
+    step_times_ms: Sequence[int],
+    *,
+    lead_in_ms: int = LEAD_IN_MS,
+) -> list[tuple[int, int] | None]:
+    """Synthetic speak windows on a given click clock (tests / legacy)."""
+    out: list[tuple[int, int] | None] = []
+    prev_end = 0
+    for i, line in enumerate(lines):
+        text = str(line or "").strip()
+        if not text:
+            out.append(None)
+            continue
+        act = int(step_times_ms[i]) if i < len(step_times_ms) else prev_end
+        start = max(0, prev_end, act - lead_in_ms)
+        end = start + _spoken_ms(text)
+        out.append((start, end))
+        prev_end = end
+    return out
+
+
+def compact_timeline(
+    lines: Sequence[str],
+    *,
+    lead_in_ms: int = LEAD_IN_MS,
+) -> tuple[list[int], list[tuple[int, int] | None]]:
+    """Clicks follow spoken lines — drop 45s monologue holes in the recording clock."""
+    clicks: list[int] = []
+    windows: list[tuple[int, int] | None] = []
+    t = 0
+    for line in lines:
+        text = str(line or "").strip()
+        if not text:
+            clicks.append(t)
+            windows.append(None)
+            t += _SILENT_GAP_MS
+            continue
+        spoken = _spoken_ms(text)
+        lead = min(lead_in_ms, max(_SPOKEN_FLOOR_MS, spoken // 3))
+        if spoken and lead >= spoken:
+            lead = spoken // 2
+        speak_start = t
+        act = speak_start + lead
+        speak_end = speak_start + spoken
+        windows.append((speak_start, speak_end))
+        clicks.append(act)
+        t = max(speak_end, act) + _SETTLE_MS
+    return clicks, windows
+
+
+def rebuild_flow_narration(
+    *,
+    lines: Sequence[str],
+    step_times_ms: Sequence[int],
+    hints: Sequence[str] | None = None,
+    ask_text: Callable[[str], str] | None = None,
+    product_name: str = "",
+) -> tuple[list[str], list[dict[str, int]], list[tuple[int, int] | None], list[int]]:
+    """Split monologues, fill silent clicks, merge recorded+hint, compact clock.
+
+    ``step_times_ms`` is accepted for call-site compatibility; the returned
+    click clock is rebuilt from the new lines so a 45s host pause does not
+    freeze the screenshare after a 6s line.
+    """
+    _ = step_times_ms  # rebuilt from lines; kept in signature for callers
+    hint_list = list(hints or [])
+    paced = pace_lines(lines, hints=hint_list)
+    merged = merge_demo_lines(
+        paced, hint_list, ask_text=ask_text, product_name=product_name
+    )
+    clicks, windows = compact_timeline(merged)
+    return merged, step_timings(clicks, merged), windows, clicks
+
+
 def skip_indices(lines: Sequence[str], step_times_ms: Sequence[int]) -> set[int]:
     """Steps to drop: silent AND indistinguishable from the click before them.
 
@@ -425,9 +681,6 @@ def narrate_recording(
         return [], [], []
 
     lines = align(segments, step_times)
-    # Taken before refine/translate rewrite the text -- the *timing* of what the
-    # host said does not change when the wording is cleaned up.
-    windows = speech_windows(segments, step_times)
     try:
         lines = refine(lines, ask_text=ask_text, language=language)
     except Exception as exc:  # noqa: BLE001
@@ -439,7 +692,18 @@ def narrate_recording(
             lines = translate_lines(lines, target=tgt, ask_text=ask_text)
         except Exception as exc:  # noqa: BLE001
             print(f"[narrate] translate skipped: {exc}", flush=True)
-    return lines, step_timings(step_times, lines), windows
+    hints = [
+        str(getattr(s, "alias", "") or "").replace("_", " ").strip() for s in steps
+    ]
+    # Pace + merge + compact clock: a 45s monologue on click 0 must not keep a
+    # 45s speech window or a 45s hole before the next click.
+    lines, timings, windows, _clicks = rebuild_flow_narration(
+        lines=lines,
+        step_times_ms=step_times,
+        hints=hints,
+        ask_text=ask_text,
+    )
+    return lines, timings, windows
 
 
 def _groq_verbose(

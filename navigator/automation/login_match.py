@@ -56,6 +56,23 @@ def playlist_has_login_flow(graph: "SiteGraph") -> bool:
     return False
 
 
+def demo_playlist_for_toggle(graph: "SiteGraph", *, include_login: bool):
+    """Playlist the live demo should run, honoring Show-login toggle.
+
+    Off → drop recorded login/onboarding rows (silent vault sign-in instead).
+    On → keep them so the prospect sees sign-in on screenshare.
+    """
+    items = sorted(graph.demo_playlist or [], key=lambda x: x.order)
+    if include_login:
+        return tuple(items)
+    kept = [
+        it
+        for it in items
+        if not flow_is_login_walkthrough(graph, it.page_id, it.flow_id, it.name)
+    ]
+    return tuple(it.model_copy(update={"order": i}) for i, it in enumerate(kept, start=1))
+
+
 def name_suggests_login_walkthrough(
     flow_id: str = "",
     flow_name: str = "",

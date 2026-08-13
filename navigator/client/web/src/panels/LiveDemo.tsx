@@ -423,7 +423,7 @@ export function LiveDemo() {
         >
           <Switch
             label="Show login during demo"
-            description="When a login/auth flow is in your playlist, Navigator runs that recording instead of auto sign-in. Toggle only adds a synthetic login beat when no auth flow exists."
+            description="On: run your recorded login/onboarding flow (or a live login if none). Off: silent auto sign-in — skip login/onboarding in the playlist."
             checked={includeLogin}
             disabled={savingIncludeLogin || !loginUser.trim()}
             onChange={(v) => void saveIncludeLogin(v)}

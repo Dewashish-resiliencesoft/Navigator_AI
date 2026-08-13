@@ -69,7 +69,7 @@ class LiveAgentConfig:
     language: SpokenLanguage = "en"
     #: Silence before Live ends the human's turn. Google's own default is ~800ms;
     #: below ~300ms mid-sentence pauses get treated as end-of-turn.
-    vad_silence_ms: int = 400
+    vad_silence_ms: int = 800
     vad_prefix_padding_ms: int = 20
     on_event: Callable[[LiveEvent], None] | None = None
     #: Extra fields for LiveConnectConfig, for forward-compat with preview flags.
@@ -89,6 +89,9 @@ class LiveAgent:
         #: When True, keep transcribing the human but drop the model's own audio
         #: so it doesn't talk over / answer itself (used during intake Q&A).
         self.listen_only = False
+        #: Playlist walkthrough: do not feed Meet mic into Live (self-echo)
+        #: and ignore VAD barge-in. Director say()/nudge() still speak.
+        self.director_only = False
 
         self._cmds: queue.Queue[_Cmd] = queue.Queue()
         self._heard: queue.Queue[str] = queue.Queue()
@@ -139,6 +142,7 @@ class LiveAgent:
             return
         self.last_spoken = text
         self.interrupted = False
+        self.speaking = True
         self._turn_done.clear()
         started = time.monotonic()
         sent_at_start = self._audio_s_sent()
@@ -183,6 +187,38 @@ class LiveAgent:
         """Tell the model what just happened on screen. Never spoken aloud."""
         if (text or "").strip():
             self._cmds.put(_Cmd(kind="context", text=text))
+
+    def accept_inbound(self) -> bool:
+        """Meet mix includes our own voice — mute mic while we are speaking."""
+        if self.director_only:
+            return False
+        return not self.speaking
+
+    def _is_self_echo(self, heard: str) -> bool:
+        if not (heard or "").strip() or not (self.last_spoken or "").strip():
+            return False
+        from navigator.meeting.intake_clean import is_likely_bot_echo
+
+        return is_likely_bot_echo(heard, self.last_spoken)
+
+    def set_director_only(self, on: bool) -> None:
+        """Speak only scripted say()/nudge(); drop Meet mic until Q&A."""
+        self.director_only = on
+        if on:
+            self.interrupted = False
+            try:
+                self.bridge.flush_bot_output()
+            except Exception:  # noqa: BLE001
+                pass
+            self.drain_heard()
+            inbound = getattr(self.bridge, "inbound", None)
+            if inbound is not None:
+                while True:
+                    try:
+                        inbound.get_nowait()
+                    except Exception:  # noqa: BLE001
+                        break
+        print(f"[live] director_only={'on' if on else 'off'}", flush=True)
 
     def set_listen_only(self, on: bool) -> None:
         """Silence the model's mouth while still hearing the human.
@@ -343,6 +379,8 @@ class LiveAgent:
                 continue
             except Exception:  # noqa: BLE001
                 continue
+            if not self.accept_inbound():
+                continue
             try:
                 await session.send_realtime_input(
                     audio={
@@ -378,6 +416,9 @@ class LiveAgent:
         sc = getattr(msg, "server_content", None)
 
         if sc is not None and getattr(sc, "interrupted", False):
+            if self.director_only:
+                # Meet mixed our own TTS back in. Stay on the scripted line.
+                return
             # The model stopped generating because a human spoke. Anything
             # still queued downstream is now stale and must not play.
             self.interrupted = True
@@ -415,11 +456,16 @@ class LiveAgent:
             heard = getattr(sc, "input_transcription", None)
             if heard is not None and getattr(heard, "text", ""):
                 text = heard.text
-                try:
-                    self._heard.put_nowait(text)
-                except queue.Full:
+                if self.director_only:
                     pass
-                self._emit(LiveEvent(kind="heard", text=text))
+                elif self._is_self_echo(text):
+                    print(f"[live] ignoring echo: {text!r}", flush=True)
+                else:
+                    try:
+                        self._heard.put_nowait(text)
+                    except queue.Full:
+                        pass
+                    self._emit(LiveEvent(kind="heard", text=text))
             if getattr(sc, "turn_complete", False):
                 self.speaking = False
                 self._turn_done.set()

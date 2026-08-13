@@ -113,6 +113,12 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
             sync_call_language,
         )
 
+        if deps.live_agent is not None:
+            text = _from_live(deps, silence_timeout=0.4)
+            if text:
+                sync_call_language(deps, text)
+                return text
+            return ""
         poll_barge_in_language_switch(deps)
         if deps.audio_frames is not None:
             text = _from_audio(deps, silence_timeout=2.5)

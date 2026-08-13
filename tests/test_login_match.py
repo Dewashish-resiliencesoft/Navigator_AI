@@ -8,6 +8,7 @@ from navigator.automation.login_match import (
     LoginConfig,
     VAULT_PASSWORD_SENTINEL,
     assert_no_login_in_graph,
+    demo_playlist_for_toggle,
     is_password_field,
     looks_like_login,
     looks_like_permission_denied,
@@ -216,3 +217,48 @@ demo_playlist:
     graph = parse_site_graph(yaml)
     cfg = LoginConfig(login_url="https://acme.example/login")
     assert_no_login_in_graph(graph, cfg)
+
+
+_TOGGLE_PLAYLIST = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      send: "#send"
+    flows:
+      onboarding_flow:
+        - tool: click_element
+          selector: send
+          expects: {check: visible, selector: send, timeout_ms: 1000}
+      send_campaign:
+        - tool: click_element
+          selector: send
+          expects: {check: visible, selector: send, timeout_ms: 1000}
+demo_playlist:
+  - order: 1
+    name: onboarding flow
+    page_id: dashboard
+    flow_id: onboarding_flow
+  - order: 2
+    name: send campaign
+    page_id: dashboard
+    flow_id: send_campaign
+"""
+
+
+def test_demo_playlist_for_toggle_off_drops_login_keeps_topic():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    off = demo_playlist_for_toggle(graph, include_login=False)
+    assert [i.flow_id for i in off] == ["send_campaign"]
+    assert off[0].order == 1
+
+
+def test_demo_playlist_for_toggle_on_keeps_login_first():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    on = demo_playlist_for_toggle(graph, include_login=True)
+    assert [i.flow_id for i in on] == ["onboarding_flow", "send_campaign"]
+

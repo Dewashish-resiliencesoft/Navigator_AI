@@ -128,6 +128,66 @@ def test_interrupted_does_not_also_queue_that_turns_audio():
     assert bridge.sent == []
 
 
+def test_director_only_rejects_inbound_and_ignores_interrupt():
+    """Playlist: don't feed Meet mic (self-echo) and don't barge-in on it."""
+    bridge = FakeBridge()
+    events: list = []
+    agent = _agent(bridge, events)
+    assert agent.accept_inbound() is True
+    agent.set_director_only(True)
+    assert agent.accept_inbound() is False
+    assert bridge.flushes == 1
+
+    agent.speaking = True
+    agent._handle_server_message(_msg(interrupted=True))
+    assert agent.interrupted is False
+    assert agent.speaking is True
+    assert not any(e.kind == "interrupted" for e in events)
+
+    agent._handle_server_message(_msg(parts=[_audio_part(b"line")]))
+    assert bridge.sent == [(b"line", OUTPUT_SAMPLE_RATE)]
+
+    heard = SimpleNamespace(
+        interrupted=False,
+        model_turn=None,
+        turn_complete=False,
+        output_transcription=None,
+        input_transcription=SimpleNamespace(text="here is meta"),
+    )
+    agent._handle_server_message(SimpleNamespace(server_content=heard, data=None))
+    assert not any(e.kind == "heard" for e in events)
+
+    agent.set_director_only(False)
+    agent.speaking = False
+    assert agent.accept_inbound() is True
+
+
+def test_half_duplex_mutes_inbound_while_speaking():
+    agent = _agent(FakeBridge())
+    assert agent.accept_inbound() is True
+    agent.speaking = True
+    assert agent.accept_inbound() is False
+    agent.speaking = False
+    assert agent.accept_inbound() is True
+
+
+def test_director_only_off_drops_echo_heard():
+    bridge = FakeBridge()
+    events: list = []
+    agent = _agent(bridge, events)
+    agent.last_spoken = "Without wasting any time, let's get started with the demo."
+    heard = SimpleNamespace(
+        interrupted=False,
+        model_turn=None,
+        turn_complete=False,
+        output_transcription=None,
+        input_transcription=SimpleNamespace(text="let's get started with the demo"),
+    )
+    agent._handle_server_message(SimpleNamespace(server_content=heard, data=None))
+    assert not any(e.kind == "heard" for e in events)
+
+
+
 def test_turn_complete_releases_say():
     bridge = FakeBridge()
     agent = _agent(bridge)

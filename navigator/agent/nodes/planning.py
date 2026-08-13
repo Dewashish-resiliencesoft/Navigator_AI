@@ -373,7 +373,11 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
 
     if utterance and not _is_continue(utterance):
-        if getattr(deps, "playlist_only", False) and phase == "walkthrough":
+        if (
+            getattr(deps, "playlist_only", False)
+            and phase == "walkthrough"
+            and deps.live_agent is None
+        ):
             if not is_goodbye(utterance):
                 return _plan_walkthrough_next(state, deps)
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)

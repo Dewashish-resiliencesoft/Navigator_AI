@@ -17,6 +17,14 @@ class Settings(BaseSettings):
 
     # Phase 1
     headful: bool = True
+    #: Playwright server WS for *manual record only* (Platform .env, never API).
+    #: Empty = launch Chromium on this host (production default).
+    record_browser_ws: str = ""
+    #: Path token appended to record_browser_ws when the URL has no path.
+    record_ws_path: str = ""
+    #: Lab only: connect to TCP-peer:3333 when record_browser_ws is empty.
+    #: Off in production — never use X-Forwarded-For for this.
+    record_local: bool = False
     site_graph: Path = Path("navigator/knowledge/sites/whatsapp_crm.yaml")
     db_path: Path = Path("navigator.db")
     piper_voice: str = "en_US-lessac-medium"
@@ -38,7 +46,7 @@ class Settings(BaseSettings):
     live_conversational_model: str = "gemini-3.1-flash-live-preview"
     #: Silence before Live ends the human's turn. Google's default is ~800ms;
     #: under ~300ms a mid-sentence pause reads as end-of-turn.
-    live_vad_silence_ms: int = 400
+    live_vad_silence_ms: int = 800
     #: Quiet time after an interruption before the walkthrough resumes.
     live_resume_silence_s: float = 0.8
     default_spoken_language: Literal["en", "hi"] = "en"

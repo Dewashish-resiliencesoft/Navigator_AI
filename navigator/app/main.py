@@ -34,7 +34,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from navigator.client.auth import persist_client_key, resolve_client_api_key
 from navigator.client.dashboard import (
@@ -1333,6 +1333,8 @@ class FlowsBody(BaseModel):
 
 
 class RecordStartBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     start_url: str = Field(min_length=1)
     flow_name: str = Field(min_length=1)
     flow_id: str | None = None
@@ -1790,9 +1792,13 @@ def client_record_status(product: DashboardAuthedProduct) -> dict:
 
 @app.post("/client/api/record/start")
 def client_record_start(
-    product: DashboardAuthedProduct, body: RecordStartBody, vault: Vault
+    product: DashboardAuthedProduct,
+    body: RecordStartBody,
+    vault: Vault,
+    request: Request,
 ) -> dict:
     from navigator.automation.login_match import LoginConfig
+    from navigator.automation.record_ws import resolve_record_browser_ws
 
     def _live_login_config() -> LoginConfig:
         return LoginConfig(login_url=vault.login_url(product.product_id))
@@ -1809,6 +1815,17 @@ def client_record_start(
         fid = (body.flow_id or None)
         fname = body.flow_name.strip()
 
+    peer = request.client.host if request.client else None
+    try:
+        browser_ws = resolve_record_browser_ws(
+            configured=settings.record_browser_ws,
+            path_token=settings.record_ws_path,
+            peer_ip=peer,
+            record_local=settings.record_local,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
     try:
         job = start_recorder(
             start_url=body.start_url.strip(),
@@ -1818,6 +1835,7 @@ def client_record_start(
             login_config_fn=_live_login_config,
             narrate=body.narrate,
             save_mode=mode,
+            browser_ws=browser_ws,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
@@ -1829,6 +1847,7 @@ def client_record_start(
         "phase": job.phase,
         "narrate": bool(job.narration is not None),
         "save_mode": job.save_mode,
+        "browser": "local" if browser_ws else "server",
     }
 
 

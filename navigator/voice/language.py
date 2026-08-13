@@ -197,6 +197,7 @@ def poll_barge_in_language_switch(deps: object) -> SpokenLanguage | None:
         live = getattr(deps, "live_agent", None)
         apply_to_speakers(lang, speaker, synth, local, live)
 
+    leftover: list[str] = []
     while pending:
         raw = pending.pop(0)
         utterance = (raw or "").strip() if isinstance(raw, str) else ""
@@ -209,6 +210,7 @@ def poll_barge_in_language_switch(deps: object) -> SpokenLanguage | None:
             allowed=allowed,
         )
         if new_lang == current:
+            leftover.append(utterance)
             continue
         current = new_lang
         switched = new_lang
@@ -218,4 +220,5 @@ def poll_barge_in_language_switch(deps: object) -> SpokenLanguage | None:
             except Exception:  # noqa: BLE001
                 pass
         break
+    pending[:0] = leftover
     return switched

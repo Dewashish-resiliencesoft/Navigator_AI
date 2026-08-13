@@ -337,7 +337,10 @@ def compose_full_demo_script(
         beats.extend(compose_intake_beats(persona))
         sources_used.add("intake")
 
-    from navigator.automation.login_match import playlist_has_login_flow
+    from navigator.automation.login_match import (
+        demo_playlist_for_toggle,
+        playlist_has_login_flow,
+    )
 
     if (
         include_login
@@ -356,7 +359,9 @@ def compose_full_demo_script(
         )
         sources_used.add("login")
 
-    playlist = sorted(graph.demo_playlist, key=lambda x: x.order)
+    playlist = list(
+        demo_playlist_for_toggle(graph, include_login=include_login)
+    )
 
     context_bits: list[str] = []
     bio = bio_fields or {}

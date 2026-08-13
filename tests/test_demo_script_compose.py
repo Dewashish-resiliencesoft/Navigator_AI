@@ -90,6 +90,33 @@ def test_compose_skips_synthetic_login_when_playlist_has_auth_flow():
     assert any(b.get("flow_id") == "authentication_flow" for b in script["beats"])
 
 
+def test_compose_skips_auth_flow_when_include_login_off():
+    raw = yaml.safe_load(_minimal_graph_yaml())
+    raw["demo_playlist"] = [
+        {
+            "order": 1,
+            "name": "Onboarding",
+            "page_id": "home",
+            "flow_id": "onboarding_flow",
+        },
+        {
+            "order": 2,
+            "name": "Tour",
+            "page_id": "home",
+            "flow_id": "tour",
+        },
+    ]
+    raw["pages"]["home"]["flows"]["onboarding_flow"] = raw["pages"]["home"]["flows"][
+        "tour"
+    ]
+    graph = parse_site_graph(yaml.safe_dump(raw))
+    script = compose_full_demo_script(graph, intake_enabled=False, include_login=False)
+    ids = [b.get("flow_id") for b in script["beats"]]
+    assert "onboarding_flow" not in ids
+    assert "tour" in ids
+
+
+
 def test_compose_includes_intake_and_wrap():
     graph = parse_site_graph(_minimal_graph_yaml())
     script = compose_full_demo_script(graph, intake_enabled=True)

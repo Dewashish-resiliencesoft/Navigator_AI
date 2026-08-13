@@ -256,7 +256,7 @@ export function Settings() {
         </CardTitle>
         <Switch
           label="Show login during demo"
-          description="On: share the login page first — visitors see email typed, then password (masked), then Sign in. Off: sign in silently before screenshare starts."
+          description="On: run your recorded login/onboarding flow (or a live login if none). Off: silent auto sign-in — skip login/onboarding in the playlist."
           checked={includeLogin}
           disabled={savingLoginToggle || !loginUsername.trim()}
           onChange={(v) => void saveLoginToggle(v)}

@@ -174,6 +174,7 @@ export function Flows() {
       setRecNarrating(!!s.narrate);
       setNarrationChunks(s.narration_chunks ?? 0);
       if (!active) {
+        if (s.error?.trim()) err(s.error.trim());
         stopPolling();
         load();
       }

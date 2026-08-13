@@ -1104,6 +1104,8 @@ def run_live_meet_demo(
                 finally:
                     if set_lo is not None:
                         set_lo(False)
+            if live_box:
+                return ""
             if audio_bridge is not None and settings.groq_api_key:
                 return _wait_meet_utterance(
                     audio_bridge.inbound,
@@ -1142,6 +1144,10 @@ def run_live_meet_demo(
         live_now = live_box[0] if live_box else None
         apply_to_speakers(spoken_language, speaker, meet_speaker, live_now)  # type: ignore[arg-type]
         print(f"[live] intake ({spoken_language}): {intake.model_dump()}", flush=True)
+        if live_now is not None:
+            set_do = getattr(live_now, "set_director_only", None)
+            if set_do is not None:
+                set_do(False)
         if live_now is not None:
             summary = _intake_summary(intake)
             if summary:
@@ -1235,9 +1241,21 @@ def run_live_meet_demo(
                 login_email = settings.product_login_email
                 login_password = settings.product_login_password
             from navigator.automation.login_match import (
+                demo_playlist_for_toggle,
                 playlist_has_login_flow,
                 same_page_path,
             )
+
+            kept = demo_playlist_for_toggle(
+                graph_cfg, include_login=include_login_in_flow
+            )
+            if kept != graph_cfg.demo_playlist:
+                graph_cfg = graph_cfg.model_copy(update={"demo_playlist": kept})
+                print(
+                    f"[live] login toggle={'on' if include_login_in_flow else 'off'} "
+                    f"playlist={[i.flow_id for i in kept]}",
+                    flush=True,
+                )
 
             playlist_login = playlist_has_login_flow(graph_cfg)
             if auto_play:
@@ -1476,14 +1494,9 @@ def run_live_meet_demo(
 
             meet_speaker.stop_event = stop_event  # type: ignore[attr-defined]
 
-            strict_playlist = bool(graph_cfg.demo_playlist)
-            if strict_playlist:
-                tier2_enabled = False
-                use_turn_brain = False
-
             playlist_demo = bool(auto_play and graph_cfg.demo_playlist)
-
             live_agent = live_box[0] if live_box else None
+
             if live_agent is None and settings.live_conversational:
                 # Started after Playwright only if early start was skipped
                 # (should not happen when the flag is on).
@@ -1507,6 +1520,12 @@ def run_live_meet_demo(
             elif live_agent is not None:
                 meet_speaker.check_barge_in = None
                 _own_meet_tts_when_live(meet_speaker, live_box)
+
+            # Live owns listen+decide. Scripted timeline/YAML is TTS-era.
+            strict_playlist = bool(graph_cfg.demo_playlist) and live_agent is None
+            if strict_playlist:
+                tier2_enabled = False
+                use_turn_brain = False
 
             deps = CallDeps(
                 graph=graph_cfg,
@@ -1569,15 +1588,20 @@ def run_live_meet_demo(
                 run_playlist_timeline,
             )
 
-            use_timeline = playlist_demo and playlist_timeline_ready(graph_cfg)
-            mode = (
-                "conversational (LLM flow / handoff)"
-                if conversational
-                else f"scripted {page_id}/{flow_id}"
+            use_timeline = (
+                live_agent is None
+                and playlist_demo
+                and playlist_timeline_ready(graph_cfg)
             )
+            if live_agent is not None:
+                mode = "live listen+decide"
+            elif conversational:
+                mode = "conversational (LLM flow / handoff)"
+            else:
+                mode = f"scripted {page_id}/{flow_id}"
             if use_timeline:
                 engine_label = "timeline playback for narrated playlist"
-            elif playlist_demo:
+            elif playlist_demo and live_agent is None:
                 engine_label = "strict YAML replay for demo playlist"
             else:
                 engine_label = f"demo graph ({mode})"
@@ -1591,7 +1615,7 @@ def run_live_meet_demo(
                     auto_play=auto_play,
                     strict=strict_playlist,
                 )
-            elif playlist_demo:
+            elif playlist_demo and live_agent is None:
                 print("[live] strict YAML replay for demo playlist", flush=True)
                 from navigator.agent.recorded_playback import run_playlist_strict
 
@@ -1620,13 +1644,30 @@ def run_live_meet_demo(
                 flush=True,
             )
             stopped = stop_event is not None and stop_event.is_set()
-            if not stopped and (use_timeline or playlist_demo):
+            if not stopped and (use_timeline or (playlist_demo and live_agent is None)):
                 qa_page = page_id
                 if graph_cfg.demo_playlist:
                     qa_page = max(
                         graph_cfg.demo_playlist, key=lambda item: item.order
                     ).page_id
                 print("[live] post-demo Q&A", flush=True)
+                if live_box:
+                    qa_live = live_box[0]
+                    set_do = getattr(qa_live, "set_director_only", None)
+                    if set_do is not None:
+                        set_do(False)
+                    set_lo = getattr(qa_live, "set_listen_only", None)
+                    if set_lo is not None:
+                        set_lo(False)
+                    add_ctx = getattr(qa_live, "add_context", None)
+                    if add_ctx is not None:
+                        add_ctx(
+                            "The product walkthrough is done. You are now in live "
+                            "Q&A. Answer the person's questions about this product "
+                            "immediately, in the language they are speaking, in one "
+                            "or two short sentences. Do not narrate the screen "
+                            "unless they ask. Stay on this product only."
+                        )
                 qa_state = anything_else_entry_state(
                     session_id,
                     qa_page,

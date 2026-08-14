@@ -349,9 +349,8 @@ def _maybe_switch_language(
 
     def _on_switch(lang: SpokenLanguage) -> None:
         apply_to_speakers(lang, speaker)
-        synth = getattr(speaker, "synthesizer", None)
         local = getattr(speaker, "local", None)
-        apply_to_speakers(lang, synth, local)
+        apply_to_speakers(lang, local)
 
     new_lang, ack = apply_language_switch(
         utterance=utterance,

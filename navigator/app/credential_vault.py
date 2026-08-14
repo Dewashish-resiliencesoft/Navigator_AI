@@ -280,7 +280,6 @@ class CredentialVault:
         col = {
             "gemini": "gemini_key_encrypted",
             "groq": "groq_key_encrypted",
-            "fish": "fish_key_encrypted",
         }.get(kind)
         if col is None:
             return None

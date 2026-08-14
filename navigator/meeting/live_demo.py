@@ -214,7 +214,7 @@ def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
     if orig_async is not None:
         meet_speaker.say_async = _say_async  # type: ignore[method-assign]
     meet_speaker._live_owns_audio = True  # type: ignore[attr-defined]
-    print("[live] MeetSpeaker TTS disabled — Live owns mic+mouth", flush=True)
+    print("[live] Live owns mic+mouth", flush=True)
 
 
 def _talk_speaker(meet_speaker, live_box: list):
@@ -992,7 +992,7 @@ def run_live_meet_demo(
             )
             if early_live is None:
                 raise LiveDemoStopped(
-                    "Live session failed to start — no TTS fallback"
+                    "Live session failed to start"
                 )
             live_box.append(early_live)
             meet_speaker.check_barge_in = None
@@ -1451,7 +1451,7 @@ def run_live_meet_demo(
                 )
                 if live_agent is None:
                     raise LiveDemoStopped(
-                        "Live session failed to start — no TTS fallback"
+                        "Live session failed to start"
                     )
                 live_box.append(live_agent)
                 meet_speaker.check_barge_in = None
@@ -1651,7 +1651,7 @@ def run_live_meet_demo(
             try:
                 speaker.close()  # type: ignore[union-attr]
             except Exception as exc:  # noqa: BLE001
-                print(f"[live] TTS close skipped: {exc}", flush=True)
+                print(f"[live] Live close skipped: {exc}", flush=True)
 
     return bot_id or ""
 

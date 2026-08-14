@@ -73,6 +73,38 @@ def demo_playlist_for_toggle(graph: "SiteGraph", *, include_login: bool):
     return tuple(it.model_copy(update={"order": i}) for i, it in enumerate(kept, start=1))
 
 
+def login_flow_hidden_from_demo(graph: "SiteGraph", page_id: str, flow_id: str) -> bool:
+    """True when this is a login/onboarding walkthrough dropped from the live playlist."""
+    fid = (flow_id or "").strip()
+    if not fid:
+        return False
+    if not flow_is_login_walkthrough(graph, page_id, fid):
+        return False
+    return not graph.flow_in_playlist(page_id, fid)
+
+
+def live_start_flow(
+    graph: "SiteGraph",
+    page_id: str,
+    flow_id: str,
+    *,
+    include_login: bool,
+) -> tuple[str, str]:
+    """Where auto-play should start after the login toggle is applied.
+
+    Filtered playlist wins. Never auto-start a dropped login/onboarding flow.
+    """
+    first = graph.primary_flow()
+    if first:
+        return first
+    pid, fid = page_id, (flow_id or "").strip()
+    if fid and not (
+        (not include_login) and flow_is_login_walkthrough(graph, pid, fid)
+    ):
+        return pid, fid
+    return pid, ""
+
+
 def name_suggests_login_walkthrough(
     flow_id: str = "",
     flow_name: str = "",

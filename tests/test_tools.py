@@ -65,6 +65,20 @@ def test_wait_for_returns_when_present(page, site_graph):
     assert result.ok
 
 
+def test_wait_for_body_stub_is_instant_ok(page, site_graph):
+    call = WaitFor(
+        selector="body",
+        timeout_ms=15000,
+        expects=Postcondition(check="visible", selector="body"),
+    )
+    started = time.perf_counter()
+    result, next_page = execute(page, site_graph, "inbox", call)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    assert result.ok
+    assert next_page == "inbox"
+    assert elapsed_ms < 500
+
+
 def test_fill_field_with_mouse_path_types_into_focused_field_not_first_match(page):
     """Duplicate #email (signup + sign-in): fill the field under the recorded point.
 

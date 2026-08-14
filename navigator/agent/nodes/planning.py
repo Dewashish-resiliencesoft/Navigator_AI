@@ -47,7 +47,9 @@ from navigator.voice.language import (
     sync_call_language,
 )
 
-_CONTINUE = frozenset({"ok", "continue", "go on", "yes", "sure"})
+_CONTINUE = frozenset(
+    {"ok", "okay", "continue", "go on", "yes", "sure", "yeah", "yep", "mhm", "um", "uh"}
+)
 _AFFIRM = frozenset(
     {"yes", "yeah", "yep", "sure", "ok", "okay", "please", "go ahead", "do it",
      "that one", "correct", "right", "exactly", "the first", "the second"}
@@ -309,12 +311,13 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         )
     if deps.scripted_flow is not None:
         page_id, flow_id = deps.scripted_flow
-        return _plan_from_flow(
-            deps,
-            page_id,
-            flow_id,
-            spoken=_describe(deps.graph.page(page_id).name, flow_id),
-        )
+        if _flow_offerable(deps, page_id, flow_id):
+            return _plan_from_flow(
+                deps,
+                page_id,
+                flow_id,
+                spoken=_describe(deps.graph.page(page_id).name, flow_id),
+            )
 
     if state.get("user_correction"):
         return _plan_user_correction(state, deps)
@@ -641,10 +644,9 @@ def _flow_texts_for_page(deps: CallDeps, page_id: str) -> dict[str, str]:
 
     Flows with an explicit `broken` / `needs_review` validation verdict are
     excluded so a rotten explored flow cannot reach a live End User. Flows with
-    no validation entry (manually authored) stay offerable.
+    no validation entry (manually authored) stay offerable. Login/onboarding
+    rows dropped by the Show-login toggle stay out of retrieval too.
     """
-    from navigator.automation.explore.validate import is_offerable
-
     page = deps.graph.page(page_id)
     names: dict[str, str] = {}
     for item in deps.graph.demo_playlist:
@@ -665,7 +667,7 @@ def _flow_texts_for_page(deps: CallDeps, page_id: str) -> dict[str, str]:
             trigger_intent=_flow_intent(deps, fid),
         )
         for fid in flow_ids
-        if is_offerable(deps.graph.flow_validation(fid))
+        if _flow_offerable(deps, page_id, fid)
     }
 
 
@@ -1248,18 +1250,24 @@ def _try_turn_brain(
 def _flow_offerable(deps: CallDeps, page_id: str, flow_id: str) -> bool:
     """True when flow exists on the site graph and may be shown live."""
     from navigator.automation.explore.validate import is_offerable
+    from navigator.automation.login_match import login_flow_hidden_from_demo
 
+    fid = (flow_id or "").strip()
+    if not fid:
+        return False
     try:
         page = deps.graph.page(page_id)
     except SiteGraphError:
         return False
-    if flow_id not in page.flows:
+    if fid not in page.flows:
+        return False
+    if login_flow_hidden_from_demo(deps.graph, page_id, fid):
         return False
     try:
-        list(deps.graph.flow(page_id, flow_id))
+        list(deps.graph.flow(page_id, fid))
     except SiteGraphError:
         return False
-    return is_offerable(deps.graph.flow_validation(flow_id))
+    return is_offerable(deps.graph.flow_validation(fid))
 
 
 def _seamless_detour_fallback(page_name: str, flow_id: str) -> str:
@@ -1587,7 +1595,18 @@ def _plan_resume_main(
 def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     page_id = _guide_page_id(state)
     flow_id = state.get("walkthrough_flow_id") or ""
-    if not flow_id:
+    if not flow_id or not _flow_offerable(deps, page_id, flow_id):
+        if flow_id or deps.live_agent is not None:
+            spoken = ANYTHING_ELSE
+            return CallState(
+                phase="anything_else",
+                plan=Plan(spoken_response=spoken, tool_calls=[]),
+                pending_calls=[],
+                narration=[spoken],
+                transcript=[f"agent: {spoken}"],
+                silence_rounds=0,
+                walkthrough_flow_id="",
+            )
         raise RuntimeError(
             "walkthrough phase requires walkthrough_flow_id on CallState "
             "(or CallDeps.scripted_flow for deterministic replay)"

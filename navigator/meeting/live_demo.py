@@ -1144,6 +1144,7 @@ def run_live_meet_demo(
         live_now = live_box[0] if live_box else None
         apply_to_speakers(spoken_language, speaker, meet_speaker, live_now)  # type: ignore[arg-type]
         print(f"[live] intake ({spoken_language}): {intake.model_dump()}", flush=True)
+        pending_barge_in.clear()
         if live_now is not None:
             set_do = getattr(live_now, "set_director_only", None)
             if set_do is not None:
@@ -1242,6 +1243,7 @@ def run_live_meet_demo(
                 login_password = settings.product_login_password
             from navigator.automation.login_match import (
                 demo_playlist_for_toggle,
+                live_start_flow,
                 playlist_has_login_flow,
                 same_page_path,
             )
@@ -1259,9 +1261,12 @@ def run_live_meet_demo(
 
             playlist_login = playlist_has_login_flow(graph_cfg)
             if auto_play:
-                first = graph_cfg.primary_flow()
-                if first:
-                    page_id, flow_id = first
+                page_id, flow_id = live_start_flow(
+                    graph_cfg,
+                    page_id,
+                    flow_id,
+                    include_login=include_login_in_flow,
+                )
             start_spec = graph_cfg.page(page_id)
             hold_url = urljoin(origin, start_spec.url.lstrip("/") or "/")
 
@@ -1534,7 +1539,7 @@ def run_live_meet_demo(
                 speaker=talk,
                 scripted_flow=(
                     None
-                    if conversational or playlist_demo
+                    if conversational or playlist_demo or live_agent is not None or not flow_id
                     else (page_id, flow_id)
                 ),
                 product_id=product_id or graph_cfg.site or "default",
@@ -1606,6 +1611,8 @@ def run_live_meet_demo(
             else:
                 engine_label = f"demo graph ({mode})"
             print(f"[live] running demo ({mode}) engine={engine_label}", flush=True)
+            # Intake answers + kickoff echo must not look like a mid-demo ask.
+            pending_barge_in.clear()
             _check_stop(stop_event)
             if use_timeline:
                 print("[live] timeline playback for narrated playlist", flush=True)

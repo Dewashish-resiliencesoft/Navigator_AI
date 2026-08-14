@@ -10,6 +10,8 @@ from navigator.automation.login_match import (
     assert_no_login_in_graph,
     demo_playlist_for_toggle,
     is_password_field,
+    live_start_flow,
+    login_flow_hidden_from_demo,
     looks_like_login,
     looks_like_permission_denied,
     same_page_path,
@@ -261,4 +263,28 @@ def test_demo_playlist_for_toggle_on_keeps_login_first():
     graph = parse_site_graph(_TOGGLE_PLAYLIST)
     on = demo_playlist_for_toggle(graph, include_login=True)
     assert [i.flow_id for i in on] == ["onboarding_flow", "send_campaign"]
+
+
+def test_live_start_flow_skips_onboarding_when_toggle_off():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    graph = graph.model_copy(
+        update={"demo_playlist": demo_playlist_for_toggle(graph, include_login=False)}
+    )
+    page_id, flow_id = live_start_flow(
+        graph, "dashboard", "onboarding_flow", include_login=False
+    )
+    assert flow_id == "send_campaign"
+    assert page_id == "dashboard"
+    assert login_flow_hidden_from_demo(graph, "dashboard", "onboarding_flow")
+
+
+def test_live_start_flow_empty_playlist_does_not_keep_onboarding():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    graph = graph.model_copy(update={"demo_playlist": ()})
+    page_id, flow_id = live_start_flow(
+        graph, "dashboard", "onboarding_flow", include_login=False
+    )
+    assert page_id == "dashboard"
+    assert flow_id == ""
+    assert login_flow_hidden_from_demo(graph, "dashboard", "onboarding_flow")
 

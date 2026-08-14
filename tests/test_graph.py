@@ -121,6 +121,22 @@ def test_verifying_logs_a_failure_and_narrates_softly(state, deps):
     assert deps.log.failures(state["session_id"]) == [entry]
 
 
+def test_verifying_wait_for_fail_stays_silent(state, deps):
+    from navigator.core.schemas import Postcondition, ToolResult, WaitFor
+
+    call = WaitFor(
+        selector="body",
+        expects=Postcondition(check="visible", selector="body"),
+    )
+    state["last_call"] = call
+    state["last_result"] = ToolResult(
+        ok=False, tool="wait_for", detail="action failed: timeout", duration_ms=15000
+    )
+    out = verifying(state, deps)
+    assert out["failures"]
+    assert out["narration"] == []
+
+
 def test_speaking_drains_the_queue(state, deps):
     state["narration"] = ["one", "two"]
     out = speaking(state, deps)

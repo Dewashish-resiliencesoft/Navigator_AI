@@ -88,7 +88,7 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
             last_result=None,
         )
 
-    line = _narrate(entry, verdict)
+    line = _narrate(entry, verdict)  # wait_for fails stay silent — see _narrate
     narration = [line] if line.strip() else []
     transcript = [f"agent: {line}"] if line.strip() else []
     if (
@@ -150,10 +150,14 @@ def _narrate(entry: ActionLogEntry, verdict: VerifyResult) -> str:
         return _success_line(call)
     # Never speak Playwright/CSS/timeout jargon on the call.
     print(
-        f"[verify] soft-fail spoken; selector={call.expects.selector!r} "
+        f"[verify] soft-fail; selector={call.expects.selector!r} "
         f"detail={verdict.actual!r}",
         flush=True,
     )
+    # wait_for is a pacing/stub step. Speaking a glitch after every timeout
+    # makes the agent sound broken; the screenshare already moved on.
+    if getattr(call, "tool", "") == "wait_for":
+        return ""
     return (
         "Oh — something glitched on our side there, not yours. "
         "It's nothing you did. We're sorting it; I'll keep going."

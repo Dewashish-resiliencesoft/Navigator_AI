@@ -14,25 +14,17 @@ from typing import Literal
 SpokenLanguage = Literal["en", "hi"]
 
 _EN = (
-    "Um…",
-    "Yeah…",
-    "Mhm…",
-    "Yes…",
     "One sec…",
     "Checking that…",
-    "Hmm…",
     "Alright…",
 )
 _HI = (
-    "Haan…",
-    "Hmm…",
-    "Ji…",
     "Ek second…",
     "Dekh rahi hoon…",
     "Theek hai…",
 )
 
-_NUDGE_GAP_S = 2.0
+_NUDGE_GAP_S = 8.0
 _lock = threading.Lock()
 _last_nudge_at = 0.0
 _en_cycle = itertools.cycle(_EN)
@@ -60,6 +52,10 @@ def maybe_nudge_live(live: object | None, *, language: SpokenLanguage = "en") ->
     Returns True when a nudge was queued.
     """
     if live is None or not hasattr(live, "nudge"):
+        return False
+    # Don't talk over a line already in flight — "Yeah…" on top of narration
+    # is the agent answering itself.
+    if getattr(live, "speaking", False):
         return False
     global _last_nudge_at
     now = time.monotonic()

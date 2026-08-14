@@ -15,7 +15,7 @@ TYPICAL_PLATFORM_PER_DEMO: dict[str, int] = {
 def uses_byok(byok: dict[str, bool]) -> bool:
     return any(
         byok.get(k)
-        for k in ("has_groq_api_key", "has_gemini_api_key", "has_fish_api_key")
+        for k in ("has_groq_api_key", "has_gemini_api_key")
     )
 
 
@@ -23,7 +23,6 @@ def billing_label(byok: dict[str, bool]) -> str:
     flags = [
         byok.get("has_groq_api_key"),
         byok.get("has_gemini_api_key"),
-        byok.get("has_fish_api_key"),
     ]
     if not any(flags):
         return "Platform default keys (Navigator environment)"
@@ -34,8 +33,6 @@ def billing_label(byok: dict[str, bool]) -> str:
         parts.append("your Groq")
     if byok.get("has_gemini_api_key"):
         parts.append("your Gemini")
-    if byok.get("has_fish_api_key"):
-        parts.append("your Fish")
     return f"Mixed — {', '.join(parts)} + platform defaults for the rest"
 
 

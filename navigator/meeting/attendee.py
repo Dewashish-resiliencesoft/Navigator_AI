@@ -131,6 +131,10 @@ class AttendeeClient:
         For Zoom host join, pass ``zoom_tokens_url`` (Attendee POSTs for a ZAK).
         """
         payload: dict[str, Any] = {"meeting_url": meeting_url, "bot_name": bot_name}
+        # No on-disk recording. Attendee's default mp4 recorder is an ffmpeg
+        # x11grab that pins ~80% CPU and starves live Meet voice + screenshare
+        # frames. We never read the artifact; live transcription is unaffected.
+        payload["recording_settings"] = {"format": "none"}
         if screenshare_url:
             payload["voice_agent_settings"] = {"screenshare_url": screenshare_url}
         elif voice_agent_url:

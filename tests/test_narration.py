@@ -118,9 +118,11 @@ def test_narrate_recording_end_to_end():
     assert any("First" in l for l in lines)
     assert any("Second" in l for l in lines)
     assert timings[0]["idx"] == 0
-    assert timings[0]["speak_ms"] == 5000
-    # Windows are the raw speech times, not the refined wording.
-    assert windows == [(500, 1500), (5500, 6500), None]
+    # Compact clock: gaps follow line length, not the original 5s click spacing.
+    assert timings[0]["speak_ms"] < 10_000
+    assert windows[0] is not None and windows[1] is not None
+    assert windows[2] is None
+    assert windows[0][1] - windows[0][0] < 10_000
 
 
 def test_speech_windows_span_segments_and_skip_silence():
@@ -149,3 +151,146 @@ def test_speech_windows_payload_omits_silent_steps():
 def test_align_unchanged_by_assign_extraction():
     segs = [narration.Segment(0, 900, "a"), narration.Segment(1000, 1900, "b")]
     assert narration.align(segs, [0, 6000]) == ["a b", ""]
+
+
+_MONO = (
+    "Welcome to the dashboard where you can see every conversation at a glance. "
+    "From here the team tracks replies, tags, and assignments in one place. "
+    "Click campaigns to open the list of running outreach. "
+    "Then create a new one and pick the audience you want to reach. "
+    "Fill in the name and the message template before you continue. "
+    "Save when you are done and watch it go live for the team."
+)
+
+
+def test_pace_lines_splits_monologue_onto_silent_steps():
+    lines = [_MONO, "", "", "", ""]
+    hints = ["dashboard", "campaigns", "create", "name_field", "save"]
+    out = narration.pace_lines(lines, hints=hints)
+    assert all(l.strip() for l in out)
+    assert out[0] != _MONO
+    assert all(len(l.split()) <= narration.MAX_WORDS for l in out)
+    joined = " ".join(out).lower()
+    assert "dashboard" in joined or "welcome" in joined
+    assert "campaigns" in joined or "create" in joined
+
+
+def test_pace_lines_keeps_short_narrated_steps():
+    lines = ["Open inbox.", "Compose a message.", "Send it."]
+    assert narration.pace_lines(lines) == lines
+
+
+def test_pace_lines_fills_empty_from_hints():
+    out = narration.pace_lines(
+        ["Welcome.", "", ""],
+        hints=["home", "inbox_tab", "compose"],
+    )
+    assert "Welcome" in out[0]
+    assert out[1].strip() and "inbox" in out[1].lower()
+    assert out[2].strip() and "compose" in out[2].lower()
+
+
+def test_pace_lines_empty_without_hints_stays_empty():
+    assert narration.pace_lines(["hi", "", ""])[1:] == ["", ""]
+
+
+def test_merge_demo_lines_combines_recorded_and_hint():
+    def ask(prompt: str) -> str:
+        assert "inbox" in prompt.lower()
+        return '{"lines": ["Here is the inbox where every conversation lands."]}'
+
+    out = narration.merge_demo_lines(
+        ["open inbox"], ["inbox tab"], ask_text=ask
+    )
+    assert "inbox" in out[0].lower()
+    assert len(out) == 1
+
+
+def test_merge_demo_lines_noop_without_asker():
+    lines = ["Open inbox.", ""]
+    assert narration.merge_demo_lines(lines, ["a", "b"], ask_text=None) == lines
+
+
+def test_merge_demo_lines_keeps_paced_when_llm_blanks():
+    def ask(_prompt: str) -> str:
+        return '{"lines": [""]}'
+
+    out = narration.merge_demo_lines(["Open the inbox now."], ["inbox"], ask_text=ask)
+    assert out == ["Open the inbox now."]
+
+
+def test_paced_speech_windows_match_line_length_not_monologue():
+    lines = ["Short intro here.", "Now the next click."]
+    times = [500, 5000]
+    wins = narration.paced_speech_windows(lines, times)
+    assert wins[0] is not None and wins[1] is not None
+    assert wins[0][1] - wins[0][0] < 10_000
+    assert wins[1][1] - wins[1][0] < 10_000
+    assert wins[0][0] <= times[0]
+    assert wins[1][0] <= times[1]
+
+
+def test_compact_timeline_closes_monologue_holes():
+    lines = ["Short intro here.", "Now the next click.", "And save."]
+    clicks, windows = narration.compact_timeline(lines)
+    assert clicks == sorted(clicks)
+    assert clicks[-1] < 30_000
+    assert all(w is not None for w in windows)
+    # Click lands during the line, not 45s later.
+    assert windows[0][0] <= clicks[0] <= windows[0][1]
+
+
+def test_paced_speech_windows_skip_silent():
+    wins = narration.paced_speech_windows(["One.", "", "Three."], [0, 2000, 4000])
+    assert wins[0] is not None
+    assert wins[1] is None
+    assert wins[2] is not None
+
+
+def test_rebuild_flow_narration_paces_and_windows():
+    lines, timings, windows, clicks = narration.rebuild_flow_narration(
+        lines=[_MONO, "", ""],
+        step_times_ms=[500, 4000, 8000],
+        hints=["home", "inbox", "compose"],
+        ask_text=None,
+    )
+    assert all(l.strip() for l in lines)
+    assert all(len(l.split()) <= narration.MAX_WORDS for l in lines)
+    assert timings and timings[0]["idx"] == 0
+    assert windows[0] is not None
+    assert windows[0][1] - windows[0][0] < 30_000
+    assert clicks[-1] < 60_000
+
+
+def test_narrate_recording_paces_monologue_across_silent_clicks():
+    @dataclass
+    class _Aliased:
+        at_ms: int
+        alias: str = ""
+
+    steps = [
+        _Aliased(0, "dashboard"),
+        _Aliased(2000, "campaigns"),
+        _Aliased(5000, "create"),
+    ]
+
+    def transcribe_verbose(**_kw):
+        return {
+            "segments": [
+                {"start": 0.0, "end": 20.0, "text": _MONO},
+            ]
+        }
+
+    lines, timings, windows = narration.narrate_recording(
+        audio=b"fake",
+        steps=steps,
+        api_key="test",
+        ask_text=None,
+        transcribe_verbose=transcribe_verbose,
+        language="en",
+    )
+    assert len(lines) == 3
+    assert all(l.strip() for l in lines)
+    assert all(len(l.split()) <= narration.MAX_WORDS for l in lines)
+    assert all(w is not None for w in windows)
+    assert timings[0]["idx"] == 0

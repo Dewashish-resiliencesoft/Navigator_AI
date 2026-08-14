@@ -49,6 +49,22 @@ def playlist_graph() -> SiteGraph:
     )
 
 
+def test_auto_advance_returns_live_heard_utterance():
+    deps = MagicMock(spec=CallDeps)
+    deps.auto_advance_walkthrough = True
+    deps.pending_barge_in = ["how does pricing work"]
+    deps.spoken_language = "en"
+    deps.extra_languages = ("hi",)
+    deps.audio_frames = None
+    deps.live_agent = MagicMock()
+    deps.interactive_listen = False
+    deps.is_bot_echo = None
+    deps.stop_event = None
+    deps.speaker = MagicMock(bot_ended=False)
+    state: CallState = {"phase": "walkthrough"}
+    assert _capture_utterance(state, deps) == "how does pricing work"
+
+
 def test_auto_advance_skips_listen_wait(playlist_graph: SiteGraph):
     deps = MagicMock(spec=CallDeps)
     deps.auto_advance_walkthrough = True
@@ -56,6 +72,7 @@ def test_auto_advance_skips_listen_wait(playlist_graph: SiteGraph):
     deps.spoken_language = "en"
     deps.extra_languages = ("hi",)
     deps.audio_frames = iter([b"\x00" * 6400])
+    deps.live_agent = None
     deps.interactive_listen = False
     state: CallState = {"phase": "walkthrough"}
     assert _capture_utterance(state, deps) == ""
@@ -83,6 +100,32 @@ def test_playlist_only_ignores_interrupt_and_runs_next_step(
     assert out.get("pending_calls")
     assert out["walkthrough_flow_id"] == "authentication_flow"
     assert out["walkthrough_step"] == 1
+
+
+def test_playlist_with_live_honors_interrupt(playlist_graph: SiteGraph):
+    speaker = MagicMock()
+    speaker.bot_ended = False
+    deps = CallDeps(
+        graph=playlist_graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=speaker,
+        playlist_only=True,
+        live_agent=MagicMock(),
+    )
+    state = initial_state(
+        __import__("uuid").uuid4(),
+        "home",
+        walkthrough_flow_id="authentication_flow",
+    )
+    state["transcript"] = ["user: show me billing"]
+    out = planning(state, deps)
+    assert not (
+        out.get("walkthrough_flow_id") == "authentication_flow"
+        and out.get("walkthrough_step") == 1
+        and out.get("pending_calls")
+    )
+
 
 
 def test_flow_in_playlist(playlist_graph: SiteGraph):

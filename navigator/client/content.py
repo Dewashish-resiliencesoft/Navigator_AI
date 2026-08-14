@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
 import re
 import threading
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -291,6 +293,77 @@ def existing_flow_step_count(yaml_text: str, page_id: str, flow_id: str) -> int:
     return sum(1 for s in steps if not _is_stub_step(s))
 
 
+def rebuild_yaml_narration(
+    yaml_text: str,
+    *,
+    flow_id: str,
+    ask_text: Any = None,
+    product_name: str = "",
+) -> str:
+    """Split monologues + fill silent clicks on an already-saved flow.
+
+    Used after record-stop (next recording) and as a one-shot on a published
+    graph so live playback does not freeze on a 45s step-0 dump.
+    """
+    from navigator.automation.explore.runner import _attach_meta
+    from navigator.automation.narration import (
+        rebuild_flow_narration,
+        speech_windows_payload,
+    )
+    from navigator.core.schemas import tool_selector
+
+    fid = (flow_id or "").strip()
+    page_id = resolve_flow_page_id(yaml_text, fid)
+    if not page_id:
+        raise SiteGraphError(f"flow {fid!r} not found in site graph")
+    graph = parse_site_graph(yaml_text)
+    calls = graph.flow(page_id, fid)
+    n = len(calls)
+    if n <= 0:
+        return yaml_text
+    lines = list(graph.flow_narration_lines(fid))
+    while len(lines) < n:
+        lines.append("")
+    lines = lines[:n]
+    clicks = graph.flow_step_clicks(fid)
+    if clicks:
+        times = [int(clicks.get(i, 0) or 0) for i in range(n)]
+    else:
+        timing = graph.flow_step_timing(fid)
+        acc = 0
+        times = []
+        for i in range(n):
+            times.append(acc)
+            acc += max(0, int(timing.get(i, 0) or 0))
+    hints = []
+    for call in calls:
+        sel = tool_selector(call)
+        if sel:
+            hints.append(str(sel).replace("_", " ").strip())
+        else:
+            hints.append(str(getattr(call, "page_id", "") or "").replace("_", " ").strip())
+    new_lines, timings, windows, clicks = rebuild_flow_narration(
+        lines=lines,
+        step_times_ms=times,
+        hints=hints,
+        ask_text=ask_text,
+        product_name=product_name,
+    )
+    yaml_text = _attach_meta(yaml_text, "narration_suggestions", fid, new_lines)
+    if timings:
+        yaml_text = _attach_meta(yaml_text, "step_timing", fid, timings)
+    yaml_text = _attach_meta(
+        yaml_text, "step_speech", fid, speech_windows_payload(windows)
+    )
+    yaml_text = _attach_meta(
+        yaml_text,
+        "step_clicks",
+        fid,
+        [{"idx": i, "at_ms": int(t)} for i, t in enumerate(clicks)],
+    )
+    return yaml_text
+
+
 def merge_recorded_flow(
     yaml_text: str,
     *,
@@ -416,6 +489,9 @@ class RecorderJob:
     job_id: str
     stop: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
+    proc: Any = None
+    mp_stop: Any = None
+    mp_ns: Any = None
     error: str | None = None
     steps: list[RecordedStep] = field(default_factory=list)
     done: bool = False
@@ -433,6 +509,64 @@ class RecorderJob:
 
 _recorder_lock = threading.Lock()
 _active: RecorderJob | None = None
+
+
+class _MpGate:
+    """CaptureGate stand-in whose phase lives in a multiprocessing Namespace."""
+
+    def __init__(self, ns: Any, flagged: Any):
+        self._ns = ns
+        self.setup_discarded = 0
+        self.flagged = flagged
+        self.login_config_fn = None
+        self.allow_login_steps = False
+
+    @property
+    def phase(self) -> str:
+        return str(self._ns.phase or "setup")
+
+    @phase.setter
+    def phase(self, value: str) -> None:
+        self._ns.phase = value
+
+
+def _record_ws_worker(
+    start_url: str,
+    out_path: str,
+    flow_name: str,
+    browser_ws: str,
+    narrate: bool,
+    allow_login: bool,
+    login_url: str,
+    stop: Any,
+    ns: Any,
+    steps: Any,
+    flagged: Any,
+) -> None:
+    """Own interpreter — uvicorn's asyncio loop breaks Playwright sync+WS."""
+    from navigator.automation.login_match import LoginConfig
+    from navigator.automation.record import NarrationCapture, record_session
+
+    gate = _MpGate(ns, flagged)
+    gate.allow_login_steps = allow_login
+    if login_url:
+        gate.login_config_fn = lambda: LoginConfig(login_url=login_url)
+    try:
+        record_session(
+            start_url,
+            out_path=Path(out_path),
+            product_name=flow_name,
+            headful=True,
+            stop_event=stop,
+            steps_out=steps,
+            gate=gate,
+            narration=NarrationCapture() if narrate else None,
+            browser_ws=browser_ws,
+        )
+        ns.setup_discarded = gate.setup_discarded
+    except Exception as exc:  # noqa: BLE001
+        ns.error = str(exc)
+        print(f"[record] worker crash:\n{traceback.format_exc()}", flush=True)
 
 
 def recorder_status() -> dict[str, Any]:
@@ -472,6 +606,7 @@ def start_recorder(
     login_config_fn: Any = None,
     narrate: bool = False,
     save_mode: str = "new",
+    browser_ws: str = "",
 ) -> RecorderJob:
     global _active
     mode = (save_mode or "new").strip().lower()
@@ -505,6 +640,62 @@ def start_recorder(
         )
         _active = job
 
+    if (browser_ws or "").strip():
+        login_url = ""
+        if login_config_fn is not None:
+            try:
+                login_url = str(login_config_fn().login_url or "")
+            except Exception:  # noqa: BLE001
+                login_url = ""
+        ctx = mp.get_context("spawn")
+        mgr = ctx.Manager()
+        ns = mgr.Namespace()
+        ns.phase = "setup"
+        ns.error = ""
+        ns.setup_discarded = 0
+        steps = mgr.list()
+        flagged = mgr.list()
+        mp_stop = ctx.Event()
+        job.mp_ns = ns
+        job.mp_stop = mp_stop
+        job.steps = steps  # type: ignore[assignment]
+        gate.phase = "setup"
+        proc = ctx.Process(
+            target=_record_ws_worker,
+            kwargs={
+                "start_url": start_url,
+                "out_path": str(job.out_path or Path("archives/recordings/tmp.yaml")),
+                "flow_name": flow_name,
+                "browser_ws": browser_ws.strip(),
+                "narrate": narrate,
+                "allow_login": gate.allow_login_steps,
+                "login_url": login_url,
+                "stop": mp_stop,
+                "ns": ns,
+                "steps": steps,
+                "flagged": flagged,
+            },
+            name="ops-recorder-ws",
+            daemon=False,
+        )
+        job.proc = proc
+        proc.start()
+
+        def _wait_proc() -> None:
+            proc.join()
+            job.error = str(ns.error or "") or None
+            job.setup_discarded = int(ns.setup_discarded or 0)
+            job.flagged = list(flagged)
+            job.steps = list(steps)
+            job.phase = "done"
+            gate.phase = "done"
+            job.done = True
+            if job.error:
+                print(f"[record] local Chrome worker failed: {job.error}", flush=True)
+
+        threading.Thread(target=_wait_proc, name="ops-recorder-wait", daemon=True).start()
+        return job
+
     def _run() -> None:
         try:
             record_session(
@@ -519,6 +710,7 @@ def start_recorder(
             )
         except Exception as exc:  # noqa: BLE001
             job.error = str(exc)
+            print(f"[record] thread crash:\n{traceback.format_exc()}", flush=True)
         finally:
             gate.phase = "done"
             job.phase = "done"
@@ -542,6 +734,8 @@ def begin_capture() -> RecorderJob:
             raise RuntimeError("recording has no capture gate")
         job.gate.phase = "capturing"
         job.phase = "capturing"
+        if job.mp_ns is not None:
+            job.mp_ns.phase = "capturing"
         return job
 
 
@@ -551,7 +745,11 @@ def stop_recorder() -> RecorderJob:
         if job is None:
             raise RuntimeError("no active recording")
         job.stop.set()
-    if job.thread:
+        if job.mp_stop is not None:
+            job.mp_stop.set()
+    if job.proc is not None:
+        job.proc.join(timeout=120)
+    elif job.thread:
         job.thread.join(timeout=120)
     if job.gate is not None:
         job.phase = "done"

@@ -2689,11 +2689,6 @@ components:
           - type: string
           - type: 'null'
           title: Groq Api Key
-        fish_api_key:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Fish Api Key
       type: object
       title: AgentProviderKeysBody
     AgentSettingsBody:
@@ -2725,11 +2720,6 @@ components:
           - type: string
           - type: 'null'
           title: Tone
-        tts_provider:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Tts Provider
         gemini_voice:
           anyOf:
           - type: string
@@ -3607,6 +3597,7 @@ components:
           - type: string
           - type: 'null'
           title: Target Flow Name
+      additionalProperties: false
       type: object
       required:
       - start_url

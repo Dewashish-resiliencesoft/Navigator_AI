@@ -26,9 +26,9 @@ from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
 
-from navigator.agent.graph import build_graph
+from navigator.agent.graph import anything_else_entry_state, build_graph
 from navigator.agent.state import CallDeps, initial_state
-from navigator.automation.browser.cursor import install_cursor
+from navigator.automation.browser.cursor import install_cursor, set_screencast_mode
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
 from navigator.automation.browser.product_login import login_product, open_login_page
 from navigator.automation.browser.screen_context import screen_snapshot
@@ -44,29 +44,26 @@ from navigator.meeting.intake import (
     run_intake,
 )
 from navigator.meeting.meet_speaker import MeetSpeaker
-from navigator.meeting.relay import push_frame, start_relay
+from navigator.meeting.relay import (
+    push_frame,
+    start_relay,
+    start_screencast,
+    stop_screencast,
+)
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
 from navigator.meeting.tunnel import start_tunnel
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
 from navigator.core.settings import settings
 from navigator.core.usage_context import bind_demo_usage, clear_demo_usage
 from navigator.voice.stt import VoiceSegmenter, transcribe
-from navigator.voice.fish_tts import FishSpeaker
-from navigator.voice.tts import PiperSpeaker, PrintSpeaker, make_speaker
+from navigator.voice.tts import PrintSpeaker
 
 
 def _is_likely_echo(heard: str, bot_text: str) -> bool:
     """True when STT likely captured the bot's own TTS, not the prospect."""
-    h = " ".join((heard or "").lower().split())
-    b = " ".join((bot_text or "").lower().split())
-    if len(h) < 3 or not b:
-        return False
-    if h in b or b in h:
-        return True
-    hw, bw = set(h.split()), set(b.split())
-    if len(hw) < 2:
-        return h in b
-    return len(hw & bw) / len(hw) >= 0.65
+    from navigator.meeting.intake_clean import is_likely_bot_echo
+
+    return is_likely_bot_echo(heard, bot_text)
 
 
 def _drain_inbound(queue) -> int:
@@ -105,23 +102,18 @@ def _start_live_agent(
     spoken_language: str,
     agent_gender: str,
     heard_sink: list[str] | None = None,
+    voice_name: str = "",
 ):
-    """Open the bidirectional Live session, or return None to keep the TTS path.
-
-    Off unless NAVIGATOR_LIVE_CONVERSATIONAL is set. Any failure here degrades
-    to the existing MeetSpeaker path rather than killing the demo.
-    """
-    if not settings.live_conversational:
-        return None
+    """Open the bidirectional Live session, or return None (caller stops the demo)."""
     if audio_bridge is None:
-        print("[live] conversational mode needs the audio bridge — using TTS", flush=True)
+        print("[live] Live audio needs the audio bridge", flush=True)
         return None
 
     from navigator.core.gemini_keys import gemini_key_candidates
 
     keys = gemini_key_candidates()
     if not keys:
-        print("[live] conversational mode needs a Gemini key — using TTS", flush=True)
+        print("[live] Live audio needs a Gemini key", flush=True)
         return None
 
     def _on_event(event) -> None:
@@ -160,7 +152,7 @@ def _start_live_agent(
                 api_key=keys[0],
                 system_instruction=instruction,
                 model=settings.live_conversational_model,
-                voice_name=settings.gemini_live_voice,
+                voice_name=voice_name or settings.gemini_live_voice,
                 language=spoken_language,  # type: ignore[arg-type]
                 vad_silence_ms=settings.live_vad_silence_ms,
                 on_event=_on_event,
@@ -169,12 +161,60 @@ def _start_live_agent(
         )
         agent_box.append(agent)
     except Exception as exc:  # noqa: BLE001
-        print(f"[live] conversational setup failed ({exc}) — using TTS", flush=True)
+        print(f"[live] Live setup failed ({exc})", flush=True)
         return None
 
     if not agent.start():
         return None
     return agent
+
+
+def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
+    """When Live owns audio, route MeetSpeaker.say to live.say (no WAV)."""
+    if getattr(meet_speaker, "_live_owns_audio", False):
+        return
+    from navigator.meeting.playback_handle import PlaybackHandle
+
+    orig_say = meet_speaker.say
+    orig_async = getattr(meet_speaker, "say_async", None)
+
+    def _say(text: str) -> None:
+        live = live_box[0] if live_box else None
+        if live is not None:
+            live.say(text, mode="natural")
+            return
+        orig_say(text)
+
+    def _say_async(text: str):
+        live = live_box[0] if live_box else None
+        if live is None:
+            if orig_async is not None:
+                return orig_async(text)
+            orig_say(text)
+            handle = PlaybackHandle()
+            handle._finish()
+            return handle
+        handle = PlaybackHandle()
+
+        def _worker() -> None:
+            try:
+                live.say(text, mode="natural")
+            except Exception as exc:  # noqa: BLE001
+                handle.error = str(exc)
+            finally:
+                handle._finish()
+
+        handle._thread = threading.Thread(
+            target=_worker, name="live-own-say", daemon=True
+        )
+        handle._thread.start()
+        return handle
+
+    meet_speaker.say = _say  # type: ignore[method-assign]
+    if orig_async is not None:
+        meet_speaker.say_async = _say_async  # type: ignore[method-assign]
+    meet_speaker._live_owns_audio = True  # type: ignore[attr-defined]
+    print("[live] MeetSpeaker TTS disabled — Live owns mic+mouth", flush=True)
 
 
 def _talk_speaker(meet_speaker, live_box: list):
@@ -247,6 +287,7 @@ def _wait_meet_utterance(
     api_key: str,
     timeout_s: float = 60.0,
     audio_bridge=None,
+    bot_spoken: str = "",
 ) -> str:
     """Block until prospect utterance (not bot echo), or timeout → \"\"."""
     deadline = time.monotonic() + timeout_s
@@ -265,7 +306,10 @@ def _wait_meet_utterance(
         text = (transcribe(pcm, api_key) or "").strip()
         if not text:
             continue
-        if _is_likely_echo(text, prompt):
+        # Match against the question AND the last TTS line (greeting / ack).
+        # Without last_spoken, "I'm Navigator AI" from the greet becomes the
+        # prospect's "name".
+        if _is_likely_echo(text, prompt) or _is_likely_echo(text, bot_spoken):
             print(f"[intake] ignoring echo: {text!r}", flush=True)
             continue
         return text
@@ -450,10 +494,13 @@ def wait_until_joined(
         if bot.state == "fatal_error":
             raise RuntimeError(
                 f"Attendee bot fatal_error (last state={last}). "
-                "Common Zoom causes: Attendee worker cannot resolve the ZAK tunnel "
-                "hostname (check attendee-worker-local DNS), ZAK callback 401/502, "
-                "or Zoom SDK 'Invalid signature' when ZAK never arrived. "
-                "See Attendee worker logs: docker compose logs attendee-worker-local"
+                "Zoom web SDK error 3712 'Invalid signature' means Attendee's "
+                "Meeting SDK JWT is wrong — NAVIGATOR_ZOOM_CLIENT_ID/SECRET must "
+                "be a Meeting SDK (or General App with Meeting SDK) Client ID/"
+                "Secret, not Server-to-Server OAuth. A ZAK callback 200 does not "
+                "prove the SDK signature. Other causes: worker DNS for the ZAK "
+                "tunnel hostname, or ZAK callback 401/502. "
+                "See: docker compose logs attendee-worker-local"
             )
         if "waiting" in last.lower() and not warned_waiting:
             warned_waiting = True
@@ -488,38 +535,10 @@ def _share_meet_link(*, meeting_url: str, bot_ready: bool) -> None:
     print("=" * 60, flush=True)
 
 
-def _make_live_speaker(
-    *,
-    mute: bool,
-    spoken_language: str = "en",
-    require_audio: bool = False,
-    gemini_api_key: str = "",
-    gemini_live_voice: str = "",
-    groq_api_key: str = "",
-    fish_api_key: str = "",
-    tts_provider: str = "",
-):
-    return make_speaker(
-        mute=mute,
-        gemini_api_key=gemini_api_key or settings.gemini_api_key,
-        gemini_live_model=settings.gemini_live_model,
-        gemini_live_voice=gemini_live_voice or settings.gemini_live_voice,
-        spoken_language=spoken_language,  # type: ignore[arg-type]
-        fish_api_key=fish_api_key or settings.fish_api_key,
-        fish_model=settings.fish_model,
-        fish_reference_id=settings.fish_reference_id,
-        tts_provider=tts_provider or settings.tts_provider,
-        piper_voice=settings.piper_voice,
-        piper_data_dir=settings.piper_data_dir,
-        require_audio=require_audio,
-    )
-
-
 def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
     out = {
         "gemini": settings.gemini_api_key or "",
         "groq": settings.groq_api_key or "",
-        "fish": settings.fish_api_key or "",
     }
     if not product_id:
         return out
@@ -536,9 +555,9 @@ def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
     return out
 
 
-def _provider_byok_flags(product_id: str | None) -> tuple[bool, bool, bool]:
+def _provider_byok_flags(product_id: str | None) -> tuple[bool, bool]:
     if not product_id:
-        return False, False, False
+        return False, False
     try:
         from navigator.app.credential_vault import CredentialVault
 
@@ -547,35 +566,9 @@ def _provider_byok_flags(product_id: str | None) -> tuple[bool, bool, bool]:
             return (
                 bool(pub.get("has_groq_api_key")),
                 bool(pub.get("has_gemini_api_key")),
-                bool(pub.get("has_fish_api_key")),
             )
     except Exception:  # noqa: BLE001
-        return False, False, False
-
-
-def _speaker(*, mute: bool, spoken_language: str = "en"):
-    return _make_live_speaker(mute=mute, spoken_language=spoken_language)
-
-
-def _require_tts_for_meet(
-    *,
-    mute: bool,
-    spoken_language: str = "en",
-    gemini_api_key: str = "",
-    gemini_live_voice: str = "",
-    fish_api_key: str = "",
-    tts_provider: str = "",
-):
-    """Live Meet needs Gemini Live (preferred), Fish, or Piper WAV → Attendee speak."""
-    return _make_live_speaker(
-        mute=mute,
-        spoken_language=spoken_language,
-        require_audio=True,
-        gemini_api_key=gemini_api_key,
-        gemini_live_voice=gemini_live_voice,
-        fish_api_key=fish_api_key,
-        tts_provider=tts_provider,
-    )
+        return False, False
 
 
 def _leave_stale_bots(client: AttendeeClient, meeting_url: str) -> None:
@@ -689,13 +682,12 @@ def run_live_meet_demo(
 
     provider_keys = _resolve_provider_keys(product_id)
     if product_id:
-        groq_byok, gemini_byok, fish_byok = _provider_byok_flags(product_id)
+        groq_byok, gemini_byok = _provider_byok_flags(product_id)
         bind_demo_usage(
             product_id=product_id,
             session_id=str(session_id) if session_id else None,
             groq_client=groq_byok,
             gemini_client=gemini_byok,
-            fish_client=fish_byok,
         )
     spoken_language: str = agent_settings.default_language or settings.default_spoken_language
     print(
@@ -703,23 +695,7 @@ def run_live_meet_demo(
         f"(extras={list(agent_settings.extra_languages)})",
         flush=True,
     )
-    speaker = _require_tts_for_meet(
-        mute=mute,
-        spoken_language=spoken_language,
-        gemini_api_key=provider_keys["gemini"],
-        gemini_live_voice=agent_settings.effective_gemini_voice(),
-        fish_api_key=provider_keys["fish"],
-        tts_provider=agent_settings.tts_provider,
-    )
-    # Warm synthesizer so first Meet utterance isn't cold.
-    if hasattr(speaker, "synthesize_wav"):
-        try:
-            warm = "तैयार।" if spoken_language == "hi" else "Ready."
-            speaker.synthesize_wav(warm)  # type: ignore[union-attr]
-            kind = type(speaker).__name__
-            print(f"[live] TTS warmed ({kind})", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[live] TTS warm skipped: {exc}", flush=True)
+    speaker = PrintSpeaker()
     if graph_cfg is None:
         graph_cfg = load_site_graph(settings.site_graph)
     persona = graph_cfg.effective_persona()
@@ -734,7 +710,9 @@ def run_live_meet_demo(
     tunnel = None
     audio_bridge = None
     audio_tunnel = None
+    screencast = None
     bot_id: str | None = None
+    live_box: list = []
 
     try:
         zoom_native = is_zoom_meeting(meeting_url)
@@ -904,12 +882,10 @@ def run_live_meet_demo(
 
         pending_barge_in: list[str] = []
         speaker_box: list = []
-        live_box: list = []
-        meet_speaker: MeetSpeaker | PrintSpeaker | PiperSpeaker | FishSpeaker = MeetSpeaker(
+        meet_speaker = MeetSpeaker(
             speaker,
             client,
             bot.id,
-            synthesizer=speaker if hasattr(speaker, "synthesize_wav") else None,
             also_chat=False,
             after_speak=_after_speak,
             set_avatar_state=relay.set_avatar_state,
@@ -991,8 +967,8 @@ def run_live_meet_demo(
                         flush=True,
                     )
 
-        # Conversational Live owns mic+mouth from intake onward.
-        if settings.live_conversational and not live_box:
+        # Live owns mic+mouth from intake onward (mute = silent PrintSpeaker).
+        if not mute and not live_box:
             early_live = _start_live_agent(
                 audio_bridge=audio_bridge,
                 graph_cfg=graph_cfg,
@@ -1001,45 +977,68 @@ def run_live_meet_demo(
                 spoken_language=spoken_language,
                 agent_gender=agent_settings.agent_gender,
                 heard_sink=pending_barge_in,
+                voice_name=agent_settings.effective_gemini_voice(),
             )
             if early_live is None:
                 raise LiveDemoStopped(
-                    "Live conversational mode is on but the Live session failed "
-                    "to start — refusing MeetSpeaker TTS fallback"
+                    "Live session failed to start — no TTS fallback"
                 )
             live_box.append(early_live)
             meet_speaker.check_barge_in = None
+            _own_meet_tts_when_live(meet_speaker, live_box)
 
         def _intake_listen(prompt: str) -> str:
+            bot_spoken = (
+                getattr(talk, "last_spoken", "")
+                or getattr(meet_speaker, "last_spoken", "")
+                or ""
+            )
+            timeout_s = float(
+                getattr(
+                    brain_config,
+                    "listen_timeout_s",
+                    settings.brain_listen_timeout_s,
+                )
+                if brain_config is not None
+                else settings.brain_listen_timeout_s
+            )
             if live_box:
                 live = live_box[0]
                 if hasattr(live, "drain_heard"):
                     live.drain_heard()
-                timeout_s = float(
-                    getattr(
-                        brain_config,
-                        "listen_timeout_s",
-                        settings.brain_listen_timeout_s,
-                    )
-                    if brain_config is not None
-                    else settings.brain_listen_timeout_s
-                )
-                return live.wait_for_heard(timeout_s=timeout_s)
+                # Native-audio Live would answer the human itself here. Mute its
+                # mouth for the listen window; transcription still flows.
+                set_lo = getattr(live, "set_listen_only", None)
+                if set_lo is not None:
+                    set_lo(True)
+                try:
+                    # Keep listening past bot-echo transcripts until timeout.
+                    deadline = time.monotonic() + timeout_s
+                    while time.monotonic() < deadline:
+                        remaining = max(0.05, deadline - time.monotonic())
+                        text = (live.wait_for_heard(timeout_s=remaining) or "").strip()
+                        if not text:
+                            return ""
+                        if _is_likely_echo(text, prompt) or _is_likely_echo(
+                            text, bot_spoken
+                        ):
+                            print(f"[intake] ignoring echo: {text!r}", flush=True)
+                            continue
+                        return text
+                    return ""
+                finally:
+                    if set_lo is not None:
+                        set_lo(False)
+            if live_box:
+                return ""
             if audio_bridge is not None and settings.groq_api_key:
                 return _wait_meet_utterance(
                     audio_bridge.inbound,
                     prompt=prompt,
                     api_key=settings.groq_api_key,
-                    timeout_s=float(
-                        getattr(
-                            brain_config,
-                            "listen_timeout_s",
-                            settings.brain_listen_timeout_s,
-                        )
-                        if brain_config is not None
-                        else settings.brain_listen_timeout_s
-                    ),
+                    timeout_s=timeout_s,
                     audio_bridge=audio_bridge,
+                    bot_spoken=bot_spoken,
                 )
             if interactive_listen:
                 try:
@@ -1070,6 +1069,11 @@ def run_live_meet_demo(
         live_now = live_box[0] if live_box else None
         apply_to_speakers(spoken_language, speaker, meet_speaker, live_now)  # type: ignore[arg-type]
         print(f"[live] intake ({spoken_language}): {intake.model_dump()}", flush=True)
+        pending_barge_in.clear()
+        if live_now is not None:
+            set_do = getattr(live_now, "set_director_only", None)
+            if set_do is not None:
+                set_do(False)
         if live_now is not None:
             summary = _intake_summary(intake)
             if summary:
@@ -1163,15 +1167,31 @@ def run_live_meet_demo(
                 login_email = settings.product_login_email
                 login_password = settings.product_login_password
             from navigator.automation.login_match import (
+                demo_playlist_for_toggle,
+                live_start_flow,
                 playlist_has_login_flow,
                 same_page_path,
             )
 
+            kept = demo_playlist_for_toggle(
+                graph_cfg, include_login=include_login_in_flow
+            )
+            if kept != graph_cfg.demo_playlist:
+                graph_cfg = graph_cfg.model_copy(update={"demo_playlist": kept})
+                print(
+                    f"[live] login toggle={'on' if include_login_in_flow else 'off'} "
+                    f"playlist={[i.flow_id for i in kept]}",
+                    flush=True,
+                )
+
             playlist_login = playlist_has_login_flow(graph_cfg)
             if auto_play:
-                first = graph_cfg.primary_flow()
-                if first:
-                    page_id, flow_id = first
+                page_id, flow_id = live_start_flow(
+                    graph_cfg,
+                    page_id,
+                    flow_id,
+                    include_login=include_login_in_flow,
+                )
             start_spec = graph_cfg.page(page_id)
             hold_url = urljoin(origin, start_spec.url.lstrip("/") or "/")
 
@@ -1244,6 +1264,12 @@ def run_live_meet_demo(
                 _push()
                 time.sleep(0.08)
 
+            # Stream repaints instead of polling screenshots: the cursor then
+            # animates in-page at ~60fps and the audio thread stops paying ~30ms
+            # per hop. Falls back to _push automatically if CDP is unavailable.
+            screencast = start_screencast(relay, page)
+            set_screencast_mode(screencast is not None)
+
             baseline_hits = relay.frame_hits
             print("[live] enabling screen share…", flush=True)
             relay.set_status("thinking", "Sharing screen…")
@@ -1261,25 +1287,26 @@ def run_live_meet_demo(
 
             relay.set_status("speaking", "Starting demo…")
             try:
-                meet_speaker.say(demo_kickoff_line(lang=spoken_language))  # type: ignore[arg-type]
+                # Live owns mouth when conversational — never Piper/MeetSpeaker here.
+                talk.say(demo_kickoff_line(lang=spoken_language))  # type: ignore[arg-type]
             except Exception as exc:  # noqa: BLE001
-                print(f"[live] kickoff TTS skipped: {exc}", flush=True)
+                print(f"[live] kickoff speak skipped: {exc}", flush=True)
 
             if show_login:
                 print("[live] signing in on screenshare…", flush=True)
                 relay.set_status("speaking", "Signing in…")
                 try:
-                    meet_speaker.say(
+                    talk.say(
                         "Signing into your product with the saved demo credentials."
                     )
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[live] login intro TTS skipped: {exc}", flush=True)
+                    print(f"[live] login intro speak skipped: {exc}", flush=True)
                 gate = run_login_gate(
                     login_fn=_do_login,
                     url=login_url,
                     email=login_email,
                     password=login_password,
-                    speaker=meet_speaker,
+                    speaker=talk,
                     attendee=None,
                     bot_id=None,
                 )
@@ -1397,17 +1424,10 @@ def run_live_meet_demo(
 
             meet_speaker.stop_event = stop_event  # type: ignore[attr-defined]
 
-            strict_playlist = bool(graph_cfg.demo_playlist)
-            if strict_playlist:
-                tier2_enabled = False
-                use_turn_brain = False
-
             playlist_demo = bool(auto_play and graph_cfg.demo_playlist)
-
             live_agent = live_box[0] if live_box else None
-            if live_agent is None and settings.live_conversational:
-                # Started after Playwright only if early start was skipped
-                # (should not happen when the flag is on).
+
+            if live_agent is None and not mute:
                 live_agent = _start_live_agent(
                     audio_bridge=audio_bridge,
                     graph_cfg=graph_cfg,
@@ -1416,16 +1436,24 @@ def run_live_meet_demo(
                     spoken_language=spoken_language,
                     agent_gender=agent_settings.agent_gender,
                     heard_sink=pending_barge_in,
+                    voice_name=agent_settings.effective_gemini_voice(),
                 )
                 if live_agent is None:
                     raise LiveDemoStopped(
-                        "Live conversational mode is on but the Live session "
-                        "failed to start — refusing MeetSpeaker TTS fallback"
+                        "Live session failed to start — no TTS fallback"
                     )
                 live_box.append(live_agent)
                 meet_speaker.check_barge_in = None
+                _own_meet_tts_when_live(meet_speaker, live_box)
             elif live_agent is not None:
                 meet_speaker.check_barge_in = None
+                _own_meet_tts_when_live(meet_speaker, live_box)
+
+            # Live owns listen+decide. Scripted timeline/YAML is TTS-era.
+            strict_playlist = bool(graph_cfg.demo_playlist) and live_agent is None
+            if strict_playlist:
+                tier2_enabled = False
+                use_turn_brain = False
 
             deps = CallDeps(
                 graph=graph_cfg,
@@ -1434,7 +1462,7 @@ def run_live_meet_demo(
                 speaker=talk,
                 scripted_flow=(
                     None
-                    if conversational or playlist_demo
+                    if conversational or playlist_demo or live_agent is not None or not flow_id
                     else (page_id, flow_id)
                 ),
                 product_id=product_id or graph_cfg.site or "default",
@@ -1488,19 +1516,26 @@ def run_live_meet_demo(
                 run_playlist_timeline,
             )
 
-            use_timeline = playlist_demo and playlist_timeline_ready(graph_cfg)
-            mode = (
-                "conversational (LLM flow / handoff)"
-                if conversational
-                else f"scripted {page_id}/{flow_id}"
+            use_timeline = (
+                live_agent is None
+                and playlist_demo
+                and playlist_timeline_ready(graph_cfg)
             )
+            if live_agent is not None:
+                mode = "live listen+decide"
+            elif conversational:
+                mode = "conversational (LLM flow / handoff)"
+            else:
+                mode = f"scripted {page_id}/{flow_id}"
             if use_timeline:
                 engine_label = "timeline playback for narrated playlist"
-            elif playlist_demo:
+            elif playlist_demo and live_agent is None:
                 engine_label = "strict YAML replay for demo playlist"
             else:
                 engine_label = f"demo graph ({mode})"
             print(f"[live] running demo ({mode}) engine={engine_label}", flush=True)
+            # Intake answers + kickoff echo must not look like a mid-demo ask.
+            pending_barge_in.clear()
             _check_stop(stop_event)
             if use_timeline:
                 print("[live] timeline playback for narrated playlist", flush=True)
@@ -1510,7 +1545,7 @@ def run_live_meet_demo(
                     auto_play=auto_play,
                     strict=strict_playlist,
                 )
-            elif playlist_demo:
+            elif playlist_demo and live_agent is None:
                 print("[live] strict YAML replay for demo playlist", flush=True)
                 from navigator.agent.recorded_playback import run_playlist_strict
 
@@ -1538,8 +1573,39 @@ def run_live_meet_demo(
                 f"failures={failures}",
                 flush=True,
             )
-            # Let final Meet TTS finish playing before we tear the bot down.
-            time.sleep(0.6)
+            stopped = stop_event is not None and stop_event.is_set()
+            if not stopped and (use_timeline or (playlist_demo and live_agent is None)):
+                qa_page = page_id
+                if graph_cfg.demo_playlist:
+                    qa_page = max(
+                        graph_cfg.demo_playlist, key=lambda item: item.order
+                    ).page_id
+                print("[live] post-demo Q&A", flush=True)
+                if live_box:
+                    qa_live = live_box[0]
+                    set_do = getattr(qa_live, "set_director_only", None)
+                    if set_do is not None:
+                        set_do(False)
+                    set_lo = getattr(qa_live, "set_listen_only", None)
+                    if set_lo is not None:
+                        set_lo(False)
+                    add_ctx = getattr(qa_live, "add_context", None)
+                    if add_ctx is not None:
+                        add_ctx(
+                            "The product walkthrough is done. You are now in live "
+                            "Q&A. Answer the person's questions about this product "
+                            "immediately, in the language they are speaking, in one "
+                            "or two short sentences. Do not narrate the screen "
+                            "unless they ask. Stay on this product only."
+                        )
+                qa_state = anything_else_entry_state(
+                    session_id,
+                    qa_page,
+                    max_turns=settings.live_max_turns,
+                    walkthrough_flow_id=flow_id or settings.live_walkthrough_flow,
+                )
+                final = build_graph(deps, entry="speaking").invoke(qa_state)
+                _push()
 
             context.close()
             browser.close()
@@ -1567,6 +1633,8 @@ def run_live_meet_demo(
             audio_bridge.stop()
         if tunnel is not None:
             tunnel.stop()
+        stop_screencast(screencast)
+        set_screencast_mode(False)
         relay.stop()
         if hasattr(speaker, "close"):
             try:

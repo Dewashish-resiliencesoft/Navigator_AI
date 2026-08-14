@@ -8,6 +8,7 @@ from navigator.meeting.live_demo import (
     assert_live_site_graph,
     share_media_join_opts,
     show_login_on_screenshare,
+    wait_until_joined,
 )
 from navigator.core.settings import settings
 from navigator.knowledge.site_graph import DemoPlaylistItem, PageSpec, SiteGraph
@@ -185,3 +186,26 @@ def test_missing_attendee_key_is_still_refused(monkeypatch):
     monkeypatch.setattr(settings, "attendee_api_key", "")
     with pytest.raises(RuntimeError, match="ATTENDEE_API_KEY"):
         _require_live_settings("https://meet.google.com/x")
+
+
+def test_live_box_initialized_before_join_try():
+    """Join fail hits finally; live_box must exist before wait_until_joined."""
+    import inspect
+
+    from navigator.meeting.live_demo import run_live_meet_demo
+
+    src = inspect.getsource(run_live_meet_demo)
+    assert src.index("live_box: list = []") < src.index("\n    try:")
+
+
+def test_wait_until_joined_fatal_error_names_meeting_sdk_creds():
+    class _Bot:
+        state = "fatal_error"
+        raw_state = "fatal_error"
+
+    class _Client:
+        def get(self, bot_id):
+            return _Bot()
+
+    with pytest.raises(RuntimeError, match="Meeting SDK"):
+        wait_until_joined(_Client(), "bot", timeout_s=1)

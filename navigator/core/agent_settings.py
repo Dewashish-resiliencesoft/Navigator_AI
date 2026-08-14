@@ -9,7 +9,6 @@ from pydantic import BaseModel, Field, field_validator
 
 SpokenLanguage = Literal["en", "hi"]
 AgentGender = Literal["female", "male"]
-TtsProvider = Literal["auto", "gemini", "fish", "piper"]
 
 DEFAULT_AGENT_SETTINGS: dict[str, object] = {
     "default_language": "en",
@@ -17,7 +16,6 @@ DEFAULT_AGENT_SETTINGS: dict[str, object] = {
     "agent_gender": "female",
     "agent_name": "",
     "tone": "",
-    "tts_provider": "auto",
     "gemini_voice": "",
 }
 
@@ -33,7 +31,6 @@ class AgentSettings(BaseModel):
     agent_gender: AgentGender = "female"
     agent_name: str = ""
     tone: str = ""
-    tts_provider: TtsProvider = "auto"
     gemini_voice: str = ""
 
     @field_validator("extra_languages", mode="before")

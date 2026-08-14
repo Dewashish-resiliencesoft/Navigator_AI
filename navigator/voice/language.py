@@ -8,11 +8,16 @@ from typing import Literal
 
 SpokenLanguage = Literal["en", "hi"]
 
-#: BCP-47 codes for Gemini Live speech_config.
+#: BCP-47 codes for Gemini Live speech_config. The native-audio model rejects
+#: en-IN (1007 Unsupported language code), so English stays en-US; the Indian
+#: accent comes from the voice + the "speak natural Indian English" instruction.
 LANGUAGE_CODES: dict[SpokenLanguage, str] = {
     "en": "en-US",
     "hi": "hi-IN",
 }
+
+#: Any Devanagari code point → the person is speaking Hindi, keyword or not.
+_DEVANAGARI = re.compile(r"[\u0900-\u097F]")
 
 #: One-line acknowledgment when the prospect switches language.
 SWITCH_ACK: dict[SpokenLanguage, str] = {
@@ -69,6 +74,30 @@ def detect_language_switch(utterance: str) -> SpokenLanguage | None:
 
 def language_code(lang: SpokenLanguage) -> str:
     return LANGUAGE_CODES.get(lang, "en-US")
+
+
+def detect_spoken_language(utterance: str) -> SpokenLanguage | None:
+    """Infer the language actually being spoken, without a switch keyword.
+
+    Devanagari in the transcript → ``hi`` right away: that is the reliable
+    signal and the whole reason "speak Hindi and it still replies English"
+    happened — the old detector only fired on the literal word "hindi". A
+    multi-word Latin sentence → ``en``. Short or ambiguous fragments return
+    None so a one-word backchannel ("haan", "ok") can't thrash the language
+    mid-demo.
+
+    ponytail: script heuristic. Ceiling: romanized Hindi ("dikhao") reads as
+    Latin and is missed. Upgrade path: a real language-id model on the
+    transcript if romanized Hindi becomes common.
+    """
+    text = (utterance or "").strip()
+    if not text:
+        return None
+    if _DEVANAGARI.search(text):
+        return "hi"
+    if len(re.findall(r"[A-Za-z]{2,}", text)) >= 3:
+        return "en"
+    return None
 
 
 def is_language_switch_only(utterance: str) -> bool:
@@ -138,6 +167,9 @@ def apply_language_switch(
 ) -> tuple[SpokenLanguage, str | None]:
     """Apply a language switch. Returns (language, optional ack line)."""
     target = detect_language_switch(utterance)
+    if target is None:
+        # No explicit "talk in X" — mirror the language they are actually speaking.
+        target = detect_spoken_language(utterance)
     if target is None or target == current:
         return current, None
     if allowed is not None and target not in allowed:
@@ -165,6 +197,7 @@ def poll_barge_in_language_switch(deps: object) -> SpokenLanguage | None:
         live = getattr(deps, "live_agent", None)
         apply_to_speakers(lang, speaker, synth, local, live)
 
+    leftover: list[str] = []
     while pending:
         raw = pending.pop(0)
         utterance = (raw or "").strip() if isinstance(raw, str) else ""
@@ -177,6 +210,7 @@ def poll_barge_in_language_switch(deps: object) -> SpokenLanguage | None:
             allowed=allowed,
         )
         if new_lang == current:
+            leftover.append(utterance)
             continue
         current = new_lang
         switched = new_lang
@@ -186,4 +220,5 @@ def poll_barge_in_language_switch(deps: object) -> SpokenLanguage | None:
             except Exception:  # noqa: BLE001
                 pass
         break
+    pending[:0] = leftover
     return switched

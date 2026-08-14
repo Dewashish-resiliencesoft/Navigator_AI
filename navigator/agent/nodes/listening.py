@@ -23,6 +23,42 @@ from navigator.voice.language import sync_call_language
 
 SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"
 
+_FILLER_HEARD = frozenset(
+    {
+        "um",
+        "uh",
+        "yeah",
+        "yep",
+        "mhm",
+        "mm",
+        "hmm",
+        "yes",
+        "ok",
+        "okay",
+        "one sec",
+        "alright",
+        "checking that",
+    }
+)
+
+
+def _ignore_stale_heard(text: str, deps: CallDeps) -> bool:
+    """True for nudge filler or leftover intake answers replayed as barge-in."""
+    raw = (text or "").strip()
+    if not raw:
+        return True
+    low = raw.lower().rstrip(".!?…, ")
+    if low in _FILLER_HEARD:
+        return True
+    intake = getattr(deps, "intake", None)
+    if intake is None:
+        return False
+    name = (getattr(intake, "name", "") or "").strip().lower()
+    if name and (low == name or (low.startswith("my name is") and name in low)):
+        return True
+    looking = (getattr(intake, "looking_for", "") or "").strip().lower()
+    return bool(looking and low == looking)
+
 
 def _aborted(deps: CallDeps) -> bool:
     ev = deps.stop_event
@@ -49,8 +85,12 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
     # Prefer utterance captured during barge-in over a fresh listen wait.
     pending = deps.pending_barge_in
     if pending:
-        utterance = pending.pop(0).strip()
-        if utterance:
+        while pending:
+            utterance = pending.pop(0).strip()
+            if not utterance or _ignore_stale_heard(utterance, deps):
+                if utterance:
+                    print(f"[listen] ignore stale barge-in: {utterance!r}", flush=True)
+                continue
             print(f"[listen] barge-in utterance: {utterance!r}", flush=True)
             sync_call_language(deps, utterance)
             last = _last_entry(state, deps)
@@ -113,6 +153,12 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
             sync_call_language,
         )
 
+        if deps.live_agent is not None:
+            text = _from_live(deps, silence_timeout=0.4)
+            if text:
+                sync_call_language(deps, text)
+                return text
+            return ""
         poll_barge_in_language_switch(deps)
         if deps.audio_frames is not None:
             text = _from_audio(deps, silence_timeout=2.5)
@@ -208,6 +254,9 @@ def _from_live(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
                 continue
             if deps.is_bot_echo is not None and deps.is_bot_echo(text):
                 print(f"[listen] ignoring bot echo: {text!r}", flush=True)
+                continue
+            if _ignore_stale_heard(text, deps):
+                print(f"[listen] ignore stale barge-in: {text!r}", flush=True)
                 continue
             return text
         if deadline is not None and time.monotonic() >= deadline:

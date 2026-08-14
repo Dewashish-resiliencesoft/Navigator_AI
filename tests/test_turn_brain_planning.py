@@ -64,3 +64,47 @@ def test_interrupt_turn_brain_navigates(site_graph, page, log, tmp_path):
     calls = out.get("pending_calls") or []
     assert calls and isinstance(calls[0], Navigate)
     assert calls[0].page_id == "inbox"
+
+
+def test_aligned_interrupt_skips_turn_brain_screenshot(site_graph, page, log, tmp_path):
+    """On-script chatter must not take a PNG — Meet/Zoom share stays the video."""
+
+    def boom(**kwargs):
+        raise AssertionError("turn brain should not run for aligned utterance")
+
+    deps = CallDeps(
+        graph=site_graph,
+        page=page,
+        log=log,
+        speaker=PrintSpeaker(),
+        scripted_flow=None,
+        product_id="acme",
+        archive_dir=tmp_path / "archives",
+        groq_api_key=None,
+        decide_turn=boom,
+        use_turn_brain=True,
+        retrieve=lambda **k: (_ for _ in ()).throw(RuntimeError("no retrieve")),
+        choose_flow=lambda **k: (_ for _ in ()).throw(RuntimeError("no choose")),
+    )
+    deps.speaker.say("Here is the send campaign button")
+    state = initial_state(
+        uuid4(), "inbox", max_turns=5, walkthrough_flow_id="send_test_message"
+    )
+    state = {
+        **state,
+        "phase": "walkthrough",
+        "walkthrough_step": 1,
+        "transcript": ["user: send campaign looks good"],
+    }
+    shots = {"n": 0}
+    orig = page.screenshot
+
+    def _count(*a, **k):
+        shots["n"] += 1
+        return orig(*a, **k)
+
+    page.screenshot = _count  # type: ignore[method-assign]
+    out = planning(state, deps)
+    assert shots["n"] == 0
+    assert out.get("phase") == "walkthrough"
+

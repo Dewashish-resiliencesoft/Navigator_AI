@@ -26,6 +26,10 @@ def test_assess_demo_readiness_new_product(tmp_path: Path):
         report = assess_demo_readiness(reg, "acme", origin="dashboard_test")
     assert report.score >= 0
     assert any(c.id == "published" for c in report.checks)
+    ids = [c.id for c in report.checks]
+    assert "tts" not in ids
+    live = next(c for c in report.checks if c.id == "live")
+    assert live.blocking is True
 
 
 def test_has_offerable_flow_uses_page_keys(site_graph):
@@ -107,3 +111,14 @@ def test_explorer_blocks_public_embed(tmp_path: Path):
         report = assess_demo_readiness(reg, "acme", origin="public_embed")
     blocked = [c for c in report.checks if c.id == "explorer_embed"]
     assert blocked and not blocked[0].ok and blocked[0].blocking
+
+
+def test_readiness_does_not_import_live_demo():
+    """Dashboard polls readiness; importing live_demo pulls Playwright into uvicorn RSS."""
+    import inspect
+
+    from navigator.agent import readiness
+
+    src = inspect.getsource(readiness._attendee_ok)
+    assert "live_demo" not in src
+    assert "attendee_stack" in src

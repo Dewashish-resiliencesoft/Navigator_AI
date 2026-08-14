@@ -27,6 +27,21 @@ import { errText, useUi } from "../store";
 
 const LINK_PENDING = "Creating meeting link…";
 
+function legacyCopy(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    return document.execCommand("copy");
+  } finally {
+    ta.remove();
+  }
+}
+
 export function LiveDemo() {
   const { ok, err, setTab, setLogsSessionId } = useUi();
   const invalidate = useProductData((s) => s.invalidate);
@@ -308,7 +323,13 @@ export function LiveDemo() {
   const copy = async () => {
     if (!joinUrl) return;
     try {
-      await navigator.clipboard.writeText(joinUrl);
+      // navigator.clipboard is undefined on insecure origins (dashboard is served
+      // over plain http on the LAN), so fall back to a hidden-textarea copy.
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(joinUrl);
+      } else if (!legacyCopy(joinUrl)) {
+        throw new Error("copy rejected");
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 1300);
     } catch {
@@ -402,7 +423,7 @@ export function LiveDemo() {
         >
           <Switch
             label="Show login during demo"
-            description="When a login/auth flow is in your playlist, Navigator runs that recording instead of auto sign-in. Toggle only adds a synthetic login beat when no auth flow exists."
+            description="On: run your recorded login/onboarding flow (or a live login if none). Off: silent auto sign-in — skip login/onboarding in the playlist."
             checked={includeLogin}
             disabled={savingIncludeLogin || !loginUser.trim()}
             onChange={(v) => void saveIncludeLogin(v)}

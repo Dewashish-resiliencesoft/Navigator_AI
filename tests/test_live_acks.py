@@ -31,6 +31,11 @@ def test_next_working_ack_rotates_english():
     b = next_working_ack("en")
     assert a and b
     assert "…" in a or a.endswith("...")
+    for text in (a, b, next_working_ack("en")):
+        low = text.lower()
+        assert "yeah" not in low
+        assert "um" not in low
+        assert "mhm" not in low
 
 
 def test_hindi_acks_are_localized():
@@ -44,6 +49,14 @@ def test_throttle_blocks_rapid_nudges():
     assert maybe_nudge_live(live, language="en") is True
     assert maybe_nudge_live(live, language="en") is False
     assert len(live.nudges) == 1
+
+
+def test_nudge_skipped_while_live_is_speaking():
+    reset_nudge_throttle_for_tests()
+    live = FakeLive()
+    live.speaking = True
+    assert maybe_nudge_live(live, language="en") is False
+    assert live.nudges == []
 
 
 def test_executing_nudges_live_before_tool(state, deps):

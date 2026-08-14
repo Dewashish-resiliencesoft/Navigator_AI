@@ -6,6 +6,7 @@ module constants (MOTION_SCALE=0 makes tests instant).
 
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 from playwright.sync_api import Page
@@ -21,9 +22,13 @@ PAUSE_AFTER_CLICK_MS = 200
 HIGHLIGHT_FADE_MS = 280
 RIPPLE_MS = 320
 PRESS_MS = 120
-SCROLL_MS = 450
 # Tests / CI: set to 0 so waits and animations collapse.
 MOTION_SCALE = 1.0
+# Screencast trail replay: last N ms of recorded motion, visible duration clamp.
+TRAIL_APPROACH_MS = 1500.0
+TRAIL_MIN_MS = 700.0
+TRAIL_MAX_MS = 1800.0
+TRAIL_MAX_FRAMES = 24
 # Timeline replay uses faster motion (see set_playback_mode).
 _playback_mode = False
 
@@ -37,8 +42,22 @@ def set_playback_mode(enabled: bool) -> None:
     _playback_mode = enabled
 
 
+#: True once the screenshare streams CDP screencast frames. Then the viewer sees
+#: in-page repaints directly, so stepping the cursor from Python (a screenshot
+#: per hop) is pure overhead — the page animates itself at 60fps instead.
+_screencast_mode = False
+
+
+def set_screencast_mode(enabled: bool) -> None:
+    global _screencast_mode
+    _screencast_mode = enabled
+
+
 def _motion_scale() -> float:
-    # Playback must keep up with Live narration (was 0.4 but _scaled_ms ignored it).
+    # JPEG hop path needs 0.22x so screenshot encodes keep up with narration.
+    # Screencast already streams CSS at 60fps — crushing duration looks like a teleport.
+    if _screencast_mode:
+        return MOTION_SCALE
     return 0.22 if _playback_mode else MOTION_SCALE
 
 
@@ -135,7 +154,9 @@ def _paced_wait(
     page: Page, ms: float, on_frame: Callable[[], None] | None
 ) -> None:
     """Wait, pushing frames through it so a pause is not a frozen screen."""
-    if on_frame is None:
+    # Under screencast a plain wait already streams repaints; slicing it into
+    # hops would only add screenshot cost and drift past the intended duration.
+    if on_frame is None or _screencast_mode:
         _wait_ms(page, ms)
         return
     total = _scaled_ms(ms)
@@ -167,7 +188,7 @@ def move_cursor(
     """
     _ = steps
     install_cursor(page)
-    if on_frame is not None:
+    if on_frame is not None and not _screencast_mode:
         _move_stepped(page, x, y, on_frame)
         return
     page.evaluate(
@@ -258,6 +279,106 @@ def _move_stepped(
             page.wait_for_timeout(int(hop_ms))
 
 
+def _trail_playback(
+    points: list[dict[str, int]],
+) -> tuple[list[dict[str, float]], float]:
+    """Keyframe a recorded mouse trail for screencast replay.
+
+    Host recordings include tens of seconds of wandering while talking. Replay
+    only the last ``TRAIL_APPROACH_MS`` of motion, subsampled, duration clamped
+    so Meet sees a connected glide — not a 350ms scribble.
+    """
+    parsed: list[tuple[float, float, float]] = []
+    for p in points:
+        x = float(p.get("x") or 0)
+        y = float(p.get("y") or 0)
+        try:
+            t = float(p.get("at_ms") or 0)
+        except (TypeError, ValueError):
+            t = 0.0
+        parsed.append((x, y, t))
+    if not parsed:
+        return [], 0.0
+    if MOTION_SCALE <= 0 or len(parsed) < 2:
+        x, y, _ = parsed[-1]
+        return [{"x": x, "y": y, "offset": 1.0}], 0.0
+
+    t0, t1 = parsed[0][2], parsed[-1][2]
+    span = t1 - t0
+    if span > TRAIL_APPROACH_MS:
+        cutoff = t1 - TRAIL_APPROACH_MS
+        approach = [pt for pt in parsed if pt[2] >= cutoff]
+        parsed = approach if len(approach) >= 2 else parsed[-2:]
+        t0, t1 = parsed[0][2], parsed[-1][2]
+        span = t1 - t0
+
+    if len(parsed) > TRAIL_MAX_FRAMES:
+        last_i = len(parsed) - 1
+        step = last_i / (TRAIL_MAX_FRAMES - 1)
+        idxs: list[int] = []
+        seen: set[int] = set()
+        for i in range(TRAIL_MAX_FRAMES - 1):
+            idx = int(round(i * step))
+            if idx not in seen:
+                seen.add(idx)
+                idxs.append(idx)
+        if last_i not in seen:
+            idxs.append(last_i)
+        parsed = [parsed[i] for i in idxs]
+
+    if span <= 0:
+        dist = sum(
+            ((parsed[i][0] - parsed[i - 1][0]) ** 2 + (parsed[i][1] - parsed[i - 1][1]) ** 2)
+            ** 0.5
+            for i in range(1, len(parsed))
+        )
+        duration = float(move_duration_ms(dist))
+    else:
+        duration = float(span)
+    duration = max(TRAIL_MIN_MS, min(TRAIL_MAX_MS, duration))
+
+    t0 = parsed[0][2]
+    denom = max(parsed[-1][2] - t0, 1.0)
+    frames: list[dict[str, float]] = []
+    last_i = len(parsed) - 1
+    for i, (x, y, t) in enumerate(parsed):
+        if i == 0:
+            off = 0.0
+        elif i == last_i:
+            off = 1.0
+        else:
+            off = min(1.0, max(0.0, (t - t0) / denom))
+        frames.append({"x": x, "y": y, "offset": off})
+    return frames, duration
+
+
+def _animate_path(page: Page, points: list[dict[str, int]]) -> None:
+    """Animate the cursor through a subsampled recorded trail in one CSS run."""
+    frames, duration = _trail_playback(points)
+    if not frames:
+        return
+    if duration <= 0 or len(frames) < 2:
+        last = frames[-1]
+        _place_cursor(page, last["x"], last["y"])
+        return
+    page.evaluate(
+        """async ([frames, duration]) => {
+          const c = document.getElementById('nav-cursor');
+          if (!c) return;
+          const kf = frames.map(f => ({
+            left: f.x + 'px', top: f.y + 'px', offset: f.offset,
+          }));
+          const anim = c.animate(kf, {duration, easing: 'linear', fill: 'forwards'});
+          try { await anim.finished; } catch (e) {}
+          const last = frames[frames.length - 1];
+          c.style.left = last.x + 'px';
+          c.style.top = last.y + 'px';
+          try { anim.cancel(); } catch (e) {}
+        }""",
+        [frames, duration],
+    )
+
+
 def _place_cursor(page: Page, x: float, y: float) -> None:
     page.evaluate(
         """([x, y]) => {
@@ -336,6 +457,11 @@ def replay_mouse_path(
     x1 = float(end.get("x") or 0)
     y1 = float(end.get("y") or 0)
     _snap_cursor(page, x0, y0)
+    if _screencast_mode:
+        # Screencast makes the whole recorded trail affordable — one in-page
+        # animation through every point, instead of 3 keypoints via screenshots.
+        _animate_path(page, points)
+        return x1, y1
     if on_frame is not None:
         on_frame()
     # Mid keypoint keeps a hint of the real trail without N screenshots.
@@ -349,6 +475,64 @@ def replay_mouse_path(
     else:
         _snap_cursor(page, x1, y1)
     return x1, y1
+
+
+def _box_in_viewport(
+    page: Page, box: dict[str, float] | None, *, margin: float = 8.0
+) -> bool:
+    if not box:
+        return False
+    vp = page.viewport_size or {"width": 1280, "height": 720}
+    return (
+        box["y"] + box["height"] > margin
+        and box["y"] < vp["height"] - margin
+        and box["x"] + box["width"] > margin
+        and box["x"] < vp["width"] - margin
+    )
+
+
+def _smooth_scroll_into_view(
+    page: Page,
+    loc,
+    *,
+    on_frame: Callable[[], None] | None = None,
+    timeout: float = 5000,
+) -> None:
+    """Animated scroll so Meet sees the page move — not a teleport click."""
+    try:
+        loc.wait_for(state="attached", timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        box = loc.bounding_box(timeout=timeout)
+    except Exception:  # noqa: BLE001
+        box = None
+    if _box_in_viewport(page, box):
+        return
+    if MOTION_SCALE <= 0:
+        try:
+            loc.scroll_into_view_if_needed(timeout=timeout)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        loc.evaluate(
+            "el => el.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'})"
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            loc.scroll_into_view_if_needed(timeout=timeout)
+        except Exception:  # noqa: BLE001
+            return
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        _paced_wait(page, 50, on_frame)
+        try:
+            box = loc.bounding_box(timeout=500)
+        except Exception:  # noqa: BLE001
+            box = None
+        if _box_in_viewport(page, box, margin=40):
+            break
 
 
 def guide_to(
@@ -368,12 +552,7 @@ def guide_to(
 
     loc = page.locator(selector).first
     loc.wait_for(state="attached", timeout=timeout)
-    # Playwright scroll — works for :has-text / role selectors (not CSS-only).
-    try:
-        loc.scroll_into_view_if_needed(timeout=timeout)
-        _paced_wait(page, SCROLL_MS, on_frame)
-    except Exception:  # noqa: BLE001
-        pass
+    _smooth_scroll_into_view(page, loc, on_frame=on_frame, timeout=timeout)
 
     box = loc.bounding_box(timeout=timeout)
     if box is None:
@@ -434,30 +613,40 @@ def click_with_cursor(
     on_frame: Callable[[], None] | None = None,
     mouse_path: list[dict[str, int]] | None = None,
 ) -> None:
-    """Move cursor then click. With a recorded path, click the recorded point."""
-    use_path = bool(mouse_path)
-    if use_path:
-        install_cursor(page)
-        page.evaluate("(s) => { window.__navMotionScale = s; }", _motion_scale())
-        x, y = replay_mouse_path(page, mouse_path or [], on_frame=on_frame)
-        _paced_wait(page, min(80.0, PAUSE_BEFORE_CLICK_MS * _motion_scale()), on_frame)
+    """Move cursor then click. Scroll target into view first (recorded paths
+    are viewport coords from an already-scrolled page). Missing selector falls
+    back to the recorded point.
+    """
+    loc = page.locator(selector).first
+    attached = False
+    try:
+        loc.wait_for(state="attached", timeout=timeout)
+        attached = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    if attached or not mouse_path:
+        x, y = guide_to(
+            page, selector, timeout=timeout, highlight=True, on_frame=on_frame
+        )
+        loc = page.locator(selector).first
         _play_click_fx(page, x, y)
-        _paced_wait(page, PRESS_MS / 2.0 * _motion_scale(), on_frame)
-        # Click the exact recorded viewport point — never scroll-then-CSS after
-        # the trail (that jumped to a different element and looked random).
-        page.mouse.click(x, y)
-        _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0) * _motion_scale(), on_frame)
+        _paced_wait(page, PRESS_MS / 2.0, on_frame)
+        loc.click(timeout=timeout)
+        _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0), on_frame)
         _clear_highlight(page)
-        _paced_wait(page, PAUSE_AFTER_CLICK_MS * _motion_scale(), on_frame)
+        _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)
         return
 
-    x, y = guide_to(
-        page, selector, timeout=timeout, highlight=True, on_frame=on_frame
-    )
-    loc = page.locator(selector).first
+    install_cursor(page)
+    page.evaluate("(s) => { window.__navMotionScale = s; }", _motion_scale())
+    x, y = replay_mouse_path(page, mouse_path, on_frame=on_frame)
+    _paced_wait(page, min(80.0, PAUSE_BEFORE_CLICK_MS * _motion_scale()), on_frame)
     _play_click_fx(page, x, y)
-    _paced_wait(page, PRESS_MS / 2.0, on_frame)
-    loc.click(timeout=timeout)
-    _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0), on_frame)
+    _paced_wait(page, PRESS_MS / 2.0 * _motion_scale(), on_frame)
+    page.mouse.click(x, y)
+    _paced_wait(
+        page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0) * _motion_scale(), on_frame
+    )
     _clear_highlight(page)
-    _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)
+    _paced_wait(page, PAUSE_AFTER_CLICK_MS * _motion_scale(), on_frame)

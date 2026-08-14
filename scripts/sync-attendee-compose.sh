@@ -16,4 +16,5 @@ if [[ ! -d "$ATTENDEE" ]]; then
   exit 1
 fi
 cp "$SRC" "$DST"
-echo "[sync] wrote $DST (ENABLE_VOICE_AGENTS=true)"
+echo "[sync] wrote $DST (ENABLE_VOICE_AGENTS=true SAVE_DEBUG_RECORDINGS=false)"
+python3 "$ROOT/scripts/disable-attendee-debug-recording.py" "$ATTENDEE"

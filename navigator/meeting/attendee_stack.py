@@ -19,7 +19,7 @@ from navigator.core.settings import settings
 
 _COMPOSE_FILES = ("dev.docker-compose.yaml", "local.docker-compose.yaml")
 _COMPOSE_PROFILE = "webpage-streamer"
-_COMPOSE_ID = "voice-agents-v3-worker-dns"
+_COMPOSE_ID = "voice-agents-v4-no-debug-rec"
 _STREAMER_SERVICE = "attendee-webpage-streamer-local"
 
 
@@ -65,6 +65,20 @@ def _sync_attendee_override(compose_dir: Path) -> None:
         print(f"[attendee] synced voice-agent compose → {dst}", flush=True)
     except OSError as exc:
         print(f"[attendee] WARN: compose sync skipped: {exc}", flush=True)
+        return
+    import importlib.util
+
+    patch_path = Path(__file__).resolve().parents[2] / "scripts" / "disable-attendee-debug-recording.py"
+    spec = importlib.util.spec_from_file_location("nav_disable_attendee_debug_rec", patch_path)
+    if spec is None or spec.loader is None:
+        print("[attendee] WARN: debug-rec patch script missing", flush=True)
+        return
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    try:
+        print(f"[attendee] debug-rec: {mod.patch(compose_dir)}", flush=True)
+    except OSError as exc:
+        print(f"[attendee] WARN: debug-rec patch skipped: {exc}", flush=True)
 
 
 def _needs_voice_agent_recreate(compose_dir: Path) -> bool:

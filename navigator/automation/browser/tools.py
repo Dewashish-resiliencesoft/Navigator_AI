@@ -205,7 +205,12 @@ def wait_for(
     on_frame: Callable[[], None] | None = None,
     mouse_path: list[dict[str, int]] | None = None,
 ) -> tuple[str, str]:
+    alias = (call.selector or "").strip().lower()
+    if alias == "body":
+        return "body ready", page_id
     css = graph.selector(page_id, call.selector)
+    if css.strip().lower() == "body":
+        return "body ready", page_id
     page.wait_for_selector(
         css, timeout=_action_timeout(call.timeout_ms), state="visible"
     )

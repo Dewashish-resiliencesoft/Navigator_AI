@@ -394,7 +394,7 @@ def _install_listeners(
         except Exception as exc:  # noqa: BLE001
             print(f"[record] reinject skipped: {exc}", flush=True)
 
-    page.on("load", lambda: _reinject())
+    page.on("load", lambda *_: _reinject())
     _reinject()
 
 
@@ -515,6 +515,7 @@ def record_session(
     steps_out: list[RecordedStep] | None = None,
     gate: CaptureGate | None = None,
     narration: NarrationCapture | None = None,
+    browser_ws: str = "",
 ) -> Path:
     """Open browser, record clicks/fills until Enter — or until `stop_event` is set."""
     steps: list[RecordedStep] = steps_out if steps_out is not None else []
@@ -522,7 +523,18 @@ def record_session(
     if gate is None:
         gate = CaptureGate(phase="capturing")
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=not headful)
+        ws = (browser_ws or "").strip()
+        if ws:
+            print("[record] connecting to local Playwright server", flush=True)
+            try:
+                browser = pw.chromium.connect(ws, timeout=20_000)
+            except Exception as exc:  # noqa: BLE001
+                raise RuntimeError(
+                    "local record browser not reachable — on your laptop run "
+                    ".venv/bin/python scripts/local_record_server.py"
+                ) from exc
+        else:
+            browser = pw.chromium.launch(headless=not headful)
         # Match live-demo screenshare viewport so recorded mouse coords replay 1:1.
         context = browser.new_context(viewport={"width": 1280, "height": 720})
         if narration is not None:
@@ -589,7 +601,9 @@ def record_session(
             )
         try:
             context.close()
-            browser.close()
+            # Connected local server must stay up for the next Record click.
+            if not ws:
+                browser.close()
         except Exception as exc:  # noqa: BLE001
             # User often closes the window before Enter — ignore TargetClosedError noise.
             print(f"[record] browser already closed ({exc.__class__.__name__})", flush=True)

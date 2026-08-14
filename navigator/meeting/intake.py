@@ -195,6 +195,16 @@ def run_intake(
     prefill = {k: v.strip() for k, v in (prefill or {}).items() if v and v.strip()}
     lang: SpokenLanguage = spoken_language
     product = prospect_facing_product(persona)
+    reserved_names = frozenset(
+        x.strip().lower()
+        for x in (
+            getattr(persona, "agent_name", "") or "",
+            product,
+            "navigator",
+            "navigator ai",
+        )
+        if x and str(x).strip()
+    )
     questions = intake_questions(lang=lang, product_name=product)
 
     hello = greet_line(
@@ -203,16 +213,12 @@ def run_intake(
         lang=lang,
         agent_gender=agent_gender,
     )
-    # Warm TTS for greet + questions while we speak / listen (MeetSpeaker).
-    prefetch = getattr(speaker, "prefetch_lines", None)
-    if callable(prefetch):
-        prefetch([hello, *[q for _, q, _ in questions]])
     _say(speaker, hello)
 
     for key, question, default in questions:
         prefilled = (prefill.get(key) or "").strip()
         if prefilled:
-            cleaned = _clean_field(key, prefilled)
+            cleaned = _clean_field(key, prefilled, reserved_names=reserved_names)
             answers[key] = _answer_or_empty(key, cleaned)
             print(f"[intake] {key}={answers[key]!r} (prefilled)", flush=True)
             if key == "name" and answers.get("name") and answers["name"] != "there":
@@ -220,17 +226,6 @@ def run_intake(
             continue
         _say(speaker, question)
         if listen is not None:
-            # Prefetch next unanswered question while STT runs.
-            if callable(prefetch):
-                nxt = [
-                    q
-                    for k, q, _ in questions
-                    if k != key
-                    and k not in answers
-                    and not (prefill.get(k) or "").strip()
-                ]
-                if nxt:
-                    prefetch(nxt[:2])
             print(f"[intake] listening for {key}…", flush=True)
             heard = ""
             try:
@@ -249,16 +244,30 @@ def run_intake(
                 answers[key] = ""
                 print(f"[intake] {key} skipped (declined)", flush=True)
             else:
-                if fast_extract:
-                    cleaned = _clean_field(key, heard) if heard else ""
+                if not heard:
+                    cleaned = ""
+                elif fast_extract:
+                    cleaned = _clean_field(
+                        key, heard, reserved_names=reserved_names, question=question
+                    )
                 else:
-                    cleaned = extract_intake_entity(key, question, heard) if heard else ""
+                    cleaned = extract_intake_entity(
+                        key, question, heard, reserved_names=reserved_names
+                    )
                 answers[key] = _answer_or_empty(key, cleaned)
                 print(
                     f"[intake] {key}={answers[key]!r}"
-                    + ("" if heard else " (empty)"),
+                    + ("" if heard else " (silence — not inventing an answer)"),
                     flush=True,
                 )
+                # Only acknowledge a name the prospect actually spoke.
+                if (
+                    key == "name"
+                    and heard
+                    and answers.get("name")
+                    and answers["name"] != "there"
+                ):
+                    _say(speaker, name_ack_line(answers["name"], lang=lang))
         elif interactive:
             try:
                 typed = input(f"[intake {key}] > ").strip()
@@ -267,13 +276,24 @@ def run_intake(
             if is_declined(typed):
                 answers[key] = ""
             else:
-                answers[key] = _answer_or_empty(key, _clean_field(key, typed) if typed else "")
+                answers[key] = _answer_or_empty(
+                    key,
+                    _clean_field(key, typed, reserved_names=reserved_names)
+                    if typed
+                    else "",
+                )
+            if (
+                key == "name"
+                and typed
+                and answers.get("name")
+                and answers["name"] != "there"
+            ):
+                _say(speaker, name_ack_line(answers["name"], lang=lang))
         else:
             answers[key] = _answer_or_empty(key, _clean_field(key, default) or default)
             print(f"[intake] (non-interactive) {key}={answers[key]!r}", flush=True)
 
-        if key == "name" and answers.get("name"):
-            _say(speaker, name_ack_line(answers["name"], lang=lang))
+        # Listen/interactive paths already ack when appropriate; non-interactive skip.
 
     intake = ProspectIntake(
         name=answers.get("name", ""),
@@ -337,25 +357,42 @@ def _answer_or_empty(key: str, cleaned: str) -> str:
     return ""
 
 
-def _clean_field(key: str, value: str) -> str:
+def _clean_field(
+    key: str,
+    value: str,
+    *,
+    reserved_names: frozenset[str] | None = None,
+    question: str = "",
+) -> str:
     if key == "name":
-        return clean_name(value)
+        return clean_name(value, reserved=reserved_names)
     if key == "company":
         return clean_company(value)
     if key == "business_type":
         return clean_business(value)
     if key == "looking_for":
+        # Drop STT that is just a replay/paraphrase of the question we asked.
+        from navigator.meeting.intake_clean import is_likely_bot_echo
+
+        if question and is_likely_bot_echo(value, question):
+            return ""
         return summarize_need(value, max_len=120) or clean_phrase(value)
     return clean_phrase(value)
 
 
-def extract_intake_entity(key: str, question: str, heard: str) -> str:
+def extract_intake_entity(
+    key: str,
+    question: str,
+    heard: str,
+    *,
+    reserved_names: frozenset[str] | None = None,
+) -> str:
     from navigator.agent.providers import get_provider
     try:
         provider = get_provider()
     except RuntimeError as e:
         print(f"[intake] LLM fallback due to: {e}")
-        return _clean_field(key, heard)
+        return _clean_field(key, heard, reserved_names=reserved_names, question=question)
 
     sys_prompt = f"""You are an extraction assistant for a sales call.
 The agent asked: "{question}"
@@ -364,6 +401,7 @@ The user replied: "{heard}"
 Your task is to extract ONLY the specific piece of information requested (e.g., just the company name, just the person's name, or just the business type).
 If the user says they don't have one, or gives a negative response, output: "NONE"
 If the user's answer is ambiguous or doesn't contain the requested information, output: "NONE"
+If the transcript is clearly the agent talking to itself (bot name, product pitch, or a repeat of the question), output: "NONE"
 Do not output full sentences. Only output the extracted entity. Do not use quotes."""
 
     try:
@@ -372,7 +410,9 @@ Do not output full sentences. Only output the extracted entity. Do not use quote
             return ""
         if is_declined(result):
             return ""
-        return result.strip()
+        return _clean_field(
+            key, result.strip(), reserved_names=reserved_names, question=question
+        )
     except Exception as exc:
         msg = str(exc)
         if "429" in msg and "limit: 0" in msg:
@@ -383,7 +423,7 @@ Do not output full sentences. Only output the extracted entity. Do not use quote
             )
         else:
             print(f"[intake] LLM extraction failed: {exc}", flush=True)
-        return _clean_field(key, heard)
+        return _clean_field(key, heard, reserved_names=reserved_names, question=question)
 
 
 def _say(speaker: Speaker, text: str) -> None:

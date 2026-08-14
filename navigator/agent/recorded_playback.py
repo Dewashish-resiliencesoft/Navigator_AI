@@ -2,9 +2,8 @@
 
 Replays a recording as a copy of itself: every cue sits at an absolute time on
 the flow's clock, and playback waits until that time rather than sleeping
-between steps. Narration therefore starts at the same offset relative to its
-click as it did during capture — never before, never after. See
-`navigator.agent.playback_schedule` for the timing rules.
+between steps. Narrated steps start speech and the cursor/click together so
+Meet sees the pointer on the control while the line names it.
 
 LangGraph speak-then-click walkthrough is the fallback when metadata is missing.
 """
@@ -37,6 +36,8 @@ PREFETCH_WAIT_S = 20.0
 
 PAUSE_LINE = "One moment — let me get that step right."
 SKIP_LINE = "Moving on — we'll skip that step for now."
+#: After a browser act, let Meet catch the frame before the next line.
+_ACT_SETTLE_S = 0.25
 
 DemoOrigin = Literal["dashboard_test", "public_embed"]
 
@@ -350,6 +351,7 @@ def _run_flow_timeline_inner(
     #: stretches (see live log: act 1 at 00:56 while speak 0 still running).
     speech_idx: int | None = None
     skipped: set[int] = set()
+    last_was_act = False
     t0 = time.monotonic()
     #: Runtime slip (retries, slow pages) and TTS overrun both land here, so a
     #: late step moves narration AND action together instead of desyncing them.
@@ -390,6 +392,12 @@ def _run_flow_timeline_inner(
             # absorbs the overrun, which makes this step's action late, which
             # shifts the rest — narration and action stay together.
             poll_barge_in_language_switch(deps)
+            if last_was_act:
+                _wait_until(deps, time.monotonic() + _ACT_SETTLE_S)
+                last_was_act = False
+                late = elapsed_ms() - due_ms
+                if late > 0:
+                    shift_ms += late
             # Guard only: the schedule is what keeps lines from overlapping.
             _wait_speech(speech)
             print(
@@ -409,6 +417,7 @@ def _run_flow_timeline_inner(
             speech_idx = None
 
         print(f"[timeline] {fmt_ms(elapsed_ms())} act step {cue.idx}", flush=True)
+        last_was_act = True
         entry, current_page = _run_step(
             deps,
             call,
@@ -428,6 +437,7 @@ def _run_flow_timeline_inner(
         if not entry.failed:
             continue
 
+        skipped.add(cue.idx)
         outcome.failures.append(entry)
         if not entry.actual_result.ok:
             if _hard_stop_on_click_fail(deps, strict=strict):

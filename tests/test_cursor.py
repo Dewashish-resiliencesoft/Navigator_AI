@@ -176,3 +176,32 @@ def test_trail_playback_short_path_keeps_start(monkeypatch):
     assert frames[0]["x"] == 10
     assert frames[-1]["x"] == 80
 
+
+def test_click_with_cursor_scrolls_below_fold_target(page, monkeypatch):
+    """Recorded path is viewport coords; demo must scroll so Meet sees the target."""
+    from navigator.automation.browser import cursor as cursor_mod
+    from navigator.automation.browser.cursor import click_with_cursor
+
+    monkeypatch.setattr(cursor_mod, "MOTION_SCALE", 0.0)
+    page.set_viewport_size({"width": 800, "height": 400})
+    page.set_content(
+        '<div style="height:1600px"></div>'
+        '<button id="deep" style="width:80px;height:24px">Send campaign</button>'
+    )
+    page.evaluate(
+        """() => {
+          window.__navClicks = 0;
+          document.getElementById('deep').addEventListener('click', () => {
+            window.__navClicks += 1;
+          });
+        }"""
+    )
+    path = [
+        {"x": 20, "y": 20, "at_ms": 0},
+        {"x": 40, "y": 40, "at_ms": 40},
+    ]
+    assert page.evaluate("window.scrollY") == 0
+    click_with_cursor(page, "#deep", mouse_path=path, timeout=3000)
+    assert page.evaluate("window.__navClicks") >= 1
+    assert page.evaluate("window.scrollY") > 200
+

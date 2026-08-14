@@ -11,9 +11,10 @@ until each event's time. Two kinds of event, per step:
     SPEAK  start narrating step N
     ACT    execute step N's browser action
 
-`ACT` comes from ``_meta.step_clicks``. `SPEAK` comes from ``_meta.step_speech``
--- when the host's voice actually started, per step. The gap between them is the
-lead-in the host performed, and reproducing it per-step is the whole point.
+`ACT` comes from ``_meta.step_clicks``. `SPEAK` comes from ``_meta.step_speech``.
+Narrated steps fire both at the speak time so the cursor moves while the line
+plays ("here's the send campaign button" + pointer on that button). Silent
+clicks keep recorded spacing.
 
 Pure transforms over recorded data: no I/O, no browser, no CallDeps. Every
 timing rule lives here so it can be tested without a demo running.
@@ -143,8 +144,7 @@ def build_schedule(
     total = 0
 
     for i in range(n_steps):
-        # Both move by the same shift, so the recorded lead-in between them
-        # survives every stretch. This is the sync invariant.
+        # Both move by the same shift so a late line does not desync later steps.
         at_speak = max(speak[i] + shift, prev_speak)
         at_act = max(act[i] + shift, prev_act)
         # Silent recorded bursts (several clicks in a second, no narration) are
@@ -154,6 +154,10 @@ def build_schedule(
             at_act = prev_act + MIN_ACT_GAP_MS
 
         if narrated[i]:
+            # Cursor rides the line. Recorded talk-then-click lead-in left Meet
+            # hearing "here's the button" on a still screen.
+            at_act = max(at_speak, prev_act)
+            at_speak = at_act
             spoken_ms = duration(i)
             cues.append(Cue(i, "speak", at_speak, _line(lines, i)))
             prev_speak = at_speak

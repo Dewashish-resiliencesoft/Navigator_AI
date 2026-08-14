@@ -2,9 +2,8 @@
 
 Replays a recording as a copy of itself: every cue sits at an absolute time on
 the flow's clock, and playback waits until that time rather than sleeping
-between steps. Narration therefore starts at the same offset relative to its
-click as it did during capture — never before, never after. See
-`navigator.agent.playback_schedule` for the timing rules.
+between steps. Narrated steps start speech and the cursor/click together so
+Meet sees the pointer on the control while the line names it.
 
 LangGraph speak-then-click walkthrough is the fallback when metadata is missing.
 """

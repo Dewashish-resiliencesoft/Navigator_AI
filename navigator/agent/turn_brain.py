@@ -114,3 +114,85 @@ def decide_turn(
 
 def capture_screenshot_png(page) -> bytes:
     return page.screenshot(type="png", full_page=False)
+
+
+_STOPWORDS = {
+    "the",
+    "a",
+    "an",
+    "to",
+    "of",
+    "and",
+    "or",
+    "is",
+    "it",
+    "this",
+    "that",
+    "here",
+    "let",
+    "me",
+    "you",
+    "we",
+    "on",
+    "in",
+    "for",
+    "with",
+    "looks",
+    "good",
+    "ok",
+    "okay",
+    "yes",
+    "yeah",
+}
+
+
+def _content_words(text: str) -> set[str]:
+    return {
+        w
+        for w in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(w) > 2 and w not in _STOPWORDS
+    }
+
+
+def narration_aligned(utterance: str, expected_line: str) -> bool:
+    """True when the client is talking about the current spoken line."""
+    u = _content_words(utterance)
+    e = _content_words(expected_line)
+    if not u:
+        return True
+    if not e:
+        return False
+    return bool(u & e)
+
+
+def should_track_screenshot(
+    *,
+    utterance: str = "",
+    expected_line: str = "",
+    stuck: bool = False,
+) -> bool:
+    """One PNG for the AI — only when stuck or the client left the current line.
+
+    Meet/Zoom screenshare stays a live video. This is not that pipe.
+    """
+    if stuck:
+        return True
+    if not (utterance or "").strip():
+        return False
+    return not narration_aligned(utterance, expected_line)
+
+
+def expected_narration_line(deps: object, state: dict | None = None) -> str:
+    last = getattr(deps, "speaker", None)
+    spoken = getattr(last, "last_spoken", None)
+    if isinstance(spoken, str) and spoken.strip():
+        return spoken
+    said = getattr(last, "said", None)
+    if isinstance(said, list) and said:
+        return str(said[-1])
+    if state:
+        narr = state.get("narration") or []
+        if narr:
+            return str(narr[-1])
+    return ""
+

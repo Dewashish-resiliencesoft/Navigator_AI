@@ -6,6 +6,7 @@ module constants (MOTION_SCALE=0 makes tests instant).
 
 from __future__ import annotations
 
+import time
 from typing import Callable
 
 from playwright.sync_api import Page
@@ -21,7 +22,6 @@ PAUSE_AFTER_CLICK_MS = 200
 HIGHLIGHT_FADE_MS = 280
 RIPPLE_MS = 320
 PRESS_MS = 120
-SCROLL_MS = 450
 # Tests / CI: set to 0 so waits and animations collapse.
 MOTION_SCALE = 1.0
 # Screencast trail replay: last N ms of recorded motion, visible duration clamp.
@@ -477,6 +477,64 @@ def replay_mouse_path(
     return x1, y1
 
 
+def _box_in_viewport(
+    page: Page, box: dict[str, float] | None, *, margin: float = 8.0
+) -> bool:
+    if not box:
+        return False
+    vp = page.viewport_size or {"width": 1280, "height": 720}
+    return (
+        box["y"] + box["height"] > margin
+        and box["y"] < vp["height"] - margin
+        and box["x"] + box["width"] > margin
+        and box["x"] < vp["width"] - margin
+    )
+
+
+def _smooth_scroll_into_view(
+    page: Page,
+    loc,
+    *,
+    on_frame: Callable[[], None] | None = None,
+    timeout: float = 5000,
+) -> None:
+    """Animated scroll so Meet sees the page move — not a teleport click."""
+    try:
+        loc.wait_for(state="attached", timeout=timeout)
+    except Exception:  # noqa: BLE001
+        return
+    try:
+        box = loc.bounding_box(timeout=timeout)
+    except Exception:  # noqa: BLE001
+        box = None
+    if _box_in_viewport(page, box):
+        return
+    if MOTION_SCALE <= 0:
+        try:
+            loc.scroll_into_view_if_needed(timeout=timeout)
+        except Exception:  # noqa: BLE001
+            pass
+        return
+    try:
+        loc.evaluate(
+            "el => el.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'})"
+        )
+    except Exception:  # noqa: BLE001
+        try:
+            loc.scroll_into_view_if_needed(timeout=timeout)
+        except Exception:  # noqa: BLE001
+            return
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        _paced_wait(page, 50, on_frame)
+        try:
+            box = loc.bounding_box(timeout=500)
+        except Exception:  # noqa: BLE001
+            box = None
+        if _box_in_viewport(page, box, margin=40):
+            break
+
+
 def guide_to(
     page: Page,
     selector: str,
@@ -494,12 +552,7 @@ def guide_to(
 
     loc = page.locator(selector).first
     loc.wait_for(state="attached", timeout=timeout)
-    # Playwright scroll — works for :has-text / role selectors (not CSS-only).
-    try:
-        loc.scroll_into_view_if_needed(timeout=timeout)
-        _paced_wait(page, SCROLL_MS, on_frame)
-    except Exception:  # noqa: BLE001
-        pass
+    _smooth_scroll_into_view(page, loc, on_frame=on_frame, timeout=timeout)
 
     box = loc.bounding_box(timeout=timeout)
     if box is None:
@@ -560,30 +613,40 @@ def click_with_cursor(
     on_frame: Callable[[], None] | None = None,
     mouse_path: list[dict[str, int]] | None = None,
 ) -> None:
-    """Move cursor then click. With a recorded path, click the recorded point."""
-    use_path = bool(mouse_path)
-    if use_path:
-        install_cursor(page)
-        page.evaluate("(s) => { window.__navMotionScale = s; }", _motion_scale())
-        x, y = replay_mouse_path(page, mouse_path or [], on_frame=on_frame)
-        _paced_wait(page, min(80.0, PAUSE_BEFORE_CLICK_MS * _motion_scale()), on_frame)
+    """Move cursor then click. Scroll target into view first (recorded paths
+    are viewport coords from an already-scrolled page). Missing selector falls
+    back to the recorded point.
+    """
+    loc = page.locator(selector).first
+    attached = False
+    try:
+        loc.wait_for(state="attached", timeout=timeout)
+        attached = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    if attached or not mouse_path:
+        x, y = guide_to(
+            page, selector, timeout=timeout, highlight=True, on_frame=on_frame
+        )
+        loc = page.locator(selector).first
         _play_click_fx(page, x, y)
-        _paced_wait(page, PRESS_MS / 2.0 * _motion_scale(), on_frame)
-        # Click the exact recorded viewport point — never scroll-then-CSS after
-        # the trail (that jumped to a different element and looked random).
-        page.mouse.click(x, y)
-        _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0) * _motion_scale(), on_frame)
+        _paced_wait(page, PRESS_MS / 2.0, on_frame)
+        loc.click(timeout=timeout)
+        _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0), on_frame)
         _clear_highlight(page)
-        _paced_wait(page, PAUSE_AFTER_CLICK_MS * _motion_scale(), on_frame)
+        _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)
         return
 
-    x, y = guide_to(
-        page, selector, timeout=timeout, highlight=True, on_frame=on_frame
-    )
-    loc = page.locator(selector).first
+    install_cursor(page)
+    page.evaluate("(s) => { window.__navMotionScale = s; }", _motion_scale())
+    x, y = replay_mouse_path(page, mouse_path, on_frame=on_frame)
+    _paced_wait(page, min(80.0, PAUSE_BEFORE_CLICK_MS * _motion_scale()), on_frame)
     _play_click_fx(page, x, y)
-    _paced_wait(page, PRESS_MS / 2.0, on_frame)
-    loc.click(timeout=timeout)
-    _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0), on_frame)
+    _paced_wait(page, PRESS_MS / 2.0 * _motion_scale(), on_frame)
+    page.mouse.click(x, y)
+    _paced_wait(
+        page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0) * _motion_scale(), on_frame
+    )
     _clear_highlight(page)
-    _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)
+    _paced_wait(page, PAUSE_AFTER_CLICK_MS * _motion_scale(), on_frame)

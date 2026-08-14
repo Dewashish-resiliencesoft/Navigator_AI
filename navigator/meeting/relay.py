@@ -21,10 +21,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from playwright.sync_api import Page
 
-#: Meet `/view` JPEG poll cadence. 30fps looks smooth without the JPEG spam that
-#: froze Chromium at 60fps. Viable now that Attendee's ffmpeg recorder is off.
-#: ponytail: 30fps ceiling. Bump toward 16ms only if the box has headroom.
-VIEW_FRAME_MS = 33
+#: Meet `/view` JPEG poll cadence. 16ms ≈ 60fps. CPU hog (Attendee ffmpeg
+#: recorder) is off, so this is viable again.
+VIEW_FRAME_MS = 16
 #: CDP screencast every repaint (60fps source) — cursor motion stays fluid.
 SCREENCAST_EVERY_NTH_FRAME = 1
 
@@ -59,7 +58,7 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 33);
+  setTimeout(tickFrame, 16);
 }
 tickFrame();
 </script></body></html>

@@ -494,10 +494,13 @@ def wait_until_joined(
         if bot.state == "fatal_error":
             raise RuntimeError(
                 f"Attendee bot fatal_error (last state={last}). "
-                "Common Zoom causes: Attendee worker cannot resolve the ZAK tunnel "
-                "hostname (check attendee-worker-local DNS), ZAK callback 401/502, "
-                "or Zoom SDK 'Invalid signature' when ZAK never arrived. "
-                "See Attendee worker logs: docker compose logs attendee-worker-local"
+                "Zoom web SDK error 3712 'Invalid signature' means Attendee's "
+                "Meeting SDK JWT is wrong — NAVIGATOR_ZOOM_CLIENT_ID/SECRET must "
+                "be a Meeting SDK (or General App with Meeting SDK) Client ID/"
+                "Secret, not Server-to-Server OAuth. A ZAK callback 200 does not "
+                "prove the SDK signature. Other causes: worker DNS for the ZAK "
+                "tunnel hostname, or ZAK callback 401/502. "
+                "See: docker compose logs attendee-worker-local"
             )
         if "waiting" in last.lower() and not warned_waiting:
             warned_waiting = True
@@ -709,6 +712,7 @@ def run_live_meet_demo(
     audio_tunnel = None
     screencast = None
     bot_id: str | None = None
+    live_box: list = []
 
     try:
         zoom_native = is_zoom_meeting(meeting_url)
@@ -878,7 +882,6 @@ def run_live_meet_demo(
 
         pending_barge_in: list[str] = []
         speaker_box: list = []
-        live_box: list = []
         meet_speaker = MeetSpeaker(
             speaker,
             client,

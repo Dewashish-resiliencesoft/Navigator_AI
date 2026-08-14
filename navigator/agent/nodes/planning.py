@@ -165,42 +165,6 @@ def _guide_page_id(state: CallState) -> str:
     )
 
 
-def _section_knowledge_for_step(
-    deps: CallDeps,
-    *,
-    page_id: str,
-    flow_id: str,
-    step_action: str,
-) -> str:
-    """Pull knowledge that matches this page/flow so narration can explain it."""
-    try:
-        page_name = deps.graph.page(page_id).name
-    except Exception:  # noqa: BLE001
-        page_name = page_id
-    query = " ".join(
-        part for part in (page_name, flow_id.replace("_", " "), step_action) if part
-    ).strip()
-    if not query:
-        return ""
-    chroma_path = (
-        deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
-    )
-    try:
-        chunks = retrieve_product_knowledge(
-            deps.product_id, query, k=3, path=chroma_path
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[plan] section knowledge skipped: {exc}", flush=True)
-        return ""
-    # Soft prefer chunks that mention the page/section name.
-    needle = page_name.lower()
-    ranked = sorted(
-        chunks,
-        key=lambda c: (0 if needle and needle in c.lower() else 1, -len(c)),
-    )
-    return "\n".join(ranked[:3])
-
-
 def _ensure_browser_on_page(deps: CallDeps, page_id: str) -> None:
     """After a Topic detour, put the browser back where the Default step expects.
 
@@ -320,6 +284,11 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
             )
 
     if state.get("user_correction"):
+        query = _query_from_transcript(list(state.get("transcript") or []))
+        if query:
+            brain = _try_turn_brain(state, deps, utterance=query)
+            if brain is not None:
+                return brain
         return _plan_user_correction(state, deps)
 
     phase = state.get("phase") or "walkthrough"
@@ -491,6 +460,17 @@ def _plan_interrupt(
         return tier2
 
     # Retrieve found nothing actionable — vision turn-brain may still navigate.
+    from navigator.agent.turn_brain import (
+        expected_narration_line,
+        should_track_screenshot,
+    )
+
+    if not should_track_screenshot(
+        utterance=utterance,
+        expected_line=expected_narration_line(deps, state),
+    ):
+        return _plan_walkthrough_next(state, deps)
+
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     brain = _try_turn_brain(state, deps, utterance=utterance)
     if brain is not None:
@@ -1057,52 +1037,8 @@ def _walkthrough_spoken(
     from navigator.automation.narration import spoken_for_live_step
 
     fallback = spoken_for_live_step(yaml_hint, max_len=200) or "Let me show you the next step."
-
-    # Playlist demos use recorded lines — skip per-step Gemini (quota + latency).
-    if getattr(deps, "playlist_only", False):
-        return fallback
-
-    if not (_use_turn_brain(deps) and deps.page is not None):
-        return fallback
-
-    try:
-        from navigator.agent.turn_brain import capture_screenshot_png
-        from navigator.agent.vision_narrator import generate_narration
-
-        png = capture_screenshot_png(deps.page)
-        screen = ""
-        if deps.screen_context is not None:
-            screen = deps.screen_context() or ""
-        intake_summary = ""
-        if deps.intake:
-            intake_summary = (
-                f"{deps.intake.name} at {deps.intake.company}, "
-                f"{deps.intake.business_type}, need={deps.intake.looking_for}"
-            )
-        tool = getattr(nxt, "tool", "") or type(nxt).__name__
-        alias = getattr(nxt, "alias", "") or getattr(nxt, "page_id", "")
-        step_action = f"{tool} {alias}".strip()
-        section_knowledge = _section_knowledge_for_step(
-            deps,
-            page_id=page_id,
-            flow_id=flow_id,
-            step_action=step_action,
-        )
-        spoken = generate_narration(
-            screenshot_png=png,
-            screen_text=screen,
-            narration_hint=yaml_hint,
-            intake_summary=intake_summary,
-            product_brief=deps.product_brief or "",
-            step_action=step_action,
-            section_knowledge=section_knowledge,
-            spoken_language=deps.spoken_language,
-            agent_gender=deps.agent_gender,
-        )
-        return spoken_for_live_step(spoken, max_len=200) or fallback
-    except Exception as exc:  # noqa: BLE001
-        print(f"[plan] vision narration skipped: {exc}", flush=True)
-        return fallback
+    # ponytail: recorded line / YAML only. Vision PNG is interrupt/stuck, not every step.
+    return fallback
 
 
 def _use_turn_brain(deps: CallDeps) -> bool:
@@ -1364,44 +1300,6 @@ def _spoken_for_flow_step(
     yaml_hint = format_with_intake(yaml_hint, deps.intake)
     parts = [p for p in (intro, resume_bridge, yaml_hint) if p.strip()]
     spoken = " ".join(parts).strip()
-
-    if _use_turn_brain(deps) and deps.page is not None:
-        try:
-            from navigator.agent.turn_brain import capture_screenshot_png
-            from navigator.agent.vision_narrator import generate_narration
-
-            png = capture_screenshot_png(deps.page)
-            screen = ""
-            if deps.screen_context is not None:
-                screen = deps.screen_context() or ""
-            intake_summary = ""
-            if deps.intake:
-                intake_summary = (
-                    f"{deps.intake.name} at {deps.intake.company}, "
-                    f"{deps.intake.business_type}, need={deps.intake.looking_for}"
-                )
-            tool = getattr(call, "tool", "") or type(call).__name__
-            alias = getattr(call, "alias", "") or getattr(call, "page_id", "")
-            step_action = f"{tool} {alias}".strip()
-            section_knowledge = _section_knowledge_for_step(
-                deps,
-                page_id=page_id,
-                flow_id=flow_id,
-                step_action=step_action,
-            )
-            spoken = generate_narration(
-                screenshot_png=png,
-                screen_text=screen,
-                narration_hint=spoken,
-                intake_summary=intake_summary,
-                product_brief=deps.product_brief or "",
-                step_action=step_action,
-                section_knowledge=section_knowledge,
-                spoken_language=deps.spoken_language,
-                agent_gender=deps.agent_gender,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[plan] vision narration skipped: {exc}", flush=True)
     return spoken
 
 
@@ -1715,7 +1613,7 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     )
     if len(batch_calls) > 1:
         print(f"[plan] batch_safe: steps {step}..{next_step - 1}", flush=True)
-    # YAML spoken as hint — vision generates the real narration.
+    # Recorded / YAML line. Vision PNG only on off-script interrupt or stuck verify.
     yaml_hint = _step_narration_hint(
         deps, page_id=page_id, flow_id=flow_id, step=step, call=nxt
     )

@@ -343,8 +343,8 @@ def _run_lead_in_flow(meta: dict, *, slow_first_click_s: float = 0.0):
     return speaks, clicks
 
 
-def test_timeline_reproduces_recorded_lead_in():
-    """The host talked before clicking. Playback must do the same, per step."""
+def test_timeline_speak_and_act_overlap():
+    """Line and cursor start together — not talk-then-click."""
     meta = {
         "narration_suggestions": {"demo": ["Opening signup", "Now confirm"]},
         "step_clicks": {"demo": [{"idx": 0, "at_ms": 400}, {"idx": 1, "at_ms": 900}]},
@@ -357,12 +357,11 @@ def test_timeline_reproduces_recorded_lead_in():
     }
     speaks, clicks = _run_lead_in_flow(meta)
     assert len(speaks) == 2 and len(clicks) == 2
-    # Recorded lead-in is 300ms on both steps.
-    assert 0.15 < clicks[0] - speaks[0] < 0.55
-    assert 0.15 < clicks[1] - speaks[1] < 0.55
+    assert 0 <= clicks[0] - speaks[0] < 0.2
+    assert 0 <= clicks[1] - speaks[1] < 0.2
 
 
-def test_timeline_slip_shifts_later_cues_and_keeps_lead_in():
+def test_timeline_slip_shifts_later_cues_and_keeps_speak_act_glued():
     """A slow step pushes what follows instead of desyncing speech from action."""
     meta = {
         "narration_suggestions": {"demo": ["Opening signup", "Now confirm"]},
@@ -376,10 +375,8 @@ def test_timeline_slip_shifts_later_cues_and_keeps_lead_in():
     }
     speaks, clicks = _run_lead_in_flow(meta, slow_first_click_s=0.6)
     assert len(speaks) == 2 and len(clicks) == 2
-    # Step 1's narration waits out the overrun rather than firing on schedule.
     assert speaks[1] > clicks[0]
-    # And its 300ms lead-in survives the shift — the invariant that matters.
-    assert 0.15 < clicks[1] - speaks[1] < 0.55
+    assert 0 <= clicks[1] - speaks[1] < 0.2
 
 
 def test_timeline_holds_later_act_until_prior_speech_ends():
@@ -860,7 +857,7 @@ def test_strict_verifying_pauses_on_action_fail():
 
 
 def test_timeline_verify_miss_skips_that_step_speak():
-    """Act-before-talk + verify miss must not narrate a screen that never appeared."""
+    """Same-step speak starts with the click; a verify miss does not rewind it."""
 
     def _fill(alias: str, url: str) -> FillField:
         return FillField(
@@ -946,4 +943,5 @@ def test_timeline_verify_miss_skips_that_step_speak():
 
     joined = " ".join(spoken).lower()
     assert "opening signup" in joined
-    assert "dashboard" not in joined
+    # Speak+act are glued, so this step's line may already be in-flight when
+    # verify misses. Later-screen leakage was the old act-before-talk bug.

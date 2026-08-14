@@ -360,7 +360,6 @@ class CredentialVault:
             "groq": "groq_key_encrypted",
             "openai": "openai_key_encrypted",
             "anthropic": "anthropic_key_encrypted",
-            "fish": "fish_key_encrypted",
             "openrouter": "openrouter_key_encrypted",
             "huggingface": "huggingface_key_encrypted",
         }.get(kind)

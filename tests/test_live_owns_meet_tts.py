@@ -58,3 +58,6 @@ def test_meet_uses_print_speaker_not_wav_cascade():
     assert not hasattr(live_demo, "_local_speaker_for_meet")
     assert not hasattr(live_demo, "_require_tts_for_meet")
     assert not hasattr(live_demo, "_make_live_speaker")
+    src = inspect.getsource(live_demo)
+    assert "using TTS" not in src
+    assert "no TTS fallback" not in src

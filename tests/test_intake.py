@@ -215,6 +215,37 @@ def test_no_prefill_asks_everything():
     assert len(asked) == 2
 
 
+def test_intake_questions_spoken_verbatim():
+    """Live natural-mode rewrote 'What is your name?' into 'My name is ResilioHub.'"""
+
+    class _ModeSpeaker:
+        def __init__(self) -> None:
+            self.modes: list[str] = []
+
+        def say(self, text: str, *, mode: str = "natural") -> None:
+            self.modes.append(mode)
+
+    speaker = _ModeSpeaker()
+    run_intake(
+        persona=Persona(product_name="P", agent_name="Nav"),
+        speaker=speaker,
+        interactive=False,
+        listen=lambda _p: "Alex",
+    )
+    assert speaker.modes
+    assert all(m == "verbatim" for m in speaker.modes)
+
+
+def test_usable_meeting_display_name():
+    from navigator.meeting.intake import usable_meeting_display_name
+
+    assert usable_meeting_display_name("Dewashish Hatekar") == "Dewashish Hatekar"
+    assert usable_meeting_display_name("iPhone") == ""
+    assert usable_meeting_display_name("Guest") == ""
+    assert usable_meeting_display_name("+919876543210") == ""
+    assert usable_meeting_display_name("") == ""
+
+
 def test_preferred_flow_from_looking_for():
     from navigator.meeting.intake import preferred_flow_id, solution_blurb
 

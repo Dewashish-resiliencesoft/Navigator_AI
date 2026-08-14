@@ -178,10 +178,10 @@ def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
     orig_say = meet_speaker.say
     orig_async = getattr(meet_speaker, "say_async", None)
 
-    def _say(text: str) -> None:
+    def _say(text: str, *, mode: str = "natural") -> None:
         live = live_box[0] if live_box else None
         if live is not None:
-            live.say(text, mode="natural")
+            live.say(text, mode=mode)
             return
         orig_say(text)
 
@@ -228,12 +228,15 @@ def _talk_speaker(meet_speaker, live_box: list):
                 return getattr(live, "last_spoken", "") or ""
             return getattr(meet_speaker, "last_spoken", "") or ""
 
-        def say(self, text: str) -> None:
+        def say(self, text: str, *, mode: str = "natural") -> None:
             live = live_box[0] if live_box else None
             if live is not None:
-                live.say(text, mode="natural")
+                live.say(text, mode=mode)
                 return
-            meet_speaker.say(text)
+            try:
+                meet_speaker.say(text, mode=mode)
+            except TypeError:
+                meet_speaker.say(text)
 
         def say_async(self, text: str):
             live = live_box[0] if live_box else None
@@ -936,7 +939,15 @@ def run_live_meet_demo(
                     or ""
                 )
                 print(f"[live] human joined: {human_name!r}", flush=True)
-                # Meet display name is not intake — ask unless landing page prefilled.
+                from navigator.meeting.intake import usable_meeting_display_name
+
+                display = usable_meeting_display_name(human_name)
+                if display and not (merged_prefill.get("name") or "").strip():
+                    merged_prefill["name"] = display
+                    print(
+                        f"[live] intake name from meeting display: {display!r}",
+                        flush=True,
+                    )
                 settle = max(0.0, settings.live_human_settle_s)
                 if settle:
                     print(f"[live] settle {settle:.1f}s before intake…", flush=True)

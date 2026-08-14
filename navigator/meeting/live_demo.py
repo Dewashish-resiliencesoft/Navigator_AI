@@ -56,8 +56,7 @@ from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
 from navigator.core.settings import settings
 from navigator.core.usage_context import bind_demo_usage, clear_demo_usage
 from navigator.voice.stt import VoiceSegmenter, transcribe
-from navigator.voice.fish_tts import FishSpeaker
-from navigator.voice.tts import PiperSpeaker, PrintSpeaker, make_speaker
+from navigator.voice.tts import PrintSpeaker
 
 
 def _is_likely_echo(heard: str, bot_text: str) -> bool:
@@ -103,23 +102,18 @@ def _start_live_agent(
     spoken_language: str,
     agent_gender: str,
     heard_sink: list[str] | None = None,
+    voice_name: str = "",
 ):
-    """Open the bidirectional Live session, or return None to keep the TTS path.
-
-    Off unless NAVIGATOR_LIVE_CONVERSATIONAL is set. Any failure here degrades
-    to the existing MeetSpeaker path rather than killing the demo.
-    """
-    if not settings.live_conversational:
-        return None
+    """Open the bidirectional Live session, or return None (caller stops the demo)."""
     if audio_bridge is None:
-        print("[live] conversational mode needs the audio bridge — using TTS", flush=True)
+        print("[live] Live audio needs the audio bridge", flush=True)
         return None
 
     from navigator.core.gemini_keys import gemini_key_candidates
 
     keys = gemini_key_candidates()
     if not keys:
-        print("[live] conversational mode needs a Gemini key — using TTS", flush=True)
+        print("[live] Live audio needs a Gemini key", flush=True)
         return None
 
     def _on_event(event) -> None:
@@ -158,7 +152,7 @@ def _start_live_agent(
                 api_key=keys[0],
                 system_instruction=instruction,
                 model=settings.live_conversational_model,
-                voice_name=settings.gemini_live_voice,
+                voice_name=voice_name or settings.gemini_live_voice,
                 language=spoken_language,  # type: ignore[arg-type]
                 vad_silence_ms=settings.live_vad_silence_ms,
                 on_event=_on_event,
@@ -167,7 +161,7 @@ def _start_live_agent(
         )
         agent_box.append(agent)
     except Exception as exc:  # noqa: BLE001
-        print(f"[live] conversational setup failed ({exc}) — using TTS", flush=True)
+        print(f"[live] Live setup failed ({exc})", flush=True)
         return None
 
     if not agent.start():
@@ -176,7 +170,7 @@ def _start_live_agent(
 
 
 def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
-    """When Live owns audio, block MeetSpeaker Piper/Fish TTS (dual-path breaks Meet)."""
+    """When Live owns audio, route MeetSpeaker.say to live.say (no WAV)."""
     if getattr(meet_speaker, "_live_owns_audio", False):
         return
     from navigator.meeting.playback_handle import PlaybackHandle
@@ -538,38 +532,10 @@ def _share_meet_link(*, meeting_url: str, bot_ready: bool) -> None:
     print("=" * 60, flush=True)
 
 
-def _make_live_speaker(
-    *,
-    mute: bool,
-    spoken_language: str = "en",
-    require_audio: bool = False,
-    gemini_api_key: str = "",
-    gemini_live_voice: str = "",
-    groq_api_key: str = "",
-    fish_api_key: str = "",
-    tts_provider: str = "",
-):
-    return make_speaker(
-        mute=mute,
-        gemini_api_key=gemini_api_key or settings.gemini_api_key,
-        gemini_live_model=settings.gemini_live_model,
-        gemini_live_voice=gemini_live_voice or settings.gemini_live_voice,
-        spoken_language=spoken_language,  # type: ignore[arg-type]
-        fish_api_key=fish_api_key or settings.fish_api_key,
-        fish_model=settings.fish_model,
-        fish_reference_id=settings.fish_reference_id,
-        tts_provider=tts_provider or settings.tts_provider,
-        piper_voice=settings.piper_voice,
-        piper_data_dir=settings.piper_data_dir,
-        require_audio=require_audio,
-    )
-
-
 def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
     out = {
         "gemini": settings.gemini_api_key or "",
         "groq": settings.groq_api_key or "",
-        "fish": settings.fish_api_key or "",
     }
     if not product_id:
         return out
@@ -586,9 +552,9 @@ def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
     return out
 
 
-def _provider_byok_flags(product_id: str | None) -> tuple[bool, bool, bool]:
+def _provider_byok_flags(product_id: str | None) -> tuple[bool, bool]:
     if not product_id:
-        return False, False, False
+        return False, False
     try:
         from navigator.app.credential_vault import CredentialVault
 
@@ -597,35 +563,9 @@ def _provider_byok_flags(product_id: str | None) -> tuple[bool, bool, bool]:
             return (
                 bool(pub.get("has_groq_api_key")),
                 bool(pub.get("has_gemini_api_key")),
-                bool(pub.get("has_fish_api_key")),
             )
     except Exception:  # noqa: BLE001
-        return False, False, False
-
-
-def _speaker(*, mute: bool, spoken_language: str = "en"):
-    return _make_live_speaker(mute=mute, spoken_language=spoken_language)
-
-
-def _require_tts_for_meet(
-    *,
-    mute: bool,
-    spoken_language: str = "en",
-    gemini_api_key: str = "",
-    gemini_live_voice: str = "",
-    fish_api_key: str = "",
-    tts_provider: str = "",
-):
-    """Live Meet needs Gemini Live (preferred), Fish, or Piper WAV → Attendee speak."""
-    return _make_live_speaker(
-        mute=mute,
-        spoken_language=spoken_language,
-        require_audio=True,
-        gemini_api_key=gemini_api_key,
-        gemini_live_voice=gemini_live_voice,
-        fish_api_key=fish_api_key,
-        tts_provider=tts_provider,
-    )
+        return False, False
 
 
 def _leave_stale_bots(client: AttendeeClient, meeting_url: str) -> None:
@@ -739,13 +679,12 @@ def run_live_meet_demo(
 
     provider_keys = _resolve_provider_keys(product_id)
     if product_id:
-        groq_byok, gemini_byok, fish_byok = _provider_byok_flags(product_id)
+        groq_byok, gemini_byok = _provider_byok_flags(product_id)
         bind_demo_usage(
             product_id=product_id,
             session_id=str(session_id) if session_id else None,
             groq_client=groq_byok,
             gemini_client=gemini_byok,
-            fish_client=fish_byok,
         )
     spoken_language: str = agent_settings.default_language or settings.default_spoken_language
     print(
@@ -753,23 +692,7 @@ def run_live_meet_demo(
         f"(extras={list(agent_settings.extra_languages)})",
         flush=True,
     )
-    speaker = _require_tts_for_meet(
-        mute=mute,
-        spoken_language=spoken_language,
-        gemini_api_key=provider_keys["gemini"],
-        gemini_live_voice=agent_settings.effective_gemini_voice(),
-        fish_api_key=provider_keys["fish"],
-        tts_provider=agent_settings.tts_provider,
-    )
-    # Warm synthesizer so first Meet utterance isn't cold.
-    if hasattr(speaker, "synthesize_wav"):
-        try:
-            warm = "तैयार।" if spoken_language == "hi" else "Ready."
-            speaker.synthesize_wav(warm)  # type: ignore[union-attr]
-            kind = type(speaker).__name__
-            print(f"[live] TTS warmed ({kind})", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[live] TTS warm skipped: {exc}", flush=True)
+    speaker = PrintSpeaker()
     if graph_cfg is None:
         graph_cfg = load_site_graph(settings.site_graph)
     persona = graph_cfg.effective_persona()
@@ -956,11 +879,10 @@ def run_live_meet_demo(
         pending_barge_in: list[str] = []
         speaker_box: list = []
         live_box: list = []
-        meet_speaker: MeetSpeaker | PrintSpeaker | PiperSpeaker | FishSpeaker = MeetSpeaker(
+        meet_speaker = MeetSpeaker(
             speaker,
             client,
             bot.id,
-            synthesizer=speaker if hasattr(speaker, "synthesize_wav") else None,
             also_chat=False,
             after_speak=_after_speak,
             set_avatar_state=relay.set_avatar_state,
@@ -1042,8 +964,8 @@ def run_live_meet_demo(
                         flush=True,
                     )
 
-        # Conversational Live owns mic+mouth from intake onward.
-        if settings.live_conversational and not live_box:
+        # Live owns mic+mouth from intake onward (mute = silent PrintSpeaker).
+        if not mute and not live_box:
             early_live = _start_live_agent(
                 audio_bridge=audio_bridge,
                 graph_cfg=graph_cfg,
@@ -1052,11 +974,11 @@ def run_live_meet_demo(
                 spoken_language=spoken_language,
                 agent_gender=agent_settings.agent_gender,
                 heard_sink=pending_barge_in,
+                voice_name=agent_settings.effective_gemini_voice(),
             )
             if early_live is None:
                 raise LiveDemoStopped(
-                    "Live conversational mode is on but the Live session failed "
-                    "to start — refusing MeetSpeaker TTS fallback"
+                    "Live session failed to start — no TTS fallback"
                 )
             live_box.append(early_live)
             meet_speaker.check_barge_in = None
@@ -1502,9 +1424,7 @@ def run_live_meet_demo(
             playlist_demo = bool(auto_play and graph_cfg.demo_playlist)
             live_agent = live_box[0] if live_box else None
 
-            if live_agent is None and settings.live_conversational:
-                # Started after Playwright only if early start was skipped
-                # (should not happen when the flag is on).
+            if live_agent is None and not mute:
                 live_agent = _start_live_agent(
                     audio_bridge=audio_bridge,
                     graph_cfg=graph_cfg,
@@ -1513,11 +1433,11 @@ def run_live_meet_demo(
                     spoken_language=spoken_language,
                     agent_gender=agent_settings.agent_gender,
                     heard_sink=pending_barge_in,
+                    voice_name=agent_settings.effective_gemini_voice(),
                 )
                 if live_agent is None:
                     raise LiveDemoStopped(
-                        "Live conversational mode is on but the Live session "
-                        "failed to start — refusing MeetSpeaker TTS fallback"
+                        "Live session failed to start — no TTS fallback"
                     )
                 live_box.append(live_agent)
                 meet_speaker.check_barge_in = None

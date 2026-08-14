@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { motion } from "motion/react";
 import { Save } from "lucide-react";
-import { api, type AgentSettings, type SpokenLanguage, type AgentGender, type TtsProvider } from "../lib/api";
+import { api, type AgentSettings, type SpokenLanguage, type AgentGender } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { stagger } from "../lib/motion";
 import { BarLoader, Button, Card, CardTitle, Input, Switch } from "../components/ui";
@@ -19,7 +19,6 @@ export function Settings() {
   const [settings, setSettings] = useState<AgentSettings | null>(null);
   const [geminiKey, setGeminiKey] = useState("");
   const [groqKey, setGroqKey] = useState("");
-  const [fishKey, setFishKey] = useState("");
   const [includeLogin, setIncludeLogin] = useState(false);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginUrl, setLoginUrl] = useState("");
@@ -38,7 +37,6 @@ export function Settings() {
       setLoginUrl(login.login_url || "");
       setGeminiKey("");
       setGroqKey("");
-      setFishKey("");
     } catch (e) {
       err(errText(e));
     } finally {
@@ -68,7 +66,6 @@ export function Settings() {
         agent_gender: settings.agent_gender,
         agent_name: settings.agent_name,
         tone: settings.tone,
-        tts_provider: settings.tts_provider,
         gemini_voice: settings.gemini_voice,
       });
       setSettings((prev) => (prev ? { ...prev, ...d } : d));
@@ -83,11 +80,9 @@ export function Settings() {
       const body: {
         gemini_api_key?: string | null;
         groq_api_key?: string | null;
-        fish_api_key?: string | null;
       } = {};
       if (geminiKey.trim()) body.gemini_api_key = geminiKey.trim();
       if (groqKey.trim()) body.groq_api_key = groqKey.trim();
-      if (fishKey.trim()) body.fish_api_key = fishKey.trim();
       if (!Object.keys(body).length) {
         err("Enter at least one API key to save.");
         return;
@@ -96,7 +91,6 @@ export function Settings() {
       setSettings((prev) => (prev ? { ...prev, ...d } : prev));
       setGeminiKey("");
       setGroqKey("");
-      setFishKey("");
       ok("Provider keys saved.");
     } catch (e) {
       err(errText(e));
@@ -219,35 +213,17 @@ export function Settings() {
       </Card>
 
       <Card>
-        <CardTitle hint="Gemini Live is default for Meet demos. Override voice name if needed (e.g. Sulafat, Charon).">
-          Voice provider
+        <CardTitle hint="Meet voice is Gemini Live. Override name if needed (Sulafat, Charon).">
+          Live voice
         </CardTitle>
-        <div className="grid gap-4 sm:grid-cols-2">
-          <label className="block space-y-1.5 text-[0.8rem]">
-            <span className="font-medium text-[var(--muted)]">TTS provider</span>
-            <select
-              className="w-full rounded-lg border bg-transparent px-3 py-2 text-[0.85rem]"
-              style={{ borderColor: "var(--line)" }}
-              value={settings.tts_provider}
-              onChange={(e) =>
-                setSettings({ ...settings, tts_provider: e.target.value as TtsProvider })
-              }
-            >
-              <option value="auto">Auto (platform default)</option>
-              <option value="gemini">Gemini Live</option>
-              <option value="fish">Fish Audio</option>
-              <option value="piper">Piper (local)</option>
-            </select>
-          </label>
-          <label className="block space-y-1.5 text-[0.8rem]">
-            <span className="font-medium text-[var(--muted)]">Gemini voice name</span>
-            <Input
-              value={settings.gemini_voice}
-              onChange={(v) => setSettings({ ...settings, gemini_voice: v })}
-              placeholder="Blank = match voice gender (Sulafat / Charon)"
-            />
-          </label>
-        </div>
+        <label className="block space-y-1.5 text-[0.8rem]">
+          <span className="font-medium text-[var(--muted)]">Gemini voice name</span>
+          <Input
+            value={settings.gemini_voice}
+            onChange={(v) => setSettings({ ...settings, gemini_voice: v })}
+            placeholder="Blank = match voice gender (Sulafat / Charon)"
+          />
+        </label>
       </Card>
 
       <Card>
@@ -288,7 +264,7 @@ export function Settings() {
               type="password"
               value={geminiKey}
               onChange={setGeminiKey}
-              placeholder={settings.has_gemini_api_key ? "••••••••  leave blank to keep" : "For TTS + vision"}
+              placeholder={settings.has_gemini_api_key ? "••••••••  leave blank to keep" : "For Live audio + vision"}
             />
           </label>
           <label className="block space-y-1.5 text-[0.8rem]">
@@ -300,17 +276,6 @@ export function Settings() {
               value={groqKey}
               onChange={setGroqKey}
               placeholder={settings.has_groq_api_key ? "••••••••  leave blank to keep" : "For live phrasing / brain"}
-            />
-          </label>
-          <label className="block space-y-1.5 text-[0.8rem]">
-            <span className="font-medium text-[var(--muted)]">
-              Fish API key {settings.has_fish_api_key ? "(saved)" : ""}
-            </span>
-            <Input
-              type="password"
-              value={fishKey}
-              onChange={setFishKey}
-              placeholder={settings.has_fish_api_key ? "••••••••  leave blank to keep" : "Fish TTS fallback"}
             />
           </label>
         </div>

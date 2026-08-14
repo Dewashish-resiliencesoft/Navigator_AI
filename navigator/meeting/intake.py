@@ -213,10 +213,6 @@ def run_intake(
         lang=lang,
         agent_gender=agent_gender,
     )
-    # Warm TTS for greet + questions while we speak / listen (MeetSpeaker).
-    prefetch = getattr(speaker, "prefetch_lines", None)
-    if callable(prefetch):
-        prefetch([hello, *[q for _, q, _ in questions]])
     _say(speaker, hello)
 
     for key, question, default in questions:
@@ -230,17 +226,6 @@ def run_intake(
             continue
         _say(speaker, question)
         if listen is not None:
-            # Prefetch next unanswered question while STT runs.
-            if callable(prefetch):
-                nxt = [
-                    q
-                    for k, q, _ in questions
-                    if k != key
-                    and k not in answers
-                    and not (prefill.get(k) or "").strip()
-                ]
-                if nxt:
-                    prefetch(nxt[:2])
             print(f"[intake] listening for {key}…", flush=True)
             heard = ""
             try:

@@ -108,7 +108,7 @@ class LiveAgent:
     # ---- lifecycle ----------------------------------------------------
 
     def start(self, *, timeout_s: float = 15.0) -> bool:
-        """Open the session. False means the caller should fall back to TTS."""
+        """Open the session. False means the caller should stop the demo."""
         self._thread = threading.Thread(
             target=self._run_loop, name="gemini-live-agent", daemon=True
         )

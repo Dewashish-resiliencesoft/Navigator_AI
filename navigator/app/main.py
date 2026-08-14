@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Callable
@@ -1073,14 +1074,12 @@ class AgentSettingsBody(BaseModel):
     agent_gender: str | None = None
     agent_name: str | None = None
     tone: str | None = None
-    tts_provider: str | None = None
     gemini_voice: str | None = None
 
 
 class AgentProviderKeysBody(BaseModel):
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
-    fish_api_key: str | None = None
 
 
 class ProductLoginBody(BaseModel):
@@ -1198,13 +1197,6 @@ def client_put_agent_settings(
         raise HTTPException(422, "default_language must be en or hi")
     if "agent_gender" in patch and patch["agent_gender"] not in {"female", "male"}:
         raise HTTPException(422, "agent_gender must be female or male")
-    if "tts_provider" in patch and patch["tts_provider"] not in {
-        "auto",
-        "gemini",
-        "fish",
-        "piper",
-    }:
-        raise HTTPException(422, "invalid tts_provider")
     merged = registry.set_agent_settings(product.product_id, patch)
     return {"ok": True, **merged.model_dump()}
 
@@ -1218,7 +1210,6 @@ def client_put_agent_provider_keys(
             product.product_id,
             gemini_api_key=body.gemini_api_key,
             groq_api_key=body.groq_api_key,
-            fish_api_key=body.fish_api_key,
         )
     except VaultNotConfigured as exc:
         raise HTTPException(503, str(exc)) from None
@@ -1227,32 +1218,59 @@ def client_put_agent_provider_keys(
     return {"ok": True, **vault.provider_keys_public(product.product_id)}
 
 
+# Dashboard polls these every few seconds. Freshness within ~12s is enough;
+# uncached hits load Chroma/ONNX into the uvicorn RSS.
+_READY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_READY_CACHE_S = 12.0
+
+
+def _cached_readiness_dict(
+    registry: Registry,
+    product_id: str,
+    *,
+    origin: str,
+    autonomy_mode: str,
+) -> dict:
+    from navigator.agent.readiness import assess_demo_readiness
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return assess_demo_readiness(
+            registry, product_id, origin=origin, autonomy_mode=autonomy_mode
+        ).as_dict()
+    key = (product_id, origin, autonomy_mode)
+    now = time.monotonic()
+    hit = _READY_CACHE.get(key)
+    if hit and now - hit[0] < _READY_CACHE_S:
+        return hit[1]
+    payload = assess_demo_readiness(
+        registry, product_id, origin=origin, autonomy_mode=autonomy_mode
+    ).as_dict()
+    _READY_CACHE[key] = (now, payload)
+    return payload
+
+
 @app.get("/client/api/demo-readiness")
 def client_demo_readiness(
     product: DashboardAuthedProduct,
     registry: Reg,
     origin: Annotated[str, Query()] = "dashboard_test",
 ) -> dict:
-    from navigator.agent.readiness import assess_demo_readiness
-
     demo_origin = "public_embed" if origin == "public_embed" else "dashboard_test"
     fresh = registry.get(product.product_id)
     mode = getattr(fresh, "autonomy_mode", None) or "guided"
-    return assess_demo_readiness(
+    return _cached_readiness_dict(
         registry,
         product.product_id,
         origin=demo_origin,
         autonomy_mode=mode,
-    ).as_dict()
+    )
 
 
 @app.get("/client/api/publish-checklist")
 def client_publish_checklist(product: DashboardAuthedProduct, registry: Reg) -> dict:
-    from navigator.agent.readiness import assess_demo_readiness
-
     fresh = registry.get(product.product_id)
     mode = getattr(fresh, "autonomy_mode", None) or "guided"
-    readiness = assess_demo_readiness(
+    readiness = _cached_readiness_dict(
         registry, product.product_id, origin="public_embed", autonomy_mode=mode
     )
     eval_score: float | None = None
@@ -1285,7 +1303,7 @@ def client_publish_checklist(product: DashboardAuthedProduct, registry: Reg) -> 
     if mode == "adaptive":
         rec = "Adaptive needs published flows + indexed knowledge."
     return {
-        "readiness": readiness.as_dict(),
+        "readiness": readiness,
         "eval_score_pct": eval_score,
         "autonomy_recommendation": rec,
     }

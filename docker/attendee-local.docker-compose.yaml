@@ -11,6 +11,8 @@ services:
       - SAVE_DEBUG_RECORDINGS=false
 
   attendee-worker-local:
+    # One Meet bot at a time. Default Celery concurrency = nproc (8 here) → ~1.5GiB idle.
+    command: "celery -A attendee worker -l INFO --concurrency=2"
     # Worker POSTs to Navigator's ZAK callback through the cloudflare tunnel.
     dns:
       - 127.0.0.11

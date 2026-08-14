@@ -14,7 +14,6 @@ def bind_demo_usage(
     session_id: str | None = None,
     groq_client: bool = False,
     gemini_client: bool = False,
-    fish_client: bool = False,
 ) -> None:
     """Mark which providers bill the Client (BYOK) vs Platform for this demo thread."""
     _local.ctx = {
@@ -22,7 +21,6 @@ def bind_demo_usage(
         "session_id": session_id,
         "groq_client": groq_client,
         "gemini_client": gemini_client,
-        "fish_client": fish_client,
     }
 
 

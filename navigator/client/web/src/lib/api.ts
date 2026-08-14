@@ -12,7 +12,6 @@ export type AutonomyMode = "guided" | "adaptive" | "explorer";
 
 export type SpokenLanguage = "en" | "hi";
 export type AgentGender = "female" | "male";
-export type TtsProvider = "auto" | "gemini" | "fish" | "piper";
 
 export type AgentSettings = {
   default_language: SpokenLanguage;
@@ -20,11 +19,9 @@ export type AgentSettings = {
   agent_gender: AgentGender;
   agent_name: string;
   tone: string;
-  tts_provider: TtsProvider;
   gemini_voice: string;
   has_gemini_api_key: boolean;
   has_groq_api_key: boolean;
-  has_fish_api_key: boolean;
   updated_at: string | null;
 };
 
@@ -110,7 +107,6 @@ export type SystemMetrics = {
     byok: {
       has_groq_api_key: boolean;
       has_gemini_api_key: boolean;
-      has_fish_api_key: boolean;
       updated_at: string | null;
     };
     platform: { input_tokens: number; output_tokens: number; total_tokens: number; calls: number };
@@ -611,13 +607,11 @@ export const api = {
   putAgentProviderKeys: (body: {
     gemini_api_key?: string | null;
     groq_api_key?: string | null;
-    fish_api_key?: string | null;
   }) =>
     send<{
       ok: boolean;
       has_gemini_api_key: boolean;
       has_groq_api_key: boolean;
-      has_fish_api_key: boolean;
       updated_at: string | null;
     }>("/client/api/agent-provider-keys", "PUT", body),
 

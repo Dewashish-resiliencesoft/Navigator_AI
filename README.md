@@ -120,7 +120,7 @@ sequenceDiagram
     ATT->>Meet: Bot enters meeting
     API->>CF: Tunnel audio + screenshare
     CF-->>ATT: Public wss/https
-    ATT->>Meet: TTS audio + screenshare page
+    ATT->>Meet: Live PCM audio + screenshare page
     API->>PW: LangGraph runs site-graph flows
     PW->>PW: click / fill / verify DOM
     Meet-->>ATT: Mixed call audio
@@ -160,7 +160,7 @@ Code is organized **by feature** under `navigator/` (not by layer dumps):
 | `navigator/agent/` | LangGraph demo conversation |
 | `navigator/automation/` | Playwright tools, recorder, explore runner |
 | `navigator/meeting/` | Attendee client, live demo, tunnels, Zoom ZAK |
-| `navigator/voice/` | TTS / STT / language switch |
+| `navigator/voice/` | Live audio / STT / language switch |
 | `navigator/knowledge/` | Site graphs, bio, briefs, Chroma memory |
 | `navigator/logs/` | ActionLog + decision traces (SQLite) |
 | `navigator/docs/` | Docs generator (HTML + Fern) from live code |
@@ -197,7 +197,7 @@ host.
 - Node 20+ (dashboard UI builds)
 - Docker + Compose v2 (for Attendee)
 - `cloudflared` on `PATH` (or set `NAVIGATOR_TUNNEL_BIN`)
-- API keys: Groq (STT/LLM), Gemini (TTS/vision), optional Fish TTS
+- API keys: Groq (STT/LLM), Gemini (Live audio + vision)
 
 ### 7.1 Clone and Python env
 
@@ -225,7 +225,7 @@ Minimum for a **live Meet demo**:
 | Variable | Why |
 |---|---|
 | `NAVIGATOR_GROQ_API_KEY` | STT + text LLM |
-| `NAVIGATOR_GEMINI_API_KEY` | Live TTS + vision |
+| `NAVIGATOR_GEMINI_API_KEY` | Live audio + vision |
 | `NAVIGATOR_ATTENDEE_API_KEY` | Meeting bot API |
 | `NAVIGATOR_CREDENTIAL_KEY` | Fernet key for product-login vault |
 | `NAVIGATOR_MEETING_URL` | Only if using **static** Meet (host-admit) |
@@ -238,13 +238,6 @@ Generate a Fernet key:
 
 Set `NAVIGATOR_TUNNEL_BIN=cloudflared` (or an absolute path to the binary).
 **Do not** leave a laptop-specific path if you sync `.env` to another machine.
-
-Optional Piper fallback voice:
-
-```bash
-.venv/bin/pip install piper-tts
-.venv/bin/python -m piper.download_voices en_US-lessac-medium --data-dir voices
-```
 
 ### 7.3 Attendee (required for live demos)
 
@@ -544,7 +537,7 @@ delegation (`NAVIGATOR_GOOGLE_SA_JSON`, `NAVIGATOR_GOOGLE_IMPERSONATE`).
 
 | Piece | Default |
 |---|---|
-| TTS | Gemini Live (`Sulafat`), fallback Fish → Piper |
+| Voice | Gemini Live PCM (`Sulafat`) — no WAV TTS |
 | STT | Groq Whisper on Attendee mixed-audio WebSocket |
 | Languages | `NAVIGATOR_DEFAULT_SPOKEN_LANGUAGE` (`en` / `hi`); mid-call switch supported |
 | Knowledge | Chroma at `NAVIGATOR_CHROMA_PATH` (first boot may download ONNX embed model ~80MB into `~/.cache/chroma`) |
@@ -571,7 +564,7 @@ See **`.env.example`** for the full commented list. Highlights:
 | `NAVIGATOR_MEETING_PLATFORM` / `NAVIGATOR_MEETING_URL` | Default platform / static link |
 | `NAVIGATOR_GOOGLE_SA_JSON` / `NAVIGATOR_GOOGLE_IMPERSONATE` | Meet space creation |
 | `NAVIGATOR_ZOOM_*` | Zoom Server-to-Server OAuth |
-| `NAVIGATOR_GROQ_*` / `NAVIGATOR_GEMINI_*` | LLM / STT / TTS |
+| `NAVIGATOR_GROQ_*` / `NAVIGATOR_GEMINI_*` | LLM / STT / Live audio |
 | `NAVIGATOR_CREDENTIAL_KEY` | Product-login vault Fernet key |
 | `NAVIGATOR_SCREENSHOT_QUALITY` | JPEG quality for screenshare (lower = less CPU) |
 | `NAVIGATOR_JWT_SECRET` | Dashboard JWT signing |
@@ -695,12 +688,11 @@ Hand-editing generated Fern files is reverted by `docs check`.
 ## 21. Costs & licensing
 
 **Typically free-tier capable:** Groq (LLM + Whisper), Gemini Flash / Live,
-Piper, Chroma, Playwright, self-hosted Attendee.
+Chroma, Playwright, self-hosted Attendee.
 
-**Paid / optional:** OpenAI reflect provider, Fish TTS, Attendee cloud,
+**Paid / optional:** OpenAI reflect provider, Attendee cloud,
 production Zoom/Meet quotas.
 
-- **Piper:** GPL-3.0 (subprocess, not imported as a library).
 - **Attendee:** Elastic License 2.0 — do not offer Attendee itself as a hosted
   service to third parties; keep it behind Navigator.
 

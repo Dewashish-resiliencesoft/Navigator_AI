@@ -59,6 +59,8 @@ def test_agent_settings_defaults_and_patch(tmp_path):
         assert body["agent_gender"] == "female"
         assert body["extra_languages"] == ["hi"]
         assert body["has_gemini_api_key"] is False
+        assert "tts_provider" not in body
+        assert "has_fish_api_key" not in body
 
         put = client.put(
             "/client/api/agent-settings",
@@ -98,3 +100,9 @@ def test_merge_agent_settings_validates():
     s = merge_agent_settings('{"default_language":"hi","extra_languages":["en"]}')
     assert s.default_language == "hi"
     assert s.extra_languages == ["en"]
+    assert "tts_provider" not in s.model_dump()
+
+
+def test_merge_ignores_legacy_tts_provider():
+    s = merge_agent_settings('{"tts_provider":"fish","default_language":"en"}')
+    assert "tts_provider" not in s.model_dump()

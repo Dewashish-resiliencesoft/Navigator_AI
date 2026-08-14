@@ -33,6 +33,17 @@ def test_meet_speaker_routes_to_live_when_owned():
     assert meet.said == []
 
 
+def test_meet_speaker_pass_through_verbatim_mode():
+    from navigator.meeting.live_demo import _own_meet_tts_when_live
+
+    live = _FakeLive()
+    meet = _FakeMeet()
+    box = [live]
+    _own_meet_tts_when_live(meet, box)
+    meet.say("What is your name?", mode="verbatim")
+    assert live.said == ["verbatim:What is your name?"]
+
+
 def test_start_live_agent_not_gated_on_flag():
     from navigator.meeting import live_demo
 

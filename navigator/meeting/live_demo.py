@@ -499,11 +499,11 @@ def wait_until_joined(
             raise RuntimeError(
                 f"Attendee bot fatal_error (last state={last}). "
                 "Zoom web SDK error 3712 'Invalid signature' means Attendee's "
-                "Meeting SDK JWT is wrong — NAVIGATOR_ZOOM_CLIENT_ID/SECRET must "
-                "be a Meeting SDK (or General App with Meeting SDK) Client ID/"
-                "Secret, not Server-to-Server OAuth. A ZAK callback 200 does not "
-                "prove the SDK signature. Other causes: worker DNS for the ZAK "
-                "tunnel hostname, or ZAK callback 401/502. "
+                "Meeting SDK JWT is wrong — NAVIGATOR_ZOOM_SDK_CLIENT_ID/SECRET "
+                "must be a General App with Meeting SDK, not the Server-to-Server "
+                "NAVIGATOR_ZOOM_CLIENT_ID used for create/ZAK. A ZAK callback 200 "
+                "does not prove the SDK signature. Other causes: worker DNS for "
+                "the ZAK tunnel hostname, or ZAK callback 401/502. "
                 "See: docker compose logs attendee-worker-local"
             )
         if "waiting" in last.lower() and not warned_waiting:
@@ -799,8 +799,9 @@ def run_live_meet_demo(
                 except Exception:
                     pass
                 raise RuntimeError(
-                    "Zoom web SDK bot needs Attendee project Zoom credentials. "
-                    "Set NAVIGATOR_ZOOM_CLIENT_ID/SECRET in .env, then run "
+                    "Zoom web SDK bot needs Attendee Meeting SDK credentials "
+                    "(General App, not the Server-to-Server create/ZAK app). "
+                    "Set NAVIGATOR_ZOOM_SDK_CLIENT_ID/SECRET in .env, then run "
                     "./scripts/sync-attendee-zoom-credentials.sh"
                     f"{ui_hint}"
                 )

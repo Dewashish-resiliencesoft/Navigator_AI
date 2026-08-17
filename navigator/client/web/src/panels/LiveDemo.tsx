@@ -659,8 +659,11 @@ export function LiveDemo() {
             {ending ? "Ending…" : "End"}
           </Button>
           {live && leaveGrace !== null && (
-            <span className="text-[0.74rem] text-amber-700 dark:text-amber-300">
-              Auto-ending in {leaveGrace}s
+            <span
+              aria-live="polite"
+              className="tabular-nums text-[0.74rem] text-amber-700 dark:text-amber-300"
+            >
+              Ends in {leaveGrace}s
             </span>
           )}
         </div>

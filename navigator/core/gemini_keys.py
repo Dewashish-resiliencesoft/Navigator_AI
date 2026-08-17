@@ -17,3 +17,14 @@ def gemini_key_candidates() -> list[str]:
 
 def is_gemini_quota_error(exc: BaseException) -> bool:
     return is_rate_limit_error(exc)
+
+
+def is_gemini_live_unavailable(exc: BaseException) -> bool:
+    """True for transient Gemini Live socket failures (retry / rotate key)."""
+    msg = str(exc).lower()
+    return (
+        "1011" in msg
+        or "currently unavailable" in msg
+        or "overloaded" in msg
+        or ("service" in msg and "unavailable" in msg)
+    )

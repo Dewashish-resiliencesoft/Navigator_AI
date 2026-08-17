@@ -79,6 +79,15 @@ def _sync_attendee_override(compose_dir: Path) -> None:
         print(f"[attendee] debug-rec: {mod.patch(compose_dir)}", flush=True)
     except OSError as exc:
         print(f"[attendee] WARN: debug-rec patch skipped: {exc}", flush=True)
+    try:
+        from navigator.meeting.attendee_ws_patch import patch as patch_audio_ws
+
+        result = patch_audio_ws(compose_dir)
+        print(f"[attendee] audio-ws: {result}", flush=True)
+        if result.startswith("patched "):
+            _restart_attendee_worker(compose_dir)
+    except OSError as exc:
+        print(f"[attendee] WARN: audio-ws patch skipped: {exc}", flush=True)
 
 
 def _needs_voice_agent_recreate(compose_dir: Path) -> bool:
@@ -131,6 +140,34 @@ def _docker_compose_up(
     if proc.returncode == 0 and force_recreate:
         _mark_voice_agent_compose(compose_dir)
     return proc
+
+
+def _restart_attendee_worker(compose_dir: Path) -> None:
+    """Celery workers load Python at boot; a host-volume patch needs restart."""
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            _COMPOSE_FILES[0],
+            "-f",
+            _COMPOSE_FILES[1],
+            "restart",
+            "attendee-worker-local",
+        ],
+        cwd=compose_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        print(
+            f"[attendee] WARN: worker restart failed: {(proc.stderr or proc.stdout or '')[:300]}",
+            flush=True,
+        )
+        return
+    print("[attendee] restarted attendee-worker-local (eager audio WS)", flush=True)
 
 
 def attendee_ui_origin(base_url: str | None = None) -> str:

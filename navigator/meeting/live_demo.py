@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 from queue import Empty
 from typing import Callable
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from uuid import uuid4
 
 from playwright.sync_api import sync_playwright
@@ -51,7 +51,7 @@ from navigator.meeting.relay import (
     stop_screencast,
 )
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
-from navigator.meeting.tunnel import start_tunnel
+from navigator.meeting.tunnel import start_tunnel, verify_attendee_docker_dns
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
 from navigator.core.settings import settings
 from navigator.core.usage_context import bind_demo_usage, clear_demo_usage
@@ -148,26 +148,34 @@ def _start_live_agent(
             gender=agent_gender,
         )
         agent_box: list = []
-        agent = LiveAgent(
-            LiveAgentConfig(
-                api_key=keys[0],
-                system_instruction=instruction,
-                model=live_conversational_model or settings.live_conversational_model,
-                voice_name=voice_name or settings.gemini_live_voice,
-                language=spoken_language,  # type: ignore[arg-type]
-                vad_silence_ms=settings.live_vad_silence_ms,
-                on_event=_on_event,
-            ),
-            audio_bridge,
-        )
-        agent_box.append(agent)
+        last_fail = ""
+        for i, key in enumerate(keys):
+            agent = LiveAgent(
+                LiveAgentConfig(
+                    api_key=key,
+                    system_instruction=instruction,
+                    model=live_conversational_model or settings.live_conversational_model,
+                    voice_name=voice_name or settings.gemini_live_voice,
+                    language=spoken_language,  # type: ignore[arg-type]
+                    vad_silence_ms=settings.live_vad_silence_ms,
+                    on_event=_on_event,
+                ),
+                audio_bridge,
+            )
+            agent_box[:] = [agent]
+            if agent.start(timeout_s=45.0):
+                return agent
+            last_fail = agent._failed or "start failed"
+            print(
+                f"[live] Gemini key {i + 1}/{len(keys)} failed ({last_fail})",
+                flush=True,
+            )
+            agent.close()
+            agent_box.clear()
+        return None
     except Exception as exc:  # noqa: BLE001
         print(f"[live] Live setup failed ({exc})", flush=True)
         return None
-
-    if not agent.start():
-        return None
-    return agent
 
 
 def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
@@ -794,6 +802,12 @@ def run_live_meet_demo(
                 "http://", "ws://"
             )
             print(f"[live] audio websocket ready: {audio_ws_url}", flush=True)
+            audio_host = urlparse(audio_ws_url).hostname or ""
+            if audio_host:
+                try:
+                    verify_attendee_docker_dns(audio_host)
+                except RuntimeError as exc:
+                    print(f"[live] audio tunnel DNS warn: {exc}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[live] audio bridge skipped: {exc}", flush=True)
             audio_bridge = None
@@ -832,10 +846,7 @@ def run_live_meet_demo(
             )
         zoom_tokens_url = None
         if zoom_native:
-            from urllib.parse import urlparse
-
             from navigator.meeting.attendee_stack import ensure_attendee_zoom_credentials
-            from navigator.meeting.tunnel import verify_attendee_docker_dns
             from navigator.meeting.zoom_host import ensure_public_base_url
 
             if not ensure_attendee_zoom_credentials():

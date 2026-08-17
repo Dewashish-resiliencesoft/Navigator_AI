@@ -11,8 +11,9 @@ brand.
 | Doc | Role |
 |---|---|
 | **[`docs/PRODUCT_MODEL.md`](docs/PRODUCT_MODEL.md)** | Standing product / auth / billing rules — **read before any change** |
-| **This README** | Full project map + new-developer onboarding |
-| [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | Short pointer + live-demo sequence diagram |
+| **This README** | Project map, setup, product rules, and operational reference |
+| [`docs/DEVELOPER_ONBOARDING.md`](docs/DEVELOPER_ONBOARDING.md) | Deep developer guide: folders, runtime relationships, UI buttons, API flow, tests, and troubleshooting |
+| [`docs/ONBOARDING.md`](docs/ONBOARDING.md) | Short onboarding pointer + live-demo sequence diagram |
 | [`docs/PROJECT_STATUS.md`](docs/PROJECT_STATUS.md) | Phase history / status notes |
 | `/docs` (API) | Live OpenAPI when the server is running |
 

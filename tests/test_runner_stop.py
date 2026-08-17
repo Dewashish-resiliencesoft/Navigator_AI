@@ -95,6 +95,40 @@ def test_live_worker_gets_stop_event_and_records_bot(site_graph):
     assert handle.status == "finished"
 
 
+def test_live_worker_exposes_leave_grace_callback(site_graph):
+    runner = DemoRunner(":memory:")
+    ready = threading.Event()
+    release = threading.Event()
+    seen: dict = {}
+
+    def fake_run(**kwargs) -> str:
+        seen["on_leave_grace"] = kwargs["on_leave_grace"]
+        ready.set()
+        release.wait(timeout=5.0)
+        return "bot-1"
+
+    page_id = next(iter(site_graph.pages))
+    flow_id = next(iter(site_graph.pages[page_id].flows))
+    handle = runner.start_live(
+        "acme",
+        site_graph,
+        revision=1,
+        flow=(page_id, flow_id),
+        meeting_url="https://meet.example/grace",
+        platform="google_meet",
+        origin="public_embed",
+        run=fake_run,
+    )
+    assert ready.wait(timeout=5.0)
+    seen["on_leave_grace"](25)
+    assert handle.leave_grace_remaining == 25
+    release.set()
+    runner.wait(handle.demo_id, timeout=5.0)
+
+    # The worker clears transient grace state when the run terminates.
+    assert handle.leave_grace_remaining is None
+
+
 def test_live_worker_sets_bot_in_meeting_when_ready(site_graph):
     runner = DemoRunner(":memory:")
 

@@ -18,6 +18,7 @@ from __future__ import annotations
 from navigator.agent.call_memory import CallMemory
 from navigator.agent.end_policy import (
     ANYTHING_ELSE,
+    OFF_TOPIC,
     QUESTION_ANSWERED,
     RESUME_AFTER_QUESTION,
     RESUME_AFTER_SILENCE,
@@ -46,7 +47,9 @@ from navigator.voice.language import (
     sync_call_language,
 )
 
-_CONTINUE = frozenset({"ok", "continue", "go on", "yes", "sure"})
+_CONTINUE = frozenset(
+    {"ok", "okay", "continue", "go on", "yes", "sure", "yeah", "yep", "mhm", "um", "uh"}
+)
 _AFFIRM = frozenset(
     {"yes", "yeah", "yep", "sure", "ok", "okay", "please", "go ahead", "do it",
      "that one", "correct", "right", "exactly", "the first", "the second"}
@@ -85,11 +88,10 @@ def _trace(deps: CallDeps, state: CallState, **kw) -> None:
 def _set_spoken_language(deps: CallDeps, lang: SpokenLanguage) -> None:
     deps.spoken_language = lang
     speaker = deps.speaker
-    synth = getattr(speaker, "synthesizer", None)
     local = getattr(speaker, "local", None)
     from navigator.voice.language import apply_to_speakers
 
-    apply_to_speakers(lang, speaker, synth, local)
+    apply_to_speakers(lang, speaker, local, deps.live_agent)
 
 
 def _maybe_language_switch_ack(
@@ -160,42 +162,6 @@ def _guide_page_id(state: CallState) -> str:
         or state.get("page_id")
         or ""
     )
-
-
-def _section_knowledge_for_step(
-    deps: CallDeps,
-    *,
-    page_id: str,
-    flow_id: str,
-    step_action: str,
-) -> str:
-    """Pull knowledge that matches this page/flow so narration can explain it."""
-    try:
-        page_name = deps.graph.page(page_id).name
-    except Exception:  # noqa: BLE001
-        page_name = page_id
-    query = " ".join(
-        part for part in (page_name, flow_id.replace("_", " "), step_action) if part
-    ).strip()
-    if not query:
-        return ""
-    chroma_path = (
-        deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
-    )
-    try:
-        chunks = retrieve_product_knowledge(
-            deps.product_id, query, k=3, path=chroma_path
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(f"[plan] section knowledge skipped: {exc}", flush=True)
-        return ""
-    # Soft prefer chunks that mention the page/section name.
-    needle = page_name.lower()
-    ranked = sorted(
-        chunks,
-        key=lambda c: (0 if needle and needle in c.lower() else 1, -len(c)),
-    )
-    return "\n".join(ranked[:3])
 
 
 def _ensure_browser_on_page(deps: CallDeps, page_id: str) -> None:
@@ -308,14 +274,20 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         )
     if deps.scripted_flow is not None:
         page_id, flow_id = deps.scripted_flow
-        return _plan_from_flow(
-            deps,
-            page_id,
-            flow_id,
-            spoken=_describe(deps.graph.page(page_id).name, flow_id),
-        )
+        if _flow_offerable(deps, page_id, flow_id):
+            return _plan_from_flow(
+                deps,
+                page_id,
+                flow_id,
+                spoken=_describe(deps.graph.page(page_id).name, flow_id),
+            )
 
     if state.get("user_correction"):
+        query = _query_from_transcript(list(state.get("transcript") or []))
+        if query:
+            brain = _try_turn_brain(state, deps, utterance=query)
+            if brain is not None:
+                return brain
         return _plan_user_correction(state, deps)
 
     phase = state.get("phase") or "walkthrough"
@@ -372,7 +344,11 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
 
     if utterance and not _is_continue(utterance):
-        if getattr(deps, "playlist_only", False) and phase == "walkthrough":
+        if (
+            getattr(deps, "playlist_only", False)
+            and phase == "walkthrough"
+            and deps.live_agent is None
+        ):
             if not is_goodbye(utterance):
                 return _plan_walkthrough_next(state, deps)
         return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
@@ -403,44 +379,57 @@ def _plan_anything_else(
 
     if not utterance.strip():
         silence_rounds = int(state.get("silence_rounds") or 0)
-        action = next_silence_action(silence_rounds=silence_rounds)
-        if action == "reask":
+        if next_silence_action(silence_rounds=silence_rounds) == "leave":
             return CallState(
-                phase="anything_else",
-                silence_rounds=silence_rounds + 1,
-                plan=Plan(spoken_response=ANYTHING_ELSE, tool_calls=[]),
+                phase="ending",
+                plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
                 pending_calls=[],
-                narration=[ANYTHING_ELSE],
-                transcript=[f"agent: {ANYTHING_ELSE}"],
+                narration=[WRAP_UP],
+                transcript=[f"agent: {WRAP_UP}"],
             )
         return CallState(
-            phase="ending",
-            plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
+            phase="anything_else",
+            silence_rounds=silence_rounds + 1,
+            plan=Plan(spoken_response=ANYTHING_ELSE, tool_calls=[]),
             pending_calls=[],
-            narration=[WRAP_UP],
-            transcript=[f"agent: {WRAP_UP}"],
+            narration=[ANYTHING_ELSE],
+            transcript=[f"agent: {ANYTHING_ELSE}"],
         )
 
     choice = _resolve_flow_choice(state, deps, transcript=transcript)
-    if choice.flow_id is None:
-        return _plan_handoff(
+    if choice.flow_id is not None:
+        page_id = _guide_page_id(state)
+        page = deps.graph.page(page_id)
+        if choice.flow_id not in page.flows:
+            flow_ids = sorted(page.flows)
+            raise ValueError(f"flow_id {choice.flow_id!r} not in allowed {flow_ids}")
+        return _plan_from_flow(
             deps,
-            query=utterance,
-            spoken=HANDOFF_SPOKEN,
+            page_id,
+            choice.flow_id,
+            spoken=choice.spoken_response,
             phase="anything_else",
-            session_id=str(state["session_id"]),
         )
-    page_id = _guide_page_id(state)
-    page = deps.graph.page(page_id)
-    if choice.flow_id not in page.flows:
-        flow_ids = sorted(page.flows)
-        raise ValueError(f"flow_id {choice.flow_id!r} not in allowed {flow_ids}")
-    return _plan_from_flow(
-        deps,
-        page_id,
-        choice.flow_id,
-        spoken=choice.spoken_response,
+
+    chroma_path = (
+        deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
+    )
+    try:
+        chunks = retrieve_product_knowledge(
+            deps.product_id, utterance, k=2, path=chroma_path
+        )
+    except Exception:  # noqa: BLE001
+        chunks = []
+    spoken = (chunks[0] or "").strip()[:280] if chunks else ""
+    if not spoken:
+        spoken = OFF_TOPIC
+    return CallState(
         phase="anything_else",
+        silence_rounds=0,
+        plan=Plan(spoken_response=spoken, tool_calls=[]),
+        pending_calls=[],
+        narration=[spoken],
+        transcript=[f"agent: {spoken}"],
     )
 
 
@@ -470,6 +459,17 @@ def _plan_interrupt(
         return tier2
 
     # Retrieve found nothing actionable — vision turn-brain may still navigate.
+    from navigator.agent.turn_brain import (
+        expected_narration_line,
+        should_track_screenshot,
+    )
+
+    if not should_track_screenshot(
+        utterance=utterance,
+        expected_line=expected_narration_line(deps, state),
+    ):
+        return _plan_walkthrough_next(state, deps)
+
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     brain = _try_turn_brain(state, deps, utterance=utterance)
     if brain is not None:
@@ -623,10 +623,9 @@ def _flow_texts_for_page(deps: CallDeps, page_id: str) -> dict[str, str]:
 
     Flows with an explicit `broken` / `needs_review` validation verdict are
     excluded so a rotten explored flow cannot reach a live End User. Flows with
-    no validation entry (manually authored) stay offerable.
+    no validation entry (manually authored) stay offerable. Login/onboarding
+    rows dropped by the Show-login toggle stay out of retrieval too.
     """
-    from navigator.automation.explore.validate import is_offerable
-
     page = deps.graph.page(page_id)
     names: dict[str, str] = {}
     for item in deps.graph.demo_playlist:
@@ -647,7 +646,7 @@ def _flow_texts_for_page(deps: CallDeps, page_id: str) -> dict[str, str]:
             trigger_intent=_flow_intent(deps, fid),
         )
         for fid in flow_ids
-        if is_offerable(deps.graph.flow_validation(fid))
+        if _flow_offerable(deps, page_id, fid)
     }
 
 
@@ -1037,52 +1036,8 @@ def _walkthrough_spoken(
     from navigator.automation.narration import spoken_for_live_step
 
     fallback = spoken_for_live_step(yaml_hint, max_len=200) or "Let me show you the next step."
-
-    # Playlist demos use recorded lines — skip per-step Gemini (quota + latency).
-    if getattr(deps, "playlist_only", False):
-        return fallback
-
-    if not (_use_turn_brain(deps) and deps.page is not None):
-        return fallback
-
-    try:
-        from navigator.agent.turn_brain import capture_screenshot_png
-        from navigator.agent.vision_narrator import generate_narration
-
-        png = capture_screenshot_png(deps.page)
-        screen = ""
-        if deps.screen_context is not None:
-            screen = deps.screen_context() or ""
-        intake_summary = ""
-        if deps.intake:
-            intake_summary = (
-                f"{deps.intake.name} at {deps.intake.company}, "
-                f"{deps.intake.business_type}, need={deps.intake.looking_for}"
-            )
-        tool = getattr(nxt, "tool", "") or type(nxt).__name__
-        alias = getattr(nxt, "alias", "") or getattr(nxt, "page_id", "")
-        step_action = f"{tool} {alias}".strip()
-        section_knowledge = _section_knowledge_for_step(
-            deps,
-            page_id=page_id,
-            flow_id=flow_id,
-            step_action=step_action,
-        )
-        spoken = generate_narration(
-            screenshot_png=png,
-            screen_text=screen,
-            narration_hint=yaml_hint,
-            intake_summary=intake_summary,
-            product_brief=deps.product_brief or "",
-            step_action=step_action,
-            section_knowledge=section_knowledge,
-            spoken_language=deps.spoken_language,
-            agent_gender=deps.agent_gender,
-        )
-        return spoken_for_live_step(spoken, max_len=200) or fallback
-    except Exception as exc:  # noqa: BLE001
-        print(f"[plan] vision narration skipped: {exc}", flush=True)
-        return fallback
+    # ponytail: recorded line / YAML only. Vision PNG is interrupt/stuck, not every step.
+    return fallback
 
 
 def _use_turn_brain(deps: CallDeps) -> bool:
@@ -1230,18 +1185,24 @@ def _try_turn_brain(
 def _flow_offerable(deps: CallDeps, page_id: str, flow_id: str) -> bool:
     """True when flow exists on the site graph and may be shown live."""
     from navigator.automation.explore.validate import is_offerable
+    from navigator.automation.login_match import login_flow_hidden_from_demo
 
+    fid = (flow_id or "").strip()
+    if not fid:
+        return False
     try:
         page = deps.graph.page(page_id)
     except SiteGraphError:
         return False
-    if flow_id not in page.flows:
+    if fid not in page.flows:
+        return False
+    if login_flow_hidden_from_demo(deps.graph, page_id, fid):
         return False
     try:
-        list(deps.graph.flow(page_id, flow_id))
+        list(deps.graph.flow(page_id, fid))
     except SiteGraphError:
         return False
-    return is_offerable(deps.graph.flow_validation(flow_id))
+    return is_offerable(deps.graph.flow_validation(fid))
 
 
 def _seamless_detour_fallback(page_name: str, flow_id: str) -> str:
@@ -1338,44 +1299,6 @@ def _spoken_for_flow_step(
     yaml_hint = format_with_intake(yaml_hint, deps.intake)
     parts = [p for p in (intro, resume_bridge, yaml_hint) if p.strip()]
     spoken = " ".join(parts).strip()
-
-    if _use_turn_brain(deps) and deps.page is not None:
-        try:
-            from navigator.agent.turn_brain import capture_screenshot_png
-            from navigator.agent.vision_narrator import generate_narration
-
-            png = capture_screenshot_png(deps.page)
-            screen = ""
-            if deps.screen_context is not None:
-                screen = deps.screen_context() or ""
-            intake_summary = ""
-            if deps.intake:
-                intake_summary = (
-                    f"{deps.intake.name} at {deps.intake.company}, "
-                    f"{deps.intake.business_type}, need={deps.intake.looking_for}"
-                )
-            tool = getattr(call, "tool", "") or type(call).__name__
-            alias = getattr(call, "alias", "") or getattr(call, "page_id", "")
-            step_action = f"{tool} {alias}".strip()
-            section_knowledge = _section_knowledge_for_step(
-                deps,
-                page_id=page_id,
-                flow_id=flow_id,
-                step_action=step_action,
-            )
-            spoken = generate_narration(
-                screenshot_png=png,
-                screen_text=screen,
-                narration_hint=spoken,
-                intake_summary=intake_summary,
-                product_brief=deps.product_brief or "",
-                step_action=step_action,
-                section_knowledge=section_knowledge,
-                spoken_language=deps.spoken_language,
-                agent_gender=deps.agent_gender,
-            )
-        except Exception as exc:  # noqa: BLE001
-            print(f"[plan] vision narration skipped: {exc}", flush=True)
     return spoken
 
 
@@ -1569,7 +1492,18 @@ def _plan_resume_main(
 def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     page_id = _guide_page_id(state)
     flow_id = state.get("walkthrough_flow_id") or ""
-    if not flow_id:
+    if not flow_id or not _flow_offerable(deps, page_id, flow_id):
+        if flow_id or deps.live_agent is not None:
+            spoken = ANYTHING_ELSE
+            return CallState(
+                phase="anything_else",
+                plan=Plan(spoken_response=spoken, tool_calls=[]),
+                pending_calls=[],
+                narration=[spoken],
+                transcript=[f"agent: {spoken}"],
+                silence_rounds=0,
+                walkthrough_flow_id="",
+            )
         raise RuntimeError(
             "walkthrough phase requires walkthrough_flow_id on CallState "
             "(or CallDeps.scripted_flow for deterministic replay)"
@@ -1678,7 +1612,7 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     )
     if len(batch_calls) > 1:
         print(f"[plan] batch_safe: steps {step}..{next_step - 1}", flush=True)
-    # YAML spoken as hint — vision generates the real narration.
+    # Recorded / YAML line. Vision PNG only on off-script interrupt or stuck verify.
     yaml_hint = _step_narration_hint(
         deps, page_id=page_id, flow_id=flow_id, step=step, call=nxt
     )

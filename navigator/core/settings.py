@@ -17,28 +17,23 @@ class Settings(BaseSettings):
 
     # Phase 1
     headful: bool = True
+    #: Playwright server WS for *manual record only* (Platform .env, never API).
+    #: Empty = launch Chromium on this host (production default).
+    record_browser_ws: str = ""
+    #: Path token appended to record_browser_ws when the URL has no path.
+    record_ws_path: str = ""
+    #: Lab only: connect to TCP-peer:3333 when record_browser_ws is empty.
+    #: Off in production — never use X-Forwarded-For for this.
+    record_local: bool = False
     site_graph: Path = Path("navigator/knowledge/sites/whatsapp_crm.yaml")
     db_path: Path = Path("navigator.db")
-    piper_voice: str = "en_US-lessac-medium"
-    piper_data_dir: Path = Path("voices")
-    #: Fish Audio — main Meet TTS when set (free S2.1 Pro + Sarah).
-    fish_api_key: str = ""
-    fish_model: str = "s2.1-pro-free"
-    #: Default: warm conversational Sarah (fish.audio/m/3a7a3d3df82948c6bd756761d6b139b5)
-    fish_reference_id: str = "3a7a3d3df82948c6bd756761d6b139b5"
-    #: "auto" | "gemini" | "fish" | "piper" (auto: Gemini → Fish → Piper)
-    tts_provider: Literal["auto", "gemini", "fish", "piper"] = "auto"
-    gemini_live_model: str = "gemini-2.5-flash-native-audio-preview-12-2025"
     #: Warm female voice for English + Hindi (Gemini Live prebuilt).
     gemini_live_voice: str = "Sulafat"
-    #: Bidirectional Live conversation instead of text→TTS. Off by default:
-    #: the model is preview, and the old path stays byte-for-byte when unset.
-    live_conversational: bool = False
-    #: Live conversational model. Audio in/out, native VAD, sync tools only.
+    #: Gemini Live model. Audio in/out, native VAD, sync tools only.
     live_conversational_model: str = "gemini-3.1-flash-live-preview"
     #: Silence before Live ends the human's turn. Google's default is ~800ms;
     #: under ~300ms a mid-sentence pause reads as end-of-turn.
-    live_vad_silence_ms: int = 400
+    live_vad_silence_ms: int = 800
     #: Quiet time after an interruption before the walkthrough resumes.
     live_resume_silence_s: float = 0.8
     default_spoken_language: Literal["en", "hi"] = "en"
@@ -80,6 +75,10 @@ class Settings(BaseSettings):
     zoom_account_id: str = ""
     zoom_client_id: str = ""
     zoom_client_secret: str = ""
+    #: Meeting SDK / General App Client ID for Attendee web SDK join.
+    #: Never reuse the Server-to-Server ``zoom_client_id`` here — that 3712s.
+    zoom_sdk_client_id: str = ""
+    zoom_sdk_client_secret: str = ""
     #: Zoom user id for create/ZAK (`me` = S2S token owner).
     zoom_user_id: str = "me"
     #: Public origin Attendee can reach for ZAK callback (tunnel or deploy URL).
@@ -131,8 +130,9 @@ class Settings(BaseSettings):
     #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier.
     #: ~200ms is aggressive; mid-sentence pauses can cut a turn early.
     live_stt_min_silence_ms: int = 200
-    #: Max wait for Attendee audio websocket before starting demo anyway.
-    live_audio_ws_wait_s: float = 12.0
+    #: Max wait for Attendee audio websocket before starting demo anyway. Zoom
+    #: can delay this until the host grants recording permission.
+    live_audio_ws_wait_s: float = 120.0
     #: Attendee signed-in Google Meet bot (needs Bot Logins in Attendee dashboard).
     google_meet_use_login: bool = False
     #: Product API key for local client dashboard (server-side; never sent to browser).

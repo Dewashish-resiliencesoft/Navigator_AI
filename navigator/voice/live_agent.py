@@ -41,8 +41,18 @@ INPUT_SAMPLE_RATE = 16_000
 #: Longest ``say`` will wait for queued audio to finish playing. A stuck or
 #: mis-scaled counter must not be able to stall the walkthrough.
 MAX_DRAIN_S = 10.0
+LIVE_CONNECT_ATTEMPTS = 3
 
 SayMode = Literal["verbatim", "natural"]
+
+
+def should_retry_live_connect(
+    exc: BaseException, attempt: int, *, max_attempts: int = LIVE_CONNECT_ATTEMPTS
+) -> bool:
+    """Retry Gemini Live 1011 / overload. Permanent errors (bad key) stay fatal."""
+    from navigator.core.gemini_keys import is_gemini_live_unavailable
+
+    return attempt < max_attempts and is_gemini_live_unavailable(exc)
 
 
 @dataclass
@@ -69,7 +79,7 @@ class LiveAgentConfig:
     language: SpokenLanguage = "en"
     #: Silence before Live ends the human's turn. Google's own default is ~800ms;
     #: below ~300ms mid-sentence pauses get treated as end-of-turn.
-    vad_silence_ms: int = 400
+    vad_silence_ms: int = 800
     vad_prefix_padding_ms: int = 20
     on_event: Callable[[LiveEvent], None] | None = None
     #: Extra fields for LiveConnectConfig, for forward-compat with preview flags.
@@ -86,6 +96,12 @@ class LiveAgent:
         self.speaking = False
         self.last_spoken = ""
         self.bot_ended = False
+        #: When True, keep transcribing the human but drop the model's own audio
+        #: so it doesn't talk over / answer itself (used during intake Q&A).
+        self.listen_only = False
+        #: Playlist walkthrough: do not feed Meet mic into Live (self-echo)
+        #: and ignore VAD barge-in. Director say()/nudge() still speak.
+        self.director_only = False
 
         self._cmds: queue.Queue[_Cmd] = queue.Queue()
         self._heard: queue.Queue[str] = queue.Queue()
@@ -102,7 +118,7 @@ class LiveAgent:
     # ---- lifecycle ----------------------------------------------------
 
     def start(self, *, timeout_s: float = 15.0) -> bool:
-        """Open the session. False means the caller should fall back to TTS."""
+        """Open the session. False means the caller should stop the demo."""
         self._thread = threading.Thread(
             target=self._run_loop, name="gemini-live-agent", daemon=True
         )
@@ -136,6 +152,7 @@ class LiveAgent:
             return
         self.last_spoken = text
         self.interrupted = False
+        self.speaking = True
         self._turn_done.clear()
         started = time.monotonic()
         sent_at_start = self._audio_s_sent()
@@ -180,6 +197,71 @@ class LiveAgent:
         """Tell the model what just happened on screen. Never spoken aloud."""
         if (text or "").strip():
             self._cmds.put(_Cmd(kind="context", text=text))
+
+    def accept_inbound(self) -> bool:
+        """Meet mix includes our own voice — mute mic while we are speaking."""
+        if self.director_only:
+            return False
+        return not self.speaking
+
+    def _is_self_echo(self, heard: str) -> bool:
+        if not (heard or "").strip() or not (self.last_spoken or "").strip():
+            return False
+        from navigator.meeting.intake_clean import is_likely_bot_echo
+
+        return is_likely_bot_echo(heard, self.last_spoken)
+
+    def set_director_only(self, on: bool) -> None:
+        """Speak only scripted say()/nudge(); drop Meet mic until Q&A."""
+        self.director_only = on
+        if on:
+            self.interrupted = False
+            try:
+                self.bridge.flush_bot_output()
+            except Exception:  # noqa: BLE001
+                pass
+            self.drain_heard()
+            inbound = getattr(self.bridge, "inbound", None)
+            if inbound is not None:
+                while True:
+                    try:
+                        inbound.get_nowait()
+                    except Exception:  # noqa: BLE001
+                        break
+        print(f"[live] director_only={'on' if on else 'off'}", flush=True)
+
+    def set_listen_only(self, on: bool) -> None:
+        """Silence the model's mouth while still hearing the human.
+
+        Native-audio Live auto-answers every turn it detects. During intake that
+        means it replies to the human's answer (and to its own echo) — the demo
+        "asks a question then answers itself". Gating outbound audio keeps the
+        input transcription flowing for intake while stopping the self-answer.
+        """
+        self.listen_only = on
+        if on:
+            try:
+                self.bridge.flush_bot_output()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def set_language(self, lang: SpokenLanguage) -> None:
+        """Switch spoken language for later turns (soft — no session reconnect).
+
+        ``speech_config.language_code`` is fixed at connect; we update cfg +
+        inject a hard context so the model stops refusing and answers in-lang.
+        """
+        if lang == self.cfg.language:
+            return
+        self.cfg.language = lang
+        label = "Hindi" if lang == "hi" else "English"
+        self.add_context(
+            f"The person asked you to speak {label} from now on. Speak only "
+            f"{label} until told otherwise. Never refuse a language switch and "
+            f"never say you can only speak another language in this demo. "
+            f"Acknowledge briefly in {label}, then continue."
+        )
+        print(f"[speak] live language → {lang}", flush=True)
 
     def wait_until_idle(self, *, silence_s: float, timeout_s: float = 30.0) -> None:
         """Block until the model has been quiet for `silence_s`.
@@ -273,6 +355,7 @@ class LiveAgent:
         from google import genai
 
         client = genai.Client(api_key=self.cfg.api_key)
+        attempt = 0
         while not self._stop.is_set():
             try:
                 async with client.aio.live.connect(
@@ -290,6 +373,14 @@ class LiveAgent:
             except Exception as exc:  # noqa: BLE001
                 if self._stop.is_set():
                     return
+                attempt += 1
+                if should_retry_live_connect(exc, attempt):
+                    print(
+                        f"[live] Gemini Live {exc} — retry {attempt}/{LIVE_CONNECT_ATTEMPTS}",
+                        flush=True,
+                    )
+                    await asyncio.sleep(1.5)
+                    continue
                 self._failed = self._failed or str(exc)
                 self._emit(LiveEvent(kind="error", text=f"session: {exc}"))
                 self._ready.set()
@@ -306,6 +397,8 @@ class LiveAgent:
             except queue.Empty:
                 continue
             except Exception:  # noqa: BLE001
+                continue
+            if not self.accept_inbound():
                 continue
             try:
                 await session.send_realtime_input(
@@ -342,6 +435,9 @@ class LiveAgent:
         sc = getattr(msg, "server_content", None)
 
         if sc is not None and getattr(sc, "interrupted", False):
+            if self.director_only:
+                # Meet mixed our own TTS back in. Stay on the scripted line.
+                return
             # The model stopped generating because a human spoke. Anything
             # still queued downstream is now stale and must not play.
             self.interrupted = True
@@ -356,7 +452,7 @@ class LiveAgent:
         for part in getattr(model_turn, "parts", None) or []:
             inline = getattr(part, "inline_data", None)
             data = getattr(inline, "data", None) if inline is not None else None
-            if data:
+            if data and not self.listen_only:
                 self.speaking = True
                 self.bridge.push_outbound_pcm(
                     data, sample_rate=OUTPUT_SAMPLE_RATE
@@ -364,7 +460,11 @@ class LiveAgent:
 
         # `msg.data` is the SDK's flattened view of the same audio; only use it
         # when parts gave us nothing, or the audio plays twice.
-        if not (getattr(model_turn, "parts", None) or []) and getattr(msg, "data", None):
+        if (
+            not self.listen_only
+            and not (getattr(model_turn, "parts", None) or [])
+            and getattr(msg, "data", None)
+        ):
             self.speaking = True
             self.bridge.push_outbound_pcm(msg.data, sample_rate=OUTPUT_SAMPLE_RATE)
 
@@ -375,11 +475,16 @@ class LiveAgent:
             heard = getattr(sc, "input_transcription", None)
             if heard is not None and getattr(heard, "text", ""):
                 text = heard.text
-                try:
-                    self._heard.put_nowait(text)
-                except queue.Full:
+                if self.director_only:
                     pass
-                self._emit(LiveEvent(kind="heard", text=text))
+                elif self._is_self_echo(text):
+                    print(f"[live] ignoring echo: {text!r}", flush=True)
+                else:
+                    try:
+                        self._heard.put_nowait(text)
+                    except queue.Full:
+                        pass
+                    self._emit(LiveEvent(kind="heard", text=text))
             if getattr(sc, "turn_complete", False):
                 self.speaking = False
                 self._turn_done.set()
@@ -396,7 +501,9 @@ class LiveAgent:
             if cmd.kind == "close":
                 return
             try:
-                await session.send_realtime_input(text=_prompt_for(cmd))
+                await session.send_realtime_input(
+                    text=_prompt_for(cmd, language=self.cfg.language)
+                )
             except Exception as exc:  # noqa: BLE001
                 self._emit(LiveEvent(kind="error", text=f"send text: {exc}"))
                 self._turn_done.set()
@@ -411,8 +518,9 @@ class LiveAgent:
             print(f"[live] event handler failed: {exc}", flush=True)
 
 
-def _prompt_for(cmd: _Cmd) -> str:
+def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
     """Turn a director command into an instruction the model will not read aloud."""
+    lang_hint = " in Hindi" if language == "hi" else " in English"
     if cmd.kind == "context":
         return (
             "[Context, do not say this out loud and do not acknowledge it] "
@@ -420,15 +528,15 @@ def _prompt_for(cmd: _Cmd) -> str:
         )
     if cmd.kind == "nudge":
         return (
-            "[Say this brief working ack aloud once, then stop. Do not elaborate "
-            f"or narrate what you are doing] {cmd.text}"
+            f"[Say this brief working ack aloud once{lang_hint}, then stop. Do not "
+            f"elaborate or narrate what you are doing] {cmd.text}"
         )
     if cmd.mode == "natural":
         return (
-            "[Say the following to the person now, in your own words, in one or "
-            f"two sentences, then stop] {cmd.text}"
+            f"[Say the following to the person now{lang_hint}, in your own words, "
+            f"in one or two sentences, then stop] {cmd.text}"
         )
     return (
-        "[Say the following to the person now, word for word, then stop] "
+        f"[Say the following to the person now{lang_hint}, word for word, then stop] "
         f"{cmd.text}"
     )

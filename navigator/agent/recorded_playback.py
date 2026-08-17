@@ -2,9 +2,8 @@
 
 Replays a recording as a copy of itself: every cue sits at an absolute time on
 the flow's clock, and playback waits until that time rather than sleeping
-between steps. Narration therefore starts at the same offset relative to its
-click as it did during capture — never before, never after. See
-`navigator.agent.playback_schedule` for the timing rules.
+between steps. Narrated steps start speech and the cursor/click together so
+Meet sees the pointer on the control while the line names it.
 
 LangGraph speak-then-click walkthrough is the fallback when metadata is missing.
 """
@@ -18,6 +17,7 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from navigator.agent.live_input import needs_live_input, resolve_live_fill
+from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
 from navigator.agent.playback_schedule import build_schedule, fmt_ms
 from navigator.agent.state import CallDeps
 from navigator.automation.browser.tools import execute as run_tool
@@ -31,12 +31,10 @@ from navigator.meeting.playback_handle import PlaybackHandle
 if TYPE_CHECKING:
     from navigator.meeting.meet_speaker import MeetSpeaker
 
-
-#: How long to wait for TTS pre-synthesis before scheduling off recorded windows.
-PREFETCH_WAIT_S = 20.0
-
 PAUSE_LINE = "One moment — let me get that step right."
 SKIP_LINE = "Moving on — we'll skip that step for now."
+#: After a browser act, let Meet catch the frame before the next line.
+_ACT_SETTLE_S = 0.25
 
 DemoOrigin = Literal["dashboard_test", "public_embed"]
 
@@ -102,22 +100,6 @@ def _wait_until(deps: CallDeps, deadline: float) -> None:
         time.sleep(min(slice_s, remaining))
 
 
-def _tts_duration_fn(deps: CallDeps):
-    """Exact synthesized length per line, when the speaker can tell us."""
-    measure = getattr(deps.speaker, "line_duration_ms", None)
-    if measure is None:
-        return lambda _text: None
-
-    def _ms(text: str) -> int | None:
-        try:
-            # int() also rejects mocks/None from speakers that only duck-type it.
-            return int(measure(spoken_for_live_step(text)))
-        except Exception:  # noqa: BLE001
-            return None
-
-    return _ms
-
-
 def _flow_schedule(deps: CallDeps, flow_id: str, lines: list[str], n_steps: int):
     return build_schedule(
         n_steps=n_steps,
@@ -125,7 +107,7 @@ def _flow_schedule(deps: CallDeps, flow_id: str, lines: list[str], n_steps: int)
         speech=deps.graph.flow_step_speech(flow_id),
         lines=lines,
         timing=deps.graph.flow_step_timing(flow_id),
-        tts_ms=_tts_duration_fn(deps),
+        tts_ms=lambda _text: None,
     )
 
 
@@ -135,7 +117,6 @@ def _start_speech(deps: CallDeps, line: str) -> PlaybackHandle | None:
         return None
     live = getattr(deps, "live_agent", None)
     if live is not None and hasattr(live, "say"):
-        # Live replaces MeetSpeaker WAV when conversational mode is on.
         # Background thread keeps same-step speak/act lead-in overlap.
         handle = PlaybackHandle()
 
@@ -349,7 +330,9 @@ def _run_flow_timeline_inner(
     #: — which is what happens when TTS prefetch misses and the schedule never
     #: stretches (see live log: act 1 at 00:56 while speak 0 still running).
     speech_idx: int | None = None
+    narration_started: dict[int, int] = {}
     skipped: set[int] = set()
+    last_was_act = False
     t0 = time.monotonic()
     #: Runtime slip (retries, slow pages) and TTS overrun both land here, so a
     #: late step moves narration AND action together instead of desyncing them.
@@ -390,11 +373,27 @@ def _run_flow_timeline_inner(
             # absorbs the overrun, which makes this step's action late, which
             # shifts the rest — narration and action stay together.
             poll_barge_in_language_switch(deps)
+            if last_was_act:
+                _wait_until(deps, time.monotonic() + _ACT_SETTLE_S)
+                last_was_act = False
+                late = elapsed_ms() - due_ms
+                if late > 0:
+                    shift_ms += late
             # Guard only: the schedule is what keeps lines from overlapping.
             _wait_speech(speech)
             print(
                 f"[timeline] {fmt_ms(elapsed_ms())} speak step {cue.idx}",
                 flush=True,
+            )
+            narration_started[cue.idx] = time.monotonic_ns()
+            emit_demo_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                event="narration_started",
+                engine="timeline",
+                flow_id=flow_id,
+                step=cue.idx,
             )
             speech = _start_speech(deps, cue.text)
             speech_idx = cue.idx if speech is not None else None
@@ -408,7 +407,20 @@ def _run_flow_timeline_inner(
             speech = None
             speech_idx = None
 
+        action_started_ns = time.monotonic_ns()
+        if cue.idx in narration_started:
+            emit_sync_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                engine="timeline",
+                flow_id=flow_id,
+                step=cue.idx,
+                narration_started_ns=narration_started[cue.idx],
+                action_started_ns=action_started_ns,
+            )
         print(f"[timeline] {fmt_ms(elapsed_ms())} act step {cue.idx}", flush=True)
+        last_was_act = True
         entry, current_page = _run_step(
             deps,
             call,
@@ -428,6 +440,7 @@ def _run_flow_timeline_inner(
         if not entry.failed:
             continue
 
+        skipped.add(cue.idx)
         outcome.failures.append(entry)
         if not entry.actual_result.ok:
             if _hard_stop_on_click_fail(deps, strict=strict):
@@ -557,7 +570,30 @@ def run_flow_strict(
             )
             continue
         line = lines[step] if step < len(lines) else ""
+        narration_started_ns = time.monotonic_ns() if line.strip() else None
+        if narration_started_ns is not None:
+            emit_demo_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                event="narration_started",
+                engine="strict_playlist",
+                flow_id=flow_id,
+                step=step,
+            )
         _start_speech(deps, line)
+        action_started_ns = time.monotonic_ns()
+        if narration_started_ns is not None:
+            emit_sync_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                engine="strict_playlist",
+                flow_id=flow_id,
+                step=step,
+                narration_started_ns=narration_started_ns,
+                action_started_ns=action_started_ns,
+            )
         entry, current_page = _run_step(
             deps,
             call,
@@ -643,42 +679,6 @@ def run_playlist_strict(
     }
 
 
-def _prefetch_playlist_narration(deps: CallDeps, graph) -> None:
-    """Synthesize timeline lines up front, then wait so the schedule can use
-    their exact durations.
-
-    On timeout the schedule falls back to recorded window lengths — a slightly
-    looser demo beats a demo that never starts. Skipped when Live owns speech
-    (no WAV cache / line_duration_ms).
-    """
-    if getattr(deps, "live_agent", None) is not None:
-        return
-    speaker = deps.speaker
-    prefetch = getattr(speaker, "prefetch_lines", None)
-    if prefetch is None:
-        return
-    lines: list[str] = []
-    for item in graph.demo_playlist or []:
-        if not graph.has_recorded_playback(item.flow_id):
-            continue
-        for line in graph.flow_narration_lines(item.flow_id):
-            text = spoken_for_live_step(line)
-            if text.strip():
-                lines.append(text)
-    if not lines:
-        return
-    worker = prefetch(lines)
-    if worker is None or not hasattr(worker, "join"):
-        return
-    worker.join(timeout=PREFETCH_WAIT_S)
-    if worker.is_alive():
-        print(
-            f"[timeline] TTS prefetch still running after {PREFETCH_WAIT_S:.0f}s — "
-            "scheduling off recorded pacing",
-            flush=True,
-        )
-
-
 def run_playlist_timeline(
     deps: CallDeps,
     *,
@@ -691,8 +691,6 @@ def run_playlist_timeline(
     playlist = sorted(graph.demo_playlist, key=lambda x: x.order) if graph.demo_playlist else []
     if not playlist:
         return {"entries": [], "failures": [], "paused": False}
-
-    _prefetch_playlist_narration(deps, graph)
 
     all_entries: list[ActionLogEntry] = []
     all_failures: list[ActionLogEntry] = []

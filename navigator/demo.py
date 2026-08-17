@@ -3,9 +3,8 @@
     python -m navigator.demo
 
 Opens a real browser window, replays one flow out of the site graph, verifies each
-step's postcondition against the DOM, narrates the outcome through Piper, and
-writes every action to the ActionLog. That whole path working end to end is what
-Phase 1 is for.
+step's postcondition against the DOM, prints narration, and writes every action
+to the ActionLog.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ from navigator.knowledge.site_graph import load_site_graph
 from navigator.logs.store import ActionLog
 from navigator.automation.browser.session import browser_page
 from navigator.core.settings import settings
-from navigator.voice.tts import make_speaker
+from navigator.voice.tts import PrintSpeaker
 
 
 def main() -> int:
@@ -34,7 +33,7 @@ def main() -> int:
     ap.add_argument(
         "--headless", action="store_true", help="override NAVIGATOR_HEADFUL"
     )
-    ap.add_argument("--mute", action="store_true", help="print narration, don't speak")
+    ap.add_argument("--mute", action="store_true", help="print narration (always on)")
     ap.add_argument(
         "--slow-mo", type=int, default=400, help="ms between actions, for watching"
     )
@@ -44,7 +43,7 @@ def main() -> int:
     print(f"[demo] site graph v{graph_cfg.version} ({graph_cfg.site}) loaded")
     print(f"[demo] flow: {args.page}/{args.flow}")
 
-    speaker = PrintSpeaker() if args.mute else _speaker()
+    speaker = PrintSpeaker()
     session_id = uuid4()
     headful = settings.headful and not args.headless
 
@@ -63,29 +62,6 @@ def main() -> int:
         _report(log, session_id, args.product_id, final)
 
     return 1 if final.get("failures") else 0
-
-
-def _speaker():
-    from navigator.voice.tts import PrintSpeaker
-
-    speaker = make_speaker(
-        gemini_api_key=settings.gemini_api_key,
-        gemini_live_model=settings.gemini_live_model,
-        gemini_live_voice=settings.gemini_live_voice,
-        spoken_language=settings.default_spoken_language,
-        fish_api_key=settings.fish_api_key,
-        fish_model=settings.fish_model,
-        fish_reference_id=settings.fish_reference_id,
-        tts_provider=settings.tts_provider,
-        piper_voice=settings.piper_voice,
-        piper_data_dir=settings.piper_data_dir,
-    )
-    if isinstance(speaker, PrintSpeaker):
-        print(
-            "[demo] no Gemini/Fish key and no Piper voice — narration prints only.\n"
-            "[demo] set NAVIGATOR_GEMINI_API_KEY (Gemini Live) or NAVIGATOR_FISH_API_KEY or Piper."
-        )
-    return speaker
 
 
 def _report(log: ActionLog, session_id, product_id: str, final: dict) -> None:

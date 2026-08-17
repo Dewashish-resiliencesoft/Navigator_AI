@@ -74,6 +74,12 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
         deps.set_status("speaking", "Speaking…")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("speaking")
+    # Keep lead-in narration queued until EXECUTING starts cursor/action.
+    if state.get("pending_calls"):
+        return CallState()
+    prior = state.get("pre_action_speech")
+    if prior is not None and hasattr(prior, "wait"):
+        prior.wait(timeout=120.0)
     live = deps.live_agent
     # Live already answered conversational Q&A out loud. Re-saying the
     # planner's reply is a second voice on the same question. Walkthrough
@@ -126,4 +132,4 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
         return CallState(narration=CLEAR, finished=True, phase="ending")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("idle")
-    return CallState(narration=CLEAR)
+    return CallState(narration=CLEAR, pre_action_speech=None)

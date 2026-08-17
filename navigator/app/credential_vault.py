@@ -234,13 +234,11 @@ class CredentialVault:
             return {
                 "has_gemini_api_key": False,
                 "has_groq_api_key": False,
-                "has_fish_api_key": False,
                 "updated_at": None,
             }
         return {
             "has_gemini_api_key": bool(row["gemini_key_encrypted"]),
             "has_groq_api_key": bool(row["groq_key_encrypted"]),
-            "has_fish_api_key": bool(row["fish_key_encrypted"]),
             "updated_at": row["updated_at"],
         }
 
@@ -250,7 +248,6 @@ class CredentialVault:
         *,
         gemini_api_key: str | None = None,
         groq_api_key: str | None = None,
-        fish_api_key: str | None = None,
     ) -> None:
         """None keeps stored key; \"\" clears it."""
         row = self._provider_row(product_id)
@@ -262,8 +259,6 @@ class CredentialVault:
             gemini_blob = _cipher().encrypt(gemini_api_key.encode()) if gemini_api_key else None
         if groq_api_key is not None:
             groq_blob = _cipher().encrypt(groq_api_key.encode()) if groq_api_key else None
-        if fish_api_key is not None:
-            fish_blob = _cipher().encrypt(fish_api_key.encode()) if fish_api_key else None
 
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
@@ -285,7 +280,6 @@ class CredentialVault:
         col = {
             "gemini": "gemini_key_encrypted",
             "groq": "groq_key_encrypted",
-            "fish": "fish_key_encrypted",
         }.get(kind)
         if col is None:
             return None

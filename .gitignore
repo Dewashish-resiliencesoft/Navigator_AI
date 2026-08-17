@@ -52,10 +52,12 @@ docs/**/*.html
 !fern/**/*.mdx
 
 # Standing rules every contributor and coding agent must read
+!README.md
 !CLAUDE.md
 !AGENTS.md
 !docs/PRODUCT_MODEL.md
 !docs/ONBOARDING.md
+!docs/DEVELOPER_ONBOARDING.md
 !navigator/client/embed/README.md
 
 # Test fixtures may use HTML/MD

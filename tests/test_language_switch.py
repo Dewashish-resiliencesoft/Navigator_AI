@@ -6,9 +6,45 @@ import pytest
 
 from navigator.voice.language import (
     detect_language_switch,
+    detect_spoken_language,
     is_language_switch_only,
+    language_code,
     sync_speaker_language,
 )
+
+
+def test_language_codes_are_model_supported():
+    # Native-audio model rejects en-IN (1007); en-US + hi-IN are accepted.
+    assert language_code("en") == "en-US"
+    assert language_code("hi") == "hi-IN"
+
+
+def test_detect_spoken_language_from_script():
+    # Speaking Hindi (Devanagari) with no "hindi" keyword must still register as hi.
+    assert detect_spoken_language("मुझे दिखाओ यह कैसे काम करता है") == "hi"
+    assert detect_spoken_language("क्या तुम मदद कर सकती हो?") == "hi"
+    # A real English sentence → en.
+    assert detect_spoken_language("show me how the dashboard works") == "en"
+    # Short/ambiguous backchannel → None so it doesn't thrash mid-demo.
+    assert detect_spoken_language("haan") is None
+    assert detect_spoken_language("") is None
+
+
+def test_speaking_hindi_switches_without_keyword():
+    # apply_language_switch must flip on script alone (the reported bug).
+    from navigator.voice.language import apply_language_switch
+
+    seen: list[str] = []
+    new_lang, ack = apply_language_switch(
+        utterance="मुझे यह फीचर दिखाओ",
+        current="en",
+        on_switch=lambda lang: seen.append(lang),
+        allowed=frozenset({"en", "hi"}),
+    )
+    assert new_lang == "hi"
+    assert seen == ["hi"]
+    # Natural speech, not an explicit "switch" request → no ack line.
+    assert ack is None
 
 
 def test_detect_hindi_switch():
@@ -19,6 +55,29 @@ def test_detect_hindi_switch():
     assert detect_language_switch("Please speak to me in Hindi") == "hi"
     assert detect_language_switch("say this in hindi") == "hi"
     assert detect_language_switch("say it in Hindi please") == "hi"
+    assert detect_language_switch("Hey navigator, could you speak me with Hindi?") == "hi"
+
+
+def test_sync_call_language_notifies_live_agent():
+    from navigator.voice.language import sync_call_language
+
+    class Live:
+        def __init__(self) -> None:
+            self.lang = "en"
+
+        def set_language(self, lang: str) -> None:
+            self.lang = lang
+
+    class Deps:
+        spoken_language = "en"
+        extra_languages = ("hi",)
+        speaker = None
+        live_agent = Live()
+
+    deps = Deps()
+    assert sync_call_language(deps, "talk in hindi") == "hi"
+    assert deps.spoken_language == "hi"
+    assert deps.live_agent.lang == "hi"
 
 
 def test_detect_english_switch():

@@ -41,14 +41,22 @@ def _style_rules(lang: SpokenLanguage, gender: str) -> str:
     else:
         voice = "Speak natural Indian English."
         backchannels = (
-            "Use short human backchannels when natural: \"hmm\", \"yeah\", "
-            "\"mm-hmm\", \"one sec\", \"checking that\". These keep the call alive "
-            "while something is happening on screen."
+            "Use short human backchannels when natural: \"um\", \"hmm\", \"yeah\", "
+            "\"mhm\", \"yes\", \"one sec\", \"checking that\". These keep the call "
+            "alive while something is happening on screen."
         )
     person = "female" if gender == "female" else "male"
+    bilingual = (
+        "You speak both English and Hindi. Reply in the same language the person "
+        "is currently speaking: if they speak Hindi, answer in Hindi; if English, "
+        "answer in English — mirror them and switch the instant they switch, "
+        "whether or not they explicitly ask. Never refuse a language, and never "
+        "say you can only speak English (or only Hindi) in this demo."
+    )
     return (
         f"{voice} Refer to yourself in the first person using {person} verb forms "
         "where the language marks gender.\n"
+        f"{bilingual}\n"
         "This is a continuous live call, not turn-based chat. Prefer an immediate "
         "micro-reaction over waiting for a polished paragraph.\n"
         "Keep substantive replies to one or two sentences. Use contractions. Sound "

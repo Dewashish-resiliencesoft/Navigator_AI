@@ -116,3 +116,24 @@ def test_listening_with_live_agent_uses_pending_not_whisper(
     )
     out = listening(initial_state(uuid4(), "inbox"), deps)
     assert out["transcript"] == ["user: show me deals"]
+
+
+def test_listening_drops_stale_intake_name_barge_in(
+    site_graph, page, log, tmp_path
+):
+    from navigator.meeting.intake import ProspectIntake
+
+    deps = CallDeps(
+        graph=site_graph,
+        page=page,
+        log=log,
+        speaker=PrintSpeaker(),
+        archive_dir=tmp_path / "archives",
+        live_agent=object(),
+        intake=ProspectIntake(name="Devashish", looking_for="Mulesoft automation"),
+        pending_barge_in=["My name is Devashish.", "Yeah…", "show me deals"],
+        audio_frames=iter([b"\x00\x01"]),
+        transcribe_audio=lambda pcm: "SHOULD NOT RUN",
+    )
+    out = listening(initial_state(uuid4(), "inbox"), deps)
+    assert out["transcript"] == ["user: show me deals"]

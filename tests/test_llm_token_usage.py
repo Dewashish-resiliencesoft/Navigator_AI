@@ -19,7 +19,6 @@ class _FakeVault:
         return {
             "has_groq_api_key": self._byok.get("groq", False),
             "has_gemini_api_key": self._byok.get("gemini", False),
-            "has_fish_api_key": self._byok.get("fish", False),
             "updated_at": None,
         }
 
@@ -29,7 +28,7 @@ class _FakeVault:
     [
         ({}, "Platform default keys (Navigator environment)"),
         (
-            {"groq": True, "gemini": True, "fish": True},
+            {"groq": True, "gemini": True},
             "Your API keys (BYOK)",
         ),
         (
@@ -42,7 +41,6 @@ def test_billing_label(byok: dict[str, bool], expected: str) -> None:
     flags = {
         "has_groq_api_key": byok.get("groq", False),
         "has_gemini_api_key": byok.get("gemini", False),
-        "has_fish_api_key": byok.get("fish", False),
     }
     assert billing_label(flags) == expected
 

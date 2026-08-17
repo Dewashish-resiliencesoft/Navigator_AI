@@ -89,6 +89,20 @@ def test_recorder_status_exposes_narrate_flag():
         content._active = None
 
 
+def test_mp_gate_phase_roundtrip():
+    from types import SimpleNamespace
+
+    from navigator.client.content import _MpGate
+
+    ns = SimpleNamespace(phase="setup")
+    flagged: list = []
+    gate = _MpGate(ns, flagged)
+    assert gate.phase == "setup"
+    gate.phase = "capturing"
+    assert ns.phase == "capturing"
+    assert gate.phase == "capturing"
+
+
 def test_start_recorder_update_requires_flow_id():
     import pytest
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -9,8 +11,6 @@ from typing import Literal
 from navigator.app.registry import ProductNotFound, Registry
 from navigator.automation.explore.validate import is_offerable
 from navigator.core.settings import settings
-from navigator.knowledge.context import retrieve_context
-from navigator.knowledge.memory.collections import get_collection
 from navigator.knowledge.site_graph import SiteGraph, SiteGraphError
 
 AutonomyMode = Literal["guided", "adaptive", "explorer"]
@@ -77,6 +77,8 @@ def _flow_has_semantics_or_triggers(graph: SiteGraph) -> bool:
 
 def _knowledge_count(product_id: str, chroma_path: Path) -> int:
     try:
+        from navigator.knowledge.memory.collections import get_collection
+
         coll = get_collection(chroma_path, product_id, "product_knowledge")
         return int(coll.count())
     except Exception:  # noqa: BLE001
@@ -111,12 +113,12 @@ def assert_live_graph_yaml(yaml_text: str) -> None:
 
 
 def _attendee_ok() -> bool:
-    from navigator.meeting.live_demo import _attendee_reachable
+    from navigator.meeting.attendee_stack import attendee_reachable
 
     local = any(h in settings.attendee_base_url for h in ("localhost", "127.0.0.1"))
     if not local:
         return True
-    return _attendee_reachable(settings.attendee_base_url)
+    return attendee_reachable(settings.attendee_base_url)
 
 
 def assess_demo_readiness(
@@ -179,6 +181,20 @@ def assess_demo_readiness(
                 blocking=origin == "public_embed",
             )
         )
+
+    gemini_ok = bool(settings.gemini_api_key)
+    checks.append(
+        ReadinessCheck(
+            id="live",
+            ok=gemini_ok,
+            message=(
+                "Gemini key set — Live audio can start."
+                if gemini_ok
+                else "Set NAVIGATOR_GEMINI_API_KEY — Meet voice is Gemini Live only."
+            ),
+            blocking=True,
+        )
+    )
 
     try:
         if origin == "public_embed" and published_rev is not None:
@@ -286,6 +302,8 @@ def assess_demo_readiness(
 
     if published_rev is not None:
         try:
+            from navigator.knowledge.context import retrieve_context
+
             stale = retrieve_context(
                 "pricing demo",
                 product_id,
@@ -318,41 +336,6 @@ def assess_demo_readiness(
                 else "Set NAVIGATOR_GROQ_API_KEY for conversational demos."
             ),
             blocking=True,
-        )
-    )
-
-    gemini_ok = bool(settings.gemini_api_key)
-    checks.append(
-        ReadinessCheck(
-            id="gemini",
-            ok=gemini_ok,
-            message=(
-                "Gemini key set — vision narration enabled."
-                if gemini_ok
-                else "Set NAVIGATOR_GEMINI_API_KEY for screen-aware narration."
-            ),
-            blocking=False,
-        )
-    )
-
-    fish_ok = (
-        bool(settings.fish_api_key)
-        or settings.tts_provider == "piper"
-        or (
-            settings.tts_provider in ("auto", "gemini")
-            and bool(settings.gemini_api_key)
-        )
-    )
-    checks.append(
-        ReadinessCheck(
-            id="tts",
-            ok=fish_ok,
-            message=(
-                "TTS configured."
-                if fish_ok
-                else "Set NAVIGATOR_FISH_API_KEY or use Piper TTS."
-            ),
-            blocking=False,
         )
     )
 

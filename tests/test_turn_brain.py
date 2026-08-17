@@ -57,3 +57,19 @@ def test_decide_turn_uses_vision():
     assert isinstance(d, TurnDecision)
     assert d.intent == "speak"
     assert calls["ok"] is True
+
+
+def test_should_track_screenshot_only_when_off_script_or_stuck():
+    from navigator.agent.turn_brain import should_track_screenshot
+
+    line = "Here is the send campaign button"
+    assert should_track_screenshot(utterance="", expected_line=line) is False
+    assert should_track_screenshot(
+        utterance="click send campaign", expected_line=line
+    ) is False
+    assert should_track_screenshot(
+        utterance="what about pricing", expected_line=line
+    ) is True
+    assert should_track_screenshot(
+        utterance="ok", expected_line=line, stuck=True
+    ) is True

@@ -174,6 +174,7 @@ export function Flows() {
       setRecNarrating(!!s.narrate);
       setNarrationChunks(s.narration_chunks ?? 0);
       if (!active) {
+        if (s.error?.trim()) err(s.error.trim());
         stopPolling();
         load();
       }
@@ -529,31 +530,31 @@ export function Flows() {
             )}
           </AnimatePresence>
         </div>
-        {confirmDelete !== null && (
-          <ConfirmDialog
-            title="Delete this flow?"
-            message={`Remove “${rows?.[confirmDelete]?.name || rows?.[confirmDelete]?.flow_id || "this flow"}” from the playlist and delete its steps from the draft site graph. Publish later to make the change live.`}
-            confirmLabel="Delete"
-            danger
-            onConfirm={() => {
-              void confirmRemoveFlow();
-            }}
-            onCancel={() => setConfirmDelete(null)}
-          />
-        )}
-        {confirmClearAll && (
-          <ConfirmDialog
-            title="Clear all flows?"
-            message="Resets the draft site graph to a minimal empty shell and clears the demo script. Persona and product URL stay. Run Auto-Explore to build a new walkthrough."
-            confirmLabel="Clear all"
-            danger
-            onConfirm={() => {
-              void clearAllFlows();
-            }}
-            onCancel={() => setConfirmClearAll(false)}
-          />
-        )}
       </Card>
+      {confirmDelete !== null && (
+        <ConfirmDialog
+          title="Delete this flow?"
+          message={`Remove “${rows?.[confirmDelete]?.name || rows?.[confirmDelete]?.flow_id || "this flow"}” from the playlist and delete its steps from the draft site graph. Publish later to make the change live.`}
+          confirmLabel="Delete"
+          danger
+          onConfirm={() => {
+            void confirmRemoveFlow();
+          }}
+          onCancel={() => setConfirmDelete(null)}
+        />
+      )}
+      {confirmClearAll && (
+        <ConfirmDialog
+          title="Clear all flows?"
+          message="Resets the draft site graph to a minimal empty shell and clears the demo script. Persona and product URL stay. Run Auto-Explore to build a new walkthrough."
+          confirmLabel="Clear all"
+          danger
+          onConfirm={() => {
+            void clearAllFlows();
+          }}
+          onCancel={() => setConfirmClearAll(false)}
+        />
+      )}
 
       <Card>
         <CardTitle

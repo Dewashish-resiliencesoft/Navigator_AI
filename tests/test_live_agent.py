@@ -83,6 +83,30 @@ def test_flattened_data_used_when_no_parts():
     assert bridge.sent == [(b"zz", OUTPUT_SAMPLE_RATE)]
 
 
+def test_listen_only_transcribes_but_stays_silent():
+    """Intake window: Live must hear the human (transcript) but not speak back."""
+    bridge = FakeBridge()
+    events: list = []
+    agent = _agent(bridge, events)
+    agent.set_listen_only(True)
+    assert bridge.flushes == 1  # any in-flight audio dropped on enable
+
+    heard = SimpleNamespace(
+        interrupted=False,
+        model_turn=SimpleNamespace(parts=[_audio_part(b"selftalk")]),
+        turn_complete=True,
+        output_transcription=None,
+        input_transcription=SimpleNamespace(text="my name is Dewa"),
+    )
+    agent._handle_server_message(SimpleNamespace(server_content=heard, data=b"selftalk"))
+    assert bridge.sent == []  # no self-answer audio reached the meeting
+    assert any(e.kind == "heard" and e.text == "my name is Dewa" for e in events)
+
+    agent.set_listen_only(False)
+    agent._handle_server_message(_msg(parts=[_audio_part(b"ok")]))
+    assert bridge.sent == [(b"ok", OUTPUT_SAMPLE_RATE)]
+
+
 def test_interrupted_flushes_downstream_audio():
     bridge = FakeBridge()
     events: list = []
@@ -104,6 +128,66 @@ def test_interrupted_does_not_also_queue_that_turns_audio():
     assert bridge.sent == []
 
 
+def test_director_only_rejects_inbound_and_ignores_interrupt():
+    """Playlist: don't feed Meet mic (self-echo) and don't barge-in on it."""
+    bridge = FakeBridge()
+    events: list = []
+    agent = _agent(bridge, events)
+    assert agent.accept_inbound() is True
+    agent.set_director_only(True)
+    assert agent.accept_inbound() is False
+    assert bridge.flushes == 1
+
+    agent.speaking = True
+    agent._handle_server_message(_msg(interrupted=True))
+    assert agent.interrupted is False
+    assert agent.speaking is True
+    assert not any(e.kind == "interrupted" for e in events)
+
+    agent._handle_server_message(_msg(parts=[_audio_part(b"line")]))
+    assert bridge.sent == [(b"line", OUTPUT_SAMPLE_RATE)]
+
+    heard = SimpleNamespace(
+        interrupted=False,
+        model_turn=None,
+        turn_complete=False,
+        output_transcription=None,
+        input_transcription=SimpleNamespace(text="here is meta"),
+    )
+    agent._handle_server_message(SimpleNamespace(server_content=heard, data=None))
+    assert not any(e.kind == "heard" for e in events)
+
+    agent.set_director_only(False)
+    agent.speaking = False
+    assert agent.accept_inbound() is True
+
+
+def test_half_duplex_mutes_inbound_while_speaking():
+    agent = _agent(FakeBridge())
+    assert agent.accept_inbound() is True
+    agent.speaking = True
+    assert agent.accept_inbound() is False
+    agent.speaking = False
+    assert agent.accept_inbound() is True
+
+
+def test_director_only_off_drops_echo_heard():
+    bridge = FakeBridge()
+    events: list = []
+    agent = _agent(bridge, events)
+    agent.last_spoken = "Without wasting any time, let's get started with the demo."
+    heard = SimpleNamespace(
+        interrupted=False,
+        model_turn=None,
+        turn_complete=False,
+        output_transcription=None,
+        input_transcription=SimpleNamespace(text="let's get started with the demo"),
+    )
+    agent._handle_server_message(SimpleNamespace(server_content=heard, data=None))
+    assert not any(e.kind == "heard" for e in events)
+
+
+
 def test_turn_complete_releases_say():
     bridge = FakeBridge()
     agent = _agent(bridge)
@@ -119,12 +203,33 @@ def test_verbatim_and_natural_prompts_differ():
     assert "word for word" in verbatim
     assert "your own words" in natural
     assert "Hi there" in verbatim and "Hi there" in natural
+    assert "in English" in verbatim
+
+
+def test_prompt_for_hindi_language_hint():
+    text = _prompt_for(
+        _Cmd(kind="say", text="Namaste", mode="natural"), language="hi"
+    )
+    assert "in Hindi" in text
+    assert "Namaste" in text
+
+
+def test_set_language_queues_context():
+    agent = _agent(FakeBridge())
+    agent.set_language("hi")
+    assert agent.cfg.language == "hi"
+    cmd = agent._cmds.get_nowait()
+    assert cmd.kind == "context"
+    assert "Hindi" in cmd.text
+    agent.set_language("hi")  # no-op
+    assert agent._cmds.empty()
 
 
 def test_context_prompt_is_not_spoken():
     text = _prompt_for(_Cmd(kind="context", text="now on Deals page"))
     assert "do not say this out loud" in text
     assert "now on Deals page" in text
+    assert "in English" not in text  # context stays language-neutral
 
 
 def test_resumption_handle_is_kept():
@@ -225,3 +330,13 @@ def test_bridge_without_the_counter_still_works():
     agent._stop = SimpleNamespace(wait=waited.append)  # type: ignore[assignment]
     agent._wait_for_playback(-1.0, 0.0)
     assert waited == []
+
+
+def test_retries_gemini_1011_then_gives_up():
+    from navigator.voice.live_agent import should_retry_live_connect
+
+    exc = RuntimeError("1011 None. The service is currently unavailable.")
+    assert should_retry_live_connect(exc, attempt=1) is True
+    assert should_retry_live_connect(exc, attempt=2) is True
+    assert should_retry_live_connect(exc, attempt=3) is False
+    assert should_retry_live_connect(RuntimeError("invalid api key"), attempt=1) is False

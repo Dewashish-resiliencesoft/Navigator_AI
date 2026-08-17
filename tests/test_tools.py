@@ -65,6 +65,80 @@ def test_wait_for_returns_when_present(page, site_graph):
     assert result.ok
 
 
+def test_wait_for_body_stub_is_instant_ok(page, site_graph):
+    call = WaitFor(
+        selector="body",
+        timeout_ms=15000,
+        expects=Postcondition(check="visible", selector="body"),
+    )
+    started = time.perf_counter()
+    result, next_page = execute(page, site_graph, "inbox", call)
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    assert result.ok
+    assert next_page == "inbox"
+    assert elapsed_ms < 500
+
+
+def test_fill_field_with_mouse_path_types_into_focused_field_not_first_match(page):
+    """Duplicate #email (signup + sign-in): fill the field under the recorded point.
+
+    ResilioHub-style pages keep both forms in the DOM. ``locator('#email').first``
+    hits the signup field even after the cursor clicked the sign-in one.
+    """
+    from navigator.automation.browser.tools import fill_field
+    from navigator.knowledge.site_graph import PageSpec, SiteGraph
+
+    page.set_content(
+        """
+        <html><body style="margin:0">
+          <form id="signup" style="padding:20px">
+            <input id="email" name="signup_email" />
+          </form>
+          <form id="signin" style="position:absolute; left:50px; top:400px">
+            <input id="email" name="signin_email" />
+          </form>
+        </body></html>
+        """
+    )
+    box = page.locator('#signin input[name="signin_email"]').bounding_box()
+    assert box is not None
+    x = int(box["x"] + box["width"] / 2)
+    y = int(box["y"] + box["height"] / 2)
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"email": "#email"},
+                flows={},
+            )
+        },
+    )
+    call = FillField(
+        selector="email",
+        value="bot@bot.com",
+        expects=Postcondition(
+            check="value_equals",
+            selector="email",
+            expected="bot@bot.com",
+            timeout_ms=2000,
+        ),
+    )
+    detail, _ = fill_field(
+        page,
+        graph,
+        "home",
+        call,
+        mouse_path=[{"x": x, "y": y, "at_ms": 0}],
+    )
+    assert "bot@bot.com" in detail
+    assert page.input_value('#signin input[name="signin_email"]') == "bot@bot.com"
+    assert page.input_value('#signup input[name="signup_email"]') == ""
+
+
 # --- failure paths -----------------------------------------------------------
 
 

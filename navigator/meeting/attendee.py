@@ -92,10 +92,11 @@ class AttendeeClient:
 
                 ui = attendee_ui_origin(self.base_url)
                 raise RuntimeError(
-                    "Attendee needs Zoom OAuth credentials for web SDK bots (separate "
-                    "from Navigator's ZAK tunnel).\n"
-                    "Fix: set NAVIGATOR_ZOOM_CLIENT_ID and NAVIGATOR_ZOOM_CLIENT_SECRET "
-                    "in .env (same Zoom Server-to-Server app), then run:\n"
+                    "Attendee needs Zoom Meeting SDK credentials for web SDK bots "
+                    "(a General App with Meeting SDK — not the Server-to-Server app "
+                    "used to create meetings / mint ZAK).\n"
+                    "Fix: set NAVIGATOR_ZOOM_SDK_CLIENT_ID and "
+                    "NAVIGATOR_ZOOM_SDK_CLIENT_SECRET in .env, then run:\n"
                     "  ./scripts/sync-attendee-zoom-credentials.sh\n"
                     f"Or open Attendee → Project → Credentials: {ui}/projects/…/credentials\n"
                     f"Original: {detail}"
@@ -131,6 +132,10 @@ class AttendeeClient:
         For Zoom host join, pass ``zoom_tokens_url`` (Attendee POSTs for a ZAK).
         """
         payload: dict[str, Any] = {"meeting_url": meeting_url, "bot_name": bot_name}
+        # No on-disk recording. Attendee's default mp4 recorder is an ffmpeg
+        # x11grab that pins ~80% CPU and starves live Meet voice + screenshare
+        # frames. We never read the artifact; live transcription is unaffected.
+        payload["recording_settings"] = {"format": "none"}
         if screenshare_url:
             payload["voice_agent_settings"] = {"screenshare_url": screenshare_url}
         elif voice_agent_url:
@@ -302,17 +307,6 @@ class AttendeeClient:
         humans = [v for k, v in present.items() if k not in bots]
         return bool(humans) and not any(humans)
 
-    def speak(self, bot_id: str, wav: bytes) -> None:
-        """Play audio into the meeting via Attendee output_audio (MP3)."""
-        import base64
-
-        mp3 = _wav_bytes_to_mp3(wav)
-        self._request(
-            "POST",
-            f"/bots/{bot_id}/output_audio",
-            {"type": "audio/mp3", "data": base64.b64encode(mp3).decode()},
-        )
-
     def register_audio_hub(self, bot_id: str, frames_queue: Any) -> None:
         """Attach an inbound PCM queue for audio_stream (filled by AudioBridge)."""
         self._audio_hubs[bot_id] = frames_queue
@@ -353,27 +347,3 @@ class AttendeeClient:
             else:
                 mapped = "joining"
         return Bot(id=str(data["id"]), state=mapped, raw_state=raw)
-
-
-def _wav_bytes_to_mp3(wav: bytes) -> bytes:
-    """Convert WAV → MP3 for Attendee output_audio. Needs ffmpeg on PATH."""
-    import shutil
-    import subprocess
-
-    if wav[:3] == b"ID3" or wav[:2] == b"\xff\xfb":
-        return wav  # already mp3-ish
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg required to convert Piper WAV → MP3 for Meet speak")
-    # Piped, not via a temp dir: this runs on every utterance, so two disk
-    # round-trips per sentence land directly in conversational latency.
-    proc = subprocess.run(
-        ["ffmpeg", "-loglevel", "error", "-i", "pipe:0",
-         "-codec:a", "libmp3lame", "-q:a", "4", "-f", "mp3", "pipe:1"],
-        input=wav,
-        capture_output=True,
-    )
-    if proc.returncode != 0 or not proc.stdout:
-        raise RuntimeError(
-            f"ffmpeg wav→mp3 failed: {proc.stderr[-400:].decode(errors='replace')}"
-        )
-    return proc.stdout

@@ -76,6 +76,8 @@ class DemoHandle:
     """Attendee bot id once joined — End uses this to leave the meeting."""
     bot_in_meeting: bool = False
     """True only after Attendee reports joined — safe to share join link."""
+    leave_grace_remaining: int | None = None
+    """Seconds before auto-ending after the human leaves the meeting."""
 
     _thread: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -282,6 +284,7 @@ class DemoRunner:
         # UI End must free Start immediately — don't wait for worker teardown.
         if handle.status in ("starting", "running"):
             self._finalize_live_demo(handle, operator_stopped=True)
+            handle.leave_grace_remaining = None
             handle.status = "finished"
             handle.error = None
             handle.finished_at = datetime.now(timezone.utc)
@@ -358,6 +361,20 @@ class DemoRunner:
                             product_id=handle.product_id,
                             archive_dir=self.archive_dir,
                         )
+                        from navigator.agent.demo_trace import emit_demo_trace
+
+                        emit_demo_trace(
+                            None,
+                            session_id=handle.session_id,
+                            product_id=handle.product_id,
+                            event="engine_selected",
+                            engine="langgraph",
+                            reason="headless DemoRunner._run",
+                            live_agent_present=False,
+                            playlist_demo=bool(graph.demo_playlist),
+                            timeline_ready=False,
+                            conversational=False,
+                        )
                         handle.status = "running"
                         self._persist_run(handle)
                         final = build_graph(deps).invoke(
@@ -392,6 +409,9 @@ class DemoRunner:
             handle.bot_in_meeting = True
             handle.said.append("Navigator is in the meeting — join link ready.")
 
+        def on_leave_grace(remaining: int | None) -> None:
+            handle.leave_grace_remaining = remaining
+
         try:
             if run is None:
                 from navigator.meeting.live_demo import run_live_meet_demo
@@ -420,6 +440,7 @@ class DemoRunner:
                 stop_event=handle._stop,
                 on_bot_joined=on_bot_joined,
                 on_meeting_ready=on_meeting_ready,
+                on_leave_grace=on_leave_grace,
             )
             handle.status = "finished"
         except Exception as exc:
@@ -435,6 +456,7 @@ class DemoRunner:
                 print(f"[runner] live demo failed:\n{handle.error}", flush=True)
         finally:
             handle.finished_at = datetime.now(timezone.utc)
+            handle.leave_grace_remaining = None
             with ActionLog(self.db_path) as log:
                 entries = log.entries(handle.session_id, product_id=handle.product_id)
             handle.actions = len(entries)

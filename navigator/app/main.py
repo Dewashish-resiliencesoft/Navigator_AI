@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any, Callable
@@ -34,7 +35,7 @@ from fastapi import (
 )
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from navigator.client.auth import persist_client_key, resolve_client_api_key
 from navigator.client.dashboard import (
@@ -308,6 +309,7 @@ class DemoView(BaseModel):
     meeting_url: str | None = None
     platform: str | None = None
     bot_in_meeting: bool = False
+    leave_grace_remaining: int | None = None
 
 
 class DemoRunView(BaseModel):
@@ -1073,14 +1075,12 @@ class AgentSettingsBody(BaseModel):
     agent_gender: str | None = None
     agent_name: str | None = None
     tone: str | None = None
-    tts_provider: str | None = None
     gemini_voice: str | None = None
 
 
 class AgentProviderKeysBody(BaseModel):
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
-    fish_api_key: str | None = None
 
 
 class ProductLoginBody(BaseModel):
@@ -1198,13 +1198,6 @@ def client_put_agent_settings(
         raise HTTPException(422, "default_language must be en or hi")
     if "agent_gender" in patch and patch["agent_gender"] not in {"female", "male"}:
         raise HTTPException(422, "agent_gender must be female or male")
-    if "tts_provider" in patch and patch["tts_provider"] not in {
-        "auto",
-        "gemini",
-        "fish",
-        "piper",
-    }:
-        raise HTTPException(422, "invalid tts_provider")
     merged = registry.set_agent_settings(product.product_id, patch)
     return {"ok": True, **merged.model_dump()}
 
@@ -1218,7 +1211,6 @@ def client_put_agent_provider_keys(
             product.product_id,
             gemini_api_key=body.gemini_api_key,
             groq_api_key=body.groq_api_key,
-            fish_api_key=body.fish_api_key,
         )
     except VaultNotConfigured as exc:
         raise HTTPException(503, str(exc)) from None
@@ -1227,32 +1219,59 @@ def client_put_agent_provider_keys(
     return {"ok": True, **vault.provider_keys_public(product.product_id)}
 
 
+# Dashboard polls these every few seconds. Freshness within ~12s is enough;
+# uncached hits load Chroma/ONNX into the uvicorn RSS.
+_READY_CACHE: dict[tuple, tuple[float, dict]] = {}
+_READY_CACHE_S = 12.0
+
+
+def _cached_readiness_dict(
+    registry: Registry,
+    product_id: str,
+    *,
+    origin: str,
+    autonomy_mode: str,
+) -> dict:
+    from navigator.agent.readiness import assess_demo_readiness
+
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return assess_demo_readiness(
+            registry, product_id, origin=origin, autonomy_mode=autonomy_mode
+        ).as_dict()
+    key = (product_id, origin, autonomy_mode)
+    now = time.monotonic()
+    hit = _READY_CACHE.get(key)
+    if hit and now - hit[0] < _READY_CACHE_S:
+        return hit[1]
+    payload = assess_demo_readiness(
+        registry, product_id, origin=origin, autonomy_mode=autonomy_mode
+    ).as_dict()
+    _READY_CACHE[key] = (now, payload)
+    return payload
+
+
 @app.get("/client/api/demo-readiness")
 def client_demo_readiness(
     product: DashboardAuthedProduct,
     registry: Reg,
     origin: Annotated[str, Query()] = "dashboard_test",
 ) -> dict:
-    from navigator.agent.readiness import assess_demo_readiness
-
     demo_origin = "public_embed" if origin == "public_embed" else "dashboard_test"
     fresh = registry.get(product.product_id)
     mode = getattr(fresh, "autonomy_mode", None) or "guided"
-    return assess_demo_readiness(
+    return _cached_readiness_dict(
         registry,
         product.product_id,
         origin=demo_origin,
         autonomy_mode=mode,
-    ).as_dict()
+    )
 
 
 @app.get("/client/api/publish-checklist")
 def client_publish_checklist(product: DashboardAuthedProduct, registry: Reg) -> dict:
-    from navigator.agent.readiness import assess_demo_readiness
-
     fresh = registry.get(product.product_id)
     mode = getattr(fresh, "autonomy_mode", None) or "guided"
-    readiness = assess_demo_readiness(
+    readiness = _cached_readiness_dict(
         registry, product.product_id, origin="public_embed", autonomy_mode=mode
     )
     eval_score: float | None = None
@@ -1285,7 +1304,7 @@ def client_publish_checklist(product: DashboardAuthedProduct, registry: Reg) -> 
     if mode == "adaptive":
         rec = "Adaptive needs published flows + indexed knowledge."
     return {
-        "readiness": readiness.as_dict(),
+        "readiness": readiness,
         "eval_score_pct": eval_score,
         "autonomy_recommendation": rec,
     }
@@ -1333,6 +1352,8 @@ class FlowsBody(BaseModel):
 
 
 class RecordStartBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     start_url: str = Field(min_length=1)
     flow_name: str = Field(min_length=1)
     flow_id: str | None = None
@@ -1790,9 +1811,13 @@ def client_record_status(product: DashboardAuthedProduct) -> dict:
 
 @app.post("/client/api/record/start")
 def client_record_start(
-    product: DashboardAuthedProduct, body: RecordStartBody, vault: Vault
+    product: DashboardAuthedProduct,
+    body: RecordStartBody,
+    vault: Vault,
+    request: Request,
 ) -> dict:
     from navigator.automation.login_match import LoginConfig
+    from navigator.automation.record_ws import resolve_record_browser_ws
 
     def _live_login_config() -> LoginConfig:
         return LoginConfig(login_url=vault.login_url(product.product_id))
@@ -1809,6 +1834,17 @@ def client_record_start(
         fid = (body.flow_id or None)
         fname = body.flow_name.strip()
 
+    peer = request.client.host if request.client else None
+    try:
+        browser_ws = resolve_record_browser_ws(
+            configured=settings.record_browser_ws,
+            path_token=settings.record_ws_path,
+            peer_ip=peer,
+            record_local=settings.record_local,
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
     try:
         job = start_recorder(
             start_url=body.start_url.strip(),
@@ -1818,6 +1854,7 @@ def client_record_start(
             login_config_fn=_live_login_config,
             narrate=body.narrate,
             save_mode=mode,
+            browser_ws=browser_ws,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
@@ -1829,6 +1866,7 @@ def client_record_start(
         "phase": job.phase,
         "narrate": bool(job.narration is not None),
         "save_mode": job.save_mode,
+        "browser": "local" if browser_ws else "server",
     }
 
 
@@ -1938,14 +1976,15 @@ def _attach_recorded_narration(
         groq_asker,
     )
     from navigator.automation.narration import (
+        compact_timeline,
         narrate_recording,
         placeholder_narration_lines,
+        rebuild_flow_narration,
         speech_windows_payload,
-        step_timings_from_steps,
+        step_timings,
     )
     from navigator.automation.record_scrub import (
         scrub_recorded_steps,
-        step_clicks_payload,
         step_mouse_paths_payload,
     )
     from navigator.core.groq_keys import groq_key_candidates
@@ -1954,21 +1993,22 @@ def _attach_recorded_narration(
     if not scrubbed_steps:
         return yaml_text, 0
 
-    clicks = step_clicks_payload(scrubbed_steps)
     mouse_paths = step_mouse_paths_payload(scrubbed_steps)
     step_times = [int(getattr(s, "at_ms", 0) or 0) for s in scrubbed_steps]
     lines = placeholder_narration_lines(scrubbed_steps)
-    timings = step_timings_from_steps(step_times)
-    # Only STT knows when the host actually spoke. Placeholders have no window,
-    # so playback falls back to the click schedule for them.
     speech: list[dict[str, int]] = []
+    used_stt = False
+    hints = [
+        str(getattr(s, "alias", "") or "").replace("_", " ").strip()
+        for s in scrubbed_steps
+    ]
 
     audio = narration.audio()
     keys = groq_key_candidates()
     if audio and keys:
         api_key = keys[0]
         try:
-            stt_lines, stt_timings, stt_windows = narrate_recording(
+            stt_lines, _stt_timings, _stt_windows = narrate_recording(
                 audio=audio,
                 steps=scrubbed_steps,
                 api_key=api_key,
@@ -1978,13 +2018,24 @@ def _attach_recorded_narration(
             )
             if any(str(l).strip() for l in stt_lines):
                 lines = stt_lines
-                if stt_timings:
-                    timings = stt_timings
-                speech = speech_windows_payload(stt_windows)
+                used_stt = True
         except Exception as exc:  # noqa: BLE001
             print(f"[record] narration STT failed (using placeholders): {exc}", flush=True)
     elif audio and not keys:
         print("[record] narration STT skipped: no Groq API keys", flush=True)
+
+    if not used_stt:
+        lines, timings, windows, click_ms = rebuild_flow_narration(
+            lines=lines,
+            step_times_ms=step_times,
+            hints=hints,
+            ask_text=None,
+        )
+    else:
+        click_ms, windows = compact_timeline(lines)
+        timings = step_timings(click_ms, lines)
+    speech = speech_windows_payload(windows)
+    clicks = [{"idx": i, "at_ms": int(t)} for i, t in enumerate(click_ms)]
 
     semantics_payload = {
         "purpose": "",

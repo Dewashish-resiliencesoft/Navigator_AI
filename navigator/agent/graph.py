@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from functools import partial
 from typing import Literal
+from uuid import UUID
 
 from langgraph.graph import END, StateGraph
 
@@ -45,7 +46,7 @@ from navigator.agent.nodes.planning import planning
 from navigator.agent.nodes.reflecting import reflecting
 from navigator.agent.nodes.speaking import speaking
 from navigator.agent.nodes.verifying import verifying
-from navigator.agent.state import CallDeps, CallState
+from navigator.agent.state import CallDeps, CallState, initial_state
 
 NODES = (
     ("joining", joining),
@@ -95,7 +96,32 @@ def turn_done(state: CallState, deps: CallDeps) -> CallState:
     return CallState(turns=state.get("turns", 0) + 1)
 
 
-def build_graph(deps: CallDeps):
+def anything_else_entry_state(
+    session_id: UUID,
+    page_id: str,
+    *,
+    max_turns: int,
+    walkthrough_flow_id: str = "",
+) -> CallState:
+    """State to enter SPEAKING with the post-demo Q&A prompt already queued."""
+    from navigator.agent.end_policy import ANYTHING_ELSE
+    from navigator.core.schemas import Plan
+
+    state = initial_state(
+        session_id,
+        page_id,
+        max_turns=max_turns,
+        walkthrough_flow_id=walkthrough_flow_id,
+        auto_play=False,
+    )
+    state["phase"] = "anything_else"
+    state["plan"] = Plan(spoken_response=ANYTHING_ELSE, tool_calls=[])
+    state["pending_calls"] = []
+    state["narration"] = [ANYTHING_ELSE]
+    return state
+
+
+def build_graph(deps: CallDeps, *, entry: str = "joining"):
     """Wire and compile the graph. `deps` is bound into every node."""
     builder = StateGraph(CallState)
 
@@ -103,7 +129,10 @@ def build_graph(deps: CallDeps):
         builder.add_node(name, partial(fn, deps=deps))
     builder.add_node("turn_done", partial(turn_done, deps=deps))
 
-    builder.set_entry_point("joining")
+    allowed = {name for name, _ in NODES} | {"turn_done"}
+    if entry not in allowed:
+        raise ValueError(f"unknown graph entry {entry!r}")
+    builder.set_entry_point(entry)
     builder.add_edge("joining", "introducing")
     builder.add_edge("introducing", "speaking")
     builder.add_edge("listening", "planning")

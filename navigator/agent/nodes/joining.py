@@ -38,6 +38,9 @@ def joining(state: CallState, deps: CallDeps) -> CallState:
     deps.bot_id = bot.id
     deadline = time.time() + 180
     while time.time() < deadline:
+        stop = getattr(deps, "stop_event", None)
+        if stop is not None and stop.is_set():
+            raise RuntimeError(f"Attendee bot {bot.id} join aborted")
         current = client.get(bot.id)
         if current.state == "joined":
             return CallState(transcript=[f"[joined call: bot {bot.id}]"])

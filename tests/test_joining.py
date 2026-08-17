@@ -29,3 +29,28 @@ def test_joining_skips_when_bot_already_set(site_graph, page, log, tmp_path):
     out = joining(initial_state(uuid4(), "inbox"), deps)
     assert "bot_existing" in out["transcript"][0]
     deps.attendee.join.assert_not_called()
+
+
+def test_joining_aborts_when_stop_event_set(site_graph, page, log, tmp_path):
+    import threading
+
+    attendee = MagicMock()
+    attendee.join.return_value.id = "bot_new"
+    attendee.get.return_value.state = "joining"
+    stop = threading.Event()
+    stop.set()
+    deps = CallDeps(
+        graph=site_graph,
+        page=page,
+        log=log,
+        speaker=PrintSpeaker(),
+        archive_dir=tmp_path / "a",
+        meeting_url="https://meet.google.com/abc",
+        attendee=attendee,
+        stop_event=stop,
+    )
+    try:
+        joining(initial_state(uuid4(), "inbox"), deps)
+        raise AssertionError("expected abort")
+    except RuntimeError as exc:
+        assert "aborted" in str(exc)

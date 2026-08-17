@@ -219,3 +219,20 @@ def test_wait_until_joined_fatal_error_names_meeting_sdk_creds():
 
     with pytest.raises(RuntimeError, match="Meeting SDK"):
         wait_until_joined(_Client(), "bot", timeout_s=1)
+
+
+def test_should_enter_post_demo_qa():
+    from navigator.meeting.live_demo import should_enter_post_demo_qa
+
+    assert should_enter_post_demo_qa(
+        stopped=False, paused=False, use_timeline=True, playlist_without_live=False
+    )
+    assert not should_enter_post_demo_qa(
+        stopped=False, paused=True, use_timeline=True, playlist_without_live=False
+    )
+    assert not should_enter_post_demo_qa(
+        stopped=True, paused=False, use_timeline=True, playlist_without_live=False
+    )
+    assert not should_enter_post_demo_qa(
+        stopped=False, paused=False, use_timeline=False, playlist_without_live=False
+    )

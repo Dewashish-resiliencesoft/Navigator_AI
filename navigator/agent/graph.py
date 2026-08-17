@@ -47,6 +47,7 @@ from navigator.agent.nodes.reflecting import reflecting
 from navigator.agent.nodes.speaking import speaking
 from navigator.agent.nodes.verifying import verifying
 from navigator.agent.state import CallDeps, CallState, initial_state
+from navigator.core.settings import settings
 
 NODES = (
     ("joining", joining),
@@ -121,6 +122,12 @@ def anything_else_entry_state(
     return state
 
 
+# A walkthrough step is ~7 graph hops (listen/plan/speak/exec/verify/speak/turn).
+# live_max_turns is 50, so 100 used to GraphRecursionError mid-playlist.
+def walkthrough_recursion_limit(max_turns: int) -> int:
+    return max(100, int(max_turns) * 12)
+
+
 def build_graph(deps: CallDeps, *, entry: str = "joining"):
     """Wire and compile the graph. `deps` is bound into every node."""
     builder = StateGraph(CallState)
@@ -145,6 +152,7 @@ def build_graph(deps: CallDeps, *, entry: str = "joining"):
     builder.add_conditional_edges("turn_done", after_turn)
     builder.add_edge("ending", END)
 
-    # A scripted turn is ~4 calls x 3 nodes; the cap only guards against a
-    # routing bug looping forever.
-    return builder.compile().with_config(recursion_limit=100)
+    # Walkthrough is one tool call per cycle, not ~4. Scale with live_max_turns.
+    return builder.compile().with_config(
+        recursion_limit=walkthrough_recursion_limit(settings.live_max_turns)
+    )

@@ -51,6 +51,8 @@ See docs/PRODUCT_MODEL.md.
 _MAX_SAID = 80
 #: Keep finished handles for dashboard poll, then drop so `_demos` cannot grow forever.
 KEEP_FINISHED_S = 120.0
+#: Whole live demo (join + walkthrough + Q&A). Sets `_stop` so Playwright/Attendee unwind.
+LIVE_DEMO_WALL_S = 25 * 60
 
 
 @dataclass
@@ -140,6 +142,11 @@ class DemoRunner:
         from navigator.app.state import DemoStateStore
         self._store = DemoStateStore(redis_url, self.worker_id, self._on_remote_stop)
         threading.Thread(target=self._sync_loop, daemon=True).start()
+
+    @staticmethod
+    def _expire_live_demo(handle: DemoHandle) -> None:
+        print("[runner] live demo wall clock elapsed — stopping", flush=True)
+        handle._stop.set()
 
     def _on_remote_stop(self, demo_id: UUID) -> None:
         handle = self._demos.get(demo_id)
@@ -449,6 +456,11 @@ class DemoRunner:
         def on_leave_grace(remaining: int | None) -> None:
             handle.leave_grace_remaining = remaining
 
+        wall = threading.Timer(
+            LIVE_DEMO_WALL_S, DemoRunner._expire_live_demo, args=(handle,)
+        )
+        wall.daemon = True
+        wall.start()
         try:
             if run is None:
                 from navigator.meeting.live_demo import run_live_meet_demo
@@ -492,6 +504,7 @@ class DemoRunner:
                 handle.error = traceback.format_exc(limit=3)
                 print(f"[runner] live demo failed:\n{handle.error}", flush=True)
         finally:
+            wall.cancel()
             handle.finished_at = datetime.now(timezone.utc)
             handle.leave_grace_remaining = None
             with ActionLog(self.db_path) as log:

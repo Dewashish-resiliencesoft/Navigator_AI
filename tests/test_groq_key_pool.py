@@ -34,3 +34,9 @@ def test_groq_key_candidates(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(groq_keys.settings, "groq_api_key", "primary", raising=False)
     monkeypatch.setattr(groq_keys.settings, "groq_api_keys", "alt1,alt2", raising=False)
     assert groq_keys.groq_key_candidates() == ["primary", "alt1", "alt2"]
+
+
+def test_groq_client_sets_http_timeout():
+    from navigator.core.groq_client import GROQ_TIMEOUT_S
+
+    assert GROQ_TIMEOUT_S == 45.0

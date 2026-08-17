@@ -440,6 +440,17 @@ class LiveDemoStopped(Exception):
     """Operator ended the demo (client dashboard End / API stop)."""
 
 
+def should_enter_post_demo_qa(
+    *,
+    stopped: bool,
+    paused: bool,
+    use_timeline: bool,
+    playlist_without_live: bool,
+) -> bool:
+    """Q&A only after a completed playlist. A hard_fail walkthrough stays silent."""
+    return (not stopped) and (not paused) and (use_timeline or playlist_without_live)
+
+
 HUMAN_LEAVE_GRACE_S = 25
 
 
@@ -1667,7 +1678,12 @@ def run_live_meet_demo(
                 flush=True,
             )
             stopped = stop_event is not None and stop_event.is_set()
-            if not stopped and (use_timeline or (playlist_demo and live_agent is None)):
+            if should_enter_post_demo_qa(
+                stopped=stopped,
+                paused=bool(final.get("paused")),
+                use_timeline=use_timeline,
+                playlist_without_live=bool(playlist_demo and live_agent is None),
+            ):
                 qa_page = page_id
                 if graph_cfg.demo_playlist:
                     qa_page = max(

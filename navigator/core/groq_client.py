@@ -10,12 +10,15 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Any
 
+#: Hung Groq must not freeze a live demo. SDK default is no timeout.
+GROQ_TIMEOUT_S = 45.0
+
 
 @lru_cache(maxsize=16)
 def groq_client(api_key: str):
     from groq import Groq
 
-    return Groq(api_key=api_key)
+    return Groq(api_key=api_key, timeout=GROQ_TIMEOUT_S)
 
 
 def _ordered_keys(api_key: str | None) -> list[str]:

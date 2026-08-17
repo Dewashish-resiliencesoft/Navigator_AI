@@ -218,3 +218,30 @@ def test_reap_keeps_running(tmp_path):
     runner._demos[handle.demo_id] = handle
     assert runner._reap_finished(keep_s=0) == 0
     assert handle.demo_id in runner._demos
+
+
+def test_live_wall_clock_sets_stop(site_graph, monkeypatch):
+    monkeypatch.setattr("navigator.app.runner.LIVE_DEMO_WALL_S", 0.05)
+    runner = DemoRunner(":memory:")
+    seen = {}
+
+    def fake_run(**kwargs) -> str:
+        seen["stop"] = kwargs["stop_event"]
+        assert kwargs["stop_event"].wait(timeout=2.0)
+        return "bot-wall"
+
+    page_id = next(iter(site_graph.pages))
+    flow_id = next(iter(site_graph.pages[page_id].flows))
+    handle = runner.start_live(
+        "acme",
+        site_graph,
+        revision=1,
+        flow=(page_id, flow_id),
+        meeting_url="https://meet.example/wall",
+        platform="google_meet",
+        origin="public_embed",
+        run=fake_run,
+    )
+    runner.wait(handle.demo_id, timeout=5.0)
+    assert seen["stop"].is_set()
+    assert handle.status == "finished"

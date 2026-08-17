@@ -16,6 +16,17 @@ from typing import Protocol
 
 from navigator.core.settings import settings
 
+LLM_HTTP_TIMEOUT_S = 45.0
+
+
+def _gemini_client(api_key: str):
+    from google import genai
+
+    return genai.Client(
+        api_key=api_key,
+        http_options={"timeout": int(LLM_HTTP_TIMEOUT_S * 1000)},
+    )
+
 
 class LLMProvider(Protocol):
     def complete(self, system: str, user: str) -> str:
@@ -56,10 +67,9 @@ class GeminiProvider:
         raise last_exc
 
     def _complete_with_key(self, api_key: str, system: str, user: str) -> str:
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=api_key)
+        client = _gemini_client(api_key)
         resp = client.models.generate_content(
             model=self.text_model,
             contents=user,
@@ -96,10 +106,9 @@ class GeminiProvider:
     def _complete_with_image_key(
         self, api_key: str, system: str, user: str, png: bytes
     ) -> str:
-        from google import genai
         from google.genai import types
 
-        client = genai.Client(api_key=api_key)
+        client = _gemini_client(api_key)
         resp = client.models.generate_content(
             model=self.vision_model,
             contents=[
@@ -129,7 +138,7 @@ class OpenAIProvider:
     def complete(self, system: str, user: str) -> str:
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, timeout=LLM_HTTP_TIMEOUT_S)
         resp = client.chat.completions.create(
             model=self.text_model,
             messages=[
@@ -146,7 +155,7 @@ class OpenAIProvider:
     def complete_with_image(self, system: str, user: str, png: bytes) -> str:
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, timeout=LLM_HTTP_TIMEOUT_S)
         b64 = base64.b64encode(png).decode()
         resp = client.chat.completions.create(
             model=self.vision_model,

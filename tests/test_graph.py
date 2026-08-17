@@ -9,6 +9,7 @@ from navigator.agent.graph import (
     after_turn,
     anything_else_entry_state,
     build_graph,
+    walkthrough_recursion_limit,
 )
 from navigator.agent.nodes.executing import executing
 from navigator.agent.nodes.introducing import introducing, render_intro
@@ -250,3 +251,9 @@ def test_broken_site_graph_records_a_failure_and_keeps_going(deps, tmp_path):
     assert failure.tool_call.tool == "click_element"
     assert not failure.actual_result.ok
     assert failure.expected_postcondition.selector == "sent_bubble"
+
+
+def test_walkthrough_recursion_covers_one_cycle_per_turn():
+    assert walkthrough_recursion_limit(50) == 600
+    assert walkthrough_recursion_limit(1) == 100
+    assert walkthrough_recursion_limit(8) == 100

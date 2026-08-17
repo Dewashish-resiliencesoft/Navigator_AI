@@ -273,6 +273,25 @@ def _talk_speaker(meet_speaker, live_box: list):
     return _Talk()
 
 
+def select_engine(
+    *,
+    live_agent_present: bool,
+    playlist_demo: bool,
+    timeline_ready: bool,
+    conversational: bool,
+) -> tuple[str, str]:
+    """Select runtime engine and expose the branch reason for diagnostics."""
+    if live_agent_present:
+        return "gemini_live", "Live Agent available"
+    if playlist_demo and timeline_ready:
+        return "timeline", "playlist metadata complete"
+    if playlist_demo:
+        return "strict_playlist", "playlist metadata incomplete"
+    if conversational:
+        return "langgraph_conversational", "no playlist; conversational mode"
+    return "langgraph", "no Live Agent and no playlist"
+
+
 def _log_live_event(event) -> None:
     if event.kind == "said" and event.text.strip():
         print(f"[live] said: {event.text.strip()}", flush=True)
@@ -414,6 +433,20 @@ class LiveDemoStopped(Exception):
     """Operator ended the demo (client dashboard End / API stop)."""
 
 
+HUMAN_LEAVE_GRACE_S = 25
+
+
+def next_leave_grace(
+    left: bool, remaining: int | None, *, grace_s: int = HUMAN_LEAVE_GRACE_S
+) -> int | None:
+    """Seconds left before auto-end. None = not in grace (present or cancelled)."""
+    if not left:
+        return None
+    if remaining is None:
+        return grace_s
+    return max(0, remaining - 1)
+
+
 def _check_stop(stop_event: threading.Event | None) -> None:
     if stop_event is not None and stop_event.is_set():
         raise LiveDemoStopped("ended by operator")
@@ -427,13 +460,16 @@ def _start_human_leave_watcher(
     agent_name: str,
     stop_event: threading.Event | None,
     speaker_box: list,
+    on_leave_grace: Callable[[int | None], None] | None = None,
 ) -> threading.Thread:
-    """When the prospect leaves Meet, kill the demo so they cannot rejoin mid-run."""
+    """If the prospect leaves, wait HUMAN_LEAVE_GRACE_S then end so they can bounce."""
 
     def _run() -> None:
-        poll_s = 2.0
+        remaining: int | None = None
         while True:
             if stop_event is not None and stop_event.is_set():
+                if on_leave_grace is not None:
+                    on_leave_grace(None)
                 return
             try:
                 left = client.human_has_left(
@@ -451,10 +487,24 @@ def _start_human_leave_watcher(
             except Exception as exc:  # noqa: BLE001
                 print(f"[live] leave-watch poll skipped: {exc}", flush=True)
                 left = False
-            if left:
+            nxt = next_leave_grace(left, remaining)
+            if nxt != remaining and on_leave_grace is not None:
+                on_leave_grace(nxt)
+            if nxt is not None and remaining is None:
                 print(
-                    f"[live] human left Meet ({human_name!r}) — "
-                    "ending demo, bot leaving now",
+                    f"[live] human left meeting ({human_name!r}) — "
+                    f"ending in {nxt}s if they stay out",
+                    flush=True,
+                )
+            if remaining is not None and nxt is None:
+                print(
+                    f"[live] human rejoined ({human_name!r}) — leave countdown cancelled",
+                    flush=True,
+                )
+            remaining = nxt
+            if remaining == 0:
+                print(
+                    f"[live] leave grace elapsed ({human_name!r}) — ending demo",
                     flush=True,
                 )
                 if stop_event is not None:
@@ -470,7 +520,7 @@ def _start_human_leave_watcher(
                 except Exception as exc:  # noqa: BLE001
                     print(f"[live] leave-on-human-exit failed: {exc}", flush=True)
                 return
-            time.sleep(poll_s)
+            time.sleep(1.0)
 
     t = threading.Thread(
         target=_run, name=f"leave-watch-{bot_id}", daemon=True
@@ -635,6 +685,7 @@ def run_live_meet_demo(
     on_meeting_ready=None,
     stop_event: threading.Event | None = None,
     on_bot_joined: Callable[[str], None] | None = None,
+    on_leave_grace: Callable[[int | None], None] | None = None,
     tier2_enabled: bool = False,
     brain_config=None,
     use_turn_brain: bool | None = None,
@@ -876,7 +927,8 @@ def run_live_meet_demo(
             if audio_bridge.clients_connected < 1:
                 print(
                     "[live] WARNING: Attendee never connected to audio WS — "
-                    "continuing; voice listen may be delayed.",
+                    "continuing without live meeting audio. Grant Attendee "
+                    "recording permission in Zoom if this persists.",
                     flush=True,
                 )
             else:
@@ -969,6 +1021,7 @@ def run_live_meet_demo(
                     agent_name=persona.agent_name,
                     stop_event=stop_event,
                     speaker_box=speaker_box,
+                    on_leave_grace=on_leave_grace,
                 )
             except LiveDemoStopped:
                 raise
@@ -1557,10 +1610,27 @@ def run_live_meet_demo(
                 run_playlist_timeline,
             )
 
-            use_timeline = (
-                live_agent is None
-                and playlist_demo
-                and playlist_timeline_ready(graph_cfg)
+            timeline_ready = playlist_timeline_ready(graph_cfg)
+            engine, engine_reason = select_engine(
+                live_agent_present=live_agent is not None,
+                playlist_demo=playlist_demo,
+                timeline_ready=timeline_ready,
+                conversational=conversational,
+            )
+            use_timeline = engine == "timeline"
+            from navigator.agent.demo_trace import emit_demo_trace
+
+            emit_demo_trace(
+                None,
+                session_id=session_id,
+                product_id=product_id or graph_cfg.site or "default",
+                event="engine_selected",
+                engine=engine,
+                reason=engine_reason,
+                live_agent_present=live_agent is not None,
+                playlist_demo=playlist_demo,
+                timeline_ready=timeline_ready,
+                conversational=conversational,
             )
             if live_agent is not None:
                 mode = "live listen+decide"

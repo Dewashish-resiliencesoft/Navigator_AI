@@ -141,23 +141,45 @@ def attendee_ui_origin(base_url: str | None = None) -> str:
     return base
 
 
+def meeting_sdk_credentials_for_attendee(
+    *,
+    sdk_client_id: str,
+    sdk_client_secret: str,
+    s2s_client_id: str,
+) -> tuple[str, str] | None:
+    """Meeting SDK keys for Attendee. S2S OAuth keys 3712 the Zoom web SDK."""
+    sdk_id = (sdk_client_id or "").strip()
+    sdk_secret = (sdk_client_secret or "").strip()
+    s2s_id = (s2s_client_id or "").strip()
+    if not sdk_id or not sdk_secret:
+        return None
+    if s2s_id and sdk_id == s2s_id:
+        return None
+    return sdk_id, sdk_secret
+
+
 def ensure_attendee_zoom_credentials(
     *,
     compose_dir: Path | None = None,
     project_name: str | None = None,
 ) -> bool:
-    """Copy ``NAVIGATOR_ZOOM_*`` into local Attendee for Zoom web SDK bots."""
+    """Copy Meeting SDK keys into local Attendee. Never the S2S create/ZAK app."""
     if not is_local_attendee_url(settings.attendee_base_url):
         return True
-    client_id = (settings.zoom_client_id or "").strip()
-    client_secret = (settings.zoom_client_secret or "").strip()
-    if not client_id or not client_secret:
+    creds = meeting_sdk_credentials_for_attendee(
+        sdk_client_id=settings.zoom_sdk_client_id,
+        sdk_client_secret=settings.zoom_sdk_client_secret,
+        s2s_client_id=settings.zoom_client_id,
+    )
+    if not creds:
         print(
-            "[attendee] WARN: NAVIGATOR_ZOOM_CLIENT_ID/SECRET unset — "
-            "Attendee cannot join Zoom until project credentials are saved",
+            "[attendee] WARN: NAVIGATOR_ZOOM_SDK_CLIENT_ID/SECRET unset or "
+            "same as S2S NAVIGATOR_ZOOM_CLIENT_ID — Attendee cannot join Zoom "
+            "until a General App (Meeting SDK on) is saved",
             flush=True,
         )
         return False
+    client_id, client_secret = creds
 
     compose_dir = compose_dir or _compose_dir()
     if not compose_dir.is_dir() or _in_pytest():
@@ -216,7 +238,7 @@ def ensure_attendee_zoom_credentials(
         )
         return False
 
-    print("[attendee] synced Zoom OAuth creds into Attendee project", flush=True)
+    print("[attendee] synced Zoom Meeting SDK creds into Attendee project", flush=True)
     return True
 
 

@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     zoom_account_id: str = ""
     zoom_client_id: str = ""
     zoom_client_secret: str = ""
+    #: Meeting SDK / General App Client ID for Attendee web SDK join.
+    #: Never reuse the Server-to-Server ``zoom_client_id`` here — that 3712s.
+    zoom_sdk_client_id: str = ""
+    zoom_sdk_client_secret: str = ""
     #: Zoom user id for create/ZAK (`me` = S2S token owner).
     zoom_user_id: str = "me"
     #: Public origin Attendee can reach for ZAK callback (tunnel or deploy URL).

@@ -1871,6 +1871,115 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/corrections/pending:
+    get:
+      summary: Client Pending Corrections
+      description: Pending rules for the Client dashboard. Same store as /v1, JWT-scoped.
+      operationId: client_pending_corrections_client_api_corrections_pending_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response Client Pending Corrections Client Api Corrections Pending Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/corrections/{correction_id}/approve:
+    post:
+      summary: Client Approve Correction
+      operationId: client_approve_correction_client_api_corrections__correction_id__approve_post
+      parameters:
+      - name: correction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Correction Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ApproveCorrectionBody'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Approve Correction Client Api Corrections  Correction Id  Approve
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/corrections/{correction_id}/reject:
+    post:
+      summary: Client Reject Correction
+      operationId: client_reject_correction_client_api_corrections__correction_id__reject_post
+      parameters:
+      - name: correction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Correction Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Reject Correction Client Api Corrections  Correction Id  Reject
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/flows:
     get:
       summary: Client Get Flows

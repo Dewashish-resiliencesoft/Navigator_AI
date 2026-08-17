@@ -407,7 +407,9 @@ def merge_recorded_flow(
     )
     selectors = page.setdefault("selectors", {})
     for alias, css in elements.items():
-        selectors.setdefault(alias, css)
+        # Re-record / explore repair must replace stale CSS. setdefault kept
+        # the broken selector and live demos kept missing the control.
+        selectors[alias] = css
     if "body" not in selectors:
         selectors["body"] = "body"
     flows = page.setdefault("flows", {})

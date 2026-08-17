@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+from urllib.parse import urlparse
 from uuid import uuid4
 
 from navigator.automation.explore.episode import EpisodeStore, StepAttempt
@@ -42,10 +43,11 @@ def draft_rules(
             if not rule:
                 continue
             last = seq[-1]
+            path = urlparse(last.url_before or "").path.strip("/") or "main"
             store.add(
                 product_id=product_id,
                 session_id=session_id,
-                page="main",
+                page=path.replace("/", "_")[:80],
                 tool_call_type=last.tool,
                 rule=rule,
                 source_call_id=f"explore:{episode.job_id}:{last.element_key}:{uuid4().hex[:8]}",

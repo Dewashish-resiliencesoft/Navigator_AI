@@ -255,8 +255,21 @@ export type ExploreStatus = {
   error?: string;
   flow_id?: string;
   revision?: number | null;
+  repairs_used?: number;
   stop_reason?: string;
   pending_question?: ExploreQuestion | null;
+};
+
+export type PendingCorrection = {
+  id: string;
+  product_id: string;
+  session_id: string;
+  page: string;
+  tool_call_type: string;
+  rule: string;
+  source_call_id: string;
+  created_at: string;
+  status: string;
 };
 
 /** One frame off the exploration WebSocket. `type` discriminates the payload. */
@@ -550,6 +563,20 @@ export const api = {
   getKnowledge: () => get<{ markdown: string }>("/client/api/knowledge"),
   putKnowledge: (markdown: string) =>
     send<unknown>("/client/api/knowledge", "PUT", { markdown }),
+
+  listPendingCorrections: () =>
+    get<PendingCorrection[]>("/client/api/corrections/pending"),
+  approveCorrection: (id: string, rule?: string) =>
+    send<{ id: string; status: string; rule: string }>(
+      `/client/api/corrections/${id}/approve`,
+      "POST",
+      rule ? { rule } : {},
+    ),
+  rejectCorrection: (id: string) =>
+    send<{ id: string; status: string }>(
+      `/client/api/corrections/${id}/reject`,
+      "POST",
+    ),
 
   getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
   putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),

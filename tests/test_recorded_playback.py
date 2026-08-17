@@ -12,7 +12,7 @@ import yaml
 
 from navigator.agent.nodes.planning import planning
 from navigator.agent.nodes.verifying import verifying
-from navigator.agent.recorded_playback import run_flow_timeline
+from navigator.agent.recorded_playback import run_flow_strict, run_flow_timeline
 from navigator.agent.state import CallDeps, initial_state
 from navigator.automation.record import RecordedStep
 from navigator.automation.record_scrub import (
@@ -691,6 +691,63 @@ def test_timeline_dashboard_test_continues_on_click_fail():
     speaker.say.assert_any_call(
         "Moving on — we'll skip that step for now."
     )
+
+
+def test_strict_retries_healed_css_from_other_page():
+    graph = SiteGraph(
+        version=1,
+        site="acme",
+        base_url="https://app.acme.test/",
+        pages={
+            "home": PageSpec(
+                name="Home",
+                url="/",
+                selectors={"submit": "#stale"},
+                flows={"demo": (_click("submit"),)},
+            ),
+            "main": PageSpec(
+                name="Main",
+                url="/app",
+                selectors={"submit": "#healed", "body": "body"},
+                flows={},
+            ),
+        },
+    )
+    deps = CallDeps(
+        graph=graph,
+        page=MagicMock(),
+        log=MagicMock(),
+        speaker=MagicMock(),
+        product_id="acme",
+        demo_origin="public_embed",
+    )
+    ok = ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1)
+    fail = ToolResult(ok=False, tool="click_element", detail="Timeout", duration_ms=1)
+
+    def _run_tool(_page, g, page_id, call, **_k):
+        css = g.selector(page_id, call.selector)
+        if css == "#healed":
+            return ok, page_id
+        return fail, page_id
+
+    with patch(
+        "navigator.agent.recorded_playback.run_tool",
+        side_effect=_run_tool,
+    ), patch(
+        "navigator.automation.browser.verify.check",
+        return_value=VerifyResult(passed=True, actual="ok"),
+    ), patch("navigator.agent.recorded_playback.time.sleep"):
+        outcome = run_flow_strict(
+            deps,
+            session_id=uuid4(),
+            page_id="home",
+            flow_id="demo",
+            strict=True,
+        )
+    assert outcome.steps_run == 1
+    assert not outcome.hard_fail
+    assert not outcome.paused
+    assert not outcome.failures
 
 
 def test_timeline_skips_junk_aliases():

@@ -406,6 +406,7 @@ def test_learn_drafts_pending_not_chroma(tmp_path):
     with PendingCorrectionStore(pending_db) as pending:
         listed = pending.list_pending("acme")
     assert listed
+    assert listed[0].page == "billing"
     assert coll.count() == before, "learn must never write Chroma"
 
 
@@ -444,3 +445,12 @@ def test_tactics_for_kinds():
     assert "alternate_selector" in tactics_for("not_found")
     assert "dismiss_overlay" in tactics_for("intercepted")
     assert tactics_for("disabled") == ()
+
+
+def test_live_graph_add_overwrites_css():
+    from navigator.automation.explore.explorer import _LiveGraph
+
+    graph = _LiveGraph("https://app.example.com")
+    graph.add("btn", "#old")
+    graph.add("btn", "#new")
+    assert graph.selector("main", "btn") == "#new"

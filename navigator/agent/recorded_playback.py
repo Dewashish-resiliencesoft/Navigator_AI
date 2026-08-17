@@ -23,7 +23,7 @@ from navigator.automation.browser.tools import execute as run_tool
 from navigator.automation.login_match import VAULT_PASSWORD_SENTINEL
 from navigator.automation.narration import spoken_for_live_step
 from navigator.core.schemas import ActionLogEntry, ClickElement, FillField, ToolResult
-from navigator.knowledge.site_graph import SiteGraphError
+from navigator.knowledge.site_graph import SiteGraph, SiteGraphError
 from navigator.logs.store import utcnow
 from navigator.meeting.playback_handle import PlaybackHandle
 
@@ -74,6 +74,24 @@ def _demo_origin(deps: CallDeps) -> DemoOrigin:
 
 def _hard_stop_on_click_fail(deps: CallDeps, *, strict: bool) -> bool:
     return strict and _demo_origin(deps) == "public_embed"
+
+
+def _css_fallbacks(graph: SiteGraph, page_id: str, alias: str) -> list[str]:
+    """Unique CSS for `alias` across pages. Current page first.
+
+    Explore often heals onto `main` while live replay looks up `home`/`inbox`.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for pid in (page_id, *graph.pages):
+        try:
+            css = graph.selector(pid, alias)
+        except SiteGraphError:
+            continue
+        if css and css not in seen:
+            seen.add(css)
+            out.append(css)
+    return out
 
 
 def _wait_until(deps: CallDeps, deadline: float) -> None:
@@ -480,6 +498,8 @@ def _run_step(
 
     last: ActionLogEntry | None = None
     current_page = page_id
+    tried_css: set[str] = set()
+    fallbacks: list[str] | None = None
     for attempt in range(_TIMELINE_RETRIES):
         call, result, current_page = _execute_call(
             deps,
@@ -526,7 +546,30 @@ def _run_step(
                 f"[timeline] step retry ({result.detail or verdict.actual})",
                 flush=True,
             )
-            _scroll_retry(deps, call, page_id=current_page)
+            rebound = False
+            alias = getattr(call, "selector", None)
+            if isinstance(alias, str) and alias:
+                if fallbacks is None:
+                    fallbacks = _css_fallbacks(deps.graph, current_page, alias)
+                    try:
+                        tried_css.add(deps.graph.selector(current_page, alias))
+                    except SiteGraphError:
+                        pass
+                nxt = next((css for css in fallbacks if css not in tried_css), None)
+                if nxt:
+                    from navigator.agent.tier2_propose import bind_ephemeral_selector
+
+                    deps.graph = bind_ephemeral_selector(
+                        deps.graph, current_page, alias, nxt
+                    )
+                    tried_css.add(nxt)
+                    rebound = True
+                    print(
+                        f"[timeline] retry {alias!r} with graph CSS {nxt!r}",
+                        flush=True,
+                    )
+            if not rebound:
+                _scroll_retry(deps, call, page_id=current_page)
             time.sleep(0.5 + attempt * 0.4)
     assert last is not None
     return last, current_page

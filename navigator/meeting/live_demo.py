@@ -1567,12 +1567,23 @@ def run_live_meet_demo(
                     )
                 )
             _push()
-            failures = len(final.get("failures") or [])
+            fail_entries = list(final.get("failures") or [])
+            failures = len(fail_entries)
             print(
                 f"[live] demo finished: actions={len(final.get('entries') or [])} "
                 f"failures={failures}",
                 flush=True,
             )
+            if fail_entries:
+                try:
+                    from navigator.agent.nodes.reflecting import reflecting
+
+                    reflecting(
+                        {"failures": fail_entries, "session_id": session_id},
+                        deps,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] reflect skipped: {exc}", flush=True)
             stopped = stop_event is not None and stop_event.is_set()
             if not stopped and (use_timeline or (playlist_demo and live_agent is None)):
                 qa_page = page_id

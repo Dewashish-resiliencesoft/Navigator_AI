@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Plus, Save, Trash2, Maximize2, Minimize2 } from "lucide-react";
-import { api, slugKey, type BioField } from "../lib/api";
+import { api, slugKey, type BioField, type PendingCorrection } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import {
@@ -210,11 +210,16 @@ export function Knowledge() {
   const epoch = useProductData((s) => s.epoch);
   const invalidate = useProductData((s) => s.invalidate);
   const [md, setMd] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingCorrection[] | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const d = await api.getKnowledge();
+      const [d, rows] = await Promise.all([
+        api.getKnowledge(),
+        api.listPendingCorrections().catch(() => [] as PendingCorrection[]),
+      ]);
       setMd(d.markdown ?? "");
+      setPending(rows);
     } catch (e) {
       err(errText(e));
     }
@@ -237,6 +242,54 @@ export function Knowledge() {
 
   return (
     <motion.div variants={stagger()} initial="hidden" animate="show">
+      {pending && pending.length > 0 && (
+        <Card className="mb-4">
+          <CardTitle hint="Explore and live-demo failures draft rules here. Approve before they change how the agent demos.">
+            Pending corrections ({pending.length})
+          </CardTitle>
+          <ul className="mt-2 space-y-3">
+            {pending.map((row) => (
+              <li
+                key={row.id}
+                className="rounded-lg border px-3 py-2.5"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <p className="text-[0.85rem] leading-snug">{row.rule}</p>
+                <p className="mt-1 font-mono text-[0.68rem] text-[var(--muted)]">
+                  {row.page} · {row.tool_call_type}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await api.approveCorrection(row.id);
+                        setPending((cur) => (cur ?? []).filter((r) => r.id !== row.id));
+                        ok("Correction approved — used on the next demo.");
+                      } catch (e) {
+                        err(errText(e));
+                      }
+                    }}
+                  >
+                    Approve
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        await api.rejectCorrection(row.id);
+                        setPending((cur) => (cur ?? []).filter((r) => r.id !== row.id));
+                      } catch (e) {
+                        err(errText(e));
+                      }
+                    }}
+                  >
+                    Reject
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
       <Card>
         <CardTitle
           hint="Markdown knowledge base — how the bot should talk about your product."

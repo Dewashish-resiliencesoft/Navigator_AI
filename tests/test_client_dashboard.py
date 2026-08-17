@@ -394,3 +394,54 @@ def test_client_tier2_toggle_roundtrip(tmp_path):
         assert off.json()["enabled"] is False
     finally:
         _cleanup(bundle, prev)
+
+
+def test_client_corrections_approve_via_jwt(tmp_path, monkeypatch):
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+    from navigator.knowledge.memory.retrieval import retrieve_corrections
+
+    db = tmp_path / "nav.db"
+    chroma = tmp_path / "chroma"
+    monkeypatch.setattr(app_module.settings, "db_path", db)
+    monkeypatch.setattr(app_module.settings, "chroma_path", chroma)
+    bundle = _client(tmp_path, client_api_key="")
+    client, prev, registry, log, auth_store = bundle
+    try:
+        p = register(client, "Acme Inbox", ACME)
+        auth_store.create_user(
+            product_id=p["id"], email="test@acme.com", password="password"
+        )
+        login_resp = client.post(
+            "/v1/auth/login",
+            json={"email": "test@acme.com", "password": "password"},
+            headers={"Host": "localhost"},
+        )
+        jwt = login_resp.json()["access_token"]
+        headers = {"Host": "localhost", "Authorization": f"Bearer {jwt}"}
+
+        with PendingCorrectionStore(db) as store:
+            row = store.add(
+                product_id=p["id"],
+                session_id="s1",
+                page="main",
+                tool_call_type="click_element",
+                rule="Wait for toast after send",
+                source_call_id="c1",
+            )
+
+        listed = client.get("/client/api/corrections/pending", headers=headers)
+        assert listed.status_code == 200, listed.text
+        assert listed.json()[0]["id"] == row.id
+
+        ok = client.post(
+            f"/client/api/corrections/{row.id}/approve",
+            headers=headers,
+            json={},
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["status"] == "approved"
+        assert client.get("/client/api/corrections/pending", headers=headers).json() == []
+        hits = retrieve_corrections(p["id"], "toast", page="inbox", path=chroma)
+        assert any("toast" in h.rule.lower() for h in hits)
+    finally:
+        _cleanup(bundle, prev)

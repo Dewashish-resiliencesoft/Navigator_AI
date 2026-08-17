@@ -500,6 +500,7 @@ class ExplorationSession:
             "error": self.error,
             "flow_id": self.flow_id,
             "revision": self.revision,
+            "repairs_used": self.repairs_used,
             "stop_reason": self.stop_reason,
             "pending_question": (
                 {

@@ -778,6 +778,63 @@ def product_failures(
     return log.product_failures(product.product_id, limit)
 
 
+def _list_pending_corrections(product_id: str) -> list[dict]:
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        return [row.as_dict() for row in store.list_pending(product_id)]
+
+
+def _approve_pending_correction(
+    correction_id: str, product_id: str, *, rule: str | None
+) -> dict:
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+    from navigator.knowledge.memory.seed import seed_correction
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        text = (rule or row.rule).strip()
+        doc_id = seed_correction(
+            settings.chroma_path,
+            product_id=product_id,
+            rule=text,
+            page=row.page,
+            tool_call_type=row.tool_call_type,
+            source_call_id=row.source_call_id,
+            doc_id=row.id,
+        )
+        updated = store.set_status(correction_id, product_id, "approved")
+    return {
+        "id": correction_id,
+        "status": "approved",
+        "chroma_id": doc_id,
+        "rule": text,
+        "product_id": product_id,
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
+def _reject_pending_correction(correction_id: str, product_id: str) -> dict:
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        updated = store.set_status(correction_id, product_id, "rejected")
+    return {
+        "id": correction_id,
+        "status": "rejected",
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
 @app.get("/v1/products/corrections/pending")
 def pending_corrections(product: AuthedProduct) -> list[dict]:
     """Reflection output awaiting human approval.
@@ -785,10 +842,7 @@ def pending_corrections(product: AuthedProduct) -> list[dict]:
     Never auto-promoted: an agent that can silently rewrite its own rules is
     not debuggable.
     """
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-
-    with PendingCorrectionStore(settings.db_path) as store:
-        return [row.as_dict() for row in store.list_pending(product.product_id)]
+    return _list_pending_corrections(product.product_id)
 
 
 class ApproveCorrectionBody(BaseModel):
@@ -804,53 +858,15 @@ def approve_correction(
     body: ApproveCorrectionBody | None = None,
 ) -> dict:
     """Human approves a pending rule → live Chroma corrections collection."""
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-    from navigator.knowledge.memory.seed import seed_correction
-
     body = body or ApproveCorrectionBody()
-    with PendingCorrectionStore(settings.db_path) as store:
-        row = store.get(correction_id, product.product_id)
-        if row is None:
-            raise HTTPException(404, "no such pending correction")
-        if row.status != "pending":
-            raise HTTPException(409, f"correction already {row.status}")
-        rule = (body.rule or row.rule).strip()
-        doc_id = seed_correction(
-            settings.chroma_path,
-            product_id=product.product_id,
-            rule=rule,
-            page=row.page,
-            tool_call_type=row.tool_call_type,
-            source_call_id=row.source_call_id,
-            doc_id=row.id,
-        )
-        updated = store.set_status(correction_id, product.product_id, "approved")
-    return {
-        "id": correction_id,
-        "status": "approved",
-        "chroma_id": doc_id,
-        "rule": rule,
-        "product_id": product.product_id,
-        "row": None if updated is None else updated.as_dict(),
-    }
+    return _approve_pending_correction(
+        correction_id, product.product_id, rule=body.rule
+    )
 
 
 @app.post("/v1/products/corrections/{correction_id}/reject")
 def reject_correction(correction_id: str, product: AuthedProduct) -> dict:
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-
-    with PendingCorrectionStore(settings.db_path) as store:
-        row = store.get(correction_id, product.product_id)
-        if row is None:
-            raise HTTPException(404, "no such pending correction")
-        if row.status != "pending":
-            raise HTTPException(409, f"correction already {row.status}")
-        updated = store.set_status(correction_id, product.product_id, "rejected")
-    return {
-        "id": correction_id,
-        "status": "rejected",
-        "row": None if updated is None else updated.as_dict(),
-    }
+    return _reject_pending_correction(correction_id, product.product_id)
 
 
 class KnowledgeIngestBody(BaseModel):
@@ -1658,6 +1674,31 @@ def client_put_knowledge(product: DashboardAuthedProduct, body: KnowledgeBody, r
         except Exception as exc:  # noqa: BLE001
             print(f"[client] chroma ingest skipped: {exc}", flush=True)
     return {"markdown": saved, "chroma_id": chroma_id}
+
+
+@app.get("/client/api/corrections/pending")
+def client_pending_corrections(product: DashboardAuthedProduct) -> list[dict]:
+    """Pending rules for the Client dashboard. Same store as /v1, JWT-scoped."""
+    return _list_pending_corrections(product.product_id)
+
+
+@app.post("/client/api/corrections/{correction_id}/approve")
+def client_approve_correction(
+    correction_id: str,
+    product: DashboardAuthedProduct,
+    body: ApproveCorrectionBody | None = None,
+) -> dict:
+    body = body or ApproveCorrectionBody()
+    return _approve_pending_correction(
+        correction_id, product.product_id, rule=body.rule
+    )
+
+
+@app.post("/client/api/corrections/{correction_id}/reject")
+def client_reject_correction(
+    correction_id: str, product: DashboardAuthedProduct
+) -> dict:
+    return _reject_pending_correction(correction_id, product.product_id)
 
 
 @app.get("/client/api/flows")

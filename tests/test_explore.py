@@ -414,6 +414,31 @@ def test_merge_update_existing_appends_without_dup_playlist():
     assert [c.selector for c in graph.flow("explore", "tour")] == ["inbox", "kanban"]
 
 
+def test_merge_overwrites_stale_selector():
+    from navigator.client.content import merge_recorded_flow
+    from navigator.knowledge.site_graph import parse_site_graph
+    from navigator.automation.record import RecordedStep
+
+    base = (
+        "version: 1\nsite: acme\nbase_url: https://app.example.com\n"
+        "pages:\n  home:\n    name: Home\n    url: /\n"
+        "    selectors:\n      body: body\n      submit: '#old'\n"
+        "    flows:\n      tour:\n        - tool: click_element\n"
+        "          selector: submit\n"
+        "          expects:\n            check: visible\n            selector: submit\n"
+    )
+    merged = merge_recorded_flow(
+        base,
+        flow_name="Healed",
+        flow_id="healed",
+        page_id="home",
+        steps=[RecordedStep(tool="click_element", alias="submit", selector="#healed")],
+        product_name="Acme",
+        base_url="https://app.example.com",
+    )
+    assert parse_site_graph(merged).selector("home", "submit") == "#healed"
+
+
 def test_backtrack_to_same_path_not_added_to_demo_flow(monkeypatch):
     """Explore may revisit a page; demo keeps only the first landing."""
     page = FakePage(

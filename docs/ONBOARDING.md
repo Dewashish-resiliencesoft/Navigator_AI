@@ -1,7 +1,11 @@
-# Developer onboarding
+# Quick developer onboarding
 
-**Canonical full guide:** [`../README.md`](../README.md)  
-(product rules, setup, Attendee, VPS, env vars, gotchas, coding workflow).
+**Canonical deep guide:** [`DEVELOPER_ONBOARDING.md`](DEVELOPER_ONBOARDING.md)<br>
+(folders, backend/frontend relationships, buttons, API flow, runtime behavior,
+tests, deployment, and troubleshooting).
+
+**Broad project map:** [`../README.md`](../README.md)<br>
+(product rules, setup, Attendee, VPS, environment variables, and coding workflow).
 
 **Product law (read before any change):** [`PRODUCT_MODEL.md`](PRODUCT_MODEL.md)
 

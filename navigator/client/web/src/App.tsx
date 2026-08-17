@@ -307,7 +307,7 @@ export default function App() {
                 <span className="text-[0.78rem] text-[var(--muted)]">
                   Live demo · {demo.platform || "meeting"} · {demo.page_id || "…"}
                 </span>
-                <div className="ml-auto flex gap-2">
+                <div className="ml-auto flex items-center gap-2">
                   {tab !== "demo" && (
                     <Button
                       variant="secondary"
@@ -325,6 +325,14 @@ export default function App() {
                     <PhoneOff size={14} />
                     {ending ? "Ending…" : "End demo"}
                   </Button>
+                  {typeof demo.leave_grace_remaining === "number" && (
+                    <span
+                      aria-live="polite"
+                      className="tabular-nums text-[0.74rem] text-amber-700 dark:text-amber-300"
+                    >
+                      Ends in {demo.leave_grace_remaining}s
+                    </span>
+                  )}
                 </div>
               </div>
             )}

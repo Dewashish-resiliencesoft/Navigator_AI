@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from navigator.app.runner import DemoHandle, DemoRunner
+from navigator.app.runner import DemoHandle, DemoRunner, _MAX_SAID
 
 
 def _handle(**kw) -> DemoHandle:
@@ -186,3 +187,34 @@ def test_live_worker_bot_in_meeting_false_until_ready(site_graph):
 
     assert handle.bot_id == "bot-early"
     assert handle.bot_in_meeting is False
+
+
+def test_said_caps_at_max():
+    handle = _handle()
+    for i in range(_MAX_SAID + 20):
+        handle.append_said(str(i))
+    assert len(handle.said) == _MAX_SAID
+    assert handle.said[0] == "20"
+    assert handle.said[-1] == str(_MAX_SAID + 19)
+
+
+def test_reap_drops_old_finished(tmp_path):
+    runner = DemoRunner(str(tmp_path / "db.sqlite"))
+    handle = _handle()
+    handle.status = "finished"
+    handle.finished_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    runner._demos[handle.demo_id] = handle
+    runner._store.save(handle)
+
+    assert runner._reap_finished(keep_s=1) == 1
+    assert handle.demo_id not in runner._demos
+    assert runner.get(handle.demo_id) is None
+
+
+def test_reap_keeps_running(tmp_path):
+    runner = DemoRunner(str(tmp_path / "db.sqlite"))
+    handle = _handle()
+    handle.status = "running"
+    runner._demos[handle.demo_id] = handle
+    assert runner._reap_finished(keep_s=0) == 0
+    assert handle.demo_id in runner._demos

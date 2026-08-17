@@ -87,6 +87,15 @@ class DemoStateStore:
                 if self._deserialize(data_str).product_id == product_id
             ]
 
+    def drop(self, handle: DemoHandle) -> None:
+        did = str(handle.demo_id)
+        if self.redis:
+            self.redis.hdel(f"demos:product:{handle.product_id}", did)
+            self.redis.delete(f"demo:{did}", f"demo_owner:{did}")
+        else:
+            self._in_memory.pop(did, None)
+            self._in_memory_owners.pop(did, None)
+
     def set_owner(self, demo_id: UUID) -> None:
         if self.redis:
             self.redis.set(f"demo_owner:{demo_id}", self.worker_id, ex=86400)

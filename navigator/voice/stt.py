@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import wave
 from collections.abc import Callable, Iterator
+from functools import lru_cache
 
 SAMPLE_RATE = 16_000
 # Silero VAD v5 requires exactly 512 samples @ 16 kHz (32 ms). Not 200 ms.
@@ -74,6 +75,7 @@ def _fixed_frames(frames: Iterator[bytes], size: int) -> Iterator[bytes]:
             del buf[:size]
 
 
+@lru_cache(maxsize=1)
 def _silero_scorer() -> Callable[[bytes], float]:
     """Lazy-load Silero once. Raises if voice extra missing."""
     try:

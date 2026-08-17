@@ -47,6 +47,11 @@ Set from the credential type at the auth boundary, never from a request body.
 See docs/PRODUCT_MODEL.md.
 """
 
+#: Poll-window transcript. Older lines drop; GET after this window still has the tail.
+_MAX_SAID = 80
+#: Keep finished handles for dashboard poll, then drop so `_demos` cannot grow forever.
+KEEP_FINISHED_S = 120.0
+
 
 @dataclass
 class DemoHandle:
@@ -82,6 +87,13 @@ class DemoHandle:
     _thread: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
 
+    def append_said(self, text: str) -> None:
+        """Transcript cap so finished handles cannot grow without bound."""
+        self.said.append(text)
+        extra = len(self.said) - _MAX_SAID
+        if extra > 0:
+            del self.said[:extra]
+
     def public(self) -> dict:
         """Serialisable view. Excludes the thread and the stop event."""
         return {
@@ -99,7 +111,7 @@ class _RecordingSpeaker:
         self._handle = handle
 
     def say(self, text: str) -> None:
-        self._handle.said.append(text)
+        self._handle.append_said(text)
         self._inner.say(text)
 
 
@@ -137,10 +149,34 @@ class DemoRunner:
     def _sync_loop(self) -> None:
         while True:
             with self._lock:
-                handles = list(self._demos.values())
-            for h in handles:
+                running = [
+                    h
+                    for h in self._demos.values()
+                    if h.status in ("starting", "running")
+                ]
+            for h in running:
                 self._store.save(h)
+            self._reap_finished()
             time.sleep(1.0)
+
+    def _reap_finished(self, *, keep_s: float = KEEP_FINISHED_S) -> int:
+        """Drop finished/failed handles older than keep_s. Returns how many."""
+        now = datetime.now(timezone.utc)
+        drop: list[DemoHandle] = []
+        with self._lock:
+            for h in list(self._demos.values()):
+                if h.status not in ("finished", "failed") or h.finished_at is None:
+                    continue
+                alive = h._thread is not None and h._thread.is_alive()
+                if alive:
+                    continue
+                age = (now - h.finished_at).total_seconds()
+                if age > keep_s:
+                    self._demos.pop(h.demo_id, None)
+                    drop.append(h)
+        for h in drop:
+            self._store.drop(h)
+        return len(drop)
 
     def start(
         self,
@@ -247,11 +283,11 @@ class DemoRunner:
         ):
             return
         if operator_stopped or handle._stop.is_set():
-            handle.said.append("Demo ended — meeting and browser closed.")
+            handle.append_said("Demo ended — meeting and browser closed.")
         elif handle.status == "failed":
-            handle.said.append("Demo failed — meeting and browser closed.")
+            handle.append_said("Demo failed — meeting and browser closed.")
         else:
-            handle.said.append(
+            handle.append_said(
                 f"Demo completed — {handle.actions} actions, "
                 f"{handle.failures} failures."
             )
@@ -393,6 +429,7 @@ class DemoRunner:
         finally:
             handle.finished_at = datetime.now(timezone.utc)
             self._persist_run(handle)
+            self._store.save(handle)
 
     def _run_live(
         self,
@@ -407,7 +444,7 @@ class DemoRunner:
 
         def on_meeting_ready(_url: str) -> None:
             handle.bot_in_meeting = True
-            handle.said.append("Navigator is in the meeting — join link ready.")
+            handle.append_said("Navigator is in the meeting — join link ready.")
 
         def on_leave_grace(remaining: int | None) -> None:
             handle.leave_grace_remaining = remaining

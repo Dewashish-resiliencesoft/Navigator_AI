@@ -59,6 +59,12 @@ def test_pcm16_to_wav_bytes_has_riff_header():
     assert b"WAVE" in wav[:16]
 
 
+def test_silero_scorer_is_cached():
+    from navigator.voice.stt import _silero_scorer
+
+    assert _silero_scorer.cache_info().maxsize == 1
+
+
 def test_transcribe_posts_wav_via_injected_path(monkeypatch):
     captured: dict = {}
 

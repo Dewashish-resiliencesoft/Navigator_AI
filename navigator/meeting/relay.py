@@ -6,9 +6,9 @@
 `/frame.jpg` — latest Playwright JPEG.
 
 ponytail: frames come from CDP Page.screencast (see start_screencast) — Chromium
-pushes a JPEG whenever the page repaints, so in-page CSS animation reaches Meet
-at ~60fps and an idle page costs nothing. push_frame stays for seeding the first
-paint and for demos with no screencast attached.
+pushes a JPEG on repaint. Idle page costs nothing. Meet re-encodes the share, so
+~30fps is enough for cursor motion without doubling JPEG encode/poll CPU.
+push_frame stays for seeding the first paint and for demos with no screencast.
 """
 
 from __future__ import annotations
@@ -21,11 +21,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from playwright.sync_api import Page
 
-#: Meet `/view` JPEG poll cadence. 16ms ≈ 60fps. CPU hog (Attendee ffmpeg
-#: recorder) is off, so this is viable again.
-VIEW_FRAME_MS = 16
-#: CDP screencast every repaint (60fps source) — cursor motion stays fluid.
-SCREENCAST_EVERY_NTH_FRAME = 1
+#: Meet `/view` JPEG poll cadence. 33ms ≈ 30fps. Meet re-encodes anyway.
+VIEW_FRAME_MS = 33
+#: CDP screencast every other frame (~30fps source). Cursor still readable.
+SCREENCAST_EVERY_NTH_FRAME = 2
 
 
 _AGENT_HTML = """<!doctype html>
@@ -58,11 +57,11 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 16);
+  setTimeout(tickFrame, __VIEW_MS__);
 }
 tickFrame();
 </script></body></html>
-"""
+""".replace("__VIEW_MS__", str(VIEW_FRAME_MS))
 
 
 @dataclass
@@ -179,7 +178,7 @@ def start_screencast(handle: RelayHandle, page: Page):
     A `page.screenshot()` costs ~30ms of the Playwright thread — the same thread
     that has to keep 24kHz PCM flowing — so the old per-hop push capped motion at
     ~12fps and overran its own timing by ~1.5x. Chromium pushes screencast frames
-    on repaint for free, so an in-page CSS animation arrives at ~60fps.
+    on repaint; we keep everyNthFrame=2 (~30fps) because Meet re-encodes anyway.
 
     Returns the CDP session, or None if screencast is unavailable (the caller
     then keeps using push_frame).

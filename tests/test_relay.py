@@ -12,9 +12,9 @@ from navigator.meeting.relay import (
 
 
 def test_view_and_screencast_tuned_for_smoothness():
-    # 60fps view swap + every-frame screencast (ffmpeg recorder is off).
-    assert VIEW_FRAME_MS == 16
-    assert SCREENCAST_EVERY_NTH_FRAME == 1
+    # 30fps view + every-other-frame screencast. Meet re-encodes; 60fps doubled CPU.
+    assert VIEW_FRAME_MS == 33
+    assert SCREENCAST_EVERY_NTH_FRAME == 2
 
 
 def test_view_returns_html():
@@ -25,7 +25,7 @@ def test_view_returns_html():
             assert resp.status == 200
         assert "getUserMedia" not in body  # screenshare page — no mic requirement
         assert "/frame.jpg" in body
-        assert "setTimeout(tickFrame, 16)" in body
+        assert "setTimeout(tickFrame, 33)" in body
         assert "id=badge" not in body and 'id="badge"' not in body
         assert "tickStatus" not in body
         with urlopen(relay.agent_url, timeout=5) as resp:

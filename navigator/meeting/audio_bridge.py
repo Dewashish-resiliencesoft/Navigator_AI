@@ -14,6 +14,20 @@ from collections.abc import Iterator
 from queue import Empty, Queue
 from typing import Any
 
+#: ~5s of mixed Meet PCM if chunks are ~20ms. Drop oldest so STT lag cannot OOM.
+MAX_INBOUND_CHUNKS = 250
+#: After Attendee is on the WS, cap bot audio (~8s). Uncapped while waiting to
+#: connect so a late Zoom socket still gets the greeting.
+MAX_OUTBOUND_CHUNKS = 400
+
+
+def _drop_oldest(q: Queue, maxsize: int) -> None:
+    while q.qsize() >= maxsize:
+        try:
+            q.get_nowait()
+        except Empty:
+            break
+
 
 def _pcm_seconds(pcm: bytes, sample_rate: int) -> float:
     """Playback duration of a 16-bit mono PCM chunk."""
@@ -79,6 +93,8 @@ class AudioBridge:
         self._ws = None
 
     def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
+        if self._ws is not None:
+            _drop_oldest(self._outbound, MAX_OUTBOUND_CHUNKS)
         self._outbound.put((pcm, sample_rate))
 
     def clear_outbound(self) -> int:
@@ -193,10 +209,14 @@ class AudioBridge:
             print(f"[audio] bridge failed: {exc}", flush=True)
             self._ready.set()
 
+    def _put_inbound(self, pcm: bytes) -> None:
+        _drop_oldest(self.inbound, MAX_INBOUND_CHUNKS)
+        self.inbound.put(pcm)
+        self.chunks_received += 1
+
     def _handle_message(self, raw: Any) -> None:
         if isinstance(raw, bytes):
-            self.inbound.put(raw)
-            self.chunks_received += 1
+            self._put_inbound(raw)
             return
         try:
             msg = json.loads(raw)
@@ -207,8 +227,7 @@ class AudioBridge:
         if not chunk_b64:
             return
         try:
-            self.inbound.put(base64.b64decode(chunk_b64))
-            self.chunks_received += 1
+            self._put_inbound(base64.b64decode(chunk_b64))
             if self.chunks_received in (1, 50, 200):
                 print(
                     f"[audio] pcm chunks received={self.chunks_received} "

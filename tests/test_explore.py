@@ -501,6 +501,14 @@ def test_starting_phase_reports_active_true():
     assert 0 <= status["progress_pct"] <= 100
 
 
+def test_release_heavy_drops_viewport_jpeg():
+    session = _session(phase="done")
+    session.latest_frame_b64 = "ZmFrZQ=="
+    session.release_heavy()
+    assert session.latest_frame_b64 == ""
+    assert session.frame_payload() is None
+
+
 def test_request_stop_marks_inactive_immediately():
     session = _session(phase="exploring")
     assert session.status()["active"] is True

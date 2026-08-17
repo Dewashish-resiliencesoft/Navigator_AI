@@ -399,6 +399,7 @@ def start_exploration(
                  "steps": len(session.steps), "flagged": len(session.flagged),
                  "phase": session.phase}
             )
+            session.release_heavy()
             if on_complete is not None:
                 try:
                     on_complete(session)

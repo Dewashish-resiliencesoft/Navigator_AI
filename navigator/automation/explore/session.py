@@ -413,6 +413,11 @@ class ExplorationSession:
                 "data": self.latest_frame_b64,
             }
 
+    def release_heavy(self) -> None:
+        """Drop viewport JPEG after the crawl. Status JSON stays."""
+        with self._lock:
+            self.latest_frame_b64 = ""
+
     def emit(self, event: dict[str, Any]) -> None:
         """Buffer an event and fan it out. Buffer replays to late WS joiners.
 

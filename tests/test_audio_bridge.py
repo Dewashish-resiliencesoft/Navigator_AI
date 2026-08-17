@@ -90,6 +90,26 @@ def test_flush_bot_output_drops_queue_and_signals_attendee():
         bridge.stop()
 
 
+def test_inbound_drops_oldest_when_full():
+    from navigator.meeting.audio_bridge import MAX_INBOUND_CHUNKS
+
+    bridge = AudioBridge()
+    for i in range(MAX_INBOUND_CHUNKS + 25):
+        bridge._put_inbound(i.to_bytes(2, "big"))
+    assert bridge.inbound.qsize() == MAX_INBOUND_CHUNKS
+    assert bridge.inbound.get_nowait() == (25).to_bytes(2, "big")
+
+
+def test_outbound_stays_uncapped_until_ws_connects():
+    from navigator.meeting.audio_bridge import MAX_OUTBOUND_CHUNKS
+
+    bridge = AudioBridge()
+    extra = MAX_OUTBOUND_CHUNKS + 10
+    for _ in range(extra):
+        bridge.push_outbound_pcm(b"\x00")
+    assert bridge._outbound.qsize() == extra
+
+
 def test_clear_outbound_drops_pending_chunks():
     bridge = AudioBridge()  # not started - nothing drains the queue
     bridge.push_outbound_pcm(b"\x00" * 10)

@@ -125,3 +125,32 @@ def test_dropped_audio_is_never_counted():
     bridge.push_outbound_pcm(b"\x00\x01" * 24000, sample_rate=24000)
     bridge.clear_outbound()
     assert bridge.audio_s_sent == 0.0
+
+
+def test_outbound_holds_until_attendee_ws_connects():
+    """Zoom ZAK join often connects tens of seconds after Gemini starts speaking."""
+    bridge = AudioBridge().start()
+    got: list[dict] = []
+    try:
+
+        async def client() -> None:
+            import websockets
+
+            await asyncio.sleep(3)
+            async with websockets.connect(
+                f"ws://127.0.0.1:{bridge.port}", open_timeout=5
+            ) as ws:
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                got.append(json.loads(raw))
+
+        async def run() -> None:
+            await asyncio.sleep(0.2)
+            bridge.push_outbound_pcm(b"\x04\x05" * 40, sample_rate=16000)
+            await client()
+
+        asyncio.run(run())
+        assert got, "late Attendee WS never received queued bot audio"
+        assert got[0]["trigger"] == "realtime_audio.bot_output"
+        assert base64.b64decode(got[0]["data"]["chunk"])[:2] == b"\x04\x05"
+    finally:
+        bridge.stop()

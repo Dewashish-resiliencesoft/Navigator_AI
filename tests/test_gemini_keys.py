@@ -38,3 +38,11 @@ def test_is_gemini_quota_error() -> None:
         RuntimeError("429 RESOURCE_EXHAUSTED limit: 0")
     )
     assert not gemini_keys.is_gemini_quota_error(RuntimeError("network timeout"))
+
+
+def test_is_gemini_live_unavailable() -> None:
+    assert gemini_keys.is_gemini_live_unavailable(
+        RuntimeError("1011 None. The service is currently unavailable.")
+    )
+    assert gemini_keys.is_gemini_live_unavailable(RuntimeError("503 overloaded"))
+    assert not gemini_keys.is_gemini_live_unavailable(RuntimeError("invalid api key"))

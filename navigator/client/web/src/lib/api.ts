@@ -72,6 +72,7 @@ export type Demo = {
   meeting_url: string | null;
   platform: string | null;
   bot_in_meeting: boolean;
+  leave_grace_remaining: number | null;
 };
 
 export type BioField = { key: string; label: string; value: string };

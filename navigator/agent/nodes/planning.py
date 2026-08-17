@@ -88,11 +88,10 @@ def _trace(deps: CallDeps, state: CallState, **kw) -> None:
 def _set_spoken_language(deps: CallDeps, lang: SpokenLanguage) -> None:
     deps.spoken_language = lang
     speaker = deps.speaker
-    synth = getattr(speaker, "synthesizer", None)
     local = getattr(speaker, "local", None)
     from navigator.voice.language import apply_to_speakers
 
-    apply_to_speakers(lang, speaker, synth, local, deps.live_agent)
+    apply_to_speakers(lang, speaker, local, deps.live_agent)
 
 
 def _maybe_language_switch_ack(

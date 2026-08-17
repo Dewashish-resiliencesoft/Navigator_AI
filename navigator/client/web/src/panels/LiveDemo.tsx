@@ -87,6 +87,7 @@ export function LiveDemo() {
   // the waiting room until a human opens the link and admits it.
   const joinUrl = demo?.meeting_url ?? null;
   const botReady = live && !!demo?.bot_in_meeting;
+  const leaveGrace = demo?.leave_grace_remaining ?? null;
   const joinDisplay =
     live || starting ? (joinUrl ?? LINK_PENDING) : done ? "—" : (joinUrl ?? "—");
   const transcriptLines = (demo?.said ?? []).filter(
@@ -648,7 +649,7 @@ export function LiveDemo() {
           </p>
         )}
 
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <Button variant="secondary" onClick={copy} disabled={!joinUrl || !live}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy link"}
@@ -657,6 +658,14 @@ export function LiveDemo() {
             <PhoneOff size={14} />
             {ending ? "Ending…" : "End"}
           </Button>
+          {live && leaveGrace !== null && (
+            <span
+              aria-live="polite"
+              className="tabular-nums text-[0.74rem] text-amber-700 dark:text-amber-300"
+            >
+              Ends in {leaveGrace}s
+            </span>
+          )}
         </div>
 
         {demo?.error && (

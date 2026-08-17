@@ -1,4 +1,7 @@
-"""Sync Navigator Zoom OAuth app creds into Attendee (manage.py shell).
+"""Sync Navigator Meeting SDK (General App) creds into Attendee.
+
+Not the Server-to-Server app: that pair creates meetings + ZAK. Using it here
+makes Zoom web SDK return 3712 Invalid signature.
 
 Run:
   docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml \

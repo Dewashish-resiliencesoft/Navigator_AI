@@ -124,9 +124,9 @@ class AudioBridge:
                 pcm, rate = self._outbound.get(timeout=0.2)
             except Empty:
                 continue
-            # Audio can be queued a beat before Attendee's socket registers.
-            # Hold it briefly rather than dropping the start of an utterance.
-            deadline = time.monotonic() + 2.0
+            # Zoom ZAK join often connects the audio WS tens of seconds later.
+            # Hold until Attendee is on the socket (or the demo stops).
+            deadline = time.monotonic() + 45.0
             while self._ws is None and not self._stop.is_set():
                 if time.monotonic() >= deadline:
                     break
@@ -145,6 +145,8 @@ class AudioBridge:
                 # drops or a dead socket refuses are never heard, so callers
                 # must not wait them out.
                 self.audio_s_sent += _pcm_seconds(pcm, rate)
+            else:
+                print("[audio] dropped outbound chunk: Attendee WS not connected", flush=True)
 
     def frames(self, *, timeout_s: float | None = None) -> Iterator[bytes]:
         while not self._stop.is_set():

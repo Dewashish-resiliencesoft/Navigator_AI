@@ -98,6 +98,30 @@ def intake_from_prefill(
     )
 
 
+def usable_meeting_display_name(name: str) -> str:
+    """Meet/Zoom join label when it is a real person name — skip asking."""
+    n = " ".join((name or "").split())
+    if not n:
+        return ""
+    low = n.lower()
+    if low in {
+        "guest",
+        "meet guest",
+        "zoom user",
+        "iphone",
+        "android",
+        "unknown",
+        "user",
+    }:
+        return ""
+    digits = "".join(c for c in n if c.isdigit())
+    if len(digits) >= 8:
+        return ""
+    if "@" in n:
+        return ""
+    return n
+
+
 def solution_blurb(persona: Persona, looking_for: str) -> str:
     from navigator.meeting.intake_copy import solution_blurb as _blurb
 
@@ -325,9 +349,8 @@ def _maybe_switch_language(
 
     def _on_switch(lang: SpokenLanguage) -> None:
         apply_to_speakers(lang, speaker)
-        synth = getattr(speaker, "synthesizer", None)
         local = getattr(speaker, "local", None)
-        apply_to_speakers(lang, synth, local)
+        apply_to_speakers(lang, local)
 
     new_lang, ack = apply_language_switch(
         utterance=utterance,
@@ -429,6 +452,13 @@ Do not output full sentences. Only output the extracted entity. Do not use quote
 def _say(speaker: Speaker, text: str) -> None:
     print(f"[agent] {text}", flush=True)
     try:
-        speaker.say(text)
+        # Intake questions must be word-for-word. Live natural-mode rewrote
+        # "What is your name?" into "My name is <product>." and then listened.
+        speaker.say(text, mode="verbatim")  # type: ignore[call-arg]
+    except TypeError:
+        try:
+            speaker.say(text)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[agent] TTS skipped: {exc}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[agent] TTS skipped: {exc}", flush=True)

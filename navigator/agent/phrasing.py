@@ -1,11 +1,8 @@
 """Live phrasing: one Groq call per spoken turn.
 
-Separate from `vision_narrator` on purpose. That module answers "what is on
-screen"; this one answers "how should this turn sound, given what was just said
-and what has already been covered". The walkthrough keeps using vision narration
-for step description; the decision branches added in Phase 2 (clarifying
-question, knowledge-only answer, handoff, resume) route through here, because
-those lines were previously frozen constants.
+Walkthrough YAML owns "what is this step"; this module owns "how should
+this turn sound given what was just said". Decision branches (clarifying
+question, knowledge-only answer, handoff, resume) route through here.
 
 Falls back to the caller's template on any failure. A demo that speaks a slightly
 stiff line is fine; a demo that speaks nothing is not.

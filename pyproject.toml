@@ -14,7 +14,6 @@ dependencies = [
     "playwright>=1.44",
     "langgraph>=1.0",
     "redis>=8.1.0",
-    "fakeredis>=2.37.0",
     "PyJWT>=2.8",
     "bcrypt>=4.0",
     "cryptography>=42.0",
@@ -38,6 +37,7 @@ dev = [
     "websockets>=12",
     "google-genai>=1.0",
     "openai>=1.40",
+    "fakeredis>=2.37.0",
 ]
 
 [project.scripts]

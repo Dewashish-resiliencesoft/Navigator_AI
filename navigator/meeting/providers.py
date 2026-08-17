@@ -20,7 +20,7 @@ walk into its own meeting alone, which is the whole design.
 Credentials are org-wide env vars, deliberately: per-tenant credentials belong
 in a vault, which is a separate piece of work.
 
-ponytail: urllib for the API calls (same as attendee.py / email_notify.py),
+ponytail: urllib for the API calls (same as attendee.py),
 google-auth only for signing the service-account JWT. No googleapiclient.
 """
 

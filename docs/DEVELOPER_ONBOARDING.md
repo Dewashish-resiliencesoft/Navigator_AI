@@ -117,7 +117,7 @@ Common variables:
 | `NAVIGATOR_MEETING_PLATFORM` | meeting provider selection | `google_meet`, `zoom`, or configured provider |
 | `NAVIGATOR_MEETING_URL` | CLI/static meeting fallback | Static meeting URL only |
 | `NAVIGATOR_DB_PATH` | registry/log stores | SQLite application database |
-| `NAVIGATOR_REDIS_URL` | `app/state_store.py` | Optional multi-worker state coordination |
+| `NAVIGATOR_REDIS_URL` | `app/state.py` | Optional multi-worker state coordination |
 
 Never commit `.env`, API keys, credentials, service-account files, or local
 database artifacts containing tenant data.
@@ -201,7 +201,7 @@ Navigator is organized by feature, not as a generic controller/model/view dump.
 | `navigator/app/runner.py` | `DemoHandle`, `DemoRunner` | Threaded demo lifecycle and observable state |
 | `navigator/app/registry.py` | `Registry`, `Product`, `SiteGraphRevision` | Tenant, revision, and publish state |
 | `navigator/app/credential_vault.py` | `CredentialVault` | Encrypted product login credentials |
-| `navigator/app/state_store.py` | `DemoStateStore` | Optional cross-worker state/stop messages |
+| `navigator/app/state.py` | `DemoStateStore` | Optional cross-worker state/stop messages |
 | `navigator/core/settings.py` | `Settings`, `settings` | Environment-backed configuration |
 | `navigator/logs/store.py` | `ActionLog` | Action rows, demo runs, metrics |
 

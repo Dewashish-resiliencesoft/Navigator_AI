@@ -25,8 +25,6 @@ class BrainConfig:
     resume_silence_s: float
     tier2_enabled: bool
     use_turn_brain: bool
-    allow_ephemeral_nav: bool
-    guardrail_strict: bool
 
     @classmethod
     def from_settings(
@@ -57,8 +55,6 @@ class BrainConfig:
             resume_silence_s=settings.brain_resume_silence_s,
             tier2_enabled=tier2,
             use_turn_brain=mode == "explorer" or bool(settings.gemini_api_key),
-            allow_ephemeral_nav=mode == "explorer",
-            guardrail_strict=mode != "explorer",
         )
 
 

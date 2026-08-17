@@ -42,8 +42,6 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     #: Comma-separated Groq keys for controller/STT/phrasing rotation.
     groq_api_keys: str = ""
-    #: Optional separate pool for analysis workloads; falls back to groq_api_keys.
-    groq_api_keys_analysis: str = ""
     reflect_provider: Literal["gemini", "openai"] = "gemini"
     gemini_api_key: str = ""
     gemini_api_key_backup: str = ""
@@ -61,7 +59,7 @@ class Settings(BaseSettings):
     #: Attendee clone (separate repo). Override with NAVIGATOR_ATTENDEE_COMPOSE_DIR.
     attendee_compose_dir: Path = Path.home() / "projects" / "attendee"
 
-    # Phase 3: Meet + email notify + product login
+    # Phase 3: Meet + product login
     #: Fallback only: the CLI path (`python -m navigator.meeting.live_demo`) uses
     #: this when no URL is passed in. The API creates a fresh link per session.
     meeting_url: str = ""
@@ -100,14 +98,7 @@ class Settings(BaseSettings):
     credential_db_path: str = "data/credentials.db"
     #: Explore self-heal episodes (JSONL + shots). Auto-purged after 7 days.
     explore_episodes_path: Path = Path("data/explore_episodes")
-    #: Inbox that receives the Meet link (Resend auto-send or mailto fallback).
-    notify_email: str = ""
-    #: Resend API key — https://resend.com (free). When set, email is auto-sent.
-    resend_api_key: str = ""
-    #: From address. Free tier: onboarding@resend.dev (no domain verify).
-    email_from: str = "Navigator AI <onboarding@resend.dev>"
-    #: Open Meet in *this* machine's browser. Off by default — demos will run on
-    #: a business landing page later; share the link via email instead.
+    #: Open Meet in *this* machine's browser. Off by default.
     open_meet_in_browser: bool = False
     tunnel_bin: str = "cloudflared"
     meet_live: bool = False
@@ -141,8 +132,6 @@ class Settings(BaseSettings):
     redis_url: str = ""
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
-    #: Screenshare relay target frame rate (16 ms ≈ 60 fps).
-    target_fps: int = 60
     #: JPEG quality for Meet screenshare frames (1–100). Meet re-encodes the
     #: share anyway, and the encode runs in the same process as the audio
     #: bridge — a lower number buys real headroom for smooth voice.

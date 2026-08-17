@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 from navigator.agent.live_input import needs_live_input, resolve_live_fill
+from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
 from navigator.agent.playback_schedule import build_schedule, fmt_ms
 from navigator.agent.state import CallDeps
 from navigator.automation.browser.tools import execute as run_tool
@@ -329,6 +330,7 @@ def _run_flow_timeline_inner(
     #: — which is what happens when TTS prefetch misses and the schedule never
     #: stretches (see live log: act 1 at 00:56 while speak 0 still running).
     speech_idx: int | None = None
+    narration_started: dict[int, int] = {}
     skipped: set[int] = set()
     last_was_act = False
     t0 = time.monotonic()
@@ -383,6 +385,16 @@ def _run_flow_timeline_inner(
                 f"[timeline] {fmt_ms(elapsed_ms())} speak step {cue.idx}",
                 flush=True,
             )
+            narration_started[cue.idx] = time.monotonic_ns()
+            emit_demo_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                event="narration_started",
+                engine="timeline",
+                flow_id=flow_id,
+                step=cue.idx,
+            )
             speech = _start_speech(deps, cue.text)
             speech_idx = cue.idx if speech is not None else None
             continue
@@ -395,6 +407,18 @@ def _run_flow_timeline_inner(
             speech = None
             speech_idx = None
 
+        action_started_ns = time.monotonic_ns()
+        if cue.idx in narration_started:
+            emit_sync_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                engine="timeline",
+                flow_id=flow_id,
+                step=cue.idx,
+                narration_started_ns=narration_started[cue.idx],
+                action_started_ns=action_started_ns,
+            )
         print(f"[timeline] {fmt_ms(elapsed_ms())} act step {cue.idx}", flush=True)
         last_was_act = True
         entry, current_page = _run_step(
@@ -546,7 +570,30 @@ def run_flow_strict(
             )
             continue
         line = lines[step] if step < len(lines) else ""
+        narration_started_ns = time.monotonic_ns() if line.strip() else None
+        if narration_started_ns is not None:
+            emit_demo_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                event="narration_started",
+                engine="strict_playlist",
+                flow_id=flow_id,
+                step=step,
+            )
         _start_speech(deps, line)
+        action_started_ns = time.monotonic_ns()
+        if narration_started_ns is not None:
+            emit_sync_trace(
+                deps.trace,
+                session_id=session_id,
+                product_id=deps.product_id,
+                engine="strict_playlist",
+                flow_id=flow_id,
+                step=step,
+                narration_started_ns=narration_started_ns,
+                action_started_ns=action_started_ns,
+            )
         entry, current_page = _run_step(
             deps,
             call,

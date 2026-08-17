@@ -309,6 +309,7 @@ class DemoView(BaseModel):
     meeting_url: str | None = None
     platform: str | None = None
     bot_in_meeting: bool = False
+    leave_grace_remaining: int | None = None
 
 
 class DemoRunView(BaseModel):

@@ -130,8 +130,9 @@ class Settings(BaseSettings):
     #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier.
     #: ~200ms is aggressive; mid-sentence pauses can cut a turn early.
     live_stt_min_silence_ms: int = 200
-    #: Max wait for Attendee audio websocket before starting demo anyway.
-    live_audio_ws_wait_s: float = 12.0
+    #: Max wait for Attendee audio websocket before starting demo anyway. Zoom
+    #: can delay this until the host grants recording permission.
+    live_audio_ws_wait_s: float = 120.0
     #: Attendee signed-in Google Meet bot (needs Bot Logins in Attendee dashboard).
     google_meet_use_login: bool = False
     #: Product API key for local client dashboard (server-side; never sent to browser).

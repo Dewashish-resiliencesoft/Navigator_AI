@@ -31,6 +31,7 @@ from navigator.agent_runtime.models import (
     TaskStatus,
     utc_now,
 )
+from navigator.agent_runtime import watchdog as _wd
 from navigator.agent_runtime.planning.flash_planner import FlashPlanner
 from navigator.agent_runtime.planning.groq_worker import GroqEventWorker
 from navigator.agent_runtime.planning.router import RouteDecision, classify_utterance
@@ -200,7 +201,11 @@ class AgentOrchestrator:
                             action_id=st.action_id,
                             action_status=ActionStatus.running,
                             lock_holder="orchestrator",
-                        )
+                            flow_id=getattr(st, "flow_id", ""),
+                            step_id=getattr(st, "step_id", ""),
+                        ),
+                        # Phase-1: watchdog tick
+                        "watchdog": _wd.tick(s.watchdog),
                     }
                 )
             )
@@ -248,10 +253,27 @@ class AgentOrchestrator:
 
             if verification.passed:
                 self._emit(AgentEventKind.VERIFICATION_PASSED, task_id=plan.task_id, action_id=step.action_id)
+                # Phase-1: clear failure count on success + loop detection
+                self.store.update(
+                    lambda s: s.model_copy(update={"watchdog": _wd.clear_failure(s.watchdog)})
+                )
+                fp = _wd.state_fingerprint(
+                    self.store.state.browser.url,
+                    self.store.state.browser.semantic_elements,
+                )
+                self.store.update(
+                    lambda s, f=fp: s.model_copy(update={"watchdog": _wd.record_state(s.watchdog, f)})
+                )
             else:
                 self._emit(AgentEventKind.VERIFICATION_FAILED, task_id=plan.task_id, action_id=step.action_id)
+                self.store.update(
+                    lambda s: s.model_copy(update={"watchdog": _wd.record_failure(s.watchdog)})
+                )
                 if plan.escalation == "screenshot":
                     self._emit(AgentEventKind.SCREENSHOT_CAPTURED, task_id=plan.task_id)
+                # Phase-1: check if stuck (loop / timeout / too many failures)
+                if _wd.is_stuck(self.store.state.watchdog):
+                    self._emit(AgentEventKind.LOOP_DETECTED, task_id=plan.task_id)
                 self._finish_speech("That step didn't verify — I'll try another approach.")
                 self._mark_task(TaskStatus.failed)
                 return
@@ -327,12 +349,17 @@ class AgentOrchestrator:
         action_id: UUID | None = None,
         latency_ms: int | None = None,
         payload: dict | None = None,
+        flow_id: str = "",
+        step_id: str = "",
     ) -> None:
+        state = self.store.state
         event = AgentEvent(
             event=kind,
-            session_id=self.store.state.session.session_id,
+            session_id=state.session.session_id,
             task_id=task_id,
             action_id=action_id,
+            flow_id=flow_id or state.execution.flow_id,
+            step_id=step_id or state.execution.step_id,
             world_state_version=self.store.version(),
             latency_ms=latency_ms,
             payload=payload or {},

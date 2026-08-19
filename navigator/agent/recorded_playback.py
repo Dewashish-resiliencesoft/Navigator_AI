@@ -6,6 +6,16 @@ between steps. Narrated steps start speech and the cursor/click together so
 Meet sees the pointer on the control while the line names it.
 
 LangGraph speak-then-click walkthrough is the fallback when metadata is missing.
+
+--- Phase-9 migration note ---
+``step_timing``, ``step_clicks``, ``step_speech``, and ``step_mouse_paths``
+are PRESENTATION HINTS only. They influence cursor animation and TTS
+pre-fetch timing; they never gate whether the next step can begin.
+
+The authoritative gate is browser state verification via ``DemoStepExecutor``.
+New live demos use ``run_demo_flow_gated()`` (below) which enforces this
+invariant. The legacy timeline path remains for backward-compatible recorded
+playback until all flows are migrated.
 """
 
 from __future__ import annotations
@@ -811,3 +821,92 @@ def playlist_timeline_ready(graph) -> bool:
     if not graph.demo_playlist:
         return False
     return any(graph.has_recorded_playback(item.flow_id) for item in graph.demo_playlist)
+
+
+# ---------------------------------------------------------------------------
+# Phase-6/9: Gated demo flow runner — browser state authoritative
+# ---------------------------------------------------------------------------
+
+def run_demo_flow_gated(
+    deps: "CallDeps",
+    *,
+    session_id,
+    flow_id: str,
+    demo_flow,  # DemoFlow from DemoGraph
+    speak: "Callable[[str], None] | None" = None,
+    emit: "Callable | None" = None,
+    on_frame: "Callable[[], None] | None" = None,
+) -> dict:
+    """Run a DemoFlow using the new DemoStepExecutor (Phase-6/9).
+
+    No step advances until its browser state verification passes.
+    Timing metadata is used only as presentation hints (cursor, pause).
+
+    Returns: {"completed": int, "failed": int, "hard_fail": bool}
+    """
+    from navigator.agent_runtime.execution.demo_step_executor import execute_demo_step
+    from navigator.agent_runtime.models import (
+        AgentSession,
+        AgentWorldState,
+        BrowserSlice,
+        DemoStepStatus,
+        ExecutionSlice,
+    )
+    from uuid import uuid4 as _uuid4
+
+    _speak = speak or (lambda t: None)
+    _emit = emit or (lambda *a, **kw: None)
+
+    # Build a minimal world state for the executor
+    page_id = getattr(demo_flow, "page_id", "dashboard") if hasattr(demo_flow, "page_id") else "dashboard"
+    session = AgentSession(
+        session_id=session_id,
+        product_id=deps.product_id,
+        origin=getattr(deps, "demo_origin", "dashboard_test"),
+    )
+    world = AgentWorldState(
+        session=session,
+        browser=BrowserSlice(
+            url=deps.page.url if deps.page else "",
+            page_id=page_id,
+        ),
+        execution=ExecutionSlice(flow_id=flow_id),
+    )
+
+    completed = 0
+    failed = 0
+    hard_fail = False
+
+    for step in demo_flow.steps:
+        if getattr(deps, "stop_event", None) and deps.stop_event.is_set():
+            break
+
+        status, world, error = execute_demo_step(
+            step,
+            world=world,
+            graph=deps.graph,
+            page=deps.page,
+            emit=_emit,
+            speak=_speak,
+            on_frame=on_frame,
+        )
+
+        if status == DemoStepStatus.complete:
+            completed += 1
+        elif status == DemoStepStatus.failed:
+            failed += 1
+            if step.recovery.on_failure.value == "fail":
+                hard_fail = True
+                break
+        elif status == DemoStepStatus.recovering:
+            failed += 1
+            # Replan: skip remaining steps in this flow
+            break
+
+        # Presentation pause hint (NOT execution control)
+        pause_ms = step.presentation.pause_after_ms
+        if pause_ms > 0:
+            import time as _time
+            _time.sleep(min(pause_ms / 1000.0, 2.0))
+
+    return {"completed": completed, "failed": failed, "hard_fail": hard_fail}

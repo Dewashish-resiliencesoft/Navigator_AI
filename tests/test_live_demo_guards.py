@@ -188,6 +188,16 @@ def test_missing_attendee_key_is_still_refused(monkeypatch):
         _require_live_settings("https://meet.google.com/x")
 
 
+def test_live_demo_prefills_name_from_meeting_display():
+    import inspect
+
+    from navigator.meeting.live_demo import run_live_meet_demo
+
+    src = inspect.getsource(run_live_meet_demo)
+    assert "usable_meeting_display_name" in src
+    assert 'merged_prefill["name"]' in src
+
+
 def test_live_box_initialized_before_join_try():
     """Join fail hits finally; live_box must exist before wait_until_joined."""
     import inspect

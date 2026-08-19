@@ -26,6 +26,22 @@ def test_wav_tts_stack_gone():
         import navigator.voice.gemini_live  # noqa: F401
 
 
+def test_no_wav_prefetch_or_duration():
+    import navigator.agent.recorded_playback as rp
+
+    assert not hasattr(rp, "_prefetch_playlist_narration")
+    assert not hasattr(rp, "_tts_duration_fn")
+
+
+def test_vault_does_not_read_fish_key():
+    import inspect
+
+    from navigator.app.credential_vault import CredentialVault
+
+    src = inspect.getsource(CredentialVault.provider_key)
+    assert '"fish"' not in src
+
+
 def test_settings_drop_tts_and_live_flag():
     fields = Settings.model_fields
     assert "live_conversational_model" in fields

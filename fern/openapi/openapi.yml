@@ -3290,6 +3290,11 @@ components:
           type: boolean
           title: Bot In Meeting
           default: false
+        leave_grace_remaining:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Leave Grace Remaining
       type: object
       required:
       - demo_id
@@ -3632,6 +3637,11 @@ components:
           type: boolean
           title: Bot In Meeting
           default: false
+        leave_grace_remaining:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Leave Grace Remaining
         meeting:
           $ref: '#/components/schemas/MeetingOut'
       type: object

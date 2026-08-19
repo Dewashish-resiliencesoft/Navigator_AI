@@ -41,8 +41,18 @@ INPUT_SAMPLE_RATE = 16_000
 #: Longest ``say`` will wait for queued audio to finish playing. A stuck or
 #: mis-scaled counter must not be able to stall the walkthrough.
 MAX_DRAIN_S = 10.0
+LIVE_CONNECT_ATTEMPTS = 3
 
 SayMode = Literal["verbatim", "natural"]
+
+
+def should_retry_live_connect(
+    exc: BaseException, attempt: int, *, max_attempts: int = LIVE_CONNECT_ATTEMPTS
+) -> bool:
+    """Retry Gemini Live 1011 / overload. Permanent errors (bad key) stay fatal."""
+    from navigator.core.gemini_keys import is_gemini_live_unavailable
+
+    return attempt < max_attempts and is_gemini_live_unavailable(exc)
 
 
 @dataclass
@@ -345,6 +355,7 @@ class LiveAgent:
         from google import genai
 
         client = genai.Client(api_key=self.cfg.api_key)
+        attempt = 0
         while not self._stop.is_set():
             try:
                 async with client.aio.live.connect(
@@ -362,6 +373,14 @@ class LiveAgent:
             except Exception as exc:  # noqa: BLE001
                 if self._stop.is_set():
                     return
+                attempt += 1
+                if should_retry_live_connect(exc, attempt):
+                    print(
+                        f"[live] Gemini Live {exc} — retry {attempt}/{LIVE_CONNECT_ATTEMPTS}",
+                        flush=True,
+                    )
+                    await asyncio.sleep(1.5)
+                    continue
                 self._failed = self._failed or str(exc)
                 self._emit(LiveEvent(kind="error", text=f"session: {exc}"))
                 self._ready.set()

@@ -160,6 +160,10 @@ class CallDeps:
     live_agent: object | None = None
     #: Agent runtime orchestrator (navigator.agent_runtime.orchestrator.AgentOrchestrator).
     orchestrator: object | None = None
+    #: Async pre-action narration; SPEAKING queues it, EXECUTING starts it.
+    pre_action_speech: object | None = None
+    #: Structured demo diagnostics sink. None means JSON logs to stdout.
+    trace: Callable[[dict[str, object]], None] | None = None
 
 
 def append_only(existing: list, new: list) -> list:
@@ -234,6 +238,7 @@ class CallState(TypedDict, total=False):
     planned_next_step: int
     #: Knowledge answer spoken; next turn asks if the question is answered.
     resume_checkin_pending: bool
+    pre_action_speech: object | None
 
 
 def initial_state(

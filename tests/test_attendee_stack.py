@@ -69,3 +69,41 @@ def test_ensure_skips_in_pytest(monkeypatch):
 def test_compose_up_requires_files(tmp_path):
     with pytest.raises(FileNotFoundError, match="missing"):
         attendee_stack._docker_compose_up(tmp_path)
+
+
+def test_meeting_sdk_creds_ignore_empty():
+    assert attendee_stack.meeting_sdk_credentials_for_attendee(
+        sdk_client_id="",
+        sdk_client_secret="secret",
+        s2s_client_id="s2s",
+    ) is None
+
+
+def test_meeting_sdk_creds_reject_s2s_reuse():
+    # Server-to-Server Client ID must never be Attendee's Meeting SDK key.
+    assert attendee_stack.meeting_sdk_credentials_for_attendee(
+        sdk_client_id="same-id",
+        sdk_client_secret="sdk-secret",
+        s2s_client_id="same-id",
+    ) is None
+
+
+def test_meeting_sdk_creds_accept_distinct_general_app():
+    got = attendee_stack.meeting_sdk_credentials_for_attendee(
+        sdk_client_id="sdk-app",
+        sdk_client_secret="sdk-secret",
+        s2s_client_id="s2s-app",
+    )
+    assert got == ("sdk-app", "sdk-secret")
+
+
+def test_ensure_zoom_creds_skips_when_only_s2s(monkeypatch):
+    monkeypatch.setattr(attendee_stack.settings, "attendee_base_url", "http://localhost:8002/api/v1")
+    monkeypatch.setattr(attendee_stack.settings, "zoom_sdk_client_id", "")
+    monkeypatch.setattr(attendee_stack.settings, "zoom_sdk_client_secret", "")
+    monkeypatch.setattr(attendee_stack.settings, "zoom_client_id", "s2s-id")
+    monkeypatch.setattr(attendee_stack.settings, "zoom_client_secret", "s2s-secret")
+    run = MagicMock()
+    monkeypatch.setattr(attendee_stack.subprocess, "run", run)
+    assert attendee_stack.ensure_attendee_zoom_credentials() is False
+    run.assert_not_called()

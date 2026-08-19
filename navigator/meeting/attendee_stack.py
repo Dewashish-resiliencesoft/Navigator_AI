@@ -79,6 +79,15 @@ def _sync_attendee_override(compose_dir: Path) -> None:
         print(f"[attendee] debug-rec: {mod.patch(compose_dir)}", flush=True)
     except OSError as exc:
         print(f"[attendee] WARN: debug-rec patch skipped: {exc}", flush=True)
+    try:
+        from navigator.meeting.attendee_ws_patch import patch as patch_audio_ws
+
+        result = patch_audio_ws(compose_dir)
+        print(f"[attendee] audio-ws: {result}", flush=True)
+        if result.startswith("patched "):
+            _restart_attendee_worker(compose_dir)
+    except OSError as exc:
+        print(f"[attendee] WARN: audio-ws patch skipped: {exc}", flush=True)
 
 
 def _needs_voice_agent_recreate(compose_dir: Path) -> bool:
@@ -133,6 +142,34 @@ def _docker_compose_up(
     return proc
 
 
+def _restart_attendee_worker(compose_dir: Path) -> None:
+    """Celery workers load Python at boot; a host-volume patch needs restart."""
+    proc = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "-f",
+            _COMPOSE_FILES[0],
+            "-f",
+            _COMPOSE_FILES[1],
+            "restart",
+            "attendee-worker-local",
+        ],
+        cwd=compose_dir,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+    )
+    if proc.returncode != 0:
+        print(
+            f"[attendee] WARN: worker restart failed: {(proc.stderr or proc.stdout or '')[:300]}",
+            flush=True,
+        )
+        return
+    print("[attendee] restarted attendee-worker-local (eager audio WS)", flush=True)
+
+
 def attendee_ui_origin(base_url: str | None = None) -> str:
     """Attendee dashboard origin (strip ``/api/v1`` from API base URL)."""
     base = (base_url or settings.attendee_base_url).rstrip("/")
@@ -141,23 +178,45 @@ def attendee_ui_origin(base_url: str | None = None) -> str:
     return base
 
 
+def meeting_sdk_credentials_for_attendee(
+    *,
+    sdk_client_id: str,
+    sdk_client_secret: str,
+    s2s_client_id: str,
+) -> tuple[str, str] | None:
+    """Meeting SDK keys for Attendee. S2S OAuth keys 3712 the Zoom web SDK."""
+    sdk_id = (sdk_client_id or "").strip()
+    sdk_secret = (sdk_client_secret or "").strip()
+    s2s_id = (s2s_client_id or "").strip()
+    if not sdk_id or not sdk_secret:
+        return None
+    if s2s_id and sdk_id == s2s_id:
+        return None
+    return sdk_id, sdk_secret
+
+
 def ensure_attendee_zoom_credentials(
     *,
     compose_dir: Path | None = None,
     project_name: str | None = None,
 ) -> bool:
-    """Copy ``NAVIGATOR_ZOOM_*`` into local Attendee for Zoom web SDK bots."""
+    """Copy Meeting SDK keys into local Attendee. Never the S2S create/ZAK app."""
     if not is_local_attendee_url(settings.attendee_base_url):
         return True
-    client_id = (settings.zoom_client_id or "").strip()
-    client_secret = (settings.zoom_client_secret or "").strip()
-    if not client_id or not client_secret:
+    creds = meeting_sdk_credentials_for_attendee(
+        sdk_client_id=settings.zoom_sdk_client_id,
+        sdk_client_secret=settings.zoom_sdk_client_secret,
+        s2s_client_id=settings.zoom_client_id,
+    )
+    if not creds:
         print(
-            "[attendee] WARN: NAVIGATOR_ZOOM_CLIENT_ID/SECRET unset — "
-            "Attendee cannot join Zoom until project credentials are saved",
+            "[attendee] WARN: NAVIGATOR_ZOOM_SDK_CLIENT_ID/SECRET unset or "
+            "same as S2S NAVIGATOR_ZOOM_CLIENT_ID — Attendee cannot join Zoom "
+            "until a General App (Meeting SDK on) is saved",
             flush=True,
         )
         return False
+    client_id, client_secret = creds
 
     compose_dir = compose_dir or _compose_dir()
     if not compose_dir.is_dir() or _in_pytest():
@@ -216,7 +275,7 @@ def ensure_attendee_zoom_credentials(
         )
         return False
 
-    print("[attendee] synced Zoom OAuth creds into Attendee project", flush=True)
+    print("[attendee] synced Zoom Meeting SDK creds into Attendee project", flush=True)
     return True
 
 

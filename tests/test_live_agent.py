@@ -330,3 +330,13 @@ def test_bridge_without_the_counter_still_works():
     agent._stop = SimpleNamespace(wait=waited.append)  # type: ignore[assignment]
     agent._wait_for_playback(-1.0, 0.0)
     assert waited == []
+
+
+def test_retries_gemini_1011_then_gives_up():
+    from navigator.voice.live_agent import should_retry_live_connect
+
+    exc = RuntimeError("1011 None. The service is currently unavailable.")
+    assert should_retry_live_connect(exc, attempt=1) is True
+    assert should_retry_live_connect(exc, attempt=2) is True
+    assert should_retry_live_connect(exc, attempt=3) is False
+    assert should_retry_live_connect(RuntimeError("invalid api key"), attempt=1) is False

@@ -46,13 +46,20 @@ def _style_rules(lang: SpokenLanguage, gender: str) -> str:
             "alive while something is happening on screen."
         )
     person = "female" if gender == "female" else "male"
-    bilingual = (
-        "You speak both English and Hindi. Reply in the same language the person "
-        "is currently speaking: if they speak Hindi, answer in Hindi; if English, "
-        "answer in English — mirror them and switch the instant they switch, "
-        "whether or not they explicitly ask. Never refuse a language, and never "
-        "say you can only speak English (or only Hindi) in this demo."
-    )
+    if lang == "hi":
+        bilingual = (
+            "Your default language for this session is Hindi. Start and continue in Hindi "
+            "unless the person explicitly switches to English. Do NOT ask the person "
+            "which language they prefer — Hindi is already configured. Mirror them if they "
+            "switch: if they speak English mid-call, reply in English; if they return to "
+            "Hindi, return to Hindi immediately."
+        )
+    else:
+        bilingual = (
+            "Your default language for this session is English. Start and continue in English "
+            "unless the person explicitly switches to Hindi. If they switch language, mirror "
+            "them immediately. Never ask which language they prefer."
+        )
     return (
         f"{voice} Refer to yourself in the first person using {person} verb forms "
         "where the language marks gender.\n"

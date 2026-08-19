@@ -116,6 +116,14 @@ class LiveAgent:
         self._turn_done = threading.Event()
         self._turn_done.set()
         self._thread: threading.Thread | None = None
+        # Barge-in debounce: ignore duplicate interrupted events within cooldown window.
+        self._last_interrupt_time: float = 0.0
+        self._interrupt_cooldown_s: float = 1.5  # ponytail: tunable; raise if still choppy
+        # Metrics
+        self.barge_in_detected: int = 0
+        self.barge_in_confirmed: int = 0
+        self.barge_in_rejected_cooldown: int = 0
+        self.audio_flush_count: int = 0
 
     # ---- lifecycle ----------------------------------------------------
 
@@ -451,13 +459,28 @@ class LiveAgent:
         sc = getattr(msg, "server_content", None)
 
         if sc is not None and getattr(sc, "interrupted", False):
+            import time as _time
+            self.barge_in_detected += 1
             if self.director_only:
                 # Meet mixed our own TTS back in. Stay on the scripted line.
                 return
+            now = _time.monotonic()
+            elapsed = now - self._last_interrupt_time
+            if elapsed < self._interrupt_cooldown_s:
+                # Duplicate interrupt within cooldown window — drop it.
+                self.barge_in_rejected_cooldown += 1
+                print(
+                    f"[live] barge-in suppressed (cooldown {elapsed:.2f}s < {self._interrupt_cooldown_s}s)",
+                    flush=True,
+                )
+                return
+            self._last_interrupt_time = now
+            self.barge_in_confirmed += 1
             # The model stopped generating because a human spoke. Anything
             # still queued downstream is now stale and must not play.
             self.interrupted = True
             self.speaking = False
+            self.audio_flush_count += 1
             self.bridge.flush_bot_output()
             self._turn_done.set()
             self._emit(LiveEvent(kind="interrupted"))

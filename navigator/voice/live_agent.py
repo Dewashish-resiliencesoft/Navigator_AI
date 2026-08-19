@@ -43,7 +43,7 @@ INPUT_SAMPLE_RATE = 16_000
 MAX_DRAIN_S = 10.0
 LIVE_CONNECT_ATTEMPTS = 3
 
-SayMode = Literal["verbatim", "natural"]
+SayMode = Literal["verbatim", "natural", "acknowledge", "result", "error"]
 
 
 def should_retry_live_connect(
@@ -101,7 +101,9 @@ class LiveAgent:
         self.listen_only = False
         #: Playlist walkthrough: do not feed Meet mic into Live (self-echo)
         #: and ignore VAD barge-in. Director say()/nudge() still speak.
-        self.director_only = False
+        #: Start in director_only=True — the demo script controls all speech
+        #: until intake is done. Only set to False when real Q&A begins.
+        self.director_only = True
 
         self._cmds: queue.Queue[_Cmd] = queue.Queue()
         self._heard: queue.Queue[str] = queue.Queue()
@@ -199,10 +201,24 @@ class LiveAgent:
             self._cmds.put(_Cmd(kind="context", text=text))
 
     def accept_inbound(self) -> bool:
-        """Meet mix includes our own voice — mute mic while we are speaking."""
+        """Meet mix includes our own voice — mute mic while we are speaking.
+
+        Block inbound audio when:
+        - director_only: scripted intake/walkthrough, Live must not self-generate
+        - speaking: model is producing audio (self-echo guard)
+        - cmd queue non-empty: a say() was queued but model hasn't started yet
+          (race guard — prevents bot audio echoing back before first audio frame)
+        """
         if self.director_only:
             return False
-        return not self.speaking
+        if self.speaking:
+            return False
+        # If there is a pending say/nudge command that hasn't been sent to the
+        # model yet, the model will start generating shortly; block the echo
+        # window now rather than after the first audio packet arrives.
+        if not self._cmds.empty():
+            return False
+        return True
 
     def _is_self_echo(self, heard: str) -> bool:
         if not (heard or "").strip() or not (self.last_spoken or "").strip():
@@ -531,12 +547,29 @@ def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
             f"[Say this brief working ack aloud once{lang_hint}, then stop. Do not "
             f"elaborate or narrate what you are doing] {cmd.text}"
         )
+    if cmd.mode == "acknowledge":
+        return (
+            f"[Say a short natural acknowledgement{lang_hint} that you understood "
+            f"and are working on it. Use the following as the intent, not word-for-word: "
+            f"{cmd.text}. One sentence only, then stop.]"
+        )
+    if cmd.mode == "result":
+        return (
+            f"[Deliver the following result to the person{lang_hint}, conversationally, "
+            f"then stop. Do not add follow-up questions.] {cmd.text}"
+        )
+    if cmd.mode == "error":
+        return (
+            f"[Say the following recovery message{lang_hint}, naturally, then stop. "
+            f"Do not reveal technical details.] {cmd.text}"
+        )
     if cmd.mode == "natural":
         return (
-            f"[Say the following to the person now{lang_hint}, in your own words, "
-            f"in one or two sentences, then stop] {cmd.text}"
+            f"[Say the following to the person{lang_hint}, naturally and conversationally, "
+            f"then stop. Do not add extra commentary or questions after.] {cmd.text}"
         )
+    # verbatim — used only for intake questions where rephrasing would change meaning
     return (
-        f"[Say the following to the person now{lang_hint}, word for word, then stop] "
+        f"[Say the following to the person now{lang_hint}, exactly as written, then stop] "
         f"{cmd.text}"
     )

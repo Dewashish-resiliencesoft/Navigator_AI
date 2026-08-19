@@ -40,16 +40,18 @@ def _last_user_text(state: CallState) -> str:
     return ""
 
 
-def _say_mode(deps: CallDeps, line: str) -> str:
-    """Client-authored copy is spoken verbatim; anything we generated may flex.
+def _say_mode(deps: CallDeps, line: str) -> str:  # noqa: ARG001
+    """Demo narration always uses natural mode.
 
-    Narration written into the site graph is the Client's own wording and often
-    contractual, so it goes out word for word. Lines PLANNING phrased at runtime
-    are already ours, so letting Live deliver them naturally costs nothing.
+    Gemini Live's "word for word" verbatim instruction overrides the model's
+    prosody and produces robotic, choppy, monotone delivery. Natural mode lets
+    the model phrase the authored text with correct intonation, pauses, and
+    rhythm while still delivering the same content.
+
+    Intake Q&A uses "verbatim" separately (intake._say) to prevent the model
+    from rephrasing intake questions into answers — that path is unaffected.
     """
-    if deps.graph is None:
-        return "verbatim"
-    return "verbatim" if (line or "").strip() in _authored_lines(deps.graph) else "natural"
+    return "natural"
 
 
 def _ensure_frame_fresh(deps: CallDeps, last_hits: int | None) -> int | None:

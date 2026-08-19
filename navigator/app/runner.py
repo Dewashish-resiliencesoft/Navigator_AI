@@ -454,20 +454,23 @@ class DemoRunner:
         from navigator.app.registry import ProductNotFound, Registry
         from navigator.core.settings import settings
 
+        from navigator.core.role_models import resolved_runtime_models
+
         try:
             with Registry(settings.db_path) as reg:
                 p = reg.get(product_id)
                 agent_settings = reg.get_agent_settings(product_id)
+                models = resolved_runtime_models(agent_settings)
                 cfg = BrainConfig.from_settings(
                     autonomy_mode=getattr(p, "autonomy_mode", None) or "guided",
                     tier2_legacy=bool(p.tier2_enabled),
-                    planning_model=getattr(agent_settings, "brain_planning_model", "") or None,
-                    phrasing_model=getattr(agent_settings, "brain_phrasing_model", "") or None,
-                    classify_model=getattr(agent_settings, "brain_classify_model", "") or None,
-                    stt_model=getattr(agent_settings, "brain_stt_model", "") or None,
-                    vision_text_model=getattr(agent_settings, "brain_vision_text_model", "") or None,
-                    vision_image_model=getattr(agent_settings, "brain_vision_image_model", "") or None,
-                    reasoning_model=getattr(agent_settings, "brain_reasoning_model", "") or None,
+                    planning_model=models["brain_planning_model"] or None,
+                    phrasing_model=models["brain_phrasing_model"] or None,
+                    classify_model=models["brain_classify_model"] or None,
+                    stt_model=models["brain_stt_model"] or None,
+                    vision_text_model=models["brain_vision_text_model"] or None,
+                    vision_image_model=models["brain_vision_image_model"] or None,
+                    reasoning_model=models["brain_reasoning_model"] or None,
                 )
                 return {
                     "tier2_enabled": cfg.tier2_enabled,

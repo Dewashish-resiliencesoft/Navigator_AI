@@ -57,8 +57,12 @@ def test_agent_settings_defaults_and_patch(tmp_path):
         body = got.json()
         assert body["default_language"] == "en"
         assert body["agent_gender"] == "female"
+        assert body["role_brain_provider"] == "gemini"
+        assert body["role_hands_provider"] == "groq"
         assert body["extra_languages"] == ["hi"]
         assert body["has_gemini_api_key"] is False
+        assert body.get("has_openai_api_key") is False
+        assert body.get("has_anthropic_api_key") is False
         assert "tts_provider" not in body
         assert "has_fish_api_key" not in body
 

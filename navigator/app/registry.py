@@ -480,7 +480,7 @@ class Registry:
         for key in data:
             if key in patch:
                 data[key] = patch[key]
-        merged = AgentSettings.model_validate(data)
+        merged = AgentSettings.model_validate(data).with_role_defaults()
         self._conn.execute(
             "UPDATE products SET agent_settings_json = ? WHERE product_id = ?",
             (merged.model_dump_json(), product_id),

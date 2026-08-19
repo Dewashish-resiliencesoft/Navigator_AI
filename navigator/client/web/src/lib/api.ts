@@ -13,6 +13,12 @@ export type AutonomyMode = "guided" | "adaptive" | "explorer";
 export type SpokenLanguage = "en" | "hi";
 export type AgentGender = "female" | "male";
 
+export type ProviderModel = {
+  id: string;
+  label: string;
+  tags: string[];
+};
+
 export type AgentSettings = {
   default_language: SpokenLanguage;
   extra_languages: SpokenLanguage[];
@@ -28,8 +34,23 @@ export type AgentSettings = {
   brain_stt_model: string;
   brain_vision_text_model: string;
   brain_vision_image_model: string;
+  role_brain_provider: string;
+  role_brain_model: string;
+  role_listening_provider: string;
+  role_listening_model: string;
+  role_speaking_provider: string;
+  role_speaking_model: string;
+  role_hands_provider: string;
+  role_hands_model: string;
   has_gemini_api_key: boolean;
   has_groq_api_key: boolean;
+  has_openai_api_key: boolean;
+  has_anthropic_api_key: boolean;
+  has_openrouter_api_key: boolean;
+  has_huggingface_api_key: boolean;
+  ollama_base_url: string;
+  vllm_base_url: string;
+  llamacpp_base_url: string;
   updated_at: string | null;
 };
 
@@ -642,13 +663,55 @@ export const api = {
   putAgentProviderKeys: (body: {
     gemini_api_key?: string | null;
     groq_api_key?: string | null;
+    openai_api_key?: string | null;
+    anthropic_api_key?: string | null;
+    openrouter_api_key?: string | null;
+    huggingface_api_key?: string | null;
   }) =>
     send<{
       ok: boolean;
       has_gemini_api_key: boolean;
       has_groq_api_key: boolean;
+      has_openai_api_key: boolean;
+      has_anthropic_api_key: boolean;
+      has_openrouter_api_key: boolean;
+      has_huggingface_api_key: boolean;
       updated_at: string | null;
     }>("/client/api/agent-provider-keys", "PUT", body),
+  getAgentProviderModels: (
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface"
+  ) =>
+    get<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      `/client/api/agent-provider-models?provider=${provider}`,
+    ),
+  previewAgentProviderModels: (body: {
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface";
+    api_key?: string;
+    base_url?: string;
+  }) =>
+    send<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      "/client/api/agent-provider-models",
+      "POST",
+      body,
+    ),
 
   getSiteGraph: () =>
     get<{

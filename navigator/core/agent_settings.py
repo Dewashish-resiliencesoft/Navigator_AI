@@ -7,8 +7,20 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from navigator.core.settings import settings
+
 SpokenLanguage = Literal["en", "hi"]
 AgentGender = Literal["female", "male"]
+
+# Default runtime roles — Gemini Live audio, Gemini Flash brain, Groq hands.
+DEFAULT_ROLE_BRAIN_PROVIDER = "gemini"
+DEFAULT_ROLE_BRAIN_MODEL = settings.brain_reasoning_model
+DEFAULT_ROLE_LISTENING_PROVIDER = "gemini"
+DEFAULT_ROLE_LISTENING_MODEL = settings.live_conversational_model
+DEFAULT_ROLE_SPEAKING_PROVIDER = "gemini"
+DEFAULT_ROLE_SPEAKING_MODEL = settings.live_conversational_model
+DEFAULT_ROLE_HANDS_PROVIDER = "groq"
+DEFAULT_ROLE_HANDS_MODEL = settings.brain_planning_model
 
 DEFAULT_AGENT_SETTINGS: dict[str, object] = {
     "default_language": "en",
@@ -26,6 +38,18 @@ DEFAULT_AGENT_SETTINGS: dict[str, object] = {
     "brain_stt_model": "",
     "brain_vision_text_model": "",
     "brain_vision_image_model": "",
+    "role_brain_provider": DEFAULT_ROLE_BRAIN_PROVIDER,
+    "role_brain_model": DEFAULT_ROLE_BRAIN_MODEL,
+    "role_listening_provider": DEFAULT_ROLE_LISTENING_PROVIDER,
+    "role_listening_model": DEFAULT_ROLE_LISTENING_MODEL,
+    "role_speaking_provider": DEFAULT_ROLE_SPEAKING_PROVIDER,
+    "role_speaking_model": DEFAULT_ROLE_SPEAKING_MODEL,
+    "role_hands_provider": DEFAULT_ROLE_HANDS_PROVIDER,
+    "role_hands_model": DEFAULT_ROLE_HANDS_MODEL,
+    # Local provider endpoints (not secrets). Empty = unconfigured.
+    "ollama_base_url": "",
+    "vllm_base_url": "",
+    "llamacpp_base_url": "",
 }
 
 GEMINI_VOICE_BY_GENDER: dict[AgentGender, str] = {
@@ -57,6 +81,24 @@ class AgentSettings(BaseModel):
     brain_vision_text_model: str = ""
     #: Gemini vision image model id override. "" = default.
     brain_vision_image_model: str = ""
+    #: Main reasoning brain — provider id (gemini|groq|openai|anthropic).
+    role_brain_provider: str = ""
+    role_brain_model: str = ""
+    #: Ears / STT — what hears the visitor.
+    role_listening_provider: str = ""
+    role_listening_model: str = ""
+    #: Voice / TTS — what speaks in the meeting.
+    role_speaking_provider: str = ""
+    role_speaking_model: str = ""
+    #: Hands — plans browser actions after brain updates.
+    role_hands_provider: str = ""
+    role_hands_model: str = ""
+
+    #: Local provider endpoints. Used when role provider is `ollama` / `vllm` /
+    #: `llamacpp`.
+    ollama_base_url: str = ""
+    vllm_base_url: str = ""
+    llamacpp_base_url: str = ""
 
     @field_validator("extra_languages", mode="before")
     @classmethod
@@ -84,6 +126,29 @@ class AgentSettings(BaseModel):
             return custom
         return GEMINI_VOICE_BY_GENDER.get(self.agent_gender, "Sulafat")
 
+    def with_role_defaults(self) -> AgentSettings:
+        """Fill blank role picks with platform defaults (Gemini Live / Flash / Groq)."""
+        patch: dict[str, str] = {}
+        if not (self.role_brain_provider or "").strip():
+            patch["role_brain_provider"] = DEFAULT_ROLE_BRAIN_PROVIDER
+        if not (self.role_brain_model or "").strip():
+            patch["role_brain_model"] = DEFAULT_ROLE_BRAIN_MODEL
+        if not (self.role_listening_provider or "").strip():
+            patch["role_listening_provider"] = DEFAULT_ROLE_LISTENING_PROVIDER
+        if not (self.role_listening_model or "").strip():
+            patch["role_listening_model"] = DEFAULT_ROLE_LISTENING_MODEL
+        if not (self.role_speaking_provider or "").strip():
+            patch["role_speaking_provider"] = DEFAULT_ROLE_SPEAKING_PROVIDER
+        if not (self.role_speaking_model or "").strip():
+            patch["role_speaking_model"] = DEFAULT_ROLE_SPEAKING_MODEL
+        if not (self.role_hands_provider or "").strip():
+            patch["role_hands_provider"] = DEFAULT_ROLE_HANDS_PROVIDER
+        if not (self.role_hands_model or "").strip():
+            patch["role_hands_model"] = DEFAULT_ROLE_HANDS_MODEL
+        if patch:
+            return self.model_copy(update=patch)
+        return self
+
 
 def merge_agent_settings(raw: str | None) -> AgentSettings:
     data: dict[str, object] = dict(DEFAULT_AGENT_SETTINGS)
@@ -96,4 +161,4 @@ def merge_agent_settings(raw: str | None) -> AgentSettings:
             for key in DEFAULT_AGENT_SETTINGS:
                 if key in parsed:
                     data[key] = parsed[key]
-    return AgentSettings.model_validate(data)
+    return AgentSettings.model_validate(data).with_role_defaults()

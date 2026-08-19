@@ -540,6 +540,8 @@ def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
     out = {
         "gemini": settings.gemini_api_key or "",
         "groq": settings.groq_api_key or "",
+        "openai": settings.openai_api_key or "",
+        "anthropic": "",
     }
     if not product_id:
         return out
@@ -680,6 +682,10 @@ def run_live_meet_demo(
             agent_settings = merge_agent_settings(None)
     elif agent_settings is None:
         agent_settings = merge_agent_settings(None)
+
+    from navigator.core.role_models import resolved_runtime_models
+
+    runtime_models = resolved_runtime_models(agent_settings)
 
     provider_keys = _resolve_provider_keys(product_id)
     if product_id:
@@ -980,7 +986,7 @@ def run_live_meet_demo(
                 agent_gender=agent_settings.agent_gender,
                 heard_sink=pending_barge_in,
                 voice_name=agent_settings.effective_gemini_voice(),
-                live_conversational_model=getattr(agent_settings, "live_conversational_model", "") or "",
+                live_conversational_model=runtime_models["live_conversational_model"] or "",
             )
             if early_live is None:
                 raise LiveDemoStopped(
@@ -1440,7 +1446,7 @@ def run_live_meet_demo(
                     agent_gender=agent_settings.agent_gender,
                     heard_sink=pending_barge_in,
                     voice_name=agent_settings.effective_gemini_voice(),
-                    live_conversational_model=getattr(agent_settings, "live_conversational_model", "") or "",
+                    live_conversational_model=runtime_models["live_conversational_model"] or "",
                 )
                 if live_agent is None:
                     raise LiveDemoStopped(

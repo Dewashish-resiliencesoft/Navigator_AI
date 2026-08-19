@@ -1099,11 +1099,34 @@ class AgentSettingsBody(BaseModel):
     brain_stt_model: str | None = None
     brain_vision_text_model: str | None = None
     brain_vision_image_model: str | None = None
+    role_brain_provider: str | None = None
+    role_brain_model: str | None = None
+    role_listening_provider: str | None = None
+    role_listening_model: str | None = None
+    role_speaking_provider: str | None = None
+    role_speaking_model: str | None = None
+    role_hands_provider: str | None = None
+    role_hands_model: str | None = None
+    ollama_base_url: str | None = None
+    vllm_base_url: str | None = None
+    llamacpp_base_url: str | None = None
 
 
 class AgentProviderKeysBody(BaseModel):
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
+    openai_api_key: str | None = None
+    anthropic_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    huggingface_api_key: str | None = None
+
+
+class ProviderModelsBody(BaseModel):
+    provider: str = Field(
+        pattern="^(gemini|groq|openai|anthropic|ollama|vllm|llamacpp|openrouter|huggingface)$"
+    )
+    api_key: str | None = None
+    base_url: str | None = None
 
 
 class ProductLoginBody(BaseModel):
@@ -1234,12 +1257,100 @@ def client_put_agent_provider_keys(
             product.product_id,
             gemini_api_key=body.gemini_api_key,
             groq_api_key=body.groq_api_key,
+            openai_api_key=body.openai_api_key,
+            anthropic_api_key=body.anthropic_api_key,
+            openrouter_api_key=body.openrouter_api_key,
+            huggingface_api_key=body.huggingface_api_key,
         )
     except VaultNotConfigured as exc:
         raise HTTPException(503, str(exc)) from None
     except CredentialVaultError as exc:
         raise HTTPException(422, str(exc)) from None
     return {"ok": True, **vault.provider_keys_public(product.product_id)}
+
+
+def _provider_models_for(
+    product_id: str,
+    provider: str,
+    *,
+    vault: Vault,
+    api_key: str | None,
+    base_url: str | None = None,
+) -> dict:
+    from navigator.client.provider_models import list_provider_models
+
+    kind = provider.strip().lower()
+    if kind not in {
+        "gemini",
+        "groq",
+        "openai",
+        "anthropic",
+        "ollama",
+        "vllm",
+        "llamacpp",
+        "openrouter",
+        "huggingface",
+    }:
+        raise HTTPException(422, "unsupported provider")
+
+    key = (api_key or "").strip()
+    resolved_base_url = (base_url or "").strip()
+    needs_vault_key = kind in {"gemini", "groq", "openai", "anthropic", "openrouter", "huggingface"}
+
+    if needs_vault_key and not key:
+        key = vault.provider_key(product_id, kind) or ""
+
+    if kind in {"ollama", "vllm", "llamacpp"} and not resolved_base_url:
+        from navigator.app.registry import Registry
+        with Registry(settings.db_path) as reg:
+            agent_settings = reg.get_agent_settings(product_id)
+        if kind == "ollama":
+            resolved_base_url = (agent_settings.ollama_base_url or "").strip()
+        elif kind == "vllm":
+            resolved_base_url = (agent_settings.vllm_base_url or "").strip()
+        else:
+            resolved_base_url = (agent_settings.llamacpp_base_url or "").strip()
+
+    if kind in {"gemini", "groq", "openai", "anthropic", "openrouter", "huggingface"} and not key:
+        raise HTTPException(400, f"No {kind} API key saved — connect or paste a key first")
+
+    if kind in {"ollama", "vllm", "llamacpp"} and not resolved_base_url:
+        raise HTTPException(400, f"No {kind} base URL saved — paste one in Settings first")
+
+    try:
+        models = list_provider_models(kind, key, base_url=resolved_base_url)  # type: ignore[arg-type]
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(502, f"Could not list {kind} models: {exc}") from None
+    return {"ok": True, "provider": kind, "models": models}
+
+
+@app.get("/client/api/agent-provider-models")
+def client_get_agent_provider_models(
+    product: DashboardAuthedProduct,
+    vault: Vault,
+    provider: str = Query(
+        ...,
+        pattern="^(gemini|groq|openai|anthropic|ollama|vllm|llamacpp|openrouter|huggingface)$",
+    ),
+) -> dict:
+    return _provider_models_for(
+        product.product_id, provider, vault=vault, api_key=None, base_url=None
+    )
+
+
+@app.post("/client/api/agent-provider-models")
+def client_post_agent_provider_models(
+    product: DashboardAuthedProduct, body: ProviderModelsBody, vault: Vault
+) -> dict:
+    return _provider_models_for(
+        product.product_id,
+        body.provider,
+        vault=vault,
+        api_key=body.api_key,
+        base_url=body.base_url,
+    )
 
 
 # Dashboard polls these every few seconds. Freshness within ~12s is enough;

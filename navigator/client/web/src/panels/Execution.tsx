@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, ShieldAlert, Trash2, X } from "lucide-react";
 import { parse, stringify } from "yaml";
-import { api, type Flow } from "../lib/api";
+import { api, type Flow, type PendingCorrection } from "../lib/api";
 import { useExploreSession } from "../lib/exploreSession";
 import { useProductData } from "../lib/productData";
 import { errText, useUi } from "../store";
@@ -213,13 +213,18 @@ export function Execution() {
   const [revision, setRevision] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [corrections, setCorrections] = useState<PendingCorrection[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const g = await api.getSiteGraph();
+      const [g, rows] = await Promise.all([
+        api.getSiteGraph(),
+        api.listPendingCorrections().catch(() => [] as PendingCorrection[]),
+      ]);
       setYaml(g.yaml);
       setRevision(g.revision);
+      setCorrections(rows);
     } catch (e) {
       err(errText(e));
     } finally {
@@ -303,6 +308,64 @@ export function Execution() {
           Start explore from Flows — scope travels with the session automatically.
         </p>
       </Card>
+
+      {corrections.length > 0 && (
+        <Card>
+          <CardTitle hint="Agent self-corrections from explore and live-demo failures. Approve before they change how the agent demos.">
+            Pending corrections ({corrections.length})
+          </CardTitle>
+          <ul className="mt-2 space-y-3">
+            {corrections.map((row) => (
+              <li
+                key={row.id}
+                className="rounded-lg border px-3 py-2.5"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <p className="text-[0.85rem] leading-snug">{row.rule}</p>
+                <p className="mt-1 font-mono text-[0.68rem] text-[var(--muted)]">
+                  {row.page} · {row.tool_call_type}
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await api.approveCorrection(row.id);
+                        setCorrections((c) => c.filter((r) => r.id !== row.id));
+                        ok("Correction approved — used on the next demo.");
+                      } catch (e) {
+                        err(errText(e));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    <Check size={14} /> Approve
+                  </Button>
+                  <Button
+                    variant="danger"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        await api.rejectCorrection(row.id);
+                        setCorrections((c) => c.filter((r) => r.id !== row.id));
+                      } catch (e) {
+                        err(errText(e));
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    <Trash2 size={14} /> Reject
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
 
       <Card>
         <CardTitle

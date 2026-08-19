@@ -1,63 +1,74 @@
 """Gemini Live realtime interface adapter.
 
-Owns the boundary between the orchestrator/Live; exposes:
-  - acknowledge()       → immediate natural ack while Flash starts
-  - push_dom_context()  → compact page context (NOT raw DOM)
-  - push_world_state()  → lightweight world-state JSON for Live context
-  - nudge_progress()    → forward a task-progress hint for Live to narrate
-  - is_available()      → guard
+Speech semantics
+─────────────────
+acknowledge(hint)   → immediate "I'm on it" ack — fired BEFORE Flash starts.
+                      Gemini Live dynamically rephrases the hint naturally.
+                      Keep hints short (≤ 10 words).
+
+speak_result(text)  → deliver the completed task result / narration.
+                      Called AFTER verification confirms success.
+                      Never claim completion before verification.
+
+speak_error(text)   → recovery or failure message.
+                      Used for retries and unrecoverable failures.
+
+push_world_state()  → lightweight JSON nudge so Live has current page context.
+push_dom_context()  → full DOM snapshot (for Flash; Live gets the lightweight path).
+
+Do NOT call acknowledge() to deliver results.
+Do NOT call speak_result() before the task is verified.
 """
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from navigator.agent_runtime.dom.builder import build_dom_state
 
 
 class LiveAdapter:
-    """Push compact context into Live; route acks and progress hints."""
+    """Pushes context and speech cues to the Gemini Live session."""
 
     def __init__(self, live_agent: Any) -> None:
         self._live = live_agent
 
-    # ---- speaking -------------------------------------------------------
+    # ── speech paths ──────────────────────────────────────────────────────
 
-    def acknowledge(self, task_hint: str) -> None:
-        """Emit an immediate natural acknowledgement without hardcoded phrasing.
-
-        ``task_hint`` is the user's goal — Live generates the words from it.
-        Never called after the task is completed; this is the *immediate* ack.
-        """
-        if not self.is_available():
+    def acknowledge(self, hint: str) -> None:
+        """Short "I'm working on it" — emitted immediately, before Flash starts."""
+        if self._live is None:
             return
-        nudge = getattr(self._live, "nudge", None)
-        if callable(nudge):
-            nudge(
-                f"The user just asked: '{task_hint}'. "
-                "Give ONE brief, natural acknowledgement that you're on it, then go quiet. "
-                "Do NOT claim it is done."
-            )
+        say = getattr(self._live, "say", None)
+        if callable(say):
+            say(hint, mode="acknowledge")
 
-    def nudge_progress(self, context_hint: str) -> None:
-        """Forward an orchestrator progress hint; Live decides whether to speak."""
-        if not self.is_available():
+    def speak_result(self, text: str) -> None:
+        """Deliver task result or step narration — only after verification."""
+        if self._live is None:
             return
-        nudge = getattr(self._live, "nudge", None)
-        if callable(nudge):
-            nudge(context_hint)
+        say = getattr(self._live, "say", None)
+        if callable(say):
+            say(text, mode="result")
 
-    # ---- context --------------------------------------------------------
+    def speak_error(self, text: str) -> None:
+        """Recovery or failure message — keep technical details out of this text."""
+        if self._live is None:
+            return
+        say = getattr(self._live, "say", None)
+        if callable(say):
+            say(text, mode="error")
+
+    # ── context / state nudges ────────────────────────────────────────────
 
     def push_dom_context(self, page: Any, *, page_id: str) -> None:
-        """Push compact page context (not raw DOM) for Live awareness."""
-        if not self.is_available():
+        """Full DOM snapshot for Flash reasoning (not for Live voice path)."""
+        if self._live is None:
             return
         ctx = build_dom_state(page, page_id=page_id, detailed=False)
-        add_ctx = getattr(self._live, "add_context", None)
-        if callable(add_ctx):
-            add_ctx(f"[Page context — do not read aloud] {ctx}")
+        nudge = getattr(self._live, "nudge", None)
+        if callable(nudge):
+            nudge(f"Current page context: {ctx}")
 
     def push_world_state(
         self,
@@ -68,30 +79,38 @@ class LiveAdapter:
         task_goal: str = "",
         browser_ready: bool = True,
     ) -> None:
-        """Push a lightweight world-state snapshot to Live.
+        """Push a compact one-line world-state hint so Live has current context.
 
-        Live uses this to give contextually appropriate responses.
-        The full DOM/screenshot/history stay with Flash.
+        Intentionally lightweight — Live gets page identity and task status,
+        not full DOM.  Flash gets full DOM when it needs to plan.
         """
-        if not self.is_available():
+        if self._live is None:
             return
-        payload = {
-            "page": page,
-            "url": url,
-            "task": {"status": task_status, "goal": task_goal},
-            "browser": {"ready": browser_ready},
-        }
-        add_ctx = getattr(self._live, "add_context", None)
-        if callable(add_ctx):
-            add_ctx(f"[World state — do not read aloud] {json.dumps(payload)}")
+        parts: list[str] = []
+        if page:
+            parts.append(f"page={page}")
+        if url:
+            parts.append(f"url={url}")
+        if task_status:
+            parts.append(f"task={task_status}")
+        if task_goal:
+            parts.append(f"goal={task_goal[:60]}")
+        if not browser_ready:
+            parts.append("browser=loading")
+        line = " | ".join(parts) if parts else "ready"
+        nudge = getattr(self._live, "nudge", None)
+        if callable(nudge):
+            nudge(f"[state] {line}")
 
     def push_state_context(self, context_line: str) -> None:
-        """Inject a single-line agent-state hint."""
-        if not self.is_available():
+        """Single-line realtime-state hint (LISTENING/WORKING/etc.)."""
+        if self._live is None:
             return
-        add_ctx = getattr(self._live, "add_context", None)
-        if callable(add_ctx):
-            add_ctx(context_line)
+        nudge = getattr(self._live, "nudge", None)
+        if callable(nudge):
+            nudge(f"[agent] {context_line}")
+
+    # ── availability ──────────────────────────────────────────────────────
 
     def is_available(self) -> bool:
         return self._live is not None

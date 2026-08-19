@@ -1,10 +1,17 @@
 """Wire AgentOrchestrator into live demo + LangGraph CallDeps.
 
-on_live_heard() is the seam between Gemini Live and the orchestrator.
-It applies the 3-way router (BACKCHANNEL / ANSWER / TASK_HANDOFF),
-emits an immediate natural ack for complex tasks, and delegates async.
+There is ONE canonical path for a heard user utterance:
 
-Groq is NOT on this synchronous path.
+    LiveAgent transcript
+        ↓
+    on_live_heard()
+        ↓
+    orchestrator.handle_utterance()  ← routing + state update + dispatch
+        ↓
+    BACKCHANNEL / ANSWER / TASK_HANDOFF
+
+Do NOT duplicate routing logic in live_demo.py or LiveAgent.
+Do NOT feed bot/echo back through this path — callers must filter first.
 """
 
 from __future__ import annotations
@@ -14,9 +21,12 @@ from uuid import UUID
 
 from navigator.agent_runtime.models import AgentSession
 from navigator.agent_runtime.orchestrator import AgentOrchestrator
-from navigator.agent_runtime.planning.router import RouteDecision, classify_utterance
-from navigator.agent_runtime.realtime_state import RealtimeController, RealtimeState
-from navigator.agent_runtime.backchannel import BackchannelController
+from navigator.agent_runtime.planning.router import (
+    ROUTE_BACKCHANNEL,
+    ROUTE_ANSWER,
+    ROUTE_TASK_HANDOFF,
+    RouteDecision,
+)
 from navigator.core.settings import settings
 
 
@@ -55,54 +65,21 @@ def attach_to_deps(deps: Any, orchestrator: AgentOrchestrator | None) -> None:
     deps.orchestrator = orchestrator  # type: ignore[attr-defined]
 
 
-def on_live_heard(
-    deps: Any,
-    text: str,
-    *,
-    rt_controller: RealtimeController | None = None,
-    backchannel_ctl: BackchannelController | None = None,
-) -> RouteDecision:
-    """Route one user utterance through the 3-way classifier.
+def on_live_heard(deps: Any, text: str) -> RouteDecision | None:
+    """Canonical entry point for a heard user utterance.
 
-    Returns the RouteDecision so the caller knows what happened.
-    Side effects:
-      - BACKCHANNEL: rate-limited nudge via backchannel_ctl (optional)
-      - ANSWER: Live handles it; no orchestrator call
-      - TASK_HANDOFF: immediate ack + async delegation to orchestrator
+    Returns the RouteDecision so callers can introspect the route if needed.
+    Returns None when the orchestrator is not enabled.
+
+    Route semantics:
+    ─────────────────
+    BACKCHANNEL   — Live may optionally emit a brief natural ack or stay silent.
+    ANSWER        — Live answers directly; no orchestrator involvement.
+    TASK_HANDOFF  — immediate ack already sent; orchestrator executes async.
     """
-    is_working = rt_controller.is_working if rt_controller else False
-    decision = classify_utterance(text, agent_working=is_working)
+    orch: AgentOrchestrator | None = getattr(deps, "orchestrator", None)
+    if orch is None:
+        return None
 
-    orch = getattr(deps, "orchestrator", None)
-
-    if decision.route == "backchannel":
-        if backchannel_ctl is not None:
-            backchannel_ctl.maybe_backchannel(context_hint=text[:80])
-        if rt_controller:
-            rt_controller.transition(RealtimeState.BACKCHANNELING)
-        return decision
-
-    if decision.route == "answer":
-        if rt_controller:
-            rt_controller.transition(RealtimeState.RESPONDING)
-        # Live answers from its own context — no orchestrator needed
-        return decision
-
-    # TASK_HANDOFF
-    if rt_controller:
-        rt_controller.transition(RealtimeState.DELEGATING, goal=text)
-
-    # Emit immediate natural ack (Live generates wording from hint)
-    live = getattr(deps, "live_agent", None)
-    if live is not None:
-        from navigator.agent_runtime.adapters.live_adapter import LiveAdapter
-        adapter = LiveAdapter(live)
-        adapter.acknowledge(decision.ack_hint or text)
-
-    if orch is not None:
-        if rt_controller:
-            rt_controller.transition(RealtimeState.WORKING, goal=text)
-        orch_decision = orch.handle_utterance(text)
-        _ = orch_decision  # orchestrator runs the task
-
+    decision = orch.handle_utterance(text)
     return decision

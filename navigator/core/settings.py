@@ -118,10 +118,10 @@ class Settings(BaseSettings):
     brain_phrasing_model: str = "llama-3.1-8b-instant"
     brain_classify_model: str = "llama-3.1-8b-instant"
     brain_stt_model: str = "whisper-large-v3-turbo"
-    brain_vision_text_model: str = "gemini-2.0-flash"
-    brain_vision_image_model: str = "gemini-2.0-flash"
-    #: Deep reasoning for agent runtime (Flash). Upgrade to gemini-3.6-flash when available.
-    brain_reasoning_model: str = "gemini-2.0-flash"
+    brain_vision_text_model: str = "gemini-3.6-flash"
+    brain_vision_image_model: str = "gemini-3.6-flash"
+    #: Deep reasoning for agent runtime (Flash).
+    brain_reasoning_model: str = "gemini-3.6-flash"
     #: Interactive agent runtime: Live → Orchestrator → Flash → Playwright.
     agent_runtime_enabled: bool = True
     brain_listen_timeout_s: float = 8.0
@@ -131,9 +131,10 @@ class Settings(BaseSettings):
     #: Seconds after human join before first spoken greet.
     #: Keep low — 3s felt like the bot was stuck before saying hello.
     live_human_settle_s: float = 0.35
-    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier.
-    #: ~200ms is aggressive; mid-sentence pauses can cut a turn early.
-    live_stt_min_silence_ms: int = 200
+    #: VAD end-of-utterance silence for live Meet STT (ms).
+    #: 800ms matches Gemini Live's own VAD — prevents false barge-ins from
+    #: mid-sentence pauses being misread as turn-end.
+    live_stt_min_silence_ms: int = 800
     #: Max wait for Attendee audio websocket before starting demo anyway. Zoom
     #: can delay this until the host grants recording permission.
     live_audio_ws_wait_s: float = 120.0

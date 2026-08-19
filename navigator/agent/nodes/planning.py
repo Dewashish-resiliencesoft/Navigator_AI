@@ -754,9 +754,29 @@ def _decide_live_turn(
     *,
     utterance: str,
 ) -> CallState | None:
-    """Retrieve + confidence bands. None → caller may try turn-brain / handoff."""
+    """Retrieve + confidence bands. None → caller may try turn-brain / handoff.
+
+    Pre-pass: classify via the realtime router first.
+    - BACKCHANNEL → return None immediately (Live already handled it)
+    - ANSWER      → proceed; Live may reply from context (no browser needed)
+    - TASK_HANDOFF → proceed; orchestrator owns execution
+    """
     if getattr(deps, "playlist_only", False):
         return None
+
+    # Realtime pre-classification: skip slow path for pure backchannels
+    try:
+        from navigator.agent_runtime.planning.router import classify_utterance
+        from navigator.agent_runtime.realtime_state import RealtimeController
+
+        rt_ctl = getattr(deps, "_rt_controller", None)
+        is_working = rt_ctl.is_working if isinstance(rt_ctl, RealtimeController) else False
+        rt_decision = classify_utterance(utterance, agent_working=is_working)
+        if rt_decision.route == "backchannel":
+            # Pure filler — Live handles or stays silent; no brain needed
+            return None
+    except Exception:  # noqa: BLE001
+        pass
 
     from navigator.agent.brain_router import route_turn
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { ExternalLink, RefreshCw, Save } from "lucide-react";
 import {
@@ -465,6 +465,7 @@ export function Settings() {
   const epoch = useProductData((s) => s.epoch);
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<AgentSettings | null>(null);
+  const [savingPersona, setSavingPersona] = useState(false);
   const [keyDrafts, setKeyDrafts] = useState<Record<ProviderKind, string>>({
     gemini: "",
     groq: "",
@@ -657,6 +658,12 @@ export function Settings() {
     void load();
   }, [load, epoch]);
 
+  // Skip auto-save on initial load per product epoch.
+  const loadedFromApiRef = useRef(false);
+  useEffect(() => {
+    loadedFromApiRef.current = false;
+  }, [epoch]);
+
   const toggleExtraLang = (lang: SpokenLanguage) => {
     if (!settings) return;
     const has = settings.extra_languages.includes(lang);
@@ -667,8 +674,9 @@ export function Settings() {
   };
 
   const saveSettings = async () => {
-    if (!settings) return;
+    if (!settings || savingPersona) return;
     try {
+      setSavingPersona(true);
       const d = await api.putAgentSettings({
         default_language: settings.default_language,
         extra_languages: settings.extra_languages,
@@ -681,8 +689,36 @@ export function Settings() {
       ok("Agent settings saved.");
     } catch (e) {
       err(errText(e));
+    } finally {
+      setSavingPersona(false);
     }
   };
+
+  // Make persona options dynamic: persist on change (debounced).
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!settings || loading) return;
+    if (!loadedFromApiRef.current) {
+      loadedFromApiRef.current = true;
+      return;
+    }
+    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    autoSaveTimerRef.current = setTimeout(() => {
+      void saveSettings();
+    }, 700);
+    return () => {
+      if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    settings?.default_language,
+    settings?.extra_languages,
+    settings?.agent_gender,
+    settings?.agent_name,
+    settings?.tone,
+    settings?.gemini_voice,
+    loading,
+  ]);
 
   const saveLoginToggle = async (enabled: boolean) => {
     if (!loginUsername.trim()) {

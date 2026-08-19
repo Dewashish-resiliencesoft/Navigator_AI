@@ -81,6 +81,7 @@ def _intake_summary(intake) -> str:
     if intake is None:
         return ""
     bits = []
+    name_val = ""
     for label, attr in (
         ("Name", "name"),
         ("Company", "company"),
@@ -90,7 +91,17 @@ def _intake_summary(intake) -> str:
         val = (getattr(intake, attr, "") or "").strip()
         if val:
             bits.append(f"{label}: {val}")
-    return " | ".join(bits)
+            if attr == "name":
+                name_val = val
+    summary = " | ".join(bits)
+    if name_val:
+        # Pronunciation hint: tell Live to say the name exactly as given,
+        # not shorten, anglicise, or substitute it.
+        summary += (
+            f"\nAddress this person as \"{name_val}\". "
+            "Say the name exactly as written — do not shorten, alter, or anglicise it."
+        )
+    return summary
 
 
 def _start_live_agent(
@@ -104,6 +115,8 @@ def _start_live_agent(
     heard_sink: list[str] | None = None,
     voice_name: str = "",
     live_conversational_model: str = "",
+    rt_ctl_box: list | None = None,
+    lat_box: list | None = None,
 ):
     """Open the bidirectional Live session, or return None (caller stops the demo)."""
     if audio_bridge is None:
@@ -117,34 +130,50 @@ def _start_live_agent(
         print("[live] Live audio needs a Gemini key", flush=True)
         return None
 
+    # Local references so the closure never reaches into undefined outer scope.
+    _rt_box = rt_ctl_box if rt_ctl_box is not None else []
+    _lat_box = lat_box if lat_box is not None else []
+
     def _on_event(event) -> None:
-        _log_live_event(event)
+        try:
+            _log_live_event(event)
+        except Exception:  # noqa: BLE001
+            pass
+
         # PLANNING still routes flows and drives the browser, so it needs to
         # know what the prospect asked. LISTENING drains this list first.
-        text = (event.text or "").strip() if event.kind == "heard" else ""
-        if text and heard_sink is not None:
-            heard_sink.append(text)
+        try:
+            text = (event.text or "").strip() if event.kind == "heard" else ""
+            if text and heard_sink is not None:
+                heard_sink.append(text)
+        except Exception:  # noqa: BLE001
+            text = ""
 
         # Latency: record when Live first hears the user finish speaking
-        if event.kind == "heard" and text and lat_box:
-            from navigator.agent_runtime.latency import USER_SPEECH_END
-            lat_box[0].start(USER_SPEECH_END)
+        try:
+            if event.kind == "heard" and text and _lat_box:
+                from navigator.agent_runtime.latency import USER_SPEECH_END
+                _lat_box[0].start(USER_SPEECH_END)
+        except Exception:  # noqa: BLE001
+            pass
 
         # Switch Live language as soon as we hear the request
-        if text and agent_box:
-            from navigator.voice.language import detect_language_switch
-
-            target = detect_language_switch(text)
-            if target is not None:
-                try:
+        try:
+            if text and agent_box:
+                from navigator.voice.language import detect_language_switch
+                target = detect_language_switch(text)
+                if target is not None:
                     agent_box[0].set_language(target)
-                except Exception:  # noqa: BLE001
-                    pass
+        except Exception:  # noqa: BLE001
+            pass
 
         # Update realtime state on interruption
-        if event.kind == "interrupted" and rt_ctl_box:
-            from navigator.agent_runtime.realtime_state import RealtimeState
-            rt_ctl_box[0].transition(RealtimeState.UNDERSTANDING)
+        try:
+            if event.kind == "interrupted" and _rt_box:
+                from navigator.agent_runtime.realtime_state import RealtimeState
+                _rt_box[0].transition(RealtimeState.UNDERSTANDING)
+        except Exception:  # noqa: BLE001
+            pass
 
     try:
         from navigator.voice.live_agent import LiveAgent, LiveAgentConfig
@@ -768,10 +797,14 @@ def run_live_meet_demo(
             groq_client=groq_byok,
             gemini_client=gemini_byok,
         )
+    # Language: use what the Client configured in Settings, fall back to system default.
+    # If this still shows "en" after setting Hindi in the dashboard, the Settings
+    # auto-save may not have persisted — re-open Settings and confirm the toast.
     spoken_language: str = agent_settings.default_language or settings.default_spoken_language
     print(
-        f"[live] spoken language default={spoken_language!r} "
-        f"(extras={list(agent_settings.extra_languages)})",
+        f"[live] spoken language={spoken_language!r} "
+        f"(from agent_settings.default_language={agent_settings.default_language!r}, "
+        f"extras={list(agent_settings.extra_languages)})",
         flush=True,
     )
     speaker = PrintSpeaker()
@@ -1076,6 +1109,8 @@ def run_live_meet_demo(
                 heard_sink=pending_barge_in,
                 voice_name=agent_settings.effective_gemini_voice(),
                 live_conversational_model=runtime_models["live_conversational_model"] or "",
+                rt_ctl_box=rt_ctl_box,
+                lat_box=lat_box,
             )
             if early_live is None:
                 raise LiveDemoStopped(
@@ -1536,6 +1571,8 @@ def run_live_meet_demo(
                     heard_sink=pending_barge_in,
                     voice_name=agent_settings.effective_gemini_voice(),
                     live_conversational_model=runtime_models["live_conversational_model"] or "",
+                    rt_ctl_box=rt_ctl_box,
+                    lat_box=lat_box,
                 )
                 if live_agent is None:
                     raise LiveDemoStopped(

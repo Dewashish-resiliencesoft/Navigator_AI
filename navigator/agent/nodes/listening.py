@@ -120,6 +120,15 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
             deps.on_user_utterance(utterance)
         except Exception as exc:  # noqa: BLE001
             print(f"[listen] on_user_utterance skipped: {exc}", flush=True)
+    if utterance:
+        from navigator.agent_runtime.bridge import on_live_heard
+
+        if on_live_heard(deps, utterance):
+            return CallState(
+                transcript=[f"user: {utterance}"],
+                user_correction=False,
+                phase=state.get("phase") or "walkthrough",
+            )
     last = _last_entry(state, deps)
     is_correction = False
     if last is not None and _want_classify(deps):

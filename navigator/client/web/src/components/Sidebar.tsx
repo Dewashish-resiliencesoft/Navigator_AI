@@ -15,6 +15,8 @@ import {
 import { cn } from "../lib/cn";
 import { soft } from "../lib/motion";
 import { useUi } from "../store";
+import { useProductData } from "../lib/productData";
+import { api } from "../lib/api";
 import { GetStartedCard } from "./GetStartedCard";
 import {
   isOnboardingCardHidden,
@@ -45,7 +47,9 @@ export function Sidebar({
 }) {
   const { tab, setTab } = useUi();
   const { progress } = useOnboardingProgress();
+  const epoch = useProductData((s) => s.epoch);
   const [cardHidden, setCardHidden] = useState(true);
+  const [pendingCount, setPendingCount] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -58,6 +62,14 @@ export function Sidebar({
       alive = false;
     };
   }, [progress?.percent, progress?.complete]);
+
+  useEffect(() => {
+    let alive = true;
+    api.listPendingCorrections().then((rows) => {
+      if (alive) setPendingCount(rows.length);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [epoch]);
 
   const setupIncomplete = progress && !progress.complete;
   const showSetupLink = setupIncomplete && cardHidden && onContinueSetup;
@@ -101,6 +113,11 @@ export function Sidebar({
               )}
               <Icon size={15} strokeWidth={1.9} className="relative shrink-0" />
               <span className="relative">{label}</span>
+              {id === "execution" && pendingCount > 0 && (
+                <span className="relative ml-auto flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[0.6rem] font-semibold leading-none text-white">
+                  {pendingCount > 99 ? "99+" : pendingCount}
+                </span>
+              )}
             </button>
           );
         })}

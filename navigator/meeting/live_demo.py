@@ -103,6 +103,7 @@ def _start_live_agent(
     agent_gender: str,
     heard_sink: list[str] | None = None,
     voice_name: str = "",
+    live_conversational_model: str = "",
 ):
     """Open the bidirectional Live session, or return None (caller stops the demo)."""
     if audio_bridge is None:
@@ -153,7 +154,7 @@ def _start_live_agent(
                 LiveAgentConfig(
                     api_key=key,
                     system_instruction=instruction,
-                    model=settings.live_conversational_model,
+                    model=live_conversational_model or settings.live_conversational_model,
                     voice_name=voice_name or settings.gemini_live_voice,
                     language=spoken_language,  # type: ignore[arg-type]
                     vad_silence_ms=settings.live_vad_silence_ms,
@@ -600,6 +601,8 @@ def _resolve_provider_keys(product_id: str | None) -> dict[str, str]:
     out = {
         "gemini": settings.gemini_api_key or "",
         "groq": settings.groq_api_key or "",
+        "openai": settings.openai_api_key or "",
+        "anthropic": "",
     }
     if not product_id:
         return out
@@ -742,6 +745,10 @@ def run_live_meet_demo(
     elif agent_settings is None:
         agent_settings = merge_agent_settings(None)
 
+    from navigator.core.role_models import resolved_runtime_models
+
+    runtime_models = resolved_runtime_models(agent_settings)
+
     provider_keys = _resolve_provider_keys(product_id)
     if product_id:
         groq_byok, gemini_byok = _provider_byok_flags(product_id)
@@ -775,6 +782,7 @@ def run_live_meet_demo(
     screencast = None
     bot_id: str | None = None
     live_box: list = []
+    orch_box: list = []
 
     try:
         zoom_native = is_zoom_meeting(meeting_url)
@@ -1054,6 +1062,7 @@ def run_live_meet_demo(
                 agent_gender=agent_settings.agent_gender,
                 heard_sink=pending_barge_in,
                 voice_name=agent_settings.effective_gemini_voice(),
+                live_conversational_model=runtime_models["live_conversational_model"] or "",
             )
             if early_live is None:
                 raise LiveDemoStopped(
@@ -1513,6 +1522,7 @@ def run_live_meet_demo(
                     agent_gender=agent_settings.agent_gender,
                     heard_sink=pending_barge_in,
                     voice_name=agent_settings.effective_gemini_voice(),
+                    live_conversational_model=runtime_models["live_conversational_model"] or "",
                 )
                 if live_agent is None:
                     raise LiveDemoStopped(
@@ -1587,6 +1597,25 @@ def run_live_meet_demo(
                 live_agent=live_agent,
             )
 
+            from navigator.agent_runtime.bridge import attach_to_deps, build_orchestrator
+
+            revision_id = int(getattr(graph_cfg, "revision", 0) or 0)
+            orchestrator = build_orchestrator(
+                session_id=session_id,
+                product_id=product_id or graph_cfg.site or "default",
+                revision_id=revision_id,
+                origin=(
+                    demo_origin
+                    if demo_origin in ("dashboard_test", "public_embed")
+                    else "dashboard_test"
+                ),
+                deps=deps,
+            )
+            attach_to_deps(deps, orchestrator)
+            if orchestrator is not None:
+                orch_box.append(orchestrator)
+                print("[live] agent runtime orchestrator active", flush=True)
+
             from navigator.agent.recorded_playback import (
                 playlist_timeline_ready,
                 run_playlist_timeline,
@@ -1660,12 +1689,23 @@ def run_live_meet_demo(
                     )
                 )
             _push()
-            failures = len(final.get("failures") or [])
+            fail_entries = list(final.get("failures") or [])
+            failures = len(fail_entries)
             print(
                 f"[live] demo finished: actions={len(final.get('entries') or [])} "
                 f"failures={failures}",
                 flush=True,
             )
+            if fail_entries:
+                try:
+                    from navigator.agent.nodes.reflecting import reflecting
+
+                    reflecting(
+                        {"failures": fail_entries, "session_id": session_id},
+                        deps,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live] reflect skipped: {exc}", flush=True)
             stopped = stop_event is not None and stop_event.is_set()
             if not stopped and (use_timeline or (playlist_demo and live_agent is None)):
                 qa_page = page_id
@@ -1720,6 +1760,11 @@ def run_live_meet_demo(
                 _live.close()
             except Exception as exc:  # noqa: BLE001
                 print(f"[live] Live session close skipped: {exc}", flush=True)
+        for _orch in orch_box:
+            try:
+                _orch.close()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] orchestrator close skipped: {exc}", flush=True)
         if audio_tunnel is not None:
             audio_tunnel.stop()
         if audio_bridge is not None:

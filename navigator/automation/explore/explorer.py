@@ -101,7 +101,7 @@ class _LiveGraph:
         self.selectors: dict[str, str] = {"body": "body"}
 
     def add(self, alias: str, css: str) -> None:
-        self.selectors.setdefault(alias, css)
+        self.selectors[alias] = css
 
     def selector(self, page_id: str, alias: str) -> str:
         from navigator.knowledge.site_graph import SiteGraphError

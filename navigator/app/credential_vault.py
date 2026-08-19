@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS product_provider_keys (
     gemini_key_encrypted    BLOB,
     groq_key_encrypted      BLOB,
     fish_key_encrypted      BLOB,
+    openai_key_encrypted    BLOB,
+    anthropic_key_encrypted BLOB,
+    openrouter_key_encrypted  BLOB,
+    huggingface_key_encrypted BLOB,
     updated_at              TEXT NOT NULL
 );
 """
@@ -83,6 +87,26 @@ class CredentialVault:
             self._conn.execute(
                 "ALTER TABLE product_logins ADD COLUMN "
                 "include_login_in_default_flow INTEGER NOT NULL DEFAULT 0"
+            )
+        pk_cols = {
+            r["name"]
+            for r in self._conn.execute("PRAGMA table_info(product_provider_keys)")
+        }
+        if "openai_key_encrypted" not in pk_cols:
+            self._conn.execute(
+                "ALTER TABLE product_provider_keys ADD COLUMN openai_key_encrypted BLOB"
+            )
+        if "anthropic_key_encrypted" not in pk_cols:
+            self._conn.execute(
+                "ALTER TABLE product_provider_keys ADD COLUMN anthropic_key_encrypted BLOB"
+            )
+        if "openrouter_key_encrypted" not in pk_cols:
+            self._conn.execute(
+                "ALTER TABLE product_provider_keys ADD COLUMN openrouter_key_encrypted BLOB"
+            )
+        if "huggingface_key_encrypted" not in pk_cols:
+            self._conn.execute(
+                "ALTER TABLE product_provider_keys ADD COLUMN huggingface_key_encrypted BLOB"
             )
 
     @property
@@ -234,11 +258,19 @@ class CredentialVault:
             return {
                 "has_gemini_api_key": False,
                 "has_groq_api_key": False,
+                "has_openai_api_key": False,
+                "has_anthropic_api_key": False,
+                "has_openrouter_api_key": False,
+                "has_huggingface_api_key": False,
                 "updated_at": None,
             }
         return {
             "has_gemini_api_key": bool(row["gemini_key_encrypted"]),
             "has_groq_api_key": bool(row["groq_key_encrypted"]),
+            "has_openai_api_key": bool(row["openai_key_encrypted"]),
+            "has_anthropic_api_key": bool(row["anthropic_key_encrypted"]),
+            "has_openrouter_api_key": bool(row["openrouter_key_encrypted"]),
+            "has_huggingface_api_key": bool(row["huggingface_key_encrypted"]),
             "updated_at": row["updated_at"],
         }
 
@@ -248,29 +280,75 @@ class CredentialVault:
         *,
         gemini_api_key: str | None = None,
         groq_api_key: str | None = None,
+        openai_api_key: str | None = None,
+        anthropic_api_key: str | None = None,
+        openrouter_api_key: str | None = None,
+        huggingface_api_key: str | None = None,
     ) -> None:
         """None keeps stored key; \"\" clears it."""
         row = self._provider_row(product_id)
         gemini_blob = row["gemini_key_encrypted"] if row is not None else None
         groq_blob = row["groq_key_encrypted"] if row is not None else None
+        openai_blob = row["openai_key_encrypted"] if row is not None else None
+        anthropic_blob = row["anthropic_key_encrypted"] if row is not None else None
         fish_blob = row["fish_key_encrypted"] if row is not None else None
+        openrouter_blob = (
+            row["openrouter_key_encrypted"] if row is not None else None
+        )
+        huggingface_blob = (
+            row["huggingface_key_encrypted"] if row is not None else None
+        )
 
         if gemini_api_key is not None:
             gemini_blob = _cipher().encrypt(gemini_api_key.encode()) if gemini_api_key else None
         if groq_api_key is not None:
             groq_blob = _cipher().encrypt(groq_api_key.encode()) if groq_api_key else None
+        if openai_api_key is not None:
+            openai_blob = _cipher().encrypt(openai_api_key.encode()) if openai_api_key else None
+        if anthropic_api_key is not None:
+            anthropic_blob = (
+                _cipher().encrypt(anthropic_api_key.encode()) if anthropic_api_key else None
+            )
+        if openrouter_api_key is not None:
+            openrouter_blob = (
+                _cipher().encrypt(openrouter_api_key.encode())
+                if openrouter_api_key
+                else None
+            )
+        if huggingface_api_key is not None:
+            huggingface_blob = (
+                _cipher().encrypt(huggingface_api_key.encode())
+                if huggingface_api_key
+                else None
+            )
 
         now = datetime.now(timezone.utc).isoformat()
         self._conn.execute(
             "INSERT INTO product_provider_keys "
-            "(product_id, gemini_key_encrypted, groq_key_encrypted, fish_key_encrypted, updated_at) "
-            "VALUES (?,?,?,?,?) "
+            "(product_id, gemini_key_encrypted, groq_key_encrypted, fish_key_encrypted, "
+            "openai_key_encrypted, anthropic_key_encrypted, openrouter_key_encrypted, "
+            "huggingface_key_encrypted, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(product_id) DO UPDATE SET "
             "gemini_key_encrypted=excluded.gemini_key_encrypted, "
             "groq_key_encrypted=excluded.groq_key_encrypted, "
             "fish_key_encrypted=excluded.fish_key_encrypted, "
+            "openai_key_encrypted=excluded.openai_key_encrypted, "
+            "anthropic_key_encrypted=excluded.anthropic_key_encrypted, "
+            "openrouter_key_encrypted=excluded.openrouter_key_encrypted, "
+            "huggingface_key_encrypted=excluded.huggingface_key_encrypted, "
             "updated_at=excluded.updated_at",
-            (product_id, gemini_blob, groq_blob, fish_blob, now),
+            (
+                product_id,
+                gemini_blob,
+                groq_blob,
+                fish_blob,
+                openai_blob,
+                anthropic_blob,
+                openrouter_blob,
+                huggingface_blob,
+                now,
+            ),
         )
 
     def provider_key(self, product_id: str, kind: str) -> str | None:
@@ -280,6 +358,10 @@ class CredentialVault:
         col = {
             "gemini": "gemini_key_encrypted",
             "groq": "groq_key_encrypted",
+            "openai": "openai_key_encrypted",
+            "anthropic": "anthropic_key_encrypted",
+            "openrouter": "openrouter_key_encrypted",
+            "huggingface": "huggingface_key_encrypted",
         }.get(kind)
         if col is None:
             return None

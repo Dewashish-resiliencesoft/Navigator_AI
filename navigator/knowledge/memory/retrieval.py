@@ -50,39 +50,49 @@ def retrieve_corrections(
     if coll.count() == 0:
         return []
 
-    if tool_call_type is None:
-        where: dict = {"page": page}
-    else:
-        where = {
-            "$and": [
-                {"page": page},
-                {"tool_call_type": tool_call_type},
-            ]
+    def _query(where: dict | None) -> list[Correction]:
+        kwargs: dict = {
+            "query_texts": [query],
+            "n_results": min(k, coll.count()),
         }
+        if where:
+            kwargs["where"] = where
+        result = coll.query(**kwargs)
+        docs = (result.get("documents") or [[]])[0]
+        metas = (result.get("metadatas") or [[]])[0]
+        hits: list[Correction] = []
+        for doc, meta in zip(docs, metas, strict=True):
+            meta = meta or {}
+            pid = meta.get("product_id", "")
+            if pid != product_id:
+                raise AssertionError(
+                    f"tenant leak: expected product_id={product_id!r}, got {pid!r}"
+                )
+            hits.append(
+                Correction(
+                    rule=doc,
+                    product_id=pid,
+                    page=meta["page"],
+                    tool_call_type=meta["tool_call_type"],
+                    source_call_id=meta["source_call_id"],
+                )
+            )
+        return hits
 
-    result = coll.query(
-        query_texts=[query], n_results=min(k, coll.count()), where=where
-    )
-    docs = (result.get("documents") or [[]])[0]
-    metas = (result.get("metadatas") or [[]])[0]
-    out: list[Correction] = []
-    for doc, meta in zip(docs, metas, strict=True):
-        meta = meta or {}
-        pid = meta.get("product_id", "")
-        if pid != product_id:
-            raise AssertionError(
-                f"tenant leak: expected product_id={product_id!r}, got {pid!r}"
-            )
-        out.append(
-            Correction(
-                rule=doc,
-                product_id=pid,
-                page=meta["page"],
-                tool_call_type=meta["tool_call_type"],
-                source_call_id=meta["source_call_id"],
-            )
-        )
-    return out
+    if tool_call_type is None:
+        where: dict | None = {"page": page} if page else None
+    elif page:
+        where = {"$and": [{"page": page}, {"tool_call_type": tool_call_type}]}
+    else:
+        where = {"tool_call_type": tool_call_type}
+
+    out = _query(where)
+    if out or not page:
+        return out
+    # Explore drafts tag page="main"; live retrieve uses real page_id → miss.
+    if tool_call_type is None:
+        return _query(None)
+    return _query({"tool_call_type": tool_call_type})
 
 
 def retrieve_product_knowledge(

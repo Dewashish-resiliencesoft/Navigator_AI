@@ -1496,7 +1496,11 @@ function AutoExplore({ onFinished }: { onFinished: () => void }) {
           )}
           <p className="mt-3 text-[0.7rem] text-[var(--muted)]">
             Unpublished draft — review in the playlist above, then publish the site
-            graph when ready for visitors.
+            graph when ready for visitors
+            {status.repairs_used
+              ? ` (${status.repairs_used} selector repair${status.repairs_used === 1 ? "" : "s"} only go live after Publish)`
+              : ""}
+            .
           </p>
         </div>
       )}

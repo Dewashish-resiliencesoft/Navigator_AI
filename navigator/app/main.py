@@ -779,6 +779,63 @@ def product_failures(
     return log.product_failures(product.product_id, limit)
 
 
+def _list_pending_corrections(product_id: str) -> list[dict]:
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        return [row.as_dict() for row in store.list_pending(product_id)]
+
+
+def _approve_pending_correction(
+    correction_id: str, product_id: str, *, rule: str | None
+) -> dict:
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+    from navigator.knowledge.memory.seed import seed_correction
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        text = (rule or row.rule).strip()
+        doc_id = seed_correction(
+            settings.chroma_path,
+            product_id=product_id,
+            rule=text,
+            page=row.page,
+            tool_call_type=row.tool_call_type,
+            source_call_id=row.source_call_id,
+            doc_id=row.id,
+        )
+        updated = store.set_status(correction_id, product_id, "approved")
+    return {
+        "id": correction_id,
+        "status": "approved",
+        "chroma_id": doc_id,
+        "rule": text,
+        "product_id": product_id,
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
+def _reject_pending_correction(correction_id: str, product_id: str) -> dict:
+    from navigator.knowledge.memory.pending import PendingCorrectionStore
+
+    with PendingCorrectionStore(settings.db_path) as store:
+        row = store.get(correction_id, product_id)
+        if row is None:
+            raise HTTPException(404, "no such pending correction")
+        if row.status != "pending":
+            raise HTTPException(409, f"correction already {row.status}")
+        updated = store.set_status(correction_id, product_id, "rejected")
+    return {
+        "id": correction_id,
+        "status": "rejected",
+        "row": None if updated is None else updated.as_dict(),
+    }
+
+
 @app.get("/v1/products/corrections/pending")
 def pending_corrections(product: AuthedProduct) -> list[dict]:
     """Reflection output awaiting human approval.
@@ -786,10 +843,7 @@ def pending_corrections(product: AuthedProduct) -> list[dict]:
     Never auto-promoted: an agent that can silently rewrite its own rules is
     not debuggable.
     """
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-
-    with PendingCorrectionStore(settings.db_path) as store:
-        return [row.as_dict() for row in store.list_pending(product.product_id)]
+    return _list_pending_corrections(product.product_id)
 
 
 class ApproveCorrectionBody(BaseModel):
@@ -805,53 +859,15 @@ def approve_correction(
     body: ApproveCorrectionBody | None = None,
 ) -> dict:
     """Human approves a pending rule → live Chroma corrections collection."""
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-    from navigator.knowledge.memory.seed import seed_correction
-
     body = body or ApproveCorrectionBody()
-    with PendingCorrectionStore(settings.db_path) as store:
-        row = store.get(correction_id, product.product_id)
-        if row is None:
-            raise HTTPException(404, "no such pending correction")
-        if row.status != "pending":
-            raise HTTPException(409, f"correction already {row.status}")
-        rule = (body.rule or row.rule).strip()
-        doc_id = seed_correction(
-            settings.chroma_path,
-            product_id=product.product_id,
-            rule=rule,
-            page=row.page,
-            tool_call_type=row.tool_call_type,
-            source_call_id=row.source_call_id,
-            doc_id=row.id,
-        )
-        updated = store.set_status(correction_id, product.product_id, "approved")
-    return {
-        "id": correction_id,
-        "status": "approved",
-        "chroma_id": doc_id,
-        "rule": rule,
-        "product_id": product.product_id,
-        "row": None if updated is None else updated.as_dict(),
-    }
+    return _approve_pending_correction(
+        correction_id, product.product_id, rule=body.rule
+    )
 
 
 @app.post("/v1/products/corrections/{correction_id}/reject")
 def reject_correction(correction_id: str, product: AuthedProduct) -> dict:
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-
-    with PendingCorrectionStore(settings.db_path) as store:
-        row = store.get(correction_id, product.product_id)
-        if row is None:
-            raise HTTPException(404, "no such pending correction")
-        if row.status != "pending":
-            raise HTTPException(409, f"correction already {row.status}")
-        updated = store.set_status(correction_id, product.product_id, "rejected")
-    return {
-        "id": correction_id,
-        "status": "rejected",
-        "row": None if updated is None else updated.as_dict(),
-    }
+    return _reject_pending_correction(correction_id, product.product_id)
 
 
 class KnowledgeIngestBody(BaseModel):
@@ -1076,11 +1092,42 @@ class AgentSettingsBody(BaseModel):
     agent_name: str | None = None
     tone: str | None = None
     gemini_voice: str | None = None
+    live_conversational_model: str | None = None
+    brain_reasoning_model: str | None = None
+    brain_planning_model: str | None = None
+    brain_phrasing_model: str | None = None
+    brain_classify_model: str | None = None
+    brain_stt_model: str | None = None
+    brain_vision_text_model: str | None = None
+    brain_vision_image_model: str | None = None
+    role_brain_provider: str | None = None
+    role_brain_model: str | None = None
+    role_listening_provider: str | None = None
+    role_listening_model: str | None = None
+    role_speaking_provider: str | None = None
+    role_speaking_model: str | None = None
+    role_hands_provider: str | None = None
+    role_hands_model: str | None = None
+    ollama_base_url: str | None = None
+    vllm_base_url: str | None = None
+    llamacpp_base_url: str | None = None
 
 
 class AgentProviderKeysBody(BaseModel):
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
+    openai_api_key: str | None = None
+    anthropic_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    huggingface_api_key: str | None = None
+
+
+class ProviderModelsBody(BaseModel):
+    provider: str = Field(
+        pattern="^(gemini|groq|openai|anthropic|ollama|vllm|llamacpp|openrouter|huggingface)$"
+    )
+    api_key: str | None = None
+    base_url: str | None = None
 
 
 class ProductLoginBody(BaseModel):
@@ -1211,12 +1258,100 @@ def client_put_agent_provider_keys(
             product.product_id,
             gemini_api_key=body.gemini_api_key,
             groq_api_key=body.groq_api_key,
+            openai_api_key=body.openai_api_key,
+            anthropic_api_key=body.anthropic_api_key,
+            openrouter_api_key=body.openrouter_api_key,
+            huggingface_api_key=body.huggingface_api_key,
         )
     except VaultNotConfigured as exc:
         raise HTTPException(503, str(exc)) from None
     except CredentialVaultError as exc:
         raise HTTPException(422, str(exc)) from None
     return {"ok": True, **vault.provider_keys_public(product.product_id)}
+
+
+def _provider_models_for(
+    product_id: str,
+    provider: str,
+    *,
+    vault: Vault,
+    api_key: str | None,
+    base_url: str | None = None,
+) -> dict:
+    from navigator.client.provider_models import list_provider_models
+
+    kind = provider.strip().lower()
+    if kind not in {
+        "gemini",
+        "groq",
+        "openai",
+        "anthropic",
+        "ollama",
+        "vllm",
+        "llamacpp",
+        "openrouter",
+        "huggingface",
+    }:
+        raise HTTPException(422, "unsupported provider")
+
+    key = (api_key or "").strip()
+    resolved_base_url = (base_url or "").strip()
+    needs_vault_key = kind in {"gemini", "groq", "openai", "anthropic", "openrouter", "huggingface"}
+
+    if needs_vault_key and not key:
+        key = vault.provider_key(product_id, kind) or ""
+
+    if kind in {"ollama", "vllm", "llamacpp"} and not resolved_base_url:
+        from navigator.app.registry import Registry
+        with Registry(settings.db_path) as reg:
+            agent_settings = reg.get_agent_settings(product_id)
+        if kind == "ollama":
+            resolved_base_url = (agent_settings.ollama_base_url or "").strip()
+        elif kind == "vllm":
+            resolved_base_url = (agent_settings.vllm_base_url or "").strip()
+        else:
+            resolved_base_url = (agent_settings.llamacpp_base_url or "").strip()
+
+    if kind in {"gemini", "groq", "openai", "anthropic", "openrouter", "huggingface"} and not key:
+        raise HTTPException(400, f"No {kind} API key saved — connect or paste a key first")
+
+    if kind in {"ollama", "vllm", "llamacpp"} and not resolved_base_url:
+        raise HTTPException(400, f"No {kind} base URL saved — paste one in Settings first")
+
+    try:
+        models = list_provider_models(kind, key, base_url=resolved_base_url)  # type: ignore[arg-type]
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except Exception as exc:
+        raise HTTPException(502, f"Could not list {kind} models: {exc}") from None
+    return {"ok": True, "provider": kind, "models": models}
+
+
+@app.get("/client/api/agent-provider-models")
+def client_get_agent_provider_models(
+    product: DashboardAuthedProduct,
+    vault: Vault,
+    provider: str = Query(
+        ...,
+        pattern="^(gemini|groq|openai|anthropic|ollama|vllm|llamacpp|openrouter|huggingface)$",
+    ),
+) -> dict:
+    return _provider_models_for(
+        product.product_id, provider, vault=vault, api_key=None, base_url=None
+    )
+
+
+@app.post("/client/api/agent-provider-models")
+def client_post_agent_provider_models(
+    product: DashboardAuthedProduct, body: ProviderModelsBody, vault: Vault
+) -> dict:
+    return _provider_models_for(
+        product.product_id,
+        body.provider,
+        vault=vault,
+        api_key=body.api_key,
+        base_url=body.base_url,
+    )
 
 
 # Dashboard polls these every few seconds. Freshness within ~12s is enough;
@@ -1659,6 +1794,31 @@ def client_put_knowledge(product: DashboardAuthedProduct, body: KnowledgeBody, r
         except Exception as exc:  # noqa: BLE001
             print(f"[client] chroma ingest skipped: {exc}", flush=True)
     return {"markdown": saved, "chroma_id": chroma_id}
+
+
+@app.get("/client/api/corrections/pending")
+def client_pending_corrections(product: DashboardAuthedProduct) -> list[dict]:
+    """Pending rules for the Client dashboard. Same store as /v1, JWT-scoped."""
+    return _list_pending_corrections(product.product_id)
+
+
+@app.post("/client/api/corrections/{correction_id}/approve")
+def client_approve_correction(
+    correction_id: str,
+    product: DashboardAuthedProduct,
+    body: ApproveCorrectionBody | None = None,
+) -> dict:
+    body = body or ApproveCorrectionBody()
+    return _approve_pending_correction(
+        correction_id, product.product_id, rule=body.rule
+    )
+
+
+@app.post("/client/api/corrections/{correction_id}/reject")
+def client_reject_correction(
+    correction_id: str, product: DashboardAuthedProduct
+) -> dict:
+    return _reject_pending_correction(correction_id, product.product_id)
 
 
 @app.get("/client/api/flows")

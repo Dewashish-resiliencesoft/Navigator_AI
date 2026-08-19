@@ -476,19 +476,30 @@ class DemoRunner:
         from navigator.app.registry import ProductNotFound, Registry
         from navigator.core.settings import settings
 
+        from navigator.core.role_models import resolved_runtime_models
+
         try:
             with Registry(settings.db_path) as reg:
                 p = reg.get(product_id)
+                agent_settings = reg.get_agent_settings(product_id)
+                models = resolved_runtime_models(agent_settings)
                 cfg = BrainConfig.from_settings(
                     autonomy_mode=getattr(p, "autonomy_mode", None) or "guided",
                     tier2_legacy=bool(p.tier2_enabled),
+                    planning_model=models["brain_planning_model"] or None,
+                    phrasing_model=models["brain_phrasing_model"] or None,
+                    classify_model=models["brain_classify_model"] or None,
+                    stt_model=models["brain_stt_model"] or None,
+                    vision_text_model=models["brain_vision_text_model"] or None,
+                    vision_image_model=models["brain_vision_image_model"] or None,
+                    reasoning_model=models["brain_reasoning_model"] or None,
                 )
                 return {
                     "tier2_enabled": cfg.tier2_enabled,
                     "brain_config": cfg,
                     "use_turn_brain": cfg.use_turn_brain,
                     "handoff_webhook_url": getattr(p, "handoff_webhook_url", "") or "",
-                    "agent_settings": reg.get_agent_settings(product_id),
+                    "agent_settings": agent_settings,
                 }
         except Exception:  # noqa: BLE001
             cfg = BrainConfig.from_settings()

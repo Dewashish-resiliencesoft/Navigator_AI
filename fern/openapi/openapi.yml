@@ -1451,6 +1451,74 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/agent-provider-models:
+    get:
+      summary: Client Get Agent Provider Models
+      operationId: client_get_agent_provider_models_client_api_agent_provider_models_get
+      parameters:
+      - name: provider
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^(gemini|groq|openai|anthropic|ollama|vllm|llamacpp|openrouter|huggingface)$
+          title: Provider
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Get Agent Provider Models Client Api Agent Provider Models Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      summary: Client Post Agent Provider Models
+      operationId: client_post_agent_provider_models_client_api_agent_provider_models_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderModelsBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Post Agent Provider Models Client Api Agent Provider Models Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/demo-readiness:
     get:
       summary: Client Demo Readiness
@@ -1865,6 +1933,115 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Client Put Knowledge Client Api Knowledge Put
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/corrections/pending:
+    get:
+      summary: Client Pending Corrections
+      description: Pending rules for the Client dashboard. Same store as /v1, JWT-scoped.
+      operationId: client_pending_corrections_client_api_corrections_pending_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  additionalProperties: true
+                title: Response Client Pending Corrections Client Api Corrections Pending Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/corrections/{correction_id}/approve:
+    post:
+      summary: Client Approve Correction
+      operationId: client_approve_correction_client_api_corrections__correction_id__approve_post
+      parameters:
+      - name: correction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Correction Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - $ref: '#/components/schemas/ApproveCorrectionBody'
+              - type: 'null'
+              title: Body
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Approve Correction Client Api Corrections  Correction Id  Approve
+                  Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/corrections/{correction_id}/reject:
+    post:
+      summary: Client Reject Correction
+      operationId: client_reject_correction_client_api_corrections__correction_id__reject_post
+      parameters:
+      - name: correction_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Correction Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Reject Correction Client Api Corrections  Correction Id  Reject
+                  Post
         '422':
           description: Validation Error
           content:
@@ -2689,6 +2866,26 @@ components:
           - type: string
           - type: 'null'
           title: Groq Api Key
+        openai_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Openai Api Key
+        anthropic_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Anthropic Api Key
+        openrouter_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Openrouter Api Key
+        huggingface_api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Huggingface Api Key
       type: object
       title: AgentProviderKeysBody
     AgentSettingsBody:
@@ -2725,6 +2922,101 @@ components:
           - type: string
           - type: 'null'
           title: Gemini Voice
+        live_conversational_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Live Conversational Model
+        brain_reasoning_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Reasoning Model
+        brain_planning_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Planning Model
+        brain_phrasing_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Phrasing Model
+        brain_classify_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Classify Model
+        brain_stt_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Stt Model
+        brain_vision_text_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Vision Text Model
+        brain_vision_image_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Vision Image Model
+        role_brain_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Brain Provider
+        role_brain_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Brain Model
+        role_listening_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Listening Provider
+        role_listening_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Listening Model
+        role_speaking_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Speaking Provider
+        role_speaking_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Speaking Model
+        role_hands_provider:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Hands Provider
+        role_hands_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Hands Model
+        ollama_base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ollama Base Url
+        vllm_base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Vllm Base Url
+        llamacpp_base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Llamacpp Base Url
       type: object
       title: AgentSettingsBody
     ApproveCorrectionBody:
@@ -3569,6 +3861,26 @@ components:
           default: false
       type: object
       title: ProductLoginBody
+    ProviderModelsBody:
+      properties:
+        provider:
+          type: string
+          pattern: ^(gemini|groq|openai|anthropic|ollama|vllm|llamacpp|openrouter|huggingface)$
+          title: Provider
+        api_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Api Key
+        base_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Base Url
+      type: object
+      required:
+      - provider
+      title: ProviderModelsBody
     RecordStartBody:
       properties:
         start_url:

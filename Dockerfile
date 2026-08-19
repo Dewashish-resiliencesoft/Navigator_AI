@@ -22,9 +22,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NAVIGATOR_REGISTRY_DB=/data/registry.db \
     NAVIGATOR_CHROMA_PATH=/data/chroma \
     NAVIGATOR_CREDENTIAL_DB_PATH=/data/credentials.db \
-    NAVIGATOR_PIPER_DATA_DIR=/data/voices \
-    NAVIGATOR_EXPLORE_EPISODES_PATH=/data/explore_episodes \
-    NAVIGATOR_TTS_PROVIDER=fish
+    NAVIGATOR_EXPLORE_EPISODES_PATH=/data/explore_episodes
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates docker.io docker-compose-v2 \
@@ -35,6 +33,7 @@ RUN apt-get update \
 
 COPY pyproject.toml ./
 COPY navigator ./navigator
+COPY scripts/disable-attendee-debug-recording.py ./scripts/disable-attendee-debug-recording.py
 COPY --from=web /build/dist ./navigator/client/web/dist
 
 RUN if [ "$NAVIGATOR_EXTRAS" = "full" ]; then \

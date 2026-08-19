@@ -158,6 +158,8 @@ class CallDeps:
     #: Bidirectional Gemini Live session (navigator.voice.live_agent.LiveAgent).
     #: When set, SPEAKING talks through it and the prospect can interrupt.
     live_agent: object | None = None
+    #: Agent runtime orchestrator (navigator.agent_runtime.orchestrator.AgentOrchestrator).
+    orchestrator: object | None = None
     #: Async pre-action narration; SPEAKING queues it, EXECUTING starts it.
     pre_action_speech: object | None = None
     #: Structured demo diagnostics sink. None means JSON logs to stdout.

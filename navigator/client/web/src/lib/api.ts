@@ -13,6 +13,12 @@ export type AutonomyMode = "guided" | "adaptive" | "explorer";
 export type SpokenLanguage = "en" | "hi";
 export type AgentGender = "female" | "male";
 
+export type ProviderModel = {
+  id: string;
+  label: string;
+  tags: string[];
+};
+
 export type AgentSettings = {
   default_language: SpokenLanguage;
   extra_languages: SpokenLanguage[];
@@ -20,8 +26,31 @@ export type AgentSettings = {
   agent_name: string;
   tone: string;
   gemini_voice: string;
+  live_conversational_model: string;
+  brain_reasoning_model: string;
+  brain_planning_model: string;
+  brain_phrasing_model: string;
+  brain_classify_model: string;
+  brain_stt_model: string;
+  brain_vision_text_model: string;
+  brain_vision_image_model: string;
+  role_brain_provider: string;
+  role_brain_model: string;
+  role_listening_provider: string;
+  role_listening_model: string;
+  role_speaking_provider: string;
+  role_speaking_model: string;
+  role_hands_provider: string;
+  role_hands_model: string;
   has_gemini_api_key: boolean;
   has_groq_api_key: boolean;
+  has_openai_api_key: boolean;
+  has_anthropic_api_key: boolean;
+  has_openrouter_api_key: boolean;
+  has_huggingface_api_key: boolean;
+  ollama_base_url: string;
+  vllm_base_url: string;
+  llamacpp_base_url: string;
   updated_at: string | null;
 };
 
@@ -256,8 +285,21 @@ export type ExploreStatus = {
   error?: string;
   flow_id?: string;
   revision?: number | null;
+  repairs_used?: number;
   stop_reason?: string;
   pending_question?: ExploreQuestion | null;
+};
+
+export type PendingCorrection = {
+  id: string;
+  product_id: string;
+  session_id: string;
+  page: string;
+  tool_call_type: string;
+  rule: string;
+  source_call_id: string;
+  created_at: string;
+  status: string;
 };
 
 /** One frame off the exploration WebSocket. `type` discriminates the payload. */
@@ -552,6 +594,20 @@ export const api = {
   putKnowledge: (markdown: string) =>
     send<unknown>("/client/api/knowledge", "PUT", { markdown }),
 
+  listPendingCorrections: () =>
+    get<PendingCorrection[]>("/client/api/corrections/pending"),
+  approveCorrection: (id: string, rule?: string) =>
+    send<{ id: string; status: string; rule: string }>(
+      `/client/api/corrections/${id}/approve`,
+      "POST",
+      rule ? { rule } : {},
+    ),
+  rejectCorrection: (id: string) =>
+    send<{ id: string; status: string }>(
+      `/client/api/corrections/${id}/reject`,
+      "POST",
+    ),
+
   getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
   putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),
   getTier2: () => get<{ enabled: boolean }>("/client/api/tier2"),
@@ -608,13 +664,55 @@ export const api = {
   putAgentProviderKeys: (body: {
     gemini_api_key?: string | null;
     groq_api_key?: string | null;
+    openai_api_key?: string | null;
+    anthropic_api_key?: string | null;
+    openrouter_api_key?: string | null;
+    huggingface_api_key?: string | null;
   }) =>
     send<{
       ok: boolean;
       has_gemini_api_key: boolean;
       has_groq_api_key: boolean;
+      has_openai_api_key: boolean;
+      has_anthropic_api_key: boolean;
+      has_openrouter_api_key: boolean;
+      has_huggingface_api_key: boolean;
       updated_at: string | null;
     }>("/client/api/agent-provider-keys", "PUT", body),
+  getAgentProviderModels: (
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface"
+  ) =>
+    get<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      `/client/api/agent-provider-models?provider=${provider}`,
+    ),
+  previewAgentProviderModels: (body: {
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface";
+    api_key?: string;
+    base_url?: string;
+  }) =>
+    send<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      "/client/api/agent-provider-models",
+      "POST",
+      body,
+    ),
 
   getSiteGraph: () =>
     get<{

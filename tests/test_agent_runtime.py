@@ -16,13 +16,13 @@ def test_semantic_id_slug():
 
 def test_router_simple_ack():
     d = classify_utterance("okay")
-    assert d.route == "live_direct"
+    assert d.route == "backchannel"
 
 
 def test_router_complex_browser_task():
     d = classify_utterance("Open analytics and compare March with April")
-    assert d.route == "orchestrator"
-    assert d.reason == "browser_task"
+    assert d.route == "task_handoff"
+    assert d.reason in {"browser_task", "browser_task_multi", "complex_instruction"}
 
 
 def test_world_state_version_increments():

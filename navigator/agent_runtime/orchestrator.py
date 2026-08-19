@@ -1,4 +1,23 @@
-"""Central runtime: routing, state, execution lock, events."""
+"""Central runtime: routing, state, execution lock, events.
+
+Concurrency rules
+─────────────────
+* ONE worker thread executes at a time — enforced by ``_exec_lock``.
+* A new user request while the worker is busy sets ``_pending_goal`` and
+  sets ``_interrupt_flag``.  The running worker checks ``_interrupt_flag``
+  after each atomic action; when set it stops the current plan and promotes
+  the pending goal.
+* ``interrupt()`` and ``handle_utterance()`` NEVER spawn a second execution
+  thread.  The single worker loop is responsible for picking up new goals.
+* This prevents the old recursive ``_run_task → interrupt → _run_task`` bug.
+
+Speech rules
+────────────
+* ``live.acknowledge(hint)``   → immediate "I'm on it" ack before Flash starts.
+* ``live.speak_result(text)``  → deliver the final task result/outcome.
+* ``live.speak_error(text)``   → recoverable or unrecoverable failure speech.
+* ``_finish_speech()`` is the internal helper that selects the right path.
+"""
 
 from __future__ import annotations
 
@@ -34,7 +53,13 @@ from navigator.agent_runtime.models import (
 from navigator.agent_runtime import watchdog as _wd
 from navigator.agent_runtime.planning.flash_planner import FlashPlanner
 from navigator.agent_runtime.planning.groq_worker import GroqEventWorker
-from navigator.agent_runtime.planning.router import RouteDecision, classify_utterance
+from navigator.agent_runtime.planning.router import (
+    ROUTE_BACKCHANNEL,
+    ROUTE_ANSWER,
+    ROUTE_TASK_HANDOFF,
+    RouteDecision,
+    classify_utterance,
+)
 from navigator.agent_runtime.verification.verifier import (
     action_result_from_parts,
     build_verification,
@@ -46,7 +71,11 @@ from navigator.logs.store import ActionLog
 
 
 class AgentOrchestrator:
-    """Source of truth for interactive agent runtime."""
+    """Source of truth for interactive agent runtime.
+
+    All realtime browser tasks go through this class.  LangGraph scripted
+    playback is a separate, compatible path that does not share the exec lock.
+    """
 
     def __init__(
         self,
@@ -78,8 +107,27 @@ class AgentOrchestrator:
         self.groq_worker = GroqEventWorker()
         self.groq_worker.start()
         self.events.subscribe(self.groq_worker.enqueue)
+
+        # Single execution lock — only one plan runs at a time.
         self._exec_lock = threading.Lock()
+        # Set by handle_utterance/interrupt to ask the worker to yield after
+        # the current atomic action.  Cleared when the worker picks it up.
+        self._interrupt_flag = threading.Event()
+        # Next goal to execute after the current atomic action finishes.
+        # Protected by _goal_lock.
+        self._pending_goal: str = ""
+        self._goal_lock = threading.Lock()
+
         self._emit(AgentEventKind.SESSION_STARTED, payload={"product_id": session.product_id})
+
+    # ── properties ────────────────────────────────────────────────────────
+
+    @property
+    def is_working(self) -> bool:
+        """True while an execution thread holds the lock."""
+        return self._exec_lock.locked()
+
+    # ── public API ─────────────────────────────────────────────────────────
 
     def refresh_browser_state(self) -> None:
         dom = build_dom_state(self.page, page_id=self.store.state.browser.page_id, detailed=True)
@@ -97,53 +145,107 @@ class AgentOrchestrator:
                 }
             )
         )
-        self.live.push_dom_context(self.page, page_id=self.store.state.browser.page_id)
+        self.live.push_world_state(
+            page=self.store.state.browser.page_id,
+            url=self.store.state.browser.url,
+            task_status=self.store.state.task.status.value if self.store.state.task else "",
+            task_goal=self.store.state.task.goal if self.store.state.task else "",
+            browser_ready=True,
+        )
 
     def handle_utterance(self, text: str) -> RouteDecision:
-        decision = classify_utterance(text)
-        self.store.update(
-            lambda s: s.model_copy(
-                update={
-                    "conversation": s.conversation.model_copy(
-                        update={"last_user_message": text}
-                    )
-                }
-            )
-        )
-        self._emit(AgentEventKind.USER_UTTERANCE, payload={"text": text, "route": decision.route})
-        if decision.route == "orchestrator":
-            ack = "Sure — let me check that for you."
-            self.live.acknowledge(ack)
-            self._emit(AgentEventKind.AGENT_ACKNOWLEDGED, payload={"text": ack})
-            threading.Thread(
-                target=self._run_task,
-                args=(text,),
-                name="agent-runtime-task",
-                daemon=True,
-            ).start()
+        """Route one heard user utterance.  Never blocks the caller."""
+        decision = classify_utterance(text, agent_working=self.is_working)
+        self._record_user_message(text, decision.route)
+
+        if decision.route == ROUTE_BACKCHANNEL:
+            # Rate-limit logic lives in BackchannelController (optional);
+            # here we just do nothing — Live may backchannel naturally.
+            pass
+
+        elif decision.route == ROUTE_ANSWER:
+            # Live handles it from its own context — no orchestrator needed.
+            pass
+
+        else:  # ROUTE_TASK_HANDOFF
+            # 1. Emit immediate natural acknowledgement (wording by Live model).
+            self.live.acknowledge(decision.ack_hint or text)
+            self._emit(AgentEventKind.AGENT_ACKNOWLEDGED, payload={"text": text})
+
+            # 2. Either start a new worker or replace the pending goal.
+            self._request_task(text)
+
         return decision
 
     def interrupt(self, *, reason: str, new_goal: str) -> None:
+        """Signal the worker to stop after the current atomic action and run new_goal.
+
+        Does NOT spawn a new thread. The running worker loop picks up the goal.
+        If no worker is running, starts one.
+        """
         self.store.update(lambda s: apply_interruption(s, reason=reason, new_goal=new_goal))
         self._emit(
             AgentEventKind.USER_INTERRUPTED,
             payload={"reason": reason, "new_goal": new_goal},
         )
         if new_goal.strip():
-            self.live.acknowledge("Sure — switching focus.")
+            self.live.acknowledge(new_goal)
+            self._request_task(new_goal)
+
+    # ── internal orchestration ─────────────────────────────────────────────
+
+    def _request_task(self, goal: str) -> None:
+        """Queue or start a task — never recursive, never creates unbounded threads.
+
+        If the worker is busy: set the pending goal and raise the interrupt
+        flag so the worker yields after its current atomic action.
+
+        If the worker is idle: start it directly.
+
+        In both cases at most ONE worker thread exists at any time.
+        """
+        with self._goal_lock:
+            self._pending_goal = goal
+
+        if self.is_working:
+            # Signal the running worker to stop after its current atomic action.
+            self._interrupt_flag.set()
+        else:
+            # No worker running — start one.
             threading.Thread(
-                target=self._run_task,
-                args=(new_goal,),
-                name="agent-runtime-interrupt-task",
+                target=self._worker_loop,
+                name="agent-runtime-worker",
                 daemon=True,
             ).start()
 
-    def _run_task(self, goal: str) -> None:
+    def _worker_loop(self) -> None:
+        """Single worker that runs goals until there are no more pending.
+
+        Acquires the exec lock once; does NOT release and re-acquire between
+        goals — this is safe because _request_task() checks is_working before
+        starting a new thread.
+        """
         if not self._exec_lock.acquire(blocking=False):
-            self.interrupt(reason="new_request", new_goal=goal)
+            # Another thread beat us to it (tiny race window); it will pick
+            # up the pending goal itself via _interrupt_flag.
             return
         try:
-            self._execute_task(goal)
+            while True:
+                with self._goal_lock:
+                    goal = self._pending_goal
+                    self._pending_goal = ""
+                self._interrupt_flag.clear()
+
+                if not goal:
+                    break
+
+                self._execute_task(goal)
+
+                # After execution, check if a new goal arrived during the run.
+                with self._goal_lock:
+                    if not self._pending_goal:
+                        break
+                    # Loop continues and picks up the new goal.
         finally:
             self._exec_lock.release()
 
@@ -164,8 +266,7 @@ class AgentOrchestrator:
 
         plan = self.planner.plan(task_id=task.task_id, goal=goal, world=self.store.state)
         if plan is None or not plan.steps:
-            msg = "I couldn't figure out the next step on this page."
-            self._finish_speech(msg)
+            self._speak_result("I couldn't figure out the next step on this page.")
             self._mark_task(TaskStatus.failed)
             return
 
@@ -187,12 +288,15 @@ class AgentOrchestrator:
     def _execute_plan(self, plan: AgentPlan) -> None:
         page_id = self.store.state.browser.page_id
         for idx, step in enumerate(plan.steps):
-            if should_cancel_remaining_plan(self.store.state):
+            # Check whether an interruption arrived before starting this step.
+            if self._interrupt_flag.is_set() or should_cancel_remaining_plan(self.store.state):
                 self._emit(AgentEventKind.TASK_CANCELLED, task_id=plan.task_id)
+                self._mark_task(TaskStatus.failed)
                 return
 
             if step.spoken:
-                self._finish_speech(step.spoken)
+                # Step narration — use result-speech path, not acknowledge.
+                self._speak_result(step.spoken)
 
             self.store.update(
                 lambda s, st=step: s.model_copy(
@@ -204,7 +308,6 @@ class AgentOrchestrator:
                             flow_id=getattr(st, "flow_id", ""),
                             step_id=getattr(st, "step_id", ""),
                         ),
-                        # Phase-1: watchdog tick
                         "watchdog": _wd.tick(s.watchdog),
                     }
                 )
@@ -253,7 +356,6 @@ class AgentOrchestrator:
 
             if verification.passed:
                 self._emit(AgentEventKind.VERIFICATION_PASSED, task_id=plan.task_id, action_id=step.action_id)
-                # Phase-1: clear failure count on success + loop detection
                 self.store.update(
                     lambda s: s.model_copy(update={"watchdog": _wd.clear_failure(s.watchdog)})
                 )
@@ -271,10 +373,9 @@ class AgentOrchestrator:
                 )
                 if plan.escalation == "screenshot":
                     self._emit(AgentEventKind.SCREENSHOT_CAPTURED, task_id=plan.task_id)
-                # Phase-1: check if stuck (loop / timeout / too many failures)
                 if _wd.is_stuck(self.store.state.watchdog):
                     self._emit(AgentEventKind.LOOP_DETECTED, task_id=plan.task_id)
-                self._finish_speech("That step didn't verify — I'll try another approach.")
+                self._speak_error("That step didn't verify — I'll try another approach.")
                 self._mark_task(TaskStatus.failed)
                 return
 
@@ -289,9 +390,17 @@ class AgentOrchestrator:
                 )
             )
 
+            # After each atomic action: check for pending interruption.
+            if self._interrupt_flag.is_set():
+                self._emit(AgentEventKind.TASK_CANCELLED, task_id=plan.task_id)
+                self._mark_task(TaskStatus.failed)
+                return
+
         self._mark_task(TaskStatus.completed)
         self._emit(AgentEventKind.TASK_COMPLETED, task_id=plan.task_id)
-        self._finish_speech("Done — take a look at the screen.")
+        self._speak_result("Done — take a look at the screen.")
+
+    # ── state helpers ──────────────────────────────────────────────────────
 
     def _mark_task(self, status: TaskStatus) -> None:
         self.store.update(
@@ -310,30 +419,52 @@ class AgentOrchestrator:
             )
         )
 
-    def _finish_speech(self, text: str) -> None:
+    def _record_user_message(self, text: str, route: str) -> None:
+        self.store.update(
+            lambda s: s.model_copy(
+                update={
+                    "conversation": s.conversation.model_copy(
+                        update={"last_user_message": text}
+                    )
+                }
+            )
+        )
+        self._emit(AgentEventKind.USER_UTTERANCE, payload={"text": text, "route": route})
+
+    # ── speech helpers — NEVER call acknowledge() for results ──────────────
+
+    def _speak_result(self, text: str) -> None:
+        """Deliver a task result or narration via Live (speak_result) or fallback."""
+        self._update_speaking(True)
         self.store.update(
             lambda s: s.model_copy(
                 update={
                     "conversation": s.conversation.model_copy(
                         update={"last_agent_message": text}
-                    ),
-                    "agent": s.agent.model_copy(
-                        update={"speaking": True, "mode": AgentMode.speaking}
-                    ),
+                    )
                 }
             )
         )
         if self.live.is_available():
-            self.live.acknowledge(text)
+            self.live.speak_result(text)
         elif self.speak is not None:
             self.speak(text)
+        self._update_speaking(False)
+
+    def _speak_error(self, text: str) -> None:
+        """Deliver a recovery/failure message to the visitor."""
+        self._update_speaking(True)
+        if self.live.is_available():
+            self.live.speak_error(text)
+        elif self.speak is not None:
+            self.speak(text)
+        self._update_speaking(False)
+
+    def _update_speaking(self, speaking: bool) -> None:
+        mode = AgentMode.speaking if speaking else AgentMode.listening
         self.store.update(
             lambda s: s.model_copy(
-                update={
-                    "agent": s.agent.model_copy(
-                        update={"speaking": False, "mode": AgentMode.listening}
-                    )
-                }
+                update={"agent": s.agent.model_copy(update={"speaking": speaking, "mode": mode})}
             )
         )
 

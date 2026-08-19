@@ -122,8 +122,10 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
             print(f"[listen] on_user_utterance skipped: {exc}", flush=True)
     if utterance:
         from navigator.agent_runtime.bridge import on_live_heard
+        from navigator.agent_runtime.planning.router import ROUTE_TASK_HANDOFF
 
-        if on_live_heard(deps, utterance):
+        _heard_decision = on_live_heard(deps, utterance)
+        if _heard_decision is not None and _heard_decision.route == ROUTE_TASK_HANDOFF:
             return CallState(
                 transcript=[f"user: {utterance}"],
                 user_correction=False,

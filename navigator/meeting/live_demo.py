@@ -124,8 +124,13 @@ def _start_live_agent(
         text = (event.text or "").strip() if event.kind == "heard" else ""
         if text and heard_sink is not None:
             heard_sink.append(text)
-        # Switch Live language as soon as we hear the request — before the
-        # model finishes an English-only refuse (MeetSpeaker was updated alone).
+
+        # Latency: record when Live first hears the user finish speaking
+        if event.kind == "heard" and text and lat_box:
+            from navigator.agent_runtime.latency import USER_SPEECH_END
+            lat_box[0].start(USER_SPEECH_END)
+
+        # Switch Live language as soon as we hear the request
         if text and agent_box:
             from navigator.voice.language import detect_language_switch
 
@@ -135,6 +140,11 @@ def _start_live_agent(
                     agent_box[0].set_language(target)
                 except Exception:  # noqa: BLE001
                     pass
+
+        # Update realtime state on interruption
+        if event.kind == "interrupted" and rt_ctl_box:
+            from navigator.agent_runtime.realtime_state import RealtimeState
+            rt_ctl_box[0].transition(RealtimeState.UNDERSTANDING)
 
     try:
         from navigator.voice.live_agent import LiveAgent, LiveAgentConfig
@@ -783,6 +793,9 @@ def run_live_meet_demo(
     bot_id: str | None = None
     live_box: list = []
     orch_box: list = []
+    rt_ctl_box: list = []   # RealtimeController
+    bc_ctl_box: list = []   # BackchannelController
+    lat_box: list = []      # LatencyTracker
 
     try:
         zoom_native = is_zoom_meeting(meeting_url)
@@ -1598,6 +1611,18 @@ def run_live_meet_demo(
             )
 
             from navigator.agent_runtime.bridge import attach_to_deps, build_orchestrator
+            from navigator.agent_runtime.realtime_state import RealtimeController, RealtimeState
+            from navigator.agent_runtime.backchannel import BackchannelController
+            from navigator.agent_runtime.latency import LatencyTracker
+
+            _rt_controller = RealtimeController(live_agent=live_agent)
+            _backchannel_ctl = BackchannelController(
+                nudge_fn=getattr(live_agent, "nudge", None) if live_agent else None,
+            )
+            _latency = LatencyTracker(session_id=str(session_id))
+            rt_ctl_box[:] = [_rt_controller]
+            bc_ctl_box[:] = [_backchannel_ctl]
+            lat_box[:] = [_latency]
 
             revision_id = int(getattr(graph_cfg, "revision", 0) or 0)
             orchestrator = build_orchestrator(

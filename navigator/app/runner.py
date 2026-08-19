@@ -457,16 +457,24 @@ class DemoRunner:
         try:
             with Registry(settings.db_path) as reg:
                 p = reg.get(product_id)
+                agent_settings = reg.get_agent_settings(product_id)
                 cfg = BrainConfig.from_settings(
                     autonomy_mode=getattr(p, "autonomy_mode", None) or "guided",
                     tier2_legacy=bool(p.tier2_enabled),
+                    planning_model=getattr(agent_settings, "brain_planning_model", "") or None,
+                    phrasing_model=getattr(agent_settings, "brain_phrasing_model", "") or None,
+                    classify_model=getattr(agent_settings, "brain_classify_model", "") or None,
+                    stt_model=getattr(agent_settings, "brain_stt_model", "") or None,
+                    vision_text_model=getattr(agent_settings, "brain_vision_text_model", "") or None,
+                    vision_image_model=getattr(agent_settings, "brain_vision_image_model", "") or None,
+                    reasoning_model=getattr(agent_settings, "brain_reasoning_model", "") or None,
                 )
                 return {
                     "tier2_enabled": cfg.tier2_enabled,
                     "brain_config": cfg,
                     "use_turn_brain": cfg.use_turn_brain,
                     "handoff_webhook_url": getattr(p, "handoff_webhook_url", "") or "",
-                    "agent_settings": reg.get_agent_settings(product_id),
+                    "agent_settings": agent_settings,
                 }
         except Exception:  # noqa: BLE001
             cfg = BrainConfig.from_settings()

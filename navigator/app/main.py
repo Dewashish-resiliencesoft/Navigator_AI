@@ -1091,6 +1091,14 @@ class AgentSettingsBody(BaseModel):
     agent_name: str | None = None
     tone: str | None = None
     gemini_voice: str | None = None
+    live_conversational_model: str | None = None
+    brain_reasoning_model: str | None = None
+    brain_planning_model: str | None = None
+    brain_phrasing_model: str | None = None
+    brain_classify_model: str | None = None
+    brain_stt_model: str | None = None
+    brain_vision_text_model: str | None = None
+    brain_vision_image_model: str | None = None
 
 
 class AgentProviderKeysBody(BaseModel):

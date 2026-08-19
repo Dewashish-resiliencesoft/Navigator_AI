@@ -20,6 +20,14 @@ export type AgentSettings = {
   agent_name: string;
   tone: string;
   gemini_voice: string;
+  live_conversational_model: string;
+  brain_reasoning_model: string;
+  brain_planning_model: string;
+  brain_phrasing_model: string;
+  brain_classify_model: string;
+  brain_stt_model: string;
+  brain_vision_text_model: string;
+  brain_vision_image_model: string;
   has_gemini_api_key: boolean;
   has_groq_api_key: boolean;
   updated_at: string | null;

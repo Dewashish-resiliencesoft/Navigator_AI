@@ -17,6 +17,15 @@ DEFAULT_AGENT_SETTINGS: dict[str, object] = {
     "agent_name": "",
     "tone": "",
     "gemini_voice": "",
+    # Per-product model overrides. Blank keeps provider/server defaults.
+    "live_conversational_model": "",
+    "brain_reasoning_model": "",
+    "brain_planning_model": "",
+    "brain_phrasing_model": "",
+    "brain_classify_model": "",
+    "brain_stt_model": "",
+    "brain_vision_text_model": "",
+    "brain_vision_image_model": "",
 }
 
 GEMINI_VOICE_BY_GENDER: dict[AgentGender, str] = {
@@ -32,6 +41,22 @@ class AgentSettings(BaseModel):
     agent_name: str = ""
     tone: str = ""
     gemini_voice: str = ""
+    #: Gemini Live realtime audio+voice model id override. "" = default.
+    live_conversational_model: str = ""
+    #: Gemini Flash deep reasoning model id override. "" = default.
+    brain_reasoning_model: str = ""
+    #: Groq planning model id override. "" = default.
+    brain_planning_model: str = ""
+    #: Groq phrasing model id override. "" = default.
+    brain_phrasing_model: str = ""
+    #: Groq classifier model id override. "" = default.
+    brain_classify_model: str = ""
+    #: Groq STT model id override (non-Live paths). "" = default.
+    brain_stt_model: str = ""
+    #: Gemini vision text model id override. "" = default.
+    brain_vision_text_model: str = ""
+    #: Gemini vision image model id override. "" = default.
+    brain_vision_image_model: str = ""
 
     @field_validator("extra_languages", mode="before")
     @classmethod

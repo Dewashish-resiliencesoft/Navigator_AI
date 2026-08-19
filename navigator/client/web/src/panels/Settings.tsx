@@ -24,6 +24,25 @@ export function Settings() {
   const [loginUrl, setLoginUrl] = useState("");
   const [savingLoginToggle, setSavingLoginToggle] = useState(false);
 
+  const saveModelOverrides = async () => {
+    if (!settings) return
+    try {
+      await api.putAgentSettings({
+        live_conversational_model: settings.live_conversational_model,
+        brain_reasoning_model: settings.brain_reasoning_model,
+        brain_planning_model: settings.brain_planning_model,
+        brain_phrasing_model: settings.brain_phrasing_model,
+        brain_classify_model: settings.brain_classify_model,
+        brain_stt_model: settings.brain_stt_model,
+        brain_vision_text_model: settings.brain_vision_text_model,
+        brain_vision_image_model: settings.brain_vision_image_model,
+      })
+      ok("Model overrides saved.")
+    } catch (e) {
+      err(errText(e))
+    }
+  }
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -224,6 +243,81 @@ export function Settings() {
             placeholder="Blank = match voice gender (Sulafat / Charon)"
           />
         </label>
+      </Card>
+
+      <Card>
+        <CardTitle
+          hint="Per-product runtime model override. Blank keeps server/provider defaults. Keys never shown; UI only updates model ids."
+          right={
+            <Button variant="secondary" onClick={() => void saveModelOverrides()}>
+              Save models
+            </Button>
+          }
+        >
+          Direct agent connection
+        </CardTitle>
+
+        <div className="space-y-4">
+          <div className="text-[0.82rem] text-[var(--muted)]">
+            Gemini key {settings.has_gemini_api_key ? "saved" : "missing"} · Groq key{" "}
+            {settings.has_groq_api_key ? "saved" : "missing"}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <label className="block space-y-1.5 text-[0.8rem]">
+              <span className="font-medium text-[var(--muted)]">Gemini Live model</span>
+              <select
+                className="w-full rounded-lg border bg-transparent px-3 py-2 text-[0.85rem]"
+                style={{ borderColor: "var(--line)" }}
+                value={settings.live_conversational_model}
+                onChange={(e) => setSettings({ ...settings, live_conversational_model: e.target.value })}
+              >
+                <option value="">Use server default</option>
+                <option value="gemini-3.1-flash-live-preview">gemini-3.1-flash-live-preview</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1.5 text-[0.8rem]">
+              <span className="font-medium text-[var(--muted)]">Gemini Flash reasoning</span>
+              <select
+                className="w-full rounded-lg border bg-transparent px-3 py-2 text-[0.85rem]"
+                style={{ borderColor: "var(--line)" }}
+                value={settings.brain_reasoning_model}
+                onChange={(e) => setSettings({ ...settings, brain_reasoning_model: e.target.value })}
+              >
+                <option value="">Use server default</option>
+                <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                <option value="gemini-3.6-flash">gemini-3.6-flash</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1.5 text-[0.8rem]">
+              <span className="font-medium text-[var(--muted)]">Groq planning model</span>
+              <select
+                className="w-full rounded-lg border bg-transparent px-3 py-2 text-[0.85rem]"
+                style={{ borderColor: "var(--line)" }}
+                value={settings.brain_planning_model}
+                onChange={(e) => setSettings({ ...settings, brain_planning_model: e.target.value })}
+              >
+                <option value="">Use server default</option>
+                <option value="llama-3.3-70b-versatile">llama-3.3-70b-versatile</option>
+              </select>
+            </label>
+
+            <label className="block space-y-1.5 text-[0.8rem]">
+              <span className="font-medium text-[var(--muted)]">Groq STT model</span>
+              <select
+                className="w-full rounded-lg border bg-transparent px-3 py-2 text-[0.85rem]"
+                style={{ borderColor: "var(--line)" }}
+                value={settings.brain_stt_model}
+                onChange={(e) => setSettings({ ...settings, brain_stt_model: e.target.value })}
+              >
+                <option value="">Use server default</option>
+                <option value="whisper-large-v3-turbo">whisper-large-v3-turbo</option>
+              </select>
+            </label>
+          </div>
+        </div>
       </Card>
 
       <Card>

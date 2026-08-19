@@ -35,6 +35,7 @@ RUN apt-get update \
 
 COPY pyproject.toml ./
 COPY navigator ./navigator
+COPY scripts/disable-attendee-debug-recording.py ./scripts/disable-attendee-debug-recording.py
 COPY --from=web /build/dist ./navigator/client/web/dist
 
 RUN if [ "$NAVIGATOR_EXTRAS" = "full" ]; then \

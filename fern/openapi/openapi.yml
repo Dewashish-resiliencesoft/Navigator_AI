@@ -2834,6 +2834,46 @@ components:
           - type: string
           - type: 'null'
           title: Gemini Voice
+        live_conversational_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Live Conversational Model
+        brain_reasoning_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Reasoning Model
+        brain_planning_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Planning Model
+        brain_phrasing_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Phrasing Model
+        brain_classify_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Classify Model
+        brain_stt_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Stt Model
+        brain_vision_text_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Vision Text Model
+        brain_vision_image_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Brain Vision Image Model
       type: object
       title: AgentSettingsBody
     ApproveCorrectionBody:

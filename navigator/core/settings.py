@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     brain_stt_model: str = "whisper-large-v3-turbo"
     brain_vision_text_model: str = "gemini-2.0-flash"
     brain_vision_image_model: str = "gemini-2.0-flash"
+    #: Deep reasoning for agent runtime (Flash). Upgrade to gemini-3.6-flash when available.
+    brain_reasoning_model: str = "gemini-2.0-flash"
+    #: Interactive agent runtime: Live → Orchestrator → Flash → Playwright.
+    agent_runtime_enabled: bool = True
     brain_listen_timeout_s: float = 8.0
     brain_resume_silence_s: float = 6.0
     #: Bot joins Meet first; link shared only after Navigator is inside.

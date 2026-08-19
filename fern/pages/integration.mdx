@@ -139,7 +139,7 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `Union[str, null]` | — |  |
+| `spoken` | `UnionType[str, null]` | — |  |
 | `tool` | `Literal[click_element]` | 'click_element' |  |
 | `selector` | `str` | required |  |
 
@@ -150,12 +150,12 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `Union[str, null]` | — |  |
+| `spoken` | `UnionType[str, null]` | — |  |
 | `tool` | `Literal[fill_field]` | 'fill_field' |  |
 | `selector` | `str` | required |  |
 | `value` | `str` | required |  |
 | `source` | `Literal[agent, user]` | 'agent' |  |
-| `live_question` | `Union[str, null]` | — |  |
+| `live_question` | `UnionType[str, null]` | — |  |
 
 #### Navigate
 
@@ -164,7 +164,7 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `Union[str, null]` | — |  |
+| `spoken` | `UnionType[str, null]` | — |  |
 | `tool` | `Literal[navigate]` | 'navigate' |  |
 | `page_id` | `str` | required |  |
 
@@ -175,7 +175,7 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `Union[str, null]` | — |  |
+| `spoken` | `UnionType[str, null]` | — |  |
 | `tool` | `Literal[wait_for]` | 'wait_for' |  |
 | `selector` | `str` | required |  |
 | `timeout_ms` | `int` | 15000 |  |

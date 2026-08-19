@@ -38,7 +38,9 @@ flowchart TB
         API[FastAPI backend\nroute/auth boundary]
         REG[Registry\nproducts + graph revisions]
         RUN[DemoRunner\nthread + browser isolation]
-        ENGINES[Demo engine layer\ngemini_live | timeline | strict_playlist | langgraph]
+        RUNTIME[Agent runtime\nOrchestrator + World State]
+        PLAYBACK[Deterministic playback\ntimeline | strict playlist]
+        LEGACY[LangGraph adapter\nmigration path]
         EXP[Autonomous explorer\nPlaywright + guardrails]
         KNOW[Knowledge + retrieval\nsite graph, Chroma, Product Map]
         LOG[SQLite ActionLog\ndecisions + demo runs]
@@ -48,10 +50,10 @@ flowchart TB
     end
 
     subgraph Providers[External providers]
-        GROQ[Groq\nLlama 3.3 70B + Whisper]
+        GROQ[Groq\nasync event enrichment + legacy STT]
         OPENAI[OpenAI\nGPT-4o-mini reflection\nGPT-4o vision fallback]
-        GEMINI[Gemini Vision / Live]
-        TTS[Fish Audio Sarah / Piper]
+        GEMINI_LIVE[Gemini Live\nrealtime audio in/out]
+        GEMINI_FLASH[Gemini Flash\nplanning + DOM reasoning]
         MEET[Google Meet]
         ZOOM[Zoom]
     end
@@ -64,15 +66,21 @@ flowchart TB
     API --> KNOW
     RUN --> REDIS
     RUN --> LOG
-    RUN --> ENGINES
-    ENGINES --> RELAY
-    ENGINES --> ATT
+    RUN --> RUNTIME
+    RUN --> PLAYBACK
+    RUN --> LEGACY
+    RUNTIME --> RELAY
+    RUNTIME --> ATT
+    PLAYBACK --> RELAY
+    LEGACY --> RELAY
     EXP --> KNOW
     EXP --> LOG
-    ENGINES --> GROQ
-    ENGINES --> OPENAI
-    ENGINES --> GEMINI
-    ENGINES --> TTS
+    RUNTIME --> GEMINI_LIVE
+    RUNTIME --> GEMINI_FLASH
+    RUNTIME --> GROQ
+    LEGACY --> GROQ
+    LEGACY --> OPENAI
+    LEGACY --> GEMINI_FLASH
     ATT --> MEET
     ATT --> ZOOM
     RELAY --> ATT
@@ -85,7 +93,9 @@ flowchart TB
 | Embed script and SDK | Server-minted `sess_` token flow for public demos; TypeScript DSL/CLI for authoring and pushing graphs. |
 | Registry | SQLite product registry and immutable site-graph revisions; `latest_revision()` for dashboard/test and `published_revision()` for live. |
 | DemoRunner | Per-demo Playwright context, thread, `CallDeps`, lifecycle handle, run persistence, and optional Redis synchronization. |
-| Demo engines | Choose the appropriate execution strategy for conversational, narrated-timeline, strict scripted, or live-agent paths. |
+| Agent runtime | **Primary interactive path.** Gemini Live (ears/mouth) → Orchestrator (world state, routing, locks) → Gemini Flash (planning) → Playwright (body) → verification → world state. Groq enriches events asynchronously. |
+| Deterministic playback | Timeline and strict playlist replay recorded flows without LLM planning. Fallback when Live is unavailable or for authored narrated demos. |
+| LangGraph adapter | Legacy conversational state machine; nodes migrate incrementally into the runtime. Still used where the orchestrator is disabled or for test demos without Live. |
 | Autonomous explorer | Bounded browser exploration using click/fill/navigate/wait tools, field classification, guardrails, semantic labeling, repair, episodes, and draft-flow generation. |
 | Knowledge/memory | Site graph validation, product brief/bio, flow semantics, Chroma collections, pending corrections, and Product Map persistence. |
 | Attendee and relay | Joins meetings, transports mixed audio, publishes screenshare/relay pages, and supports Meet/Zoom-specific behavior. |
@@ -155,18 +165,60 @@ sequenceDiagram
     AT-->>EU: Meeting experience
 ```
 
-## 5. Engine layer
+## 5. Interactive agent runtime (primary)
 
-The engines coexist because Clients have different authoring/runtime maturity and live-demo needs:
+The live demo path is a **real-time multimodal agent system**, not a single model doing everything. Two Gemini model contracts are intentional: **Gemini Live** (`gemini-3.1-flash-live-preview`) for realtime audio, and **Gemini Flash** (configurable; default `gemini-2.0-flash`, target `gemini-3.6-flash`) for deep planning. They are not interchangeable — Live has no substitute for Flash planning, and Flash has no Live API.
 
-| Engine | Why it exists | Current use |
-|---|---|---|
-| `gemini_live` | Low-latency live voice agent that can listen, reason, narrate, and respond to End User questions. | Preferred when a Gemini Live agent is available. |
-| `timeline` | Replays recorded narration and timed cursor actions with smooth pacing. | Used when playlist metadata has narration/timing/click data. |
-| `strict_playlist` | Deterministic YAML replay for incomplete playlist metadata. | Used for playlist demos when timeline metadata is incomplete and no live agent is active. |
-| `langgraph` | Explicit orchestration for planning, narration, browser execution, verification, reflection, and conversational turns. | Used when there is no Gemini Live agent and either no usable playlist or conversational mode is selected. |
+```mermaid
+flowchart TB
+    EU[End User voice] --> LIVE[Gemini Live\nlisten + speak + interrupt]
+    LIVE -->|simple reply| EU
+    LIVE -->|complex task| ORCH[Agent Orchestrator\nworld state + routing]
+    ORCH -->|ack while thinking| LIVE
+    ORCH --> FLASH[Gemini Flash\nstructured AgentPlan]
+    FLASH --> ORCH
+    ORCH --> PW[Playwright\nsemantic browser tools]
+    PW --> VER[Verifier\nmandatory postconditions]
+    VER --> WS[AgentWorldState]
+    WS --> LIVE
+    ORCH -->|async events| GROQ[Groq worker\nlogs + summaries]
+```
 
-Runtime selection reports `gemini_live`, `timeline`, `strict_playlist`, `langgraph_conversational`, or `langgraph`. The last two are LangGraph variants rather than separate orchestration frameworks.
+| Component | Responsibility |
+|---|---|
+| Gemini Live | Realtime audio in/out, listening, speaking, interruption, simple replies, compact DOM context |
+| Orchestrator | Source of truth: session, task, action lock, cancellation, model routing, event emission |
+| AgentWorldState | Canonical runtime state: conversation, browser, task, execution, agent mode, interruption, memory |
+| Gemini Flash | Deep reasoning: planning, DOM analysis, screenshot escalation, recovery strategy |
+| Groq (async) | Event enrichment: human-readable traces, summaries, memory candidates — **not on the critical click path** |
+| Playwright | Semantic actions (`click`, `type`, `navigate`, …) resolved to site-graph aliases or inventory labels |
+| Verifier | Mechanical postcondition checks after every action; vision escalation when ambiguous |
+
+**Simple vs complex routing:** Live handles acknowledgements, short questions, and conversational replies. Utterances that require browser reasoning route to the orchestrator. Live speaks an immediate acknowledgement while Flash plans in parallel.
+
+**Interruption model:** `CANCEL_AFTER_ATOMIC_ACTION` — finish the current browser action, verify, then cancel the remaining plan and start the new task. Live can respond immediately while the runtime completes the atomic step safely.
+
+**DOM context:** A DOM State Builder produces a compact representation for Live (visible labels, page, URL) and a detailed inventory for Flash. Raw DOM is not streamed continuously into Live.
+
+## 5b. Deterministic playback (fallback)
+
+Timeline and strict playlist are **playback subsystems**, not competing intelligence engines:
+
+| Mode | Role |
+|---|---|
+| `timeline` | Replays recorded narration and timed cursor actions with smooth pacing |
+| `strict_playlist` | Deterministic YAML replay when timeline metadata is incomplete |
+
+LangGraph remains a **migration adapter** for conversational test demos and nodes not yet ported to the runtime. Runtime selection still reports diagnostic labels (`gemini_live`, `timeline`, `strict_playlist`, `langgraph_conversational`) for observability.
+
+## 5c. Legacy engine layer (migration)
+
+Previously four engines competed as equal architectures. The target state collapses to:
+
+- **InteractiveAgentRuntime** — Live + Orchestrator + Flash + Playwright (primary)
+- **DeterministicPlaybackRuntime** — timeline + strict playlist
+
+The old four-engine table is retired in favor of the split above. LangGraph nodes migrate incrementally via an adapter; the graph is no longer the product architecture.
 
 ## 6. Autonomy and self-healing
 
@@ -192,13 +244,14 @@ Exploration episodes are durable JSONL/JSON artifacts with capped screenshots an
 | HTTP/API | FastAPI + Pydantic | Typed contracts, dependency-based auth, REST and WebSocket support. |
 | Dashboard | Vite + React + TypeScript | Fast local operator console with typed API calls and focused panels. |
 | Browser automation | Playwright Chromium | Real product interaction, isolated browser contexts, DOM verification, screenshots, and CDP screencast. |
-| Orchestration | LangGraph | Explicit state transitions and testable node boundaries for voice/browser turns. |
-| Live reasoning | Groq Llama 3.3 70B | Low-latency conversational planning and response generation. |
-| Reflection | OpenAI GPT-4o-mini | Cost-conscious post-failure correction drafting. |
-| Vision fallback | OpenAI GPT-4o and Gemini Vision | Visual interpretation and turn-brain/interrupt handling when DOM reasoning is insufficient. |
-| Speech-to-text | Groq Whisper | Fast transcription of mixed meeting audio. |
-| Text-to-speech | Fish Audio Sarah / Piper | Human-sounding primary voice with local/alternative fallback. |
-| Meeting bot | Self-hosted Attendee | Meet/Zoom joining, audio transport, and screenshare integration. |
+| Orchestration | Agent Orchestrator + World State (LangGraph adapter during migration) | Single authoritative runtime state; explicit event log; testable contracts |
+| Live interface | Gemini Live (`gemini-3.1-flash-live-preview`) | Native realtime audio; replaces external STT/TTS on primary live path |
+| Deep reasoning | Gemini Flash (`NAVIGATOR_BRAIN_REASONING_MODEL`) | Structured plans, DOM analysis, function calling / JSON outputs |
+| Legacy planning | Groq Llama 3.3 70B | LangGraph paths and explore; async event enrichment in runtime |
+| Reflection | OpenAI GPT-4o-mini | Cost-conscious post-failure correction drafting |
+| Vision fallback | OpenAI GPT-4o and Gemini Vision | Visual interpretation when DOM verification is ambiguous |
+| Legacy STT | Groq Whisper | Non-Live paths and fallback during migration |
+| Meeting transport | Attendee adapter | Meet/Zoom joining; audio WebSocket; screenshare — infrastructure only |
 | Vector memory | ChromaDB | Product-scoped semantic retrieval for knowledge and approved corrections. |
 | Shared demo state | Redis hashes, TTLs, and pub/sub | Cross-worker visibility and stop propagation. |
 | Durable relational data | SQLite/WAL | Simple append/read workloads for registry, logs, runs, users, and pending corrections. |
@@ -216,11 +269,11 @@ This removes the single-process visibility bottleneck for reads and stop control
 
 | Dependency | Responsibility | Current failure behavior |
 |---|---|---|
-| Groq Llama / Whisper | Live reasoning, reflection helpers, recording transcription, STT | Provider/key failures use configured fallback paths where available; missing keys can disable optional narration/STT. |
-| Gemini Live / Vision | Live voice agent and visual turn-brain | Gemini Live availability is detected; runtime can fall back to other engines. Exact synchronization parity with LangGraph remains open. |
-| OpenAI GPT-4o-mini / GPT-4o | Reflection and vision fallback | Reflection is fail-soft; visual fallback is optional and guarded. |
-| Fish Audio / Piper | Spoken output | Fish Audio is primary; Piper is the local/alternative TTS path. |
-| Attendee | Meeting bot, audio WebSocket, screenshare, avatar/camera tile | Live start fails early if Attendee is unreachable. Bot readiness and screenshare reachability are checked; Zoom can still be unreliable. |
+| Groq Llama / Whisper | Legacy LangGraph planning, explore, optional STT; runtime async event enrichment | Provider/key failures use fallback paths; runtime continues if Groq enrichment is down |
+| Gemini Live | Realtime audio interface for live demos | Live unavailable → timeline/strict playlist/LangGraph fallback |
+| Gemini Flash | Agent runtime deep planning (`navigator/agent_runtime`) | Missing key disables complex task path; Live still handles simple replies |
+| OpenAI GPT-4o-mini / GPT-4o | Reflection and vision fallback | Reflection is fail-soft; visual fallback is optional |
+| Attendee | Meeting transport only (audio WebSocket, screenshare) | Live start fails early if Attendee is unreachable |
 | Google Meet / Zoom | End-user meeting surface | Provider-specific creation/join/authentication errors prevent a live session from starting. |
 | cloudflared | Makes local audio/screenshare relay reachable by Attendee | Tunnel/DNS readiness is probed and retried; screenshare may continue after timeout with a warning. |
 | ChromaDB | Product-scoped semantic memory | Retrieval is optional/fail-soft in several paths; collection names enforce tenant separation. |
@@ -230,7 +283,9 @@ This removes the single-process visibility bottleneck for reads and stop control
 
 ### Voice latency
 
-The implementation favors short asynchronous seams: mixed meeting audio enters the bridge, STT produces text, the live agent decides, and TTS/audio is returned through Attendee. The repository does not define a formal end-to-end latency SLO. A practical live budget should be measured separately for audio capture, STT, model turn, TTS, Attendee transport, and browser action latency; current code contains timing diagnostics but no single contractual number.
+Primary live path: **Gemini Live audio in → Live → Gemini Live audio out**. No external STT/TTS on the critical conversational seam when Live is active. Complex browser tasks acknowledge immediately via Live while Flash plans asynchronously.
+
+Measure separately: Live first-response latency, Flash planning start, first browser action, action→verification, and Attendee transport. No formal end-to-end SLO is defined yet; establish baselines before declaring migration complete.
 
 ### Security
 

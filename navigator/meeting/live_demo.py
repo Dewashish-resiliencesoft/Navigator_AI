@@ -103,6 +103,7 @@ def _start_live_agent(
     agent_gender: str,
     heard_sink: list[str] | None = None,
     voice_name: str = "",
+    live_conversational_model: str = "",
 ):
     """Open the bidirectional Live session, or return None (caller stops the demo)."""
     if audio_bridge is None:
@@ -151,7 +152,7 @@ def _start_live_agent(
             LiveAgentConfig(
                 api_key=keys[0],
                 system_instruction=instruction,
-                model=settings.live_conversational_model,
+                model=live_conversational_model or settings.live_conversational_model,
                 voice_name=voice_name or settings.gemini_live_voice,
                 language=spoken_language,  # type: ignore[arg-type]
                 vad_silence_ms=settings.live_vad_silence_ms,
@@ -713,6 +714,7 @@ def run_live_meet_demo(
     screencast = None
     bot_id: str | None = None
     live_box: list = []
+    orch_box: list = []
 
     try:
         zoom_native = is_zoom_meeting(meeting_url)
@@ -978,6 +980,7 @@ def run_live_meet_demo(
                 agent_gender=agent_settings.agent_gender,
                 heard_sink=pending_barge_in,
                 voice_name=agent_settings.effective_gemini_voice(),
+                live_conversational_model=getattr(agent_settings, "live_conversational_model", "") or "",
             )
             if early_live is None:
                 raise LiveDemoStopped(
@@ -1437,6 +1440,7 @@ def run_live_meet_demo(
                     agent_gender=agent_settings.agent_gender,
                     heard_sink=pending_barge_in,
                     voice_name=agent_settings.effective_gemini_voice(),
+                    live_conversational_model=getattr(agent_settings, "live_conversational_model", "") or "",
                 )
                 if live_agent is None:
                     raise LiveDemoStopped(
@@ -1510,6 +1514,25 @@ def run_live_meet_demo(
                 ),  # type: ignore[arg-type]
                 live_agent=live_agent,
             )
+
+            from navigator.agent_runtime.bridge import attach_to_deps, build_orchestrator
+
+            revision_id = int(getattr(graph_cfg, "revision", 0) or 0)
+            orchestrator = build_orchestrator(
+                session_id=session_id,
+                product_id=product_id or graph_cfg.site or "default",
+                revision_id=revision_id,
+                origin=(
+                    demo_origin
+                    if demo_origin in ("dashboard_test", "public_embed")
+                    else "dashboard_test"
+                ),
+                deps=deps,
+            )
+            attach_to_deps(deps, orchestrator)
+            if orchestrator is not None:
+                orch_box.append(orchestrator)
+                print("[live] agent runtime orchestrator active", flush=True)
 
             from navigator.agent.recorded_playback import (
                 playlist_timeline_ready,
@@ -1638,6 +1661,11 @@ def run_live_meet_demo(
                 _live.close()
             except Exception as exc:  # noqa: BLE001
                 print(f"[live] Live session close skipped: {exc}", flush=True)
+        for _orch in orch_box:
+            try:
+                _orch.close()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] orchestrator close skipped: {exc}", flush=True)
         if audio_tunnel is not None:
             audio_tunnel.stop()
         if audio_bridge is not None:

@@ -16,6 +16,57 @@ JWT login, refresh/logout, user preferences, auth stores, dependency functions, 
 
 Shared Pydantic schemas, settings, provider key pools, usage context, and provider-specific configuration. The core schemas define tool calls, postconditions, results, and action-log payloads.
 
+### `navigator/agent_runtime`
+
+**Primary interactive runtime** (shipped on `feat/self-healing-explore`). Replaces the “Live does everything” and four-engine model with a single orchestrated path:
+
+| Module | Role |
+|---|---|
+| `models.py` | Typed contracts: `AgentSession`, `AgentWorldState`, `AgentTask`, `AgentPlan`, `AgentAction`, `AgentEvent`, … |
+| `orchestrator.py` | Central brain: routing, execution lock, task lifecycle, event emission |
+| `world_state/store.py` | Authoritative in-process world state with versioned updates |
+| `events/bus.py` | Synchronous event bus; Groq worker subscribes asynchronously |
+| `dom/builder.py` | Compact DOM for Live; detailed inventory for Flash |
+| `planning/router.py` | Simple vs complex utterance classification |
+| `planning/flash_planner.py` | Gemini Flash structured plan generation |
+| `planning/groq_worker.py` | Async log/summary enrichment (non-critical) |
+| `execution/executor.py` | Semantic action → `ToolCall` → Playwright |
+| `execution/cancellation.py` | Atomic-action interruption semantics |
+| `verification/verifier.py` | Wraps mechanical postcondition results |
+| `adapters/live_adapter.py` | Push DOM context and acknowledgements to Live |
+| `bridge.py` | Wire orchestrator into `CallDeps` and live demo |
+
+Settings: `NAVIGATOR_AGENT_RUNTIME_ENABLED` (default true), `NAVIGATOR_BRAIN_REASONING_MODEL`.
+
+Runtime sequence for a complex live utterance:
+
+```mermaid
+sequenceDiagram
+    participant U as End User
+    participant LIVE as Gemini Live
+    participant L as LISTENING node
+    participant ORCH as AgentOrchestrator
+    participant FLASH as FlashPlanner
+    participant PW as Playwright
+    participant VER as Verifier
+    participant GROQ as GroqEventWorker
+
+    U->>LIVE: Speech
+    LIVE->>L: heard transcript (barge-in queue)
+    L->>ORCH: handle_utterance (complex)
+    ORCH->>LIVE: immediate acknowledgement
+    ORCH->>FLASH: plan(goal, world state, DOM)
+    FLASH-->>ORCH: AgentPlan (structured steps)
+    loop each step
+        ORCH->>PW: semantic action
+        PW-->>ORCH: ToolResult
+        ORCH->>VER: postcondition
+        VER-->>ORCH: pass/fail
+        ORCH->>GROQ: ACTION_* events (async)
+    end
+    ORCH->>LIVE: spoken result
+```
+
 ### `navigator/agent`
 
 The conversation/execution system. `graph.py` builds the LangGraph state machine. `state.py` defines `CallState` and `CallDeps`. `nodes/` contains joining, introducing, listening, planning, speaking, executing, verifying, reflecting, and ending nodes. `recorded_playback.py` contains timeline and strict playlist execution. `turn_brain.py`, `planner.py`, `live_input.py`, `call_memory.py`, and `demo_trace.py` support interactive decisions and diagnostics.
@@ -30,7 +81,7 @@ Meeting provider factories and Meet/Zoom implementations, Attendee HTTP client/s
 
 ### `navigator/voice`
 
-STT, TTS, live persona, live acknowledgements, language switching, and the Gemini Live adapter. The live agent exposes a speaker-compatible interface consumed by the meeting/live-demo layer.
+STT (legacy non-Live paths), live persona, and the Gemini Live adapter. When Live is active, **audio in/out is native to Live** — external STT/TTS is not on the critical path. The live agent exposes a speaker-compatible interface consumed by the meeting/live-demo layer.
 
 ### `navigator/knowledge`
 
@@ -82,17 +133,14 @@ stateDiagram-v2
     [*] --> CONNECTING
     CONNECTING --> LISTENING: live session ready
     CONNECTING --> FALLBACK: unavailable / provider error
-    LISTENING --> THINKING: transcript / interrupt
-    THINKING --> SPEAKING: Gemini response or queued narration
+    LISTENING --> SPEAKING: simple reply / acknowledgement
+    LISTENING --> ROUTED: complex utterance → orchestrator
+    ROUTED --> LISTENING: task complete / ack
     SPEAKING --> LISTENING: audio complete / barge-in
-    THINKING --> EXECUTING: browser action selected
-    EXECUTING --> VERIFYING: one action
-    VERIFYING --> LISTENING: result fed to live turn
-    VERIFYING --> EXECUTING: bounded recovery
     FALLBACK --> [*]
 ```
 
-Gemini Live owns the low-latency listen/decide path and can use the shared browser execution trace. Unlike pure LangGraph, it is an external live-agent session and its exact speech/action synchronization is not yet proven equivalent to the LangGraph fix.
+Gemini Live owns the **realtime interface** only: audio, immediate replies, interruption, and compact DOM awareness. Browser planning and execution go through `AgentOrchestrator` → Flash → Playwright. Live speaks acknowledgements while Flash plans (`"Sure — let me check that for you."`).
 
 ### Timeline
 

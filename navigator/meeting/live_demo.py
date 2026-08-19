@@ -779,7 +779,14 @@ def run_live_meet_demo(
 
             with Registry(settings.db_path) as reg:
                 agent_settings = reg.get_agent_settings(product_id)
-        except Exception:  # noqa: BLE001
+            print(f"[language] agent_settings loaded from registry for product={product_id!r}", flush=True)
+        except Exception as _exc:  # noqa: BLE001
+            print(
+                f"[language] WARNING: registry lookup failed for product={product_id!r}: {_exc!r}. "
+                "Falling back to defaults — language will be 'en'. "
+                "Make sure the product row exists (dashboard → Settings → save).",
+                flush=True,
+            )
             agent_settings = merge_agent_settings(None)
     elif agent_settings is None:
         agent_settings = merge_agent_settings(None)
@@ -797,14 +804,17 @@ def run_live_meet_demo(
             groq_client=groq_byok,
             gemini_client=gemini_byok,
         )
-    # Language: use what the Client configured in Settings, fall back to system default.
-    # If this still shows "en" after setting Hindi in the dashboard, the Settings
-    # auto-save may not have persisted — re-open Settings and confirm the toast.
-    spoken_language: str = agent_settings.default_language or settings.default_spoken_language
+    from navigator.voice.resolved_language import resolve_language
+
+    _rl = resolve_language(
+        session_language=None,
+        agent_settings_language=agent_settings.default_language,
+        global_default=settings.default_spoken_language,
+    )
+    _rl.log()
+    spoken_language: str = _rl.code
     print(
-        f"[live] spoken language={spoken_language!r} "
-        f"(from agent_settings.default_language={agent_settings.default_language!r}, "
-        f"extras={list(agent_settings.extra_languages)})",
+        f"[live] extra_languages={list(agent_settings.extra_languages)}",
         flush=True,
     )
     speaker = PrintSpeaker()

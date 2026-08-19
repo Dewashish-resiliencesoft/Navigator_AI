@@ -462,13 +462,27 @@ class Registry:
         )
         return self.get(product_id)
 
+    def _ensure_product_row(self, product_id: str) -> None:
+        """Auto-create a minimal product row for user accounts that pre-date the product row."""
+        import sqlite3 as _sqlite3
+        from datetime import datetime, timezone as _tz
+
+        try:
+            self._conn.execute(
+                "INSERT INTO products (product_id, name, api_key_hash, created_at) VALUES (?,?,?,?)",
+                (product_id, product_id, "placeholder", datetime.now(_tz.utc).isoformat()),
+            )
+        except _sqlite3.IntegrityError:
+            pass  # race — row already exists
+
     def get_agent_settings(self, product_id: str) -> AgentSettings:
         row = self._conn.execute(
             "SELECT agent_settings_json FROM products WHERE product_id = ?",
             (product_id,),
         ).fetchone()
         if row is None:
-            raise ProductNotFound(f"no such product: {product_id}")
+            self._ensure_product_row(product_id)
+            return merge_agent_settings(None)  # new row → defaults
         raw = row["agent_settings_json"] if "agent_settings_json" in row.keys() else "{}"
         return merge_agent_settings(str(raw or "{}"))
 

@@ -252,14 +252,23 @@ def _section_knowledge(
     return [c.strip() for c in ranked[:3] if c.strip()]
 
 
-def compose_intake_beats(persona: Any) -> list[dict[str, Any]]:
+def compose_intake_beats(
+    persona: Any,
+    *,
+    lang: str = "en",
+    agent_gender: str = "female",
+) -> list[dict[str, Any]]:
     """Intake prelude beats with placeholder tokens for preview."""
+    from navigator.core.agent_settings import AgentGender, SpokenLanguage
+
+    spoken_lang: SpokenLanguage = "hi" if lang == "hi" else "en"
+    gender: AgentGender = "male" if agent_gender == "male" else "female"
     beats: list[dict[str, Any]] = [
         {
             "id": "intake_greet",
             "kind": "intake",
             "phase": "greet",
-            "spoken": greet_line(persona),
+            "spoken": greet_line(persona, lang=spoken_lang, agent_gender=gender),
             "asks_visitor": False,
             "spoken_source": "intake",
         }
@@ -284,7 +293,7 @@ def compose_intake_beats(persona: Any) -> list[dict[str, Any]]:
                     "id": "intake_name_ack",
                     "kind": "intake",
                     "phase": "ack",
-                    "spoken": name_ack_line("{name}"),
+                    "spoken": name_ack_line("{name}", lang=spoken_lang),
                     "asks_visitor": False,
                     "spoken_source": "intake",
                     "uses_intake_tokens": True,
@@ -301,7 +310,13 @@ def compose_intake_beats(persona: Any) -> list[dict[str, Any]]:
             "id": "intake_pitch",
             "kind": "intake",
             "phase": "pitch",
-            "spoken": pitch_line(persona, placeholder, will_share_screen=True),
+            "spoken": pitch_line(
+                persona,
+                placeholder,
+                lang=spoken_lang,
+                agent_gender=gender,
+                will_share_screen=True,
+            ),
             "asks_visitor": False,
             "spoken_source": "intake",
             "uses_intake_tokens": True,
@@ -322,6 +337,9 @@ def compose_full_demo_script(
     chroma_path: Any = None,
     stored_script: dict[str, Any] | None = None,
     flow_id_filter: str | None = None,
+    spoken_language: str = "en",
+    agent_gender: str = "female",
+    humanize: bool = False,
 ) -> dict[str, Any]:
     """Build full-demo beat list for one draft revision.
 
@@ -334,7 +352,13 @@ def compose_full_demo_script(
     sources_used: set[str] = set()
 
     if intake_enabled and not flow_id_filter:
-        beats.extend(compose_intake_beats(persona))
+        beats.extend(
+            compose_intake_beats(
+                persona,
+                lang=spoken_language,
+                agent_gender=agent_gender,
+            )
+        )
         sources_used.add("intake")
 
     from navigator.automation.login_match import (
@@ -561,6 +585,15 @@ def compose_full_demo_script(
     if context_bits and not flow_id_filter:
         sources_used.add("bio")
 
+    if humanize:
+        beats = _humanize_beats(
+            beats,
+            lang=spoken_language,
+            agent_gender=agent_gender,
+            tone=getattr(persona, "tone", "") or "",
+        )
+        sources_used.add("phrasing")
+
     return {
         "version": 1,
         "beats": beats,
@@ -573,6 +606,42 @@ def compose_full_demo_script(
             "spoken_count": sum(1 for b in beats if (b.get("spoken") or "").strip()),
         },
     }
+
+
+def _humanize_beats(
+    beats: list[dict[str, Any]],
+    *,
+    lang: str,
+    agent_gender: str,
+    tone: str,
+) -> list[dict[str, Any]]:
+    """Rewrite non-manual/recorded lines to sound less template-y."""
+    try:
+        from navigator.agent.phrasing import phrase_turn
+    except Exception:  # noqa: BLE001
+        return beats
+    out: list[dict[str, Any]] = []
+    for beat in beats:
+        b = dict(beat)
+        src = str(b.get("spoken_source") or "")
+        spoken = str(b.get("spoken") or "").strip()
+        if not spoken or src in {"manual", "recorded"}:
+            out.append(b)
+            continue
+        try:
+            rewritten = phrase_turn(
+                intent="continue",
+                fallback=spoken,
+                spoken_language=lang if lang in {"en", "hi"} else "en",
+                agent_gender=agent_gender if agent_gender in {"female", "male"} else "female",
+            )
+            if rewritten and rewritten.strip():
+                b["spoken"] = rewritten.strip()
+                b["spoken_source"] = "phrased"
+        except Exception:  # noqa: BLE001
+            pass
+        out.append(b)
+    return out
 
 
 def merge_manual_overrides(
@@ -684,6 +753,8 @@ def regenerate_demo_script(
     chroma_path: Any = None,
     stored_script: dict[str, Any] | None = None,
     flow_id_filter: str | None = None,
+    spoken_language: str = "en",
+    agent_gender: str = "female",
 ) -> dict[str, Any]:
     """Re-compose and preserve beats marked manual in stored script."""
     composed = compose_full_demo_script(
@@ -696,6 +767,9 @@ def regenerate_demo_script(
         chroma_path=chroma_path,
         stored_script=stored_script,
         flow_id_filter=flow_id_filter,
+        spoken_language=spoken_language,
+        agent_gender=agent_gender,
+        humanize=True,
     )
     if not stored_script:
         return composed

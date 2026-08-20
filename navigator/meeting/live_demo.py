@@ -114,9 +114,9 @@ def _start_live_agent(
         print("[live] Live audio needs the audio bridge", flush=True)
         return None
 
-    from navigator.core.gemini_keys import gemini_key_candidates
+    from navigator.core.gemini_keys import gemini_live_key_candidates
 
-    keys = gemini_key_candidates()
+    keys = gemini_live_key_candidates()
     if not keys:
         print("[live] Live audio needs a Gemini key", flush=True)
         return None
@@ -225,13 +225,25 @@ def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
         orig_say(text)
 
     def _say_async(text: str):
+        """Return immediately; worker may block inside live.say."""
         live = live_box[0] if live_box else None
         if live is None:
             if orig_async is not None:
                 return orig_async(text)
-            orig_say(text)
             handle = PlaybackHandle()
-            handle._finish()
+
+            def _fallback() -> None:
+                try:
+                    orig_say(text)
+                except Exception as exc:  # noqa: BLE001
+                    handle.error = str(exc)
+                finally:
+                    handle._finish()
+
+            handle._thread = threading.Thread(
+                target=_fallback, name="meet-say-fallback", daemon=True
+            )
+            handle._thread.start()
             return handle
         handle = PlaybackHandle()
 
@@ -250,8 +262,7 @@ def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
         return handle
 
     meet_speaker.say = _say  # type: ignore[method-assign]
-    if orig_async is not None:
-        meet_speaker.say_async = _say_async  # type: ignore[method-assign]
+    meet_speaker.say_async = _say_async  # type: ignore[method-assign]
     meet_speaker._live_owns_audio = True  # type: ignore[attr-defined]
     print("[live] Live owns mic+mouth", flush=True)
 
@@ -280,6 +291,7 @@ def _talk_speaker(meet_speaker, live_box: list):
                 meet_speaker.say(text)
 
         def say_async(self, text: str):
+            """Return immediately; Live mouth wait stays on a worker thread."""
             live = live_box[0] if live_box else None
             if live is not None:
                 from navigator.meeting.playback_handle import PlaybackHandle

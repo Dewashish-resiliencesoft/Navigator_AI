@@ -15,6 +15,24 @@ def gemini_key_candidates() -> list[str]:
     )
 
 
+def gemini_live_key_candidates() -> list[str]:
+    """Keys for Gemini Live mouth/mic — Live pool first, then general Gemini keys."""
+    live = parse_key_list(
+        settings.gemini_live_api_key,
+        settings.gemini_live_api_keys,
+    )
+    if live:
+        # Live keys first; fall back to general pool for failover.
+        return parse_key_list(
+            settings.gemini_live_api_key,
+            settings.gemini_live_api_keys,
+            settings.gemini_api_key,
+            settings.gemini_api_key_backup,
+            settings.gemini_api_keys,
+        )
+    return gemini_key_candidates()
+
+
 def is_gemini_quota_error(exc: BaseException) -> bool:
     return is_rate_limit_error(exc)
 

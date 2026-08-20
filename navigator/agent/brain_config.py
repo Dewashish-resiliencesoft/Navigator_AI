@@ -44,14 +44,9 @@ class BrainConfig:
         vision_image_model: str | None = None,
         reasoning_model: str | None = None,
     ) -> BrainConfig:
-        mode = autonomy_mode
-        if tier2_legacy is True and mode == "guided":
-            mode = "adaptive"
-
-        tier2 = mode in {"adaptive", "explorer"}
-        if tier2_legacy is False and mode == "adaptive":
-            tier2 = False
-
+        # Product dashboard no longer offers adaptive/explorer. Runtime is
+        # always guided: flows + knowledge (+ optional turn-brain), no Tier-2.
+        _ = autonomy_mode, tier2_legacy
         return cls(
             groq_api_key=settings.groq_api_key or None,
             gemini_api_key=settings.gemini_api_key or None,
@@ -62,13 +57,13 @@ class BrainConfig:
             vision_text_model=vision_text_model or settings.brain_vision_text_model,
             vision_image_model=vision_image_model or settings.brain_vision_image_model,
             reasoning_model=reasoning_model or settings.brain_reasoning_model,
-            autonomy_mode=mode,
+            autonomy_mode="guided",
             listen_timeout_s=settings.brain_listen_timeout_s,
             resume_silence_s=settings.brain_resume_silence_s,
-            tier2_enabled=tier2,
-            use_turn_brain=mode == "explorer" or bool(settings.gemini_api_key),
-            allow_ephemeral_nav=mode == "explorer",
-            guardrail_strict=mode != "explorer",
+            tier2_enabled=False,
+            use_turn_brain=bool(settings.gemini_api_key),
+            allow_ephemeral_nav=False,
+            guardrail_strict=True,
         )
 
 

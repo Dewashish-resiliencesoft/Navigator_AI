@@ -51,15 +51,29 @@ def test_user_preferences_defaults_and_patch(tmp_path):
 
         got = client.get("/client/api/user/preferences", headers=headers)
         assert got.status_code == 200, got.text
-        assert got.json() == {
-            "hide_get_started_card": False,
-            "onboarding_wizard_dismissed": False,
-            "onboarding_wizard_completed": False,
+        body = got.json()
+        assert body["hide_get_started_card"] is False
+        assert body["onboarding_wizard_dismissed"] is False
+        assert body["onboarding_wizard_completed"] is False
+        assert body["email"] == "prefs@example.com"
+        assert body["product_name"] == "Prefs Co"
+        assert body["product_id"] == "prefs-co"
+
+        me = client.get("/client/api/account", headers=headers)
+        assert me.status_code == 200, me.text
+        assert me.json() == {
+            "email": "prefs@example.com",
+            "product_name": "Prefs Co",
+            "product_id": "prefs-co",
         }
 
         user = auth.get_user_by_email("prefs@example.com")
         assert user is not None
-        assert auth.get_preferences(user["user_id"]) == got.json()
+        assert auth.get_preferences(user["user_id"]) == {
+            "hide_get_started_card": False,
+            "onboarding_wizard_dismissed": False,
+            "onboarding_wizard_completed": False,
+        }
 
         put = client.put(
             "/client/api/user/preferences",
@@ -70,6 +84,8 @@ def test_user_preferences_defaults_and_patch(tmp_path):
         body = put.json()
         assert body["hide_get_started_card"] is True
         assert body["onboarding_wizard_dismissed"] is False
+        assert body["email"] == "prefs@example.com"
+        assert body["product_name"] == "Prefs Co"
 
         again = client.get("/client/api/user/preferences", headers=headers)
         assert again.json()["hide_get_started_card"] is True

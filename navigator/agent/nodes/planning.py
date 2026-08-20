@@ -528,9 +528,8 @@ def _try_tier2(
     if not getattr(deps, "tier2_enabled", False):
         return None
 
-    from navigator.agent.tier2 import pending_rule_for, run_tier2
+    from navigator.agent.tier2 import run_tier2
     from navigator.agent.tier2_propose import bind_ephemeral_selector, propose_from_page
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
 
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     page_id = _guide_page_id(state)
@@ -585,20 +584,6 @@ def _try_tier2(
     css = str(el.get("_tier2_css") or "")
     if alias and css:
         deps.graph = bind_ephemeral_selector(deps.graph, page_id, alias, css)
-
-    store_path = deps.pending_db_path or settings.db_path
-    store = PendingCorrectionStore(store_path)
-    try:
-        store.add(
-            product_id=deps.product_id,
-            session_id=state.get("session_id", ""),
-            page=page_id,
-            tool_call_type=outcome.call.tool,
-            rule=pending_rule_for(outcome, utterance),
-            source_call_id=state.get("session_id", ""),
-        )
-    finally:
-        store.close()
 
     return CallState(
         phase="detour",
@@ -1792,26 +1777,11 @@ def _resolve_flow_choice(
 
 
 def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
-    """Log prospect correction; retry last step when possible."""
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-
+    """Retry last step when visitor corrects the agent mid-demo."""
     query = _query_from_transcript(list(state.get("transcript") or []))
     entries = list(state.get("entries") or [])
     last = entries[-1] if entries else None
-    store_path = deps.pending_db_path or settings.db_path
-    store = PendingCorrectionStore(store_path)
-    try:
-        store.add(
-            product_id=deps.product_id,
-            session_id=state["session_id"],
-            page=(last.page if last else state.get("page_id") or ""),
-            tool_call_type=(last.tool_call.tool if last else "unknown"),
-            rule=query or "user correction",
-            source_call_id=(last.call_id if last else state["session_id"]),
-        )
-    finally:
-        store.close()
-    print(f"[correction] pending from user: {query!r}", flush=True)
+    print(f"[correction] user note (not queued): {query!r}", flush=True)
     if last is not None and last.tool_call is not None:
         spoken = "Got it — let me try that again with your correction in mind."
         plan = Plan(spoken_response=spoken, tool_calls=[last.tool_call])
@@ -1824,8 +1794,7 @@ def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
             phase=state.get("phase") or "walkthrough",
         )
     spoken = (
-        "Thanks — I've noted that correction. A human will review it before it "
-        "changes how I demo."
+        "Thanks — I've noted that. Let's keep going with the demo."
     )
     plan = Plan(spoken_response=spoken, tool_calls=[])
     return CallState(

@@ -149,17 +149,7 @@ def assess_demo_readiness(
             autonomy_mode=autonomy_mode,
         )
 
-    autonomy_mode = getattr(product, "autonomy_mode", None) or autonomy_mode
-
-    if origin == "public_embed" and autonomy_mode == "explorer":
-        checks.append(
-            ReadinessCheck(
-                id="explorer_embed",
-                ok=False,
-                message="Explorer mode is not allowed on the public embed.",
-                blocking=True,
-            )
-        )
+    autonomy_mode = "guided"
 
     published_rev: int | None = None
     try:
@@ -328,7 +318,7 @@ def assess_demo_readiness(
                 if knowledge_ok
                 else "Add product knowledge or flow triggers so questions get answered."
             ),
-            blocking=autonomy_mode == "adaptive",
+            blocking=False,
         )
     )
 

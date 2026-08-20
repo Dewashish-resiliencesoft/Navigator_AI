@@ -18,35 +18,25 @@ def _product_name(persona: Persona) -> str:
 
 
 def solution_blurb(persona: Persona, looking_for: str) -> str:
-    """Map prospect need → product angle (short, spoken)."""
+    """Map prospect need → product angle (short, spoken). Tenant-neutral."""
     persona = prospect_facing_persona(persona)
-    need = (looking_for or "").lower()
+    need = (looking_for or "").strip()
     product = persona.product_name
-    if any(k in need for k in ("inbox", "chat", "message", "reply", "conversation")):
+    positioning = (persona.one_liner or "").strip()
+    if positioning and need:
         return (
-            f"{product} gives your team a shared WhatsApp inbox so nothing slips "
-            f"between phones — exactly for that conversation problem."
+            f"{product} is {positioning} — we'll focus the walkthrough on what "
+            f"you asked about: {summarize_need(need) or need}."
         )
-    if any(k in need for k in ("contact", "lead", "crm", "customer", "pipeline")):
+    if positioning:
+        return f"{product} is {positioning} — I'll tailor the walkthrough to you."
+    if need:
+        short = summarize_need(need) or need
         return (
-            f"{product} keeps every WhatsApp lead and customer in one contacts "
-            f"view so the team shares one source of truth."
+            f"I'll show how {product} helps with {short} — "
+            f"we will walk the parts that matter for you."
         )
-    if any(
-        k in need
-        for k in ("automat", "flow", "bot", "qualify", "24", "scale", "chatbot")
-    ):
-        return (
-            f"{product} runs chat flows that greet, qualify, and route people "
-            f"on WhatsApp without someone typing every reply."
-        )
-    if any(k in need for k in ("analytic", "report", "metric", "convert", "funnel")):
-        return (
-            f"{product} surfaces conversation analytics — volume, response time, "
-            f"what converts — so you can see the funnel clearly."
-        )
-    positioning = persona.one_liner or "WhatsApp CRM and automation for sales teams"
-    return f"{product} is {positioning} — we'll focus the walkthrough on what you asked for."
+    return f"I'll walk you through {product} live, step by step."
 
 
 def demo_kickoff_line(*, lang: SpokenLanguage = "en") -> str:

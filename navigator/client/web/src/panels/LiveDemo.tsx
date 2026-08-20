@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Copy, ExternalLink, PhoneOff, Play, Mic, TriangleAlert } from "lucide-react";
-import { api, ApiError, type AutonomyMode, type DemoReadiness, type RunEvent } from "../lib/api";
+import { api, ApiError, type RunEvent } from "../lib/api";
+import { useDemoReadinessSession } from "../lib/demoReadinessSession";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { useExploreSession } from "../lib/exploreSession";
 import { useProductData } from "../lib/productData";
@@ -20,9 +21,12 @@ import {
   Input,
   Select,
   StatusPill,
-  Switch,
   Textarea,
 } from "../components/ui";
+import {
+  readinessToChecklist,
+  StatusChecklist,
+} from "../components/StatusChecklist";
 import { LiveNarrationBanner } from "../components/LiveNarrationBanner";
 import { errText, useUi } from "../store";
 
@@ -63,18 +67,9 @@ export function LiveDemo() {
   const [domain, setDomain] = useState("");
   const [domainPlaceholder, setDomainPlaceholder] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
-  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("guided");
-  const [savingAutonomy, setSavingAutonomy] = useState(false);
-  const [readiness, setReadiness] = useState<DemoReadiness | null>(null);
-  const [loadingReadiness, setLoadingReadiness] = useState(false);
-  const [loginUrl, setLoginUrl] = useState("");
-  const [loginUser, setLoginUser] = useState("");
-  const [loginPass, setLoginPass] = useState("");
-  const [hasPassword, setHasPassword] = useState(false);
-  const [changingPass, setChangingPass] = useState(false);
-  const [includeLogin, setIncludeLogin] = useState(false);
-  const [savingLogin, setSavingLogin] = useState(false);
-  const [savingIncludeLogin, setSavingIncludeLogin] = useState(false);
+  const readiness = useDemoReadinessSession((s) => s.readiness);
+  const loadingReadiness = useDemoReadinessSession((s) => s.loading);
+  const startCoach = useUi((s) => s.startCoach);
   const [copied, setCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const listRef = useRef<HTMLUListElement>(null);
@@ -110,35 +105,8 @@ export function LiveDemo() {
       } catch (e) {
         if (alive) err(errText(e));
       }
-      try {
-        const mode = await api.getAutonomyMode();
-        if (!alive) return;
-        setAutonomyMode(mode.mode);
-      } catch (e) {
-        if (alive) err(errText(e));
-      }
-      try {
-        setLoadingReadiness(true);
-        const ready = await api.getDemoReadiness("dashboard_test");
-        if (!alive) return;
-        setReadiness(ready);
-      } catch (e) {
-        if (alive) err(errText(e));
-      } finally {
-        if (alive) setLoadingReadiness(false);
-      }
-      try {
-        const login = await api.getProductLogin();
-        if (!alive) return;
-        setLoginUrl(login.login_url || "");
-        setLoginUser(login.username || "");
-        setHasPassword(!!login.has_password);
-        setIncludeLogin(!!login.include_login_in_default_flow);
-        setChangingPass(!login.has_password);
-        setLoginPass("");
-      } catch (e) {
-        if (alive) err(errText(e));
-      }
+      // Readiness lives in useDemoReadinessSession (shared with Overview).
+      void useDemoReadinessSession.getState().refresh();
     })();
     return () => {
       alive = false;
@@ -196,90 +164,11 @@ export function LiveDemo() {
     }
   };
 
-  const saveAutonomy = async (mode: AutonomyMode) => {
-    setSavingAutonomy(true);
-    try {
-      const d = await api.putAutonomyMode(mode);
-      setAutonomyMode(d.mode);
-      invalidate();
-      const ready = await api.getDemoReadiness("dashboard_test");
-      setReadiness(ready);
-      ok(`Autonomy: ${d.mode}.`);
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setSavingAutonomy(false);
-    }
-  };
-
   const visibleReadinessChecks = clientVisibleReadinessChecks(
     readiness?.checks ?? [],
   );
   const blockingChecks = visibleReadinessChecks.filter((c) => c.blocking && !c.ok);
   const startBlocked = blockingChecks.length > 0;
-
-  const saveIncludeLogin = async (enabled: boolean) => {
-    if (!loginUser.trim()) {
-      err("Save username first.");
-      return;
-    }
-    setSavingIncludeLogin(true);
-    try {
-      const saved = await api.putProductLogin({
-        login_url: loginUrl.trim(),
-        username: loginUser.trim(),
-        password: null,
-        include_login_in_default_flow: enabled,
-      });
-      setIncludeLogin(!!saved.include_login_in_default_flow);
-      invalidate();
-      ok(
-        saved.include_login_in_default_flow
-          ? "Default demo will include login."
-          : "Default demo skips login.",
-      );
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setSavingIncludeLogin(false);
-    }
-  };
-
-  const saveLogin = async () => {
-    setSavingLogin(true);
-    try {
-      const body: {
-        login_url: string;
-        username: string;
-        password?: string | null;
-        include_login_in_default_flow: boolean;
-      } = {
-        login_url: loginUrl.trim(),
-        username: loginUser.trim(),
-        include_login_in_default_flow: includeLogin,
-      };
-      if (changingPass) {
-        body.password = loginPass;
-      } else {
-        body.password = null;
-      }
-      const saved = await api.putProductLogin(body);
-      setLoginUrl(saved.login_url || "");
-      setLoginUser(saved.username || "");
-      setHasPassword(!!saved.has_password);
-      setIncludeLogin(!!saved.include_login_in_default_flow);
-      setChangingPass(!saved.has_password);
-      setLoginPass("");
-      invalidate();
-      void useExploreSession.getState().refresh();
-      void useExploreSession.getState().syncProductUrl();
-      ok("Product login saved.");
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setSavingLogin(false);
-    }
-  };
 
   const start = async () => {
     if (domainPlaceholder || !domain.trim() || /example\.com/i.test(domain)) {
@@ -352,7 +241,7 @@ export function LiveDemo() {
       animate="show"
       className="grid grid-cols-1 gap-4 lg:grid-cols-2"
     >
-      <Card span="lg:col-span-2">
+      <Card span="lg:col-span-2" dataCoach="demo-domain">
         <CardTitle hint="Origin the agent opens and screenshares during the live demo.">
           Product domain
         </CardTitle>
@@ -371,117 +260,17 @@ export function LiveDemo() {
         <Button onClick={saveDomain} disabled={savingDomain || !domain.trim()}>
           {savingDomain ? "Saving…" : "Save domain"}
         </Button>
-      </Card>
-
-      <Card span="lg:col-span-2">
-        <CardTitle hint="Playwright sign-in for demos. Credentials stay out of the site graph.">
-          Product Login
-        </CardTitle>
-        <div className="grid gap-x-3 sm:grid-cols-2">
-          <Field label="Login URL (optional — defaults to product URL)">
-            <Input
-              value={loginUrl}
-              onChange={setLoginUrl}
-              placeholder="https://your-product.com/login"
-            />
-          </Field>
-          <Field label="Username / email">
-            <Input
-              value={loginUser}
-              onChange={setLoginUser}
-              placeholder="demo@your-product.com"
-              autoComplete="username"
-            />
-          </Field>
-        </div>
-        <Field label="Password">
-          {hasPassword && !changingPass ? (
-            <div className="flex items-center gap-2">
-              <Input value="••••••••••••" onChange={() => {}} disabled />
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setChangingPass(true);
-                  setLoginPass("");
-                }}
-              >
-                Change
-              </Button>
-            </div>
-          ) : (
-            <Input
-              value={loginPass}
-              onChange={setLoginPass}
-              placeholder={hasPassword ? "enter a new password" : "password"}
-              type="password"
-              autoComplete="new-password"
-            />
-          )}
-        </Field>
-
-        <div
-          className="mb-3 border-t pt-3"
-          style={{ borderColor: "var(--line)" }}
-        >
-          <Switch
-            label="Show login during demo"
-            description="On: run your recorded login/onboarding flow (or a live login if none). Off: silent auto sign-in — skip login/onboarding in the playlist."
-            checked={includeLogin}
-            disabled={savingIncludeLogin || !loginUser.trim()}
-            onChange={(v) => void saveIncludeLogin(v)}
-          />
-        </div>
-
-        <div
-          className="mb-3 border-t pt-3"
-          style={{ borderColor: "var(--line)" }}
-        >
-          <p className="mb-2 text-[0.78rem] font-medium">How should your agent handle unexpected questions?</p>
-          <div className="mb-3 grid gap-2 sm:grid-cols-3">
-            {(
-              [
-                ["guided", "Guided demo", "Published flows + knowledge only. Safest."],
-                ["adaptive", "Adaptive demo", "Safe live clicks when no flow matches."],
-                ["explorer", "Explorer demo", "Test only — navigates freely from screen."],
-              ] as const
-            ).map(([value, label, desc]) => (
-              <label
-                key={value}
-                className={`cursor-pointer rounded-lg border px-3 py-2 text-[0.76rem] ${
-                  autonomyMode === value ? "border-[var(--accent)] bg-[var(--accent)]/5" : ""
-                }`}
-                style={{ borderColor: autonomyMode === value ? undefined : "var(--line)" }}
-              >
-                <input
-                  type="radio"
-                  name="autonomy"
-                  className="mr-2"
-                  checked={autonomyMode === value}
-                  disabled={savingAutonomy}
-                  onChange={() => void saveAutonomy(value)}
-                />
-                <span className="font-medium">{label}</span>
-                <p className="mt-1 text-[var(--muted)]">{desc}</p>
-              </label>
-            ))}
-          </div>
-          {autonomyMode === "explorer" && (
-            <p className="mb-2 text-[0.74rem] text-amber-600 dark:text-amber-400">
-              Explorer is dashboard test demos only — not for your live website embed.
-            </p>
-          )}
-        </div>
-
-        <Button
-          onClick={saveLogin}
-          disabled={
-            savingLogin ||
-            !loginUser.trim() ||
-            (changingPass && !loginPass && !hasPassword)
-          }
-        >
-          {savingLogin ? "Saving…" : "Save product login"}
-        </Button>
+        <p className="mt-3 text-[0.74rem] text-[var(--muted)]">
+          Demo sign-in lives under{" "}
+          <button
+            type="button"
+            className="cursor-pointer font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+            onClick={() => setTab("settings")}
+          >
+            Settings → Product Login
+          </button>
+          .
+        </p>
       </Card>
 
       <Card>
@@ -566,22 +355,10 @@ export function LiveDemo() {
           {loadingReadiness && !readiness ? (
             <p className="text-[0.74rem] text-[var(--muted)]">Checking…</p>
           ) : readiness ? (
-            <ul className="space-y-1 text-[0.72rem]">
-              {visibleReadinessChecks.map((c) => (
-                <li
-                  key={c.id}
-                  className={
-                    c.ok
-                      ? "text-emerald-700 dark:text-emerald-400"
-                      : c.blocking
-                        ? "text-red-700 dark:text-red-400"
-                        : "text-amber-700 dark:text-amber-400"
-                  }
-                >
-                  {c.ok ? "✓" : c.blocking ? "✕" : "!"} {c.message}
-                </li>
-              ))}
-            </ul>
+            <StatusChecklist
+              items={readinessToChecklist(visibleReadinessChecks)}
+              onFix={startCoach}
+            />
           ) : null}
           {startBlocked && (
             <p className="mt-2 flex items-center gap-1.5 text-[0.74rem] text-red-600 dark:text-red-400">

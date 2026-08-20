@@ -465,7 +465,7 @@ def test_timeline_uses_live_say_when_live_agent_present():
     async_calls: list[str] = []
 
     class LiveStub:
-        def say(self, text: str, *, mode: str = "verbatim") -> None:
+        def say(self, text: str, *, mode: str = "verbatim", **_kwargs) -> None:
             said.append(f"{mode}:{text}")
             time.sleep(0.05)
 

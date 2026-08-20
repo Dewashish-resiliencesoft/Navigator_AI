@@ -40,7 +40,9 @@ def _send_interrupted(agent):
 
 def test_first_barge_in_confirmed():
     agent, bridge = _make_agent()
-    agent._last_interrupt_time = 0.0
+    agent._barge_confirm_s = 0.0
+    _send_interrupted(agent)
+    assert agent.barge_in_confirmed == 0
     _send_interrupted(agent)
     assert agent.barge_in_confirmed == 1
     assert bridge.flush_bot_output.call_count == 1
@@ -48,9 +50,9 @@ def test_first_barge_in_confirmed():
 
 def test_duplicate_barge_in_suppressed_in_cooldown():
     agent, bridge = _make_agent()
-    agent._last_interrupt_time = 0.0
+    agent._barge_confirm_s = 0.0
     _send_interrupted(agent)
-    # Immediately send another — within cooldown
+    _send_interrupted(agent)
     _send_interrupted(agent)
     assert agent.barge_in_confirmed == 1
     assert agent.barge_in_rejected_cooldown == 1
@@ -59,10 +61,12 @@ def test_duplicate_barge_in_suppressed_in_cooldown():
 
 def test_barge_in_after_cooldown_accepted():
     agent, bridge = _make_agent()
-    agent._interrupt_cooldown_s = 0.05  # short for test
-    agent._last_interrupt_time = 0.0
+    agent._barge_confirm_s = 0.0
+    agent._interrupt_cooldown_s = 0.05
     _send_interrupted(agent)
-    time.sleep(0.1)  # wait out cooldown
+    _send_interrupted(agent)
+    time.sleep(0.1)
+    _send_interrupted(agent)
     _send_interrupted(agent)
     assert agent.barge_in_confirmed == 2
     assert bridge.flush_bot_output.call_count == 2
@@ -78,9 +82,11 @@ def test_director_only_blocks_interrupt():
 
 def test_flush_count_tracked():
     agent, bridge = _make_agent()
+    agent._barge_confirm_s = 0.0
     agent._interrupt_cooldown_s = 0.01
-    agent._last_interrupt_time = 0.0
+    _send_interrupted(agent)
     _send_interrupted(agent)
     time.sleep(0.05)
+    _send_interrupted(agent)
     _send_interrupted(agent)
     assert agent.audio_flush_count == 2

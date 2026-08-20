@@ -11,6 +11,7 @@ import time
 
 from navigator.agent.speech_safety import prospect_safe_line
 from navigator.agent.state import CLEAR, CallDeps, CallState
+from navigator.agent.utterance import item_id, item_text, stamp_narration
 
 _FRAME_RETRY_S = 0.12
 
@@ -83,27 +84,50 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
     if prior is not None and hasattr(prior, "wait"):
         prior.wait(timeout=120.0)
     live = deps.live_agent
+    from navigator.voice.language import SWITCH_ACK
+
+    queued_items = stamp_narration(state, state.get("narration") or [], kind="speak")
+    queued_text = [prospect_safe_line(item_text(x)) for x in queued_items]
     # Live already answered conversational Q&A out loud. Re-saying the
     # planner's reply is a second voice on the same question. Walkthrough
     # lines still go out — those arrive with pending_calls or authored copy.
+    # Language-switch acks are director-owned (Live must not also ack).
+    switch_acks = set(SWITCH_ACK.values())
     if (
         live is not None
         and _last_user_text(state)
         and not state.get("pending_calls")
+        and not any((x or "").strip() in switch_acks for x in queued_text if x)
     ):
         authored = _authored_lines(deps.graph) if deps.graph is not None else set()
-        queued = [prospect_safe_line(x) for x in (state.get("narration") or [])]
-        if not any((x or "").strip() in authored for x in queued if x):
-            print("[speak] skip replay — Live already answered", flush=True)
-            return CallState(narration=CLEAR)
+        if not any((x or "").strip() in authored for x in queued_text if x):
+            ids = [item_id(x) for x in queued_items if item_id(x)]
+            print(
+                f"[speak] skip replay — Live already answered ids={ids} "
+                f"queue={len(queued_items)}",
+                flush=True,
+            )
+            return CallState(narration=CLEAR, spoken_utterance_ids=ids)
 
     interrupted = False
     last_hits: int | None = None
-    for line in state.get("narration") or []:
+    already = set(state.get("spoken_utterance_ids") or [])
+    consumed: list[str] = []
+    for item in queued_items:
         if interrupted:
             break
         if getattr(deps.speaker, "bot_ended", False):
-            return CallState(narration=CLEAR, finished=True, phase="ending")
+            return CallState(
+                narration=CLEAR,
+                finished=True,
+                phase="ending",
+                spoken_utterance_ids=consumed,
+            )
+        uid = item_id(item)
+        line = item_text(item)
+        if uid and uid in already:
+            print(f"[utterance] id={uid} skip replay queue={len(queued_items)}", flush=True)
+            continue
         last_hits = _ensure_frame_fresh(deps, last_hits)
         if deps.push_frame is not None:
             deps.push_frame()
@@ -112,12 +136,13 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
             continue
         if safe != line:
             print(f"[speak] scrubbed technical narration: {line!r}", flush=True)
+        print(
+            f"[utterance] id={uid} tts_start queue={len(queued_items)}",
+            flush=True,
+        )
         if live is not None:
-            live.say(safe, mode=_say_mode(deps, line))
+            live.say(safe, mode=_say_mode(deps, line), utterance_id=uid or None)
             if getattr(live, "interrupted", False):
-                # The prospect talked over us and Live is answering them. Let
-                # that exchange finish; the walkthrough step does not advance,
-                # so the next pass repeats from here.
                 from navigator.core.settings import settings
 
                 live.wait_until_idle(silence_s=settings.live_resume_silence_s)
@@ -126,12 +151,28 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
             deps.speaker.say(safe)
             if getattr(deps.speaker, "interrupted", False):
                 interrupted = True
+        print(
+            f"[utterance] id={uid} tts_end interrupted={interrupted}",
+            flush=True,
+        )
+        if uid:
+            consumed.append(uid)
+            already.add(uid)
         if deps.push_frame is not None:
             deps.push_frame()
         if deps.get_frame_hits is not None:
             last_hits = deps.get_frame_hits()
     if getattr(deps.speaker, "bot_ended", False):
-        return CallState(narration=CLEAR, finished=True, phase="ending")
+        return CallState(
+            narration=CLEAR,
+            finished=True,
+            phase="ending",
+            spoken_utterance_ids=consumed,
+        )
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("idle")
-    return CallState(narration=CLEAR, pre_action_speech=None)
+    return CallState(
+        narration=CLEAR,
+        pre_action_speech=None,
+        spoken_utterance_ids=consumed,
+    )

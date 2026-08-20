@@ -57,6 +57,9 @@ def maybe_nudge_live(live: object | None, *, language: SpokenLanguage = "en") ->
     # is the agent answering itself.
     if getattr(live, "speaking", False):
         return False
+    can_start = getattr(live, "can_start_utterance", None)
+    if callable(can_start) and not can_start():
+        return False
     global _last_nudge_at
     now = time.monotonic()
     with _lock:

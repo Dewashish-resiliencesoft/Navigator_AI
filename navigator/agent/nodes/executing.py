@@ -37,7 +37,9 @@ def _start_pre_action_speech(state: CallState, deps: CallDeps):
     from navigator.meeting.playback_handle import PlaybackHandle
 
     started_ns = time.monotonic_ns()
-    text = prospect_safe_line(lines[0])
+    from navigator.agent.utterance import item_text
+
+    text = prospect_safe_line(item_text(lines[0]))
     if not text.strip():
         return None, None
 

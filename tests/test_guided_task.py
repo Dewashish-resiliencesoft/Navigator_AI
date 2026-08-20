@@ -324,3 +324,28 @@ def test_patch_insert_user_input_step():
     assert len(calls) == 3
     assert calls[1]["tool"] == "fill_field"
     assert calls[1].get("source") == "user"
+
+
+def test_guided_task_client_routes_return_410(tmp_path):
+    """Flows UI retired Guided Agent — Client HTTP routes stay as 410 stubs."""
+    from test_api import ACME, register
+    from test_client_dashboard import _cleanup, _client
+    from test_demo_authoring_e2e import _headers
+
+    bundle = _client(tmp_path, client_api_key="nav_test")
+    client, prev, registry, log, auth_store = bundle
+    try:
+        p = register(client, "Acme Inbox", ACME)
+        headers = _headers(client, auth_store, p["id"])
+        for method, path in (
+            ("POST", "/client/api/guided-task/plan"),
+            ("GET", "/client/api/guided-task/status"),
+            ("POST", "/client/api/guided-task/hands/start"),
+            ("POST", "/client/api/guided-task/hands/stop"),
+            ("PATCH", "/client/api/guided-task/plan"),
+        ):
+            r = client.request(method, path, headers=headers, json={})
+            assert r.status_code == 410, f"{method} {path} → {r.status_code}: {r.text}"
+            assert "manual record" in r.json()["detail"].lower()
+    finally:
+        _cleanup(bundle, prev)

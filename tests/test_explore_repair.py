@@ -21,7 +21,6 @@ from navigator.automation.explore.session import (
     fingerprint,
 )
 from navigator.core.schemas import ToolResult, VerifyResult
-from navigator.knowledge.memory.pending import PendingCorrectionStore
 
 
 class FakePage:
@@ -349,17 +348,10 @@ def test_screenshot_cap_at_20(tmp_path):
     assert len(list(store.shots_dir.glob("*.jpg"))) == 20
 
 
-# -- 8. learn drafts pending, never Chroma -----------------------------------
+# -- 8. learn no longer drafts pending corrections ---------------------------
 
 
-def test_learn_drafts_pending_not_chroma(tmp_path):
-    pytest.importorskip("chromadb")
-    from navigator.knowledge.memory.collections import get_collection
-
-    chroma = tmp_path / "chroma"
-    coll = get_collection(chroma, "acme", "corrections")
-    before = coll.count()
-
+def test_learn_draft_rules_noop(tmp_path):
     store = EpisodeStore(root=tmp_path / "ep", product_id="acme", job_id="j7")
     store.record(
         StepAttempt(
@@ -377,37 +369,14 @@ def test_learn_drafts_pending_not_chroma(tmp_path):
             url_after="https://app.example.com/billing",
         )
     )
-    store.record(
-        StepAttempt(
-            element_key="testid=x",
-            alias="x",
-            selector='[data-testid="x"]',
-            tool="click_element",
-            attempt=1,
-            tactic="dismiss_overlay",
-            kind="",
-            ok=True,
-            detail="ok",
-            duration_ms=1,
-            url_before="https://app.example.com/billing",
-            url_after="https://app.example.com/billing",
-        )
-    )
-
-    pending_db = tmp_path / "pending.db"
     rules = draft_rules(
         store,
         product_id="acme",
         session_id=str(uuid4()),
-        pending_db_path=pending_db,
-        complete=lambda _sys, _user: "On /billing dismiss the cookie banner before clicking nav.",
+        pending_db_path=tmp_path / "pending.db",
+        complete=lambda _sys, _user: "should not run",
     )
-    assert rules
-    with PendingCorrectionStore(pending_db) as pending:
-        listed = pending.list_pending("acme")
-    assert listed
-    assert listed[0].page == "billing"
-    assert coll.count() == before, "learn must never write Chroma"
+    assert rules == []
 
 
 # -- 9. Retention purge ------------------------------------------------------

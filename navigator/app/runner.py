@@ -509,8 +509,8 @@ class DemoRunner:
                 agent_settings = reg.get_agent_settings(product_id)
                 models = resolved_runtime_models(agent_settings)
                 cfg = BrainConfig.from_settings(
-                    autonomy_mode=getattr(p, "autonomy_mode", None) or "guided",
-                    tier2_legacy=bool(p.tier2_enabled),
+                    autonomy_mode="guided",
+                    tier2_legacy=False,
                     planning_model=models["brain_planning_model"] or None,
                     phrasing_model=models["brain_phrasing_model"] or None,
                     classify_model=models["brain_classify_model"] or None,

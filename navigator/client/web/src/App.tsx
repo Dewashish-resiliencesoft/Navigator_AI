@@ -6,16 +6,20 @@ import { Overview } from "./panels/Overview";
 import { LiveDemo } from "./panels/LiveDemo";
 import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
-import { Execution } from "./panels/Execution";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
 import { Settings } from "./panels/Settings";
 import { ResourceMonitor } from "./panels/ResourceMonitor";
 import { ExploreFloat } from "./components/ExploreFloat";
+import { ProductExploreFloat } from "./components/ProductExploreFloat";
+import { CoachSpotlight } from "./components/CoachSpotlight";
 import { soft } from "./lib/motion";
 import { errText, useUi } from "./store";
 import { api } from "./lib/api";
 import { demoIsLive, useDemoSession } from "./lib/demoSession";
 import { useExploreSession } from "./lib/exploreSession";
+import { useDemoReadinessSession } from "./lib/demoReadinessSession";
+import { useAccountSession } from "./lib/accountSession";
+import { useProductExploreSession } from "./lib/productExploreSession";
 import { useProductData } from "./lib/productData";
 import { AuthScreen } from "./panels/AuthScreen";
 import { OnboardingWizard } from "./panels/Onboarding";
@@ -39,7 +43,6 @@ const PANELS: Record<string, () => React.ReactElement> = {
   demo: LiveDemo,
   logs: Logs,
   flows: Flows,
-  execution: Execution,
   graph: SiteGraph,
   knowledge: Knowledge,
   bio: Bio,
@@ -126,6 +129,9 @@ export default function App() {
   const live = demoIsLive(demo);
 
   const hydrateExplore = useExploreSession((s) => s.hydrate);
+  const bootstrapProductExplore = useProductExploreSession((s) => s.bootstrap);
+  const bootstrapDemoReadiness = useDemoReadinessSession((s) => s.bootstrap);
+  const refreshAccount = useAccountSession((s) => s.refresh);
 
   const celebrateOnboardingComplete = () => {
     setShowConfetti(true);
@@ -164,6 +170,9 @@ export default function App() {
       await hydrate();
       if (!alive) return;
       await hydrateExplore();
+      bootstrapProductExplore();
+      bootstrapDemoReadiness();
+      void refreshAccount();
     })();
     const t = setInterval(() => {
       void refreshActive();
@@ -172,7 +181,7 @@ export default function App() {
       alive = false;
       clearInterval(t);
     };
-  }, [authed, hydrate, hydrateExplore, refreshActive]);
+  }, [authed, hydrate, hydrateExplore, bootstrapProductExplore, bootstrapDemoReadiness, refreshAccount, refreshActive]);
 
   const enterAuthed = (fromSignup = false, company = "") => {
     // Overwrite any leftover "Signed out." from a prior logout (zustand persists across trees).
@@ -206,6 +215,9 @@ export default function App() {
     }
     await api.logout();
     useProductData.getState().reset();
+    useDemoReadinessSession.getState().reset();
+    useAccountSession.getState().reset();
+    useUi.getState().clearCoach();
     clearToast();
     setAuthed(false);
     ok("Signed out.");
@@ -248,7 +260,6 @@ export default function App() {
     demo: "Start and monitor headful browser sessions in real-time.",
     logs: "Detailed action logs and transcripts for all demos.",
     flows: "Configure automated steps and sequences.",
-    execution: "Explore scope and mutating-step approvals before live demo.",
     graph: "Edit the site graph and page topology.",
     knowledge: "Manage knowledge snippets available to the agent.",
     bio: "Define company identity and product details.",
@@ -355,6 +366,8 @@ export default function App() {
       </div>
       <Toast />
       <ExploreFloat />
+      <ProductExploreFloat />
+      <CoachSpotlight />
       {authed && showConfetti && (
         <Suspense fallback={null}>
           <ConfettiCelebration

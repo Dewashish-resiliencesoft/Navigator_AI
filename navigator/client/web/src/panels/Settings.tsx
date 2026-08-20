@@ -10,7 +10,7 @@ import {
 } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { stagger } from "../lib/motion";
-import { BarLoader, Button, Card, CardTitle, Input, Switch } from "../components/ui";
+import { BarLoader, Button, Card, CardTitle, Field, Input, Switch } from "../components/ui";
 import { errText, useUi } from "../store";
 
 const LANG_LABELS: Record<SpokenLanguage, string> = {
@@ -348,6 +348,7 @@ function ProviderConnectCard({
   onFetchModels,
   fetchingModels,
   savingKeys,
+  forceProvider,
 }: {
   settings: AgentSettings;
   keyDrafts: Record<ProviderKind, string>;
@@ -356,6 +357,7 @@ function ProviderConnectCard({
   onFetchModels: (provider: ProviderKind, previewKey?: string) => void;
   fetchingModels: Record<ProviderKind, boolean>;
   savingKeys: Record<ProviderKind, boolean>;
+  forceProvider?: ProviderKind;
 }) {
   const [selected, setSelected] = useState<ProviderKind>("gemini");
   const meta = PROVIDER_META[selected];
@@ -364,6 +366,10 @@ function ProviderConnectCard({
   const saving = savingKeys[selected];
   const fetching = fetchingModels[selected];
   const connected = ALL_PROVIDERS.filter((p) => hasProviderKey(settings, p));
+
+  useEffect(() => {
+    if (forceProvider) setSelected(forceProvider);
+  }, [forceProvider]);
 
   return (
     <div className="space-y-4 rounded-xl border p-4" style={{ borderColor: "var(--line)" }}>
@@ -462,6 +468,7 @@ function ProviderConnectCard({
 
 export function Settings() {
   const { ok, err } = useUi();
+  const coachTarget = useUi((s) => s.coach?.target);
   const epoch = useProductData((s) => s.epoch);
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<AgentSettings | null>(null);
@@ -514,7 +521,10 @@ export function Settings() {
   const [includeLogin, setIncludeLogin] = useState(false);
   const [loginUsername, setLoginUsername] = useState("");
   const [loginUrl, setLoginUrl] = useState("");
-  const [savingLoginToggle, setSavingLoginToggle] = useState(false);
+  const [loginPass, setLoginPass] = useState("");
+  const [hasPassword, setHasPassword] = useState(false);
+  const [changingPass, setChangingPass] = useState(false);
+  const [savingLogin, setSavingLogin] = useState(false);
 
   const fetchProviderModels = useCallback(
     async (provider: ProviderKind, previewKey?: string) => {
@@ -633,6 +643,9 @@ export function Settings() {
       setIncludeLogin(!!login.include_login_in_default_flow);
       setLoginUsername(login.username || "");
       setLoginUrl(login.login_url || "");
+      setHasPassword(!!login.has_password);
+      setChangingPass(!login.has_password);
+      setLoginPass("");
       setKeyDrafts({
         gemini: "",
         groq: "",
@@ -720,12 +733,42 @@ export function Settings() {
     loading,
   ]);
 
+  const saveLogin = async () => {
+    setSavingLogin(true);
+    try {
+      const body: {
+        login_url: string;
+        username: string;
+        password?: string | null;
+        include_login_in_default_flow: boolean;
+      } = {
+        login_url: loginUrl.trim(),
+        username: loginUsername.trim(),
+        include_login_in_default_flow: includeLogin,
+      };
+      if (changingPass) body.password = loginPass;
+      else body.password = null;
+      const saved = await api.putProductLogin(body);
+      setLoginUrl(saved.login_url || "");
+      setLoginUsername(saved.username || "");
+      setHasPassword(!!saved.has_password);
+      setIncludeLogin(!!saved.include_login_in_default_flow);
+      setChangingPass(!saved.has_password);
+      setLoginPass("");
+      ok("Product login saved.");
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setSavingLogin(false);
+    }
+  };
+
   const saveLoginToggle = async (enabled: boolean) => {
     if (!loginUsername.trim()) {
-      err("Save demo login username on Live demo first.");
+      err("Save username first.");
       return;
     }
-    setSavingLoginToggle(true);
+    setSavingLogin(true);
     try {
       const saved = await api.putProductLogin({
         login_url: loginUrl.trim(),
@@ -736,13 +779,13 @@ export function Settings() {
       setIncludeLogin(!!saved.include_login_in_default_flow);
       ok(
         enabled
-          ? "Login will show on screenshare before the walkthrough."
-          : "Login runs silently before screen share.",
+          ? "Demo will show login / onboarding on screenshare."
+          : "Demo uses silent auto sign-in.",
       );
     } catch (e) {
       err(errText(e));
     } finally {
-      setSavingLoginToggle(false);
+      setSavingLogin(false);
     }
   };
 
@@ -754,7 +797,7 @@ export function Settings() {
     <motion.div className="space-y-5" variants={stagger()} initial="hidden" animate="show">
       <Card>
         <CardTitle
-          hint="Voice gender, name, and tone must match — Hindi verb forms follow the persona you pick."
+          hint="Voice gender, name, tone, languages, and Gemini Live voice — keep them consistent (Hindi verb forms follow gender)."
           right={
             <Button onClick={saveSettings}>
               <Save size={14} /> Save
@@ -794,14 +837,6 @@ export function Settings() {
               placeholder="e.g. friendly, concise — blank uses site graph"
             />
           </label>
-        </div>
-      </Card>
-
-      <Card>
-        <CardTitle hint="Default language at demo start. Extra languages allow mid-call switches.">
-          Languages
-        </CardTitle>
-        <div className="grid gap-4 sm:grid-cols-2">
           <label className="block space-y-1.5 text-[0.8rem]">
             <span className="font-medium text-[var(--muted)]">Default spoken language</span>
             <select
@@ -832,21 +867,18 @@ export function Settings() {
               </label>
             ))}
           </fieldset>
+          <label className="col-span-full block space-y-1.5 text-[0.8rem]">
+            <span className="font-medium text-[var(--muted)]">Gemini voice name</span>
+            <Input
+              value={settings.gemini_voice}
+              onChange={(v) => setSettings({ ...settings, gemini_voice: v })}
+              placeholder="Blank = match voice gender (Sulafat / Charon)"
+            />
+            <span className="text-[0.72rem] text-[var(--muted)]">
+              Meet voice is Gemini Live. Override if needed (Sulafat, Charon).
+            </span>
+          </label>
         </div>
-      </Card>
-
-      <Card>
-        <CardTitle hint="Meet voice is Gemini Live. Override name if needed (Sulafat, Charon).">
-          Live voice
-        </CardTitle>
-        <label className="block space-y-1.5 text-[0.8rem]">
-          <span className="font-medium text-[var(--muted)]">Gemini voice name</span>
-          <Input
-            value={settings.gemini_voice}
-            onChange={(v) => setSettings({ ...settings, gemini_voice: v })}
-            placeholder="Blank = match voice gender (Sulafat / Charon)"
-          />
-        </label>
       </Card>
 
       <Card>
@@ -879,7 +911,7 @@ export function Settings() {
             ))}
           </div>
 
-          <div className="space-y-3">
+          <div className="space-y-3" data-coach="settings-gemini">
             <div className="text-[0.85rem] font-medium">Provider API keys</div>
             <ProviderConnectCard
               settings={settings}
@@ -889,6 +921,9 @@ export function Settings() {
               onFetchModels={(p, preview) => void fetchProviderModels(p, preview)}
               fetchingModels={fetchingModels}
               savingKeys={savingKeys}
+              forceProvider={
+                coachTarget === "settings-gemini" ? "gemini" : undefined
+              }
             />
           </div>
 
@@ -918,21 +953,74 @@ export function Settings() {
       </Card>
 
       <Card>
-        <CardTitle hint="Requires demo login credentials saved under Live demo → Product login.">
-          Screenshare login
+        <CardTitle hint="Playwright sign-in for demos and Product Explore. Credentials stay out of the site graph.">
+          Product Login
         </CardTitle>
-        <Switch
-          label="Show login during demo"
-          description="On: run your recorded login/onboarding flow (or a live login if none). Off: silent auto sign-in — skip login/onboarding in the playlist."
-          checked={includeLogin}
-          disabled={savingLoginToggle || !loginUsername.trim()}
-          onChange={(v) => void saveLoginToggle(v)}
-        />
-        {!loginUsername.trim() && (
-          <p className="mt-2 text-[0.74rem] text-amber-600 dark:text-amber-400">
-            Add demo username/password on the Live demo tab first.
-          </p>
-        )}
+        <div className="grid gap-x-3 sm:grid-cols-2">
+          <Field label="Login URL (optional — defaults to product URL)">
+            <Input
+              value={loginUrl}
+              onChange={setLoginUrl}
+              placeholder="https://your-product.com/login"
+            />
+          </Field>
+          <Field label="Username / email">
+            <Input
+              value={loginUsername}
+              onChange={setLoginUsername}
+              placeholder="demo@your-product.com"
+              autoComplete="username"
+            />
+          </Field>
+        </div>
+        <Field label="Password">
+          {hasPassword && !changingPass ? (
+            <div className="flex items-center gap-2">
+              <Input value="••••••••••••" onChange={() => {}} disabled />
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setChangingPass(true);
+                  setLoginPass("");
+                }}
+              >
+                Change
+              </Button>
+            </div>
+          ) : (
+            <Input
+              value={loginPass}
+              onChange={setLoginPass}
+              placeholder={hasPassword ? "enter a new password" : "password"}
+              type="password"
+              autoComplete="new-password"
+            />
+          )}
+        </Field>
+
+        <div
+          className="mb-3 border-t pt-3"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <Switch
+            label="Show login during demo"
+            description="On: run your recorded login/onboarding flow (or a live login if none). Off: silent auto sign-in — skip login/onboarding in the playlist."
+            checked={includeLogin}
+            disabled={savingLogin || !loginUsername.trim()}
+            onChange={(v) => void saveLoginToggle(v)}
+          />
+        </div>
+
+        <Button
+          onClick={() => void saveLogin()}
+          disabled={
+            savingLogin ||
+            !loginUsername.trim() ||
+            (changingPass && !loginPass && !hasPassword)
+          }
+        >
+          {savingLogin ? "Saving…" : "Save product login"}
+        </Button>
       </Card>
     </motion.div>
   );

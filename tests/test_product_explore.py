@@ -1,0 +1,99 @@
+"""Product Explore + dual knowledge merge (non-demo topology)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+from navigator.automation.product_explore import (
+    _is_noise_result_host,
+    _same_origin,
+    _unwrap_search_url,
+)
+from navigator.knowledge.company_bio import load_bio, save_bio
+from navigator.knowledge.knowledge_merge import (
+    auto_merge_knowledge,
+    load_knowledge_bundle,
+    save_explore_markdown,
+    save_user_markdown,
+)
+from navigator.knowledge.topology import load_topology, save_topology
+
+
+def test_unwrap_google_url():
+    wrapped = "https://www.google.com/url?q=https%3A%2F%2Fexample.com%2Fabout&sa=U"
+    assert _unwrap_search_url(wrapped) == "https://example.com/about"
+    ddg = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Facme.io%2Fpricing"
+    assert _unwrap_search_url(ddg) == "https://acme.io/pricing"
+    plain = "https://acme.io/docs"
+    assert _unwrap_search_url(plain) == plain
+
+
+def test_noise_and_same_origin_skip():
+    assert _is_noise_result_host("www.google.com")
+    assert _is_noise_result_host("youtube.com")
+    assert _is_noise_result_host("acme.example", product_host="acme.example")
+    assert not _is_noise_result_host("linkedin.com")
+    assert not _is_noise_result_host("crunchbase.com")
+    assert _same_origin("https://acme.io/a", "https://acme.io/b")
+    assert not _same_origin("https://acme.io/", "https://other.io/")
+
+
+def test_dual_knowledge_auto_merge_without_llm(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "navigator.knowledge.knowledge_merge._ROOT", tmp_path
+    )
+    save_user_markdown("acme", "# User\n\nWe sell widgets.")
+    save_explore_markdown("acme", "# Explore\n\nDashboard has Inbox.")
+    bundle = auto_merge_knowledge("acme")
+    assert "widgets" in (bundle["markdown"] or "")
+    assert "Inbox" in (bundle["markdown"] or "")
+    assert bundle["merged_at"]
+
+
+def test_topology_save_load_no_playlist(tmp_path, monkeypatch):
+    monkeypatch.setattr("navigator.knowledge.topology._ROOT", tmp_path)
+    raw = {
+        "site": "acme",
+        "base_url": "https://example.com/",
+        "pages": {"home": {"url": "https://example.com/", "selectors": {}, "flows": {}}},
+        "demo_playlist": [],
+        "_meta": {"non_demo": True},
+    }
+    save_topology("acme", yaml.safe_dump(raw), page_count=1)
+    loaded = load_topology("acme")
+    assert loaded["page_count"] == 1
+    assert "home" in loaded["yaml"]
+    assert "demo_playlist: []" in loaded["yaml"] or "demo_playlist:\n" in loaded["yaml"]
+
+
+def test_bio_fill_empty_only(tmp_path, monkeypatch):
+    monkeypatch.setattr("navigator.knowledge.company_bio._ROOT", tmp_path)
+    save_bio(
+        "acme",
+        {
+            "fields": [
+                {"key": "company_name", "label": "Company name", "value": "Acme"},
+                {"key": "website", "label": "Website", "value": ""},
+            ]
+        },
+    )
+    bio = load_bio("acme")
+    fields = bio["fields"]
+    by_key = {f["key"]: f for f in fields}
+    # simulate explore fill
+    if not by_key["website"]["value"]:
+        by_key["website"]["value"] = "https://example.com"
+    save_bio("acme", {"fields": list(by_key.values())})
+    again = load_bio("acme")
+    vals = {f["key"]: f["value"] for f in again["fields"]}
+    assert vals["company_name"] == "Acme"
+    assert vals["website"] == "https://example.com"
+
+
+def test_knowledge_bundle_migrates_canonical_to_user(tmp_path, monkeypatch):
+    monkeypatch.setattr("navigator.knowledge.knowledge_merge._ROOT", tmp_path)
+    (tmp_path / "acme.md").write_text("# Old brief\n", encoding="utf-8")
+    bundle = load_knowledge_bundle("acme")
+    assert "Old brief" in (bundle["user_markdown"] or "")

@@ -199,6 +199,7 @@ class Registry:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = conn
         return conn
 
@@ -451,27 +452,24 @@ class Registry:
     # -- lifecycle -----------------------------------------------------------
 
     def set_tier2_enabled(self, product_id: str, enabled: bool) -> Product:
-        """Opt a product into (or out of) constrained live Tier-2 fallback."""
+        """Legacy no-op — product autonomy is always guided (Tier-2 off)."""
+        _ = enabled
         self.get(product_id)
         self._conn.execute(
-            "UPDATE products SET tier2_enabled = ? WHERE product_id = ?",
-            (1 if enabled else 0, product_id),
-        )
-        mode = "adaptive" if enabled else "guided"
-        self._conn.execute(
-            "UPDATE products SET autonomy_mode = ? WHERE product_id = ?",
-            (mode, product_id),
+            "UPDATE products SET tier2_enabled = 0, autonomy_mode = 'guided' "
+            "WHERE product_id = ?",
+            (product_id,),
         )
         return self.get(product_id)
 
     def set_autonomy_mode(self, product_id: str, mode: str) -> Product:
+        """Legacy no-op — always persist guided / Tier-2 off."""
+        _ = mode
         self.get(product_id)
-        normalized = mode if mode in {"guided", "adaptive", "explorer"} else "guided"
-        tier2 = 1 if normalized in {"adaptive", "explorer"} else 0
         self._conn.execute(
-            "UPDATE products SET autonomy_mode = ?, tier2_enabled = ? "
+            "UPDATE products SET autonomy_mode = 'guided', tier2_enabled = 0 "
             "WHERE product_id = ?",
-            (normalized, tier2, product_id),
+            (product_id,),
         )
         return self.get(product_id)
 
@@ -537,17 +535,14 @@ class Registry:
 
 def _to_product(row: sqlite3.Row) -> Product:
     keys = row.keys()
-    tier2 = bool(row["tier2_enabled"]) if "tier2_enabled" in keys else False
-    mode = str(row["autonomy_mode"]) if "autonomy_mode" in keys else "guided"
-    if mode not in {"guided", "adaptive", "explorer"}:
-        mode = "guided"
+    # Dashboard no longer offers adaptive/explorer — force guided at read time.
     webhook = str(row["handoff_webhook_url"]) if "handoff_webhook_url" in keys else ""
     return Product(
         product_id=row["product_id"],
         name=row["name"],
         created_at=row["created_at"],
         active_revision=row["active_revision"],
-        tier2_enabled=tier2,
-        autonomy_mode=mode,
+        tier2_enabled=False,
+        autonomy_mode="guided",
         handoff_webhook_url=webhook,
     )

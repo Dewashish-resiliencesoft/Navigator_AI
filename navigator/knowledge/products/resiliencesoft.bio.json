@@ -1,0 +1,39 @@
+{
+  "fields": [
+    {
+      "key": "company_name",
+      "label": "Company name",
+      "value": "Resiliencesoft"
+    },
+    {
+      "key": "owner",
+      "label": "Owner / leadership",
+      "value": ""
+    },
+    {
+      "key": "products",
+      "label": "Products",
+      "value": ""
+    },
+    {
+      "key": "about",
+      "label": "About",
+      "value": "whatsapp automations"
+    },
+    {
+      "key": "website",
+      "label": "Website",
+      "value": ""
+    },
+    {
+      "key": "industry",
+      "label": "Industry",
+      "value": ""
+    },
+    {
+      "key": "referral_source",
+      "label": "How you heard about us",
+      "value": "Google"
+    }
+  ]
+}

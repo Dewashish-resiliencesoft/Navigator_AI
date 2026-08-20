@@ -59,6 +59,32 @@ class UserPreferencesView(BaseModel):
     hide_get_started_card: bool
     onboarding_wizard_dismissed: bool
     onboarding_wizard_completed: bool
+    email: str = ""
+    product_name: str = ""
+    product_id: str = ""
+
+
+class AccountView(BaseModel):
+    email: str
+    product_name: str
+    product_id: str
+
+
+def _prefs_view(
+    session: DashboardSession,
+    store: AuthStore,
+    prefs: dict[str, bool] | None = None,
+) -> UserPreferencesView:
+    if prefs is None:
+        prefs = store.get_preferences(session.user_id)
+    user = store.get_user(session.user_id)
+    email = str(user["email"]) if user is not None else ""
+    return UserPreferencesView(
+        **prefs,
+        email=email,
+        product_name=session.product.name,
+        product_id=session.product.product_id,
+    )
 
 
 def build_auth_router(
@@ -167,8 +193,20 @@ def build_auth_router(
         session: DashboardSession = Depends(_session_dep),
         store: AuthStore = Depends(get_auth_store),
     ) -> UserPreferencesView:
-        prefs = store.get_preferences(session.user_id)
-        return UserPreferencesView(**prefs)
+        return _prefs_view(session, store)
+
+    @router.get("/client/api/account", response_model=AccountView)
+    def get_account(
+        session: DashboardSession = Depends(_session_dep),
+        store: AuthStore = Depends(get_auth_store),
+    ) -> AccountView:
+        user = store.get_user(session.user_id)
+        email = str(user["email"]) if user is not None else ""
+        return AccountView(
+            email=email,
+            product_name=session.product.name,
+            product_id=session.product.product_id,
+        )
 
     @router.put("/client/api/user/preferences", response_model=UserPreferencesView)
     def put_user_preferences(
@@ -177,10 +215,11 @@ def build_auth_router(
         store: AuthStore = Depends(get_auth_store),
     ) -> UserPreferencesView:
         patch = body.model_dump(exclude_none=True)
-        if not patch:
-            prefs = store.get_preferences(session.user_id)
-        else:
-            prefs = store.set_preferences(session.user_id, patch)
-        return UserPreferencesView(**prefs)
+        prefs = (
+            store.get_preferences(session.user_id)
+            if not patch
+            else store.set_preferences(session.user_id, patch)
+        )
+        return _prefs_view(session, store, prefs)
 
     return router

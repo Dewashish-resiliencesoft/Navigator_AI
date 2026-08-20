@@ -26,9 +26,13 @@ from navigator.voice.live_acks import maybe_nudge_live
 
 
 def _start_pre_action_speech(state: CallState, deps: CallDeps):
-    prior = state.get("pre_action_speech")
-    if prior is not None and hasattr(prior, "wait"):
-        prior.wait(timeout=120.0)
+    """Fire narration in the background; never block Playwright on prior TTS.
+
+    Live serializes utterances inside ``say()`` (worker thread waits on the
+    mouth). The demo thread must start ``run_tool`` immediately so navigation
+    overlaps speech — waiting on ``pre_action_speech`` here caused
+    speak-then-click. SPEAKING still joins the handle before post-plan lines.
+    """
     lines = list(state.get("narration") or [])
     if not lines:
         return None, None
@@ -176,7 +180,11 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
     if is_external_url(deps.page.url, deps.graph.base_url):
         revert_external_navigation(deps.page, product_base=deps.graph.base_url)
         try:
-            deps.speaker.say(EXTERNAL_LINK_SPOKEN)
+            say_async = getattr(deps.speaker, "say_async", None)
+            if say_async is not None:
+                say_async(EXTERNAL_LINK_SPOKEN)
+            else:
+                deps.speaker.say(EXTERNAL_LINK_SPOKEN)
         except Exception as exc:  # noqa: BLE001
             print(f"[demo] external link disclaimer failed: {exc}", flush=True)
         result = result.model_copy(

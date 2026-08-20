@@ -11,12 +11,15 @@ export function Card({
   span,
   interactive = true,
   onClick,
+  dataCoach,
 }: {
   children: ReactNode;
   className?: string;
   span?: string;
   interactive?: boolean;
   onClick?: () => void;
+  /** Spotlight coach target id (`data-coach`). */
+  dataCoach?: string;
 }) {
   const mx = useMotionValue(-200);
   const my = useMotionValue(-200);
@@ -27,6 +30,7 @@ export function Card({
       variants={rise}
       {...(interactive ? cardHover : {})}
       onClick={onClick}
+      data-coach={dataCoach}
       onPointerMove={(e) => {
         const r = e.currentTarget.getBoundingClientRect();
         mx.set(e.clientX - r.left);
@@ -253,6 +257,7 @@ export function Textarea({
   rows = 4,
   mono,
   className,
+  readOnly,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -260,12 +265,14 @@ export function Textarea({
   rows?: number;
   mono?: boolean;
   className?: string;
+  readOnly?: boolean;
 }) {
   return (
     <textarea
       value={value}
       rows={rows}
       placeholder={placeholder}
+      readOnly={readOnly}
       onChange={(e) => onChange(e.target.value)}
       className={cn(fieldBase, "resize-y", mono && "font-mono text-[0.78rem]", className)}
       style={{ borderColor: "var(--line)" }}

@@ -23,6 +23,7 @@ import {
   Switch,
   Textarea,
 } from "../components/ui";
+import { LiveNarrationBanner } from "../components/LiveNarrationBanner";
 import { errText, useUi } from "../store";
 
 const LINK_PENDING = "Creating meeting link…";
@@ -774,6 +775,15 @@ export function LiveDemo() {
           )}
         </div>
       </Card>
+
+      {live && (
+        <Card span="lg:col-span-2">
+          <CardTitle hint="What Navigator will say next, in the prospect's language.">
+            Demo Script
+          </CardTitle>
+          <LiveNarrationBanner />
+        </Card>
+      )}
 
       <Card span="lg:col-span-2">
         <CardTitle hint="What the agent has said so far, live.">Transcript</CardTitle>

@@ -127,6 +127,10 @@ class CallDeps:
     phrase: Callable[..., str] | None = None
     #: Spoken language for TTS + phrasing: "en" (default) or "hi".
     spoken_language: Literal["en", "hi"] = "en"
+    #: Hysteresis tracker (navigator.voice.conversation_language.ConversationLanguage).
+    conversation_language: object | None = None
+    #: Dashboard live script: language / narration / speechStatus.
+    on_speech: Callable[[dict[str, object]], None] | None = None
     #: Languages the agent may switch to when the prospect asks.
     extra_languages: tuple[Literal["en", "hi"], ...] = ("hi",)
     #: First-person voice gender — must match TTS voice and Hindi verb forms.
@@ -254,6 +258,11 @@ class CallState(TypedDict, total=False):
     #: Knowledge answer spoken; next turn asks if the question is answered.
     resume_checkin_pending: bool
     pre_action_speech: object | None
+    user_language: str
+    narration_language: str
+    language_confidence: float
+    language_source: str
+    language_locked: bool
 
 
 def initial_state(
@@ -295,4 +304,9 @@ def initial_state(
         detour_step=0,
         detour_one_shot=False,
         resume_checkin_pending=False,
+        user_language="en",
+        narration_language="en",
+        language_confidence=1.0,
+        language_source="session",
+        language_locked=False,
     )

@@ -57,6 +57,7 @@ from navigator.core.settings import settings
 from navigator.core.usage_context import bind_demo_usage, clear_demo_usage
 from navigator.voice.stt import VoiceSegmenter, transcribe
 from navigator.voice.tts import PrintSpeaker
+from navigator.voice.conversation_language import ConversationLanguage
 
 
 def _is_likely_echo(heard: str, bot_text: str) -> bool:
@@ -276,8 +277,10 @@ def _talk_speaker(meet_speaker, live_box: list):
                 return getattr(live, "last_spoken", "") or ""
             return getattr(meet_speaker, "last_spoken", "") or ""
 
-        def say(self, text: str, *, mode: str = "natural", utterance_id: str | None = None) -> None:
+        def say(self, text: str, *, mode: str = "natural", utterance_id: str | None = None, language: str | None = None) -> None:
             live = live_box[0] if live_box else None
+            if language and live is not None and hasattr(live, "set_language"):
+                live.set_language(language)
             if live is not None:
                 live.say(text, mode=mode, utterance_id=utterance_id)
                 return
@@ -733,6 +736,7 @@ def run_live_meet_demo(
     stop_event: threading.Event | None = None,
     on_bot_joined: Callable[[str], None] | None = None,
     on_leave_grace: Callable[[int | None], None] | None = None,
+    on_speech: Callable[[dict], None] | None = None,
     tier2_enabled: bool = False,
     brain_config=None,
     use_turn_brain: bool | None = None,
@@ -1626,6 +1630,7 @@ def run_live_meet_demo(
                 is_bot_echo=lambda t: _is_likely_echo(t, talk.last_spoken),
                 set_status=lambda mode, label=None: relay.set_status(mode, label),
                 set_avatar_state=relay.set_avatar_state,
+                on_speech=on_speech,
                 screen_context=lambda: screen_snapshot(page),
                 product_brief=load_agent_context(product_id or graph_cfg.site),
                 pending_barge_in=pending_barge_in,
@@ -1641,6 +1646,10 @@ def run_live_meet_demo(
                 decision_db_path=settings.db_path,
                 on_user_utterance=_schedule_prefetch,
                 spoken_language=spoken_language,  # type: ignore[arg-type]
+                conversation_language=ConversationLanguage(
+                    user_language=spoken_language,
+                    narration_language=spoken_language,
+                ),
                 extra_languages=tuple(agent_settings.extra_languages),
                 agent_gender=agent_settings.agent_gender,
                 live_opening_done=live_opening_done,

@@ -77,6 +77,10 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
         deps.set_status("speaking", "Speaking…")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("speaking")
+    from navigator.voice.conversation_language import publish_speech
+
+    preview = prospect_safe_line(item_text((state.get("narration") or [""])[0]))
+    publish_speech(deps, status="speaking", narration=preview)
     # Keep lead-in narration queued until EXECUTING starts cursor/action.
     if state.get("pending_calls"):
         return CallState()
@@ -140,7 +144,13 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
             f"[utterance] id={uid} tts_start queue={len(queued_items)}",
             flush=True,
         )
+        snap = getattr(deps, "conversation_language", None)
+        lang = getattr(snap, "narration_language", None) or getattr(
+            deps, "spoken_language", None
+        )
         if live is not None:
+            if lang in ("en", "hi") and hasattr(live, "set_language"):
+                live.set_language(lang)
             live.say(safe, mode=_say_mode(deps, line), utterance_id=uid or None)
             if getattr(live, "interrupted", False):
                 from navigator.core.settings import settings
@@ -148,7 +158,10 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
                 live.wait_until_idle(silence_s=settings.live_resume_silence_s)
                 interrupted = True
         else:
-            deps.speaker.say(safe)
+            try:
+                deps.speaker.say(safe, language=lang)
+            except TypeError:
+                deps.speaker.say(safe)
             if getattr(deps.speaker, "interrupted", False):
                 interrupted = True
         print(

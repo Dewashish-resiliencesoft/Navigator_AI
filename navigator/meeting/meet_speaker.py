@@ -42,7 +42,9 @@ class MeetSpeaker:
         apply_to_speakers(lang, self.local)  # type: ignore[arg-type]
         print(f"[speak] language → {lang}", flush=True)
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, *, language: str | None = None) -> None:
+        if language:
+            self.set_language(language)
         print(f"[speak] {text}", flush=True)
         self.last_spoken = text
         self.interrupted = False

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, MessageSquare, Monitor, RefreshCw, Save, ShieldAlert, UserCircle } from "lucide-react";
 import { api, type DemoScriptBeat, type DemoScriptResponse } from "../lib/api";
+import { LiveNarrationBanner } from "./LiveNarrationBanner";
 import { BarLoader, Button, Card, CardTitle, Empty, Textarea } from "./ui";
 import { errText, useUi } from "../store";
 
@@ -418,6 +419,8 @@ export function DemoScriptPanel({
           </span>
         )}
       </CardTitle>
+
+      <LiveNarrationBanner />
 
       {loading && <BarLoader label="Composing demo script…" />}
       {!loading && loadError && (

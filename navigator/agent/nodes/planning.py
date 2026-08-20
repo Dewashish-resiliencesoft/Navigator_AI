@@ -69,6 +69,11 @@ def _memory(deps: CallDeps) -> CallMemory:
     return mem
 
 
+def _narration_lang(deps: CallDeps) -> str:
+    snap = getattr(deps, "conversation_language", None)
+    return str(getattr(snap, "narration_language", None) or deps.spoken_language or "en")
+
+
 def _trace(deps: CallDeps, state: CallState, **kw) -> None:
     """Record one turn's decision. Never let logging break a live call."""
     from navigator.logs.decisions import DecisionTraceStore
@@ -90,8 +95,15 @@ def _set_spoken_language(deps: CallDeps, lang: SpokenLanguage) -> None:
     speaker = deps.speaker
     local = getattr(speaker, "local", None)
     from navigator.voice.language import apply_to_speakers
+    from navigator.voice.conversation_language import ConversationLanguage
 
     apply_to_speakers(lang, speaker, local, deps.live_agent)
+    deps.conversation_language = ConversationLanguage(
+        user_language=lang,
+        narration_language=lang,
+        confidence=1.0,
+        source="switch",
+    )
 
 
 def _maybe_language_switch_ack(
@@ -111,6 +123,8 @@ def _maybe_language_switch_ack(
     )
     if not ack:
         return None
+    snap = getattr(deps, "conversation_language", None)
+    lang = snap.as_state() if snap is not None and hasattr(snap, "as_state") else {}
     return CallState(
         plan=Plan(spoken_response=ack, tool_calls=[]),
         pending_calls=[],
@@ -118,6 +132,7 @@ def _maybe_language_switch_ack(
         transcript=[f"agent: {ack}"],
         phase=phase,
         walkthrough_step=state.get("walkthrough_step"),
+        **lang,
     )
 
 
@@ -142,7 +157,7 @@ def _say(
             pacing=pacing,
             persona_name=deps.graph.effective_persona().product_name,
             product_brief=deps.product_brief or "",
-            spoken_language=deps.spoken_language,
+            spoken_language=_narration_lang(deps),
             agent_gender=deps.agent_gender,
             fallback=fallback,
             api_key=api_key or None,
@@ -265,6 +280,9 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         deps.set_status("tailoring", "Tailoring…")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("thinking")
+    from navigator.voice.conversation_language import publish_speech
+
+    publish_speech(deps, status="thinking")
     if getattr(deps.speaker, "bot_ended", False):
         return CallState(
             plan=Plan(spoken_response="", tool_calls=[]),
@@ -1056,7 +1074,13 @@ def _walkthrough_spoken(
     from navigator.automation.narration import spoken_for_live_step
 
     fallback = spoken_for_live_step(yaml_hint, max_len=200) or "Let me show you the next step."
-    # ponytail: recorded line / YAML only. Vision PNG is interrupt/stuck, not every step.
+    if (getattr(deps, "spoken_language", "en") or "en") != "en":
+        return _say(
+            deps,
+            intent="flow_intro",
+            fallback=fallback,
+            context=yaml_hint,
+        )
     return fallback
 
 
@@ -1124,7 +1148,7 @@ def _try_turn_brain(
                 product_brief=deps.product_brief or "",
                 intake_summary=intake_summary,
                 nav_labels=nav_labels,
-                spoken_language=deps.spoken_language,
+                spoken_language=_narration_lang(deps),
                 agent_gender=deps.agent_gender,
             )
     except Exception as exc:  # noqa: BLE001

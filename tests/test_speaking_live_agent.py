@@ -19,6 +19,9 @@ class FakeLive:
         self.said.append((text, mode))
         self.interrupted = text == self._interrupt_on
 
+    def set_language(self, lang: str) -> None:
+        self.language = lang
+
     def add_context(self, text: str) -> None:
         self.context.append(text)
 

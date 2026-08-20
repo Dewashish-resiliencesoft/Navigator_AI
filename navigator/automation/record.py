@@ -16,9 +16,14 @@ from typing import Any
 import yaml
 from playwright.sync_api import Page, sync_playwright
 
-_NARRATE_WIDGET_JS = (
-    Path(__file__).resolve().parent / "narrate_widget.js"
-).read_text(encoding="utf-8")
+def _narrate_widget_js() -> str:
+    """Reload from disk so record workers pick up widget edits without restart."""
+    return (
+        Path(__file__).resolve().parent / "narrate_widget.js"
+    ).read_text(encoding="utf-8")
+
+
+_NARRATE_WIDGET_JS = _narrate_widget_js()
 
 
 @dataclass
@@ -32,6 +37,10 @@ class RecordedStep:
     #: "user" → live demo pauses for End User input (requires_live_input).
     source: str = "agent"
     live_question: str | None = None
+    #: Reuse earlier visitor answer (alias from a source=user fill).
+    value_ref: str | None = None
+    #: Optional spoken line for this step (next-prompt agent / mic merge).
+    spoken: str | None = None
     #: Recorded but never executed: a mutating step (submit / send / pay) the
     #: guardrail refused. Stays out of a live demo until a human approves it.
     needs_approval: bool = False
@@ -97,17 +106,34 @@ def junk_record_reason(el_info: dict[str, Any], *, alias: str, selector: str) ->
         combined,
     ):
         return "theme toggle chrome"
+    # Record-studio / narrate overlay — never part of the Client's demo flow.
+    if "nav-narrate" in combined or "navigator-chrome" in combined:
+        return "navigator record studio chrome"
+    if re.search(
+        r"(start capturing|start hands|take over|nav.studio|record studio)",
+        f"{alias} {text}".lower(),
+    ):
+        return "navigator record studio chrome"
     return None
 
 
 def guess_postcondition(step: RecordedStep) -> dict[str, Any]:
     if step.tool == "fill_field":
+        # Visitor / value_ref fills have no known value at record time.
+        if step.source == "user" or step.value_ref:
+            return {
+                "check": "visible",
+                "selector": step.alias,
+                "timeout_ms": 5000,
+            }
         return {
             "check": "value_equals",
             "selector": step.alias,
             "expected": step.value or "",
             "timeout_ms": 5000,
         }
+    if step.tool == "scroll_page":
+        return {"check": "visible", "selector": "body", "timeout_ms": 3000}
     if step.tool == "click_element":
         alias = (step.alias or "").lower()
         if any(w in alias for w in ("close", "dismiss", "accept", "got_it", "ok")):
@@ -148,13 +174,32 @@ def draft_site_graph(
                 call["source"] = "user"
                 if step.live_question:
                     call["live_question"] = step.live_question
+            if step.value_ref:
+                call["value_ref"] = step.value_ref
         elif step.tool == "click_element":
             call["selector"] = step.alias
+        elif step.tool == "scroll_page":
+            # value encodes "x,y" absolute scroll position from the recorder.
+            raw = (step.value or "0,0").split(",")
+            try:
+                call["x"] = int(raw[0].strip())
+            except (TypeError, ValueError, IndexError):
+                call["x"] = 0
+            try:
+                call["y"] = int(raw[1].strip()) if len(raw) > 1 else 0
+            except (TypeError, ValueError):
+                call["y"] = 0
+            if step.alias and step.alias not in {"window", "body"}:
+                call["selector"] = step.alias
         elif step.tool == "navigate":
             call["page_id"] = step.page_id
         elif step.tool == "wait_for":
             call["selector"] = step.alias
+        if step.spoken:
+            call["spoken"] = step.spoken
         page["flows"]["recorded_demo"].append(call)
+
+    from navigator.automation.record_studio import demo_variables_from_steps
 
     return {
         "product": {
@@ -173,6 +218,7 @@ def draft_site_graph(
                 "Human must review: rename flows, fix postconditions, "
                 "prefer data-testid. Do not auto-trust guessed expects."
             ),
+            "demo_variables": demo_variables_from_steps(steps),
         },
     }
 
@@ -250,7 +296,7 @@ _INJECT_JS = """
   }, true);
   document.addEventListener('click', (ev) => {
     const raw = (ev.composedPath && ev.composedPath()[0]) || ev.target;
-    if (raw && raw.closest && raw.closest('#nav-narrate')) return;
+    if (raw && raw.closest && raw.closest('#nav-narrate,[data-navigator-chrome]')) return;
     const info = elInfo(raw);
     if (!info) return;
     const clickPt = {
@@ -271,6 +317,7 @@ _INJECT_JS = """
   }, true);
   document.addEventListener('change', (ev) => {
     const raw = (ev.composedPath && ev.composedPath()[0]) || ev.target;
+    if (raw && raw.closest && raw.closest('#nav-narrate,[data-navigator-chrome]')) return;
     const info = elInfo(raw);
     if (!info) return;
     const tag = info.tag;
@@ -293,18 +340,133 @@ _INJECT_JS = """
     });
     trace = [];
   }, true);
+  document.addEventListener('focusin', (ev) => {
+    const raw = (ev.composedPath && ev.composedPath()[0]) || ev.target;
+    if (raw && raw.closest && raw.closest('#nav-narrate,[data-navigator-chrome]')) return;
+    const info = elInfo(raw);
+    if (!info) return;
+    if (!['input','textarea','select'].includes(info.tag)) return;
+    send({
+      tool: 'focus_field',
+      url: location.href,
+      at_ms: atMs(),
+      ...info,
+      text: (raw.getAttribute && raw.getAttribute('placeholder')) || info.tag,
+      value: (raw && raw.value) || '',
+    });
+  }, true);
+  let scrollTimer = null;
+  let lastScrollSent = { x: 0, y: 0 };
+  const flushScroll = () => {
+    scrollTimer = null;
+    const x = Math.round(window.scrollX || window.pageXOffset || 0);
+    const y = Math.round(window.scrollY || window.pageYOffset || 0);
+    if (Math.abs(x - lastScrollSent.x) < 24 && Math.abs(y - lastScrollSent.y) < 24) return;
+    lastScrollSent = { x, y };
+    send({
+      tool: 'scroll_page',
+      url: location.href,
+      at_ms: atMs(),
+      scroll_x: x,
+      scroll_y: y,
+      tag: 'window',
+      text: 'scroll',
+    });
+  };
+  document.addEventListener('scroll', () => {
+    if (scrollTimer) clearTimeout(scrollTimer);
+    scrollTimer = setTimeout(flushScroll, 180);
+  }, true);
 })();
 """
 
 
 def inject_narration_widget(page: Page) -> None:
-    """Install the narrate overlay on the current document (idempotent)."""
-    page.evaluate(_NARRATE_WIDGET_JS)
+    """Install record-studio + narrate overlay (idempotent). Always during record."""
+    page.evaluate(_narrate_widget_js())
 
 
 def inject_dom_listeners(page: Page) -> None:
     """Install click/fill listeners on the current document (idempotent per load)."""
     page.evaluate(_INJECT_JS)
+
+
+@dataclass
+class CaptureGate:
+    """Shared mutable phase for a recording session.
+
+    Listeners close over this so POST /record/capture can flip phase without
+    restarting Playwright.
+    """
+
+    phase: str = "setup"  # setup | capturing | done
+    setup_discarded: int = 0
+    flagged: list[dict[str, Any]] = field(default_factory=list)
+    login_config_fn: Any = None  # Callable[[], LoginConfig] | None
+    allow_login_steps: bool = False
+    #: Guided Agent hands commands drained in the record wait loop.
+    hands_commands: list[dict[str, Any]] = field(default_factory=list)
+    #: stop_event for in-browser Stop button (set by record_session).
+    stop_event: threading.Event | None = None
+    #: Optional guided plan meta so worker-side hands_start can build a session.
+    guided_plan_meta: dict[str, Any] | None = None
+    #: Callable[[dict], None] — publish hands/studio status (mp ns or local).
+    status_sink: Any = None
+    #: Same list the recorder appends to (for studio mark-ask / vars).
+    steps_ref: list[RecordedStep] | None = None
+    #: Last focused/filled field summary for the studio chip.
+    last_field: dict[str, Any] | None = None
+
+
+def _publish_studio_status(gate: CaptureGate | None, page: Page | None = None) -> dict[str, Any]:
+    from navigator.automation.guided_task.session import get_guided_hands_session
+    from navigator.automation.record_studio import demo_variables_from_steps
+
+    phase = gate.phase if gate is not None else "setup"
+    sess = get_guided_hands_session()
+    hands = sess.status_dict() if sess is not None else {"active": False}
+    steps = getattr(gate, "steps_ref", None) if gate is not None else None
+    variables = demo_variables_from_steps(steps or [])
+    last_field = getattr(gate, "last_field", None) if gate is not None else None
+    out = {
+        "phase": phase,
+        "hands": hands,
+        "last_field": last_field,
+        "demo_variables": variables,
+    }
+    sink = getattr(gate, "status_sink", None) if gate is not None else None
+    if callable(sink):
+        try:
+            sink(out)
+        except Exception:  # noqa: BLE001
+            pass
+    if page is not None:
+        try:
+            page.evaluate(
+                """(st) => {
+                  try {
+                    window.__navStudioStatus = st;
+                    if (typeof window.__navStudioApply === 'function') window.__navStudioApply(st);
+                  } catch (e) {}
+                }""",
+                out,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    return out
+
+
+def _field_chip(step: RecordedStep, *, step_index: int) -> dict[str, Any]:
+    return {
+        "step_index": step_index,
+        "tool": step.tool,
+        "alias": step.alias,
+        "selector": step.selector,
+        "source": step.source,
+        "value_ref": step.value_ref,
+        "live_question": step.live_question,
+        "label": (step.alias or "field").replace("_", " "),
+    }
 
 
 def _install_listeners(
@@ -313,6 +475,7 @@ def _install_listeners(
     *,
     gate: CaptureGate | None = None,
     narration: NarrationCapture | None = None,
+    bind_only: bool = False,
 ) -> None:
     """Expose binding + inject click/fill capture (and re-inject on every navigation).
 
@@ -321,10 +484,33 @@ def _install_listeners(
     the live document after each load.
 
     Phase gate lives here (Python), not in JS — the browser is untrusted.
+
+    ``bind_only=True``: expose CDP bindings on about:blank *before* goto (remote
+    CDP after nav can stall). Call again after load to inject the live overlay.
     """
+    if gate is not None:
+        gate.steps_ref = steps
 
     def _on_payload(payload: object) -> None:
         if not isinstance(payload, dict):
+            return
+        tool = str(payload.get("tool") or "")
+        # Focus chip only — never a flow step.
+        if tool == "focus_field":
+            if gate is None or gate.phase != "capturing":
+                return
+            alias, selector = prefer_selector(payload)
+            gate.last_field = {
+                "step_index": None,
+                "tool": "focus_field",
+                "alias": alias,
+                "selector": selector,
+                "source": "agent",
+                "value_ref": None,
+                "live_question": None,
+                "label": alias.replace("_", " "),
+            }
+            _publish_studio_status(gate, page)
             return
         step = _step_from_payload(payload)
         if gate is not None and gate.phase != "capturing":
@@ -370,31 +556,229 @@ def _install_listeners(
                 )
                 print(f"[record] flagged login step: {reason}", flush=True)
                 return
+        # Coalesce consecutive scrolls into the final resting position.
+        if (
+            step.tool == "scroll_page"
+            and steps
+            and steps[-1].tool == "scroll_page"
+        ):
+            steps[-1] = step
+            print(
+                f"[record] ~scroll_page → {step.value!r}",
+                flush=True,
+            )
+            return
         steps.append(step)
+        if gate is not None and step.tool in {"fill_field", "click_element"}:
+            tag = str(payload.get("tag") or "").lower()
+            if step.tool == "fill_field" or tag in {"input", "textarea", "select"}:
+                gate.last_field = _field_chip(step, step_index=len(steps) - 1)
+                _publish_studio_status(gate, page)
         print(
             f"[record] +{step.tool} alias={step.alias!r} sel={step.selector!r}"
             + (f" value={step.value!r}" if step.value is not None else ""),
             flush=True,
         )
 
-    # expose_function: JS window.navigatorRecord(payload) → Python (no source arg).
-    page.expose_function("navigatorRecord", _on_payload)
-    page.add_init_script(_INJECT_JS)
+    def _studio_status(_: object = None) -> dict[str, Any]:
+        return _publish_studio_status(gate, page)
 
-    if narration is not None:
-        page.expose_function("navigatorNarrate", narration.on_chunk)
-        page.expose_function("navigatorNarrateConfig", narration.apply_config)
-        page.add_init_script(_NARRATE_WIDGET_JS)
+    def _studio_cmd(payload: object) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            return {"ok": False, "error": "bad payload"}
+        action = str(payload.get("action") or "").strip()
+        if gate is None:
+            return {"ok": False, "error": "no gate"}
+        if action == "begin_capture":
+            gate.phase = "capturing"
+            print("[record] studio: begin_capture", flush=True)
+            return _publish_studio_status(gate, page)
+        if action == "stop_record":
+            print("[record] studio: stop_record", flush=True)
+            if gate.stop_event is not None:
+                gate.stop_event.set()
+            return {"ok": True, "phase": "stopping"}
+        if action == "mark_field_ask":
+            from navigator.automation.record_studio import mark_step_ask_visitor
+
+            try:
+                idx = payload.get("step_index")
+                if idx is None and gate.last_field and gate.last_field.get("step_index") is None:
+                    # Focused field never emitted a fill yet — seed one.
+                    lf = gate.last_field
+                    steps.append(
+                        RecordedStep(
+                            tool="fill_field",
+                            alias=str(lf.get("alias") or "field"),
+                            selector=str(lf.get("selector") or "input"),
+                            value="",
+                            page_id="main",
+                        )
+                    )
+                    idx = len(steps) - 1
+                elif idx is None and gate.last_field and gate.last_field.get("step_index") is not None:
+                    idx = gate.last_field.get("step_index")
+                step = mark_step_ask_visitor(
+                    steps,
+                    step_index=int(idx) if idx is not None else None,
+                    var_alias=str(payload.get("var_alias") or ""),
+                    live_question=str(
+                        payload.get("live_question") or payload.get("prompt") or ""
+                    ),
+                    page=page,
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            # Prefer the rewritten step index (last fill).
+            for i in range(len(steps) - 1, -1, -1):
+                if steps[i] is step or (
+                    steps[i].alias == step.alias and steps[i].source == "user"
+                ):
+                    gate.last_field = _field_chip(steps[i], step_index=i)
+                    break
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            return st
+        if action == "bind_value_ref":
+            from navigator.automation.record_studio import bind_value_ref
+
+            try:
+                idx = payload.get("step_index")
+                if idx is None and gate.last_field and gate.last_field.get("step_index") is None:
+                    lf = gate.last_field
+                    steps.append(
+                        RecordedStep(
+                            tool="fill_field",
+                            alias=str(lf.get("alias") or "field"),
+                            selector=str(lf.get("selector") or "input"),
+                            value="",
+                            page_id="main",
+                        )
+                    )
+                    idx = len(steps) - 1
+                elif idx is None and gate.last_field and gate.last_field.get("step_index") is not None:
+                    idx = gate.last_field.get("step_index")
+                step = bind_value_ref(
+                    steps,
+                    step_index=int(idx) if idx is not None else None,
+                    value_ref=str(payload.get("value_ref") or ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            for i in range(len(steps) - 1, -1, -1):
+                if steps[i] is step or steps[i].value_ref == step.value_ref:
+                    gate.last_field = _field_chip(steps[i], step_index=i)
+                    break
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            return st
+        if action == "keep_agent_fill":
+            gate.last_field = None
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            return st
+        if action == "dismiss_field":
+            gate.last_field = None
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            return st
+        if action == "next_prompt":
+            from navigator.automation.record_studio import (
+                demo_variables_from_steps,
+                propose_next_steps,
+            )
+
+            try:
+                extra = propose_next_steps(
+                    page=page,
+                    client_prompt=str(payload.get("prompt") or ""),
+                    variables=demo_variables_from_steps(steps),
+                    graph_snippet=str(payload.get("graph_snippet") or ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            steps.extend(extra)
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            st["added"] = len(extra)
+            return st
+        cmds = gate.hands_commands
+        if action == "hands_start":
+            plan_meta = payload.get("plan") or gate.guided_plan_meta or {}
+            cmds.append(
+                {
+                    "action": "hands_start",
+                    "plan": plan_meta,
+                    "flow_index": int(payload.get("flow_index") or 0),
+                }
+            )
+            cmds.append({"action": "tick"})
+            return {"ok": True}
+        if action == "hands_pause":
+            cmds.append({"action": "pause"})
+            return {"ok": True}
+        if action == "hands_resume":
+            cmds.append({"action": "resume"})
+            return {"ok": True}
+        if action == "hands_barge":
+            cmds.append({"action": "barge"})
+            return {"ok": True}
+        if action == "hands_answer":
+            cmds.append(
+                {
+                    "action": "answer",
+                    "qid": str(payload.get("qid") or ""),
+                    "candidate_index": payload.get("candidate_index"),
+                    "value": payload.get("value"),
+                    "skip": bool(payload.get("skip")),
+                }
+            )
+            return {"ok": True}
+        if action == "hands_mark_ask":
+            cmds.append(
+                {
+                    "action": "mark_ask",
+                    "qid": str(payload.get("qid") or ""),
+                    "prompt": str(payload.get("prompt") or ""),
+                }
+            )
+            return {"ok": True, "queued": True}
+        if action == "hands_click_myself":
+            cmds.append({"action": "barge"})
+            return {"ok": True}
+        return {"ok": False, "error": f"unknown action {action}"}
+
+    already = bool(getattr(page, "_nav_record_bound", False))
+    if not already:
+        # Bind before goto when possible — remote CDP expose after nav can stall.
+        print("[record] binding studio functions…", flush=True)
+        page.expose_function("navigatorRecord", _on_payload)
+        page.expose_function("navigatorStudioCmd", _studio_cmd)
+        page.expose_function("navigatorStudioStatus", _studio_status)
+        page.add_init_script(_INJECT_JS)
+        page.add_init_script(_narrate_widget_js())
+        if narration is not None:
+            page.expose_function("navigatorNarrate", narration.on_chunk)
+            page.expose_function("navigatorNarrateConfig", narration.apply_config)
+        page._nav_record_bound = True  # type: ignore[attr-defined]
+        print("[record] studio functions bound", flush=True)
+
+    if bind_only:
+        return
 
     def _reinject() -> None:
         try:
+            from navigator.automation.browser.cursor import install_cursor
+
+            install_cursor(page)
             inject_dom_listeners(page)
-            if narration is not None:
-                inject_narration_widget(page)
+            inject_narration_widget(page)
         except Exception as exc:  # noqa: BLE001
             print(f"[record] reinject skipped: {exc}", flush=True)
 
-    page.on("load", lambda *_: _reinject())
+    if not getattr(page, "_nav_record_load_hook", False):
+        page.on("load", lambda *_: _reinject())
+        page._nav_record_load_hook = True  # type: ignore[attr-defined]
     _reinject()
 
 
@@ -404,8 +788,28 @@ def _step_from_payload(payload: dict[str, Any]) -> RecordedStep:
         is_password_field,
     )
 
-    alias, css = prefer_selector(payload)
     tool = str(payload.get("tool") or "click_element")
+    if tool == "scroll_page":
+        try:
+            sx = int(payload.get("scroll_x") or payload.get("x") or 0)
+            sy = int(payload.get("scroll_y") or payload.get("y") or 0)
+        except (TypeError, ValueError):
+            sx, sy = 0, 0
+        try:
+            at_ms = int(payload.get("at_ms") or 0)
+        except (TypeError, ValueError):
+            at_ms = 0
+        step = RecordedStep(
+            tool="scroll_page",
+            alias="window",
+            selector="body",
+            value=f"{sx},{sy}",
+            at_ms=at_ms,
+        )
+        step.postcondition = guess_postcondition(step)
+        return step
+
+    alias, css = prefer_selector(payload)
     value = payload.get("value")
     # Never persist a typed secret. Sentinel tells EXECUTING to pull from vault.
     if is_password_field(
@@ -490,23 +894,6 @@ class NarrationCapture:
         return b"".join(self.chunks)
 
 
-@dataclass
-class CaptureGate:
-    """Shared mutable phase for a recording session.
-
-    Listeners close over this so POST /record/capture can flip phase without
-    restarting Playwright.
-    """
-
-    phase: str = "setup"  # setup | capturing | done
-    setup_discarded: int = 0
-    flagged: list[dict[str, Any]] = field(default_factory=list)
-    login_config_fn: Any = None  # Callable[[], LoginConfig] | None
-    allow_login_steps: bool = False
-    #: Guided Agent hands commands drained in the record wait loop.
-    hands_commands: list[dict[str, Any]] = field(default_factory=list)
-
-
 def record_session(
     url: str,
     *,
@@ -536,15 +923,84 @@ def record_session(
                     ".venv/bin/python scripts/local_record_server.py"
                 ) from exc
         else:
-            browser = pw.chromium.launch(headless=not headful)
-        # Match live-demo screenshare viewport so recorded mouse coords replay 1:1.
-        context = browser.new_context(viewport={"width": 1280, "height": 720})
-        if narration is not None:
-            # Real mic, granted per-origin. Never --use-fake-ui-for-media-stream:
-            # that feeds silence and the Client's walkthrough is lost.
+            browser = pw.chromium.launch(
+                headless=not headful,
+                args=["--start-maximized"] if headful else [],
+            )
+        # Headful record: use the real window size (maximized). A fixed
+        # 1280×720 viewport inside a maximized Chrome looks like a white
+        # letterbox with the site stuck in one corner.
+        if headful:
+            context = browser.new_context(no_viewport=True)
+        else:
+            context = browser.new_context(viewport={"width": 1280, "height": 720})
+        page = context.new_page()
+        if stop_event is not None:
+            gate.stop_event = stop_event
+
+        def _plan_sink(meta: dict[str, Any]) -> None:
+            gate.guided_plan_meta = meta
+            try:
+                gate._plan_dirty = True  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            sink = getattr(gate, "status_sink", None)
+            if callable(sink):
+                try:
+                    from navigator.automation.guided_task.session import (
+                        get_guided_hands_session,
+                    )
+
+                    sess = get_guided_hands_session()
+                    hands = sess.status_dict() if sess else {"active": False}
+                    sink(
+                        {
+                            "phase": gate.phase,
+                            "hands": hands,
+                            "plan_meta": meta,
+                            "plan_dirty": True,
+                        }
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+
+        page._nav_plan_sink = _plan_sink  # type: ignore[attr-defined]
+        target = (url or "").strip()
+        if target and "://" not in target:
+            target = f"https://{target}"
+        # Bind CDP functions on about:blank first — after remote goto, expose can hang.
+        try:
+            _install_listeners(
+                page, steps, gate=gate, narration=narration, bind_only=True
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[record] bind-before-goto failed: {exc}", flush=True)
+        print(f"[record] opening {target!r}", flush=True)
+        try:
+            page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+            print(f"[record] loaded {page.url!r}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[record] goto failed: {exc}", flush=True)
+            try:
+                page.set_content(
+                    "<html><body style='font:16px system-ui;padding:2rem'>"
+                    "<h1>Could not open start URL</h1>"
+                    f"<p><code>{target}</code></p>"
+                    f"<pre>{exc}</pre>"
+                    "<p>Check the Start URL in the dashboard and try again.</p>"
+                    "</body></html>"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            try:
+                page.bring_to_front()
+            except Exception:  # noqa: BLE001
+                pass
+        if narration is not None and target and "://" in target:
             from urllib.parse import urlparse as _urlparse
 
-            parsed_origin = _urlparse(url)
+            parsed_origin = _urlparse(target)
             try:
                 context.grant_permissions(
                     ["microphone"],
@@ -552,16 +1008,9 @@ def record_session(
                 )
             except Exception as exc:  # noqa: BLE001
                 print(f"[record] mic permission not granted: {exc}", flush=True)
-        page = context.new_page()
-        _install_listeners(page, steps, gate=gate, narration=narration)
-        page.goto(url, wait_until="domcontentloaded")
         try:
-            from navigator.automation.browser.cursor import install_cursor
-
-            install_cursor(page)
-            inject_dom_listeners(page)
-            if narration is not None:
-                inject_narration_widget(page)
+            _install_listeners(page, steps, gate=gate, narration=narration)
+            print("[record] studio listeners ready", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[record] post-goto inject skipped: {exc}", flush=True)
         if stop_event is None:
@@ -578,16 +1027,35 @@ def record_session(
                 pass
         else:
             print(
-                "[record] Ops session: log in during Setup, then "
-                "'Start capturing this flow' in /client.",
+                "[record] Ops session: use Record studio overlay in the browser "
+                "(Start capturing / Start hands), or /client dashboard.",
                 flush=True,
             )
-            from navigator.automation.guided_task.session import poll_hands_commands
+            from navigator.automation.guided_task.session import (
+                get_guided_hands_session,
+                poll_hands_commands,
+            )
 
+            tick_i = 0
             while not stop_event.wait(0.25):
                 cmds = getattr(gate, "hands_commands", None)
                 if cmds:
                     poll_hands_commands(page, cmds)
+                tick_i += 1
+                if tick_i % 4 == 0:
+                    sess = get_guided_hands_session()
+                    if (
+                        sess is not None
+                        and sess.active
+                        and not sess.client_paused
+                        and not sess.barged
+                        and not (
+                            sess.pending_question
+                            and not sess.pending_question.resolved
+                        )
+                    ):
+                        sess.tick()
+                _publish_studio_status(gate, page)
         from urllib.parse import urlparse
 
         parsed = urlparse(url)

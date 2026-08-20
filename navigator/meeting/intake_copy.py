@@ -66,22 +66,28 @@ def greet_line(
 
     persona = prospect_facing_persona(persona)
     who = prospect_name.strip()
+    # Only use a name we already collected (form prefill). Unknown → short
+    # self-intro; "What is your name?" follows — never "Hi there" + later ack.
     if lang == "hi":
         if who:
-            open_ = f"नमस्ते {who}, मैं {persona.agent_name} हूँ।"
-        else:
-            open_ = f"नमस्ते, मैं {persona.agent_name} हूँ।"
-        tail_f = (
-            f"जुड़ने के लिए धन्यवाद — अभी {persona.product_name} live दिखाती हूँ।"
+            return (
+                f"नमस्ते {who}, मैं {persona.agent_name} हूँ। "
+                f"जुड़ने के लिए धन्यवाद — अभी {persona.product_name} live दिखा"
+                f"{'ता' if agent_gender == 'male' else 'ती'} हूँ।"
+            )
+        return (
+            f"नमस्ते, मैं {persona.agent_name} हूँ। "
+            f"आज {persona.product_name} live दिखा"
+            f"{'ऊंगा' if agent_gender == 'male' else 'ऊँगी'}।"
         )
-        tail_m = (
-            f"जुड़ने के लिए धन्यवाद — अभी {persona.product_name} live दिखाता हूँ।"
+    if who:
+        return (
+            f"Hi {who}, I'm {persona.agent_name}. Thanks for joining — "
+            f"I'll show you {persona.product_name} live in just a moment."
         )
-        return open_ + " " + (tail_m if agent_gender == "male" else tail_f)
-    who_en = who or "there"
     return (
-        f"Hi {who_en}, I'm {persona.agent_name}. Thanks for joining — "
-        f"I'll show you {persona.product_name} live in just a moment."
+        f"Hi, I'm {persona.agent_name}. Thanks for joining — "
+        f"I'll show you {persona.product_name} live today."
     )
 
 

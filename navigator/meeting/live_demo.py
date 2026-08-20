@@ -78,11 +78,10 @@ def _drain_inbound(queue) -> int:
 
 
 def _intake_summary(intake) -> str:
-    """One line about the prospect, from what intake actually captured."""
+    """Private prospect facts for Live — never phrased as speak-aloud instructions."""
     if intake is None:
         return ""
     bits = []
-    name_val = ""
     for label, attr in (
         ("Name", "name"),
         ("Company", "company"),
@@ -90,19 +89,10 @@ def _intake_summary(intake) -> str:
         ("Looking for", "looking_for"),
     ):
         val = (getattr(intake, attr, "") or "").strip()
-        if val:
-            bits.append(f"{label}: {val}")
-            if attr == "name":
-                name_val = val
-    summary = " | ".join(bits)
-    if name_val:
-        # Pronunciation hint: tell Live to say the name exactly as given,
-        # not shorten, anglicise, or substitute it.
-        summary += (
-            f"\nAddress this person as \"{name_val}\". "
-            "Say the name exactly as written — do not shorten, alter, or anglicise it."
-        )
-    return summary
+        if not val or (attr == "name" and val.lower() == "there"):
+            continue
+        bits.append(f"{label}: {val}")
+    return " | ".join(bits)
 
 
 def _start_live_agent(
@@ -1071,13 +1061,16 @@ def run_live_meet_demo(
                     or ""
                 )
                 print(f"[live] human joined: {human_name!r}", flush=True)
+                # Do NOT prefill intake name from Meet/Zoom display. Dashboard
+                # test hosts often join with their own name (e.g. Dewashish) —
+                # that skips "What is your name?" and sounds scripted. Landing
+                # form prefill (merged_prefill) still wins when present.
                 from navigator.meeting.intake import usable_meeting_display_name
 
                 display = usable_meeting_display_name(human_name)
-                if display and not (merged_prefill.get("name") or "").strip():
-                    merged_prefill["name"] = display
+                if display:
                     print(
-                        f"[live] intake name from meeting display: {display!r}",
+                        f"[live] meeting display {display!r} — still asking name",
                         flush=True,
                     )
                 settle = max(0.0, settings.live_human_settle_s)
@@ -1224,7 +1217,10 @@ def run_live_meet_demo(
         if live_now is not None:
             summary = _intake_summary(intake)
             if summary:
-                live_now.add_context(f"About the person you are talking to: {summary}")
+                live_now.add_context(
+                    "Prospect facts for this call only (use their name naturally "
+                    f"when addressing them; never read this block aloud): {summary}"
+                )
         from navigator.meeting.intake import preferred_flow_id
 
         hint = preferred_flow_id(intake.looking_for)

@@ -116,6 +116,81 @@ def guided_progress(raw: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def _clear_prior_guided(raw: dict[str, Any]) -> None:
+    """Remove previous guided stub flows/selectors/playlist rows before re-plan."""
+    meta = raw.get("_meta") or {}
+    old = GuidedPlan.from_meta(meta.get("guided_task") or {})
+    pages = raw.get("pages") or {}
+    if not isinstance(pages, dict):
+        return
+    old_ids: set[str] = set()
+    if old is not None:
+        for gf in old.flows:
+            old_ids.add(gf.flow_id)
+            page = pages.get(gf.page_id)
+            if not isinstance(page, dict):
+                continue
+            flows = page.get("flows")
+            if isinstance(flows, dict):
+                flows.pop(gf.flow_id, None)
+            selectors = page.get("selectors")
+            if isinstance(selectors, dict):
+                for step in gf.steps:
+                    css = selectors.get(step.alias)
+                    if css and is_guided_stub_selector(str(css)):
+                        selectors.pop(step.alias, None)
+    playlist = [
+        e
+        for e in (raw.get("demo_playlist") or [])
+        if not (
+            isinstance(e, dict)
+            and (str(e.get("flow_id") or "") in old_ids
+                 or str(e.get("flow_id") or "").startswith("guided_"))
+        )
+    ]
+    # Also drop playlist rows whose selectors are still pure stubs on any page.
+    cleaned: list[Any] = []
+    for e in playlist:
+        if not isinstance(e, dict):
+            cleaned.append(e)
+            continue
+        fid = str(e.get("flow_id") or "")
+        pid = str(e.get("page_id") or "dashboard")
+        page = pages.get(pid) if isinstance(pages, dict) else None
+        if isinstance(page, dict):
+            flow_steps = (page.get("flows") or {}).get(fid) or []
+            sels = page.get("selectors") or {}
+            if isinstance(flow_steps, list) and flow_steps:
+                stub_only = True
+                for step in flow_steps:
+                    if not isinstance(step, dict):
+                        continue
+                    alias = str(step.get("selector") or "")
+                    css = sels.get(alias) if isinstance(sels, dict) else None
+                    if css and not is_guided_stub_selector(str(css)):
+                        stub_only = False
+                        break
+                    if alias and not css:
+                        stub_only = False
+                        break
+                if stub_only and any(
+                    is_guided_stub_selector(str((sels or {}).get(str(s.get("selector") or ""), "")))
+                    for s in flow_steps
+                    if isinstance(s, dict)
+                ):
+                    if isinstance(page.get("flows"), dict):
+                        page["flows"].pop(fid, None)
+                    continue
+        cleaned.append(e)
+    raw["demo_playlist"] = cleaned
+
+
+def playlist_unbound_guided(raw: dict[str, Any]) -> bool:
+    """True when a guided plan exists but no stub selectors are bound yet."""
+    prog = guided_progress(raw)
+    return prog["steps_total"] > 0 and prog["steps_bound"] == 0
+
+
 def apply_guided_plan(
     yaml_text: str,
     plan: GuidedPlan,
@@ -126,6 +201,8 @@ def apply_guided_plan(
     raw = yaml.safe_load(yaml_text)
     if not isinstance(raw, dict):
         raise SiteGraphError("site graph must be a mapping")
+
+    _clear_prior_guided(raw)
 
     pages = raw.setdefault("pages", {})
     page = pages.setdefault(
@@ -142,8 +219,9 @@ def apply_guided_plan(
         selectors["body"] = "body"
     flows = page.setdefault("flows", {})
 
-    playlist = list(raw.get("demo_playlist") or [])
-    next_order = max([int(p.get("order") or 0) for p in playlist if isinstance(p, dict)] + [0])
+    # Phase C: guided plan owns the demo playlist (single flow).
+    playlist: list[Any] = []
+    next_order = 0
 
     for gf in plan.flows:
         pid = gf.page_id or page_id

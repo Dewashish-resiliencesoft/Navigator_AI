@@ -3,12 +3,14 @@
 `source="user"` is the requires_live_input marker (see FillField). EXECUTING
 calls `resolve_live_fill` before Playwright so a business-specific field never
 auto-fills the Client's setup example unless the prospect's answer is unclear.
+
+`value_ref` reuses an answer collected earlier in the same call (alias → heard).
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 
 from navigator.core.schemas import FillField, Postcondition
 
@@ -20,6 +22,8 @@ _UNCLEAR = re.compile(
 
 
 def needs_live_input(call: FillField) -> bool:
+    if (call.value_ref or "").strip():
+        return False
     return call.source == "user"
 
 
@@ -33,6 +37,52 @@ def live_prompt(call: FillField) -> str:
 
 def is_unclear(text: str) -> bool:
     return not text.strip() or bool(_UNCLEAR.match(text.strip()))
+
+
+def resolve_demo_fill(
+    call: FillField,
+    *,
+    live_answers: MutableMapping[str, str] | None,
+    listen_once: Callable[[str], str] | None,
+    extract_entity: Callable[..., str] | None,
+    speak: Callable[[str], None] | None = None,
+) -> tuple[FillField, str]:
+    """Resolve value_ref reuse, then source=user ask, else leave agent fill."""
+    answers: MutableMapping[str, str] = live_answers if live_answers is not None else {}
+    ref = (call.value_ref or "").strip()
+    if ref:
+        cached = (answers.get(ref) or "").strip()
+        if cached:
+            return _with_value(call, cached), f"value_ref {ref}={cached!r}"
+        ask = call.model_copy(
+            update={
+                "source": "user",
+                "live_question": call.live_question
+                or f"What is your {ref.replace('_', ' ')}?",
+            }
+        )
+        updated, detail = resolve_live_fill(
+            ask,
+            listen_once=listen_once,
+            extract_entity=extract_entity,
+            speak=speak,
+        )
+        if updated.value:
+            answers[ref] = updated.value
+        return updated, detail
+
+    if needs_live_input(call):
+        updated, detail = resolve_live_fill(
+            call,
+            listen_once=listen_once,
+            extract_entity=extract_entity,
+            speak=speak,
+        )
+        alias = (call.selector or "").strip()
+        if alias and updated.value:
+            answers[alias] = updated.value
+        return updated, detail
+    return call, "agent fill"
 
 
 def resolve_live_fill(

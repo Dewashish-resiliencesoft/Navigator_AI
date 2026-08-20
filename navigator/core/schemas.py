@@ -97,6 +97,8 @@ class FillField(_ToolCallBase):
     """
     live_question: str | None = None
     """Spoken when source=user. None → a generic question from the selector alias."""
+    value_ref: str | None = None
+    """Alias of an earlier source=user variable — reuse the visitor's answer."""
 
 
 class Navigate(_ToolCallBase):
@@ -111,8 +113,18 @@ class WaitFor(_ToolCallBase):
     timeout_ms: int = Field(default=15000, gt=0)
 
 
+class ScrollPage(_ToolCallBase):
+    """Scroll the document (or a scrollable container) to an absolute position."""
+
+    tool: Literal["scroll_page"] = "scroll_page"
+    x: int = 0
+    y: int = 0
+    #: Optional CSS alias of a scrollable container; None → window/document.
+    selector: str | None = None
+
+
 ToolCall = Annotated[
-    ClickElement | FillField | Navigate | WaitFor,
+    ClickElement | FillField | Navigate | WaitFor | ScrollPage,
     Field(discriminator="tool"),
 ]
 

@@ -20,11 +20,11 @@ walkthrough to a prospect.
 Your job:
 1. Look at the screenshot and describe what's relevant to the current step.
 2. Reference visible UI elements naturally (e.g. "you can see the three conversations on the left").
-3. Use the narration hint as a GUIDE, but generate your own words based on what you actually see.
-4. When section knowledge is provided, explain how this part of the product works in one short beat — grounded in that knowledge only.
-5. Personalize with the prospect's name/company/need when it's natural.
-6. SPEAK SLOWLY AND NATURALLY. Keep your sentences very short (10-15 words max).
-7. Use natural pauses by inserting commas, periods, or em-dashes (—). This helps the text-to-speech engine pace your voice like a real human.
+3. When a narration hint is provided, PRESERVE its substance: translate or lightly polish into the spoken language. Do NOT shorten, summarize away detail, or replace with generic filler like "now I click this".
+4. If the hint is empty, generate natural host speech from the screenshot + step action (still concrete, not template filler).
+5. When section knowledge is provided, explain how this part of the product works in one short beat — grounded in that knowledge only.
+6. Personalize with the prospect's name/company/need when it's natural.
+7. SPEAK NATURALLY. Prefer complete sentences. Use commas, periods, or em-dashes (—) for TTS pacing.
 8. Sound warm, relaxed, and conversational. Do not sound like a robot reading documentation or a feature list.
 9. Never invent features not present in the brief, section knowledge, or screenshot.
 10. Never mention you're an AI or that you're looking at a screenshot. Just narrate as if you're driving the product.
@@ -65,15 +65,22 @@ def generate_narration(
         from navigator.agent.providers import get_provider
         complete_with_image = get_provider().complete_with_image
 
+    hint = (narration_hint or "").strip()
+    hint_words = len(hint.split()) if hint else 0
+    length_rule = (
+        "Keep every fact from the narration hint; do not shorten."
+        if hint_words >= 6
+        else "Voice only, 2-3 sentences grounded in what you see."
+    )
     user_parts = [
-        f"Narration hint (guide only, generate your own words): {narration_hint or '(none)'}",
+        f"Narration hint (prefer adapting this; keep all substance): {hint or '(none)'}",
         f"What I'm about to do: {step_action or '(continue walkthrough)'}",
         f"Prospect: {intake_summary or '(unknown prospect)'}",
         f"Product brief: {(product_brief or '')[:1500]}",
         f"Section knowledge (use this to explain how this part works; do not invent beyond it): {(section_knowledge or '')[:2000] or '(none)'}",
         f"Visible text: {(screen_text or '')[:1000]}",
         speech_rules(spoken_language=spoken_language, agent_gender=agent_gender),
-        "Generate the narration I should speak right now. Voice only, 2-3 sentences.",
+        f"Generate the narration I should speak right now. {length_rule}",
         "If section knowledge is present, weave in one concrete point about how this feature works.",
     ]
     user = "\n".join(user_parts)
@@ -91,6 +98,11 @@ def generate_narration(
                 pass
         if narration.startswith("```"):
             narration = narration.strip("`").strip()
+        # Reject over-shortened substitutes when we had a rich host line.
+        if hint_words >= 8 and len(str(narration).split()) < max(5, int(hint_words * 0.55)):
+            from navigator.automation.narration import spoken_for_live_step
+
+            return spoken_for_live_step(hint) or str(narration)
         return narration
     except Exception as exc:  # noqa: BLE001
         print(f"[narrate] vision generation failed ({exc}); using hint", flush=True)

@@ -108,14 +108,23 @@ def execute_guided_step(
     except Exception:  # noqa: BLE001
         pass
 
-    elements = inventory(page)
+    elements = [
+        e
+        for e in inventory(page)
+        if "nav-narrate" not in str(e.get("selector") or "").lower()
+        and "nav-narrate" not in str(e.get("id") or "").lower()
+        and "navigator-chrome" not in str(e.get("testid") or "").lower()
+    ]
 
     if step.kind == "USER_INPUT":
+        # Phase A: pause for Client — never type visitor data while recording.
         return {
-            "ok": True,
-            "skipped": True,
-            "reason": "user_input_checkpoint",
-            "message": step.live_question or step.label,
+            "ok": False,
+            "paused": True,
+            "reason": "user_input",
+            "prompt": step.live_question or step.label,
+            "alias": step.alias,
+            "context": {"url": url, "kind": "user_input"},
         }
 
     hint = step.action_hint or step.label or step.alias.replace("_", " ")

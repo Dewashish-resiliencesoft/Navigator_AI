@@ -288,43 +288,66 @@ class Registry:
         graph = parse_site_graph(yaml_text, origin=f"product {product_id}")
 
         now = datetime.now(timezone.utc)
-        revision = (
-            self._conn.execute(
-                "SELECT COALESCE(MAX(revision), 0) + 1 AS next "
-                "FROM site_graph_revisions WHERE product_id = ?",
-                (product_id,),
-            ).fetchone()["next"]
-        )
+        # isolation_level=None (autocommit): race on MAX(revision)+1 can hit the
+        # PRIMARY KEY. Retry under an immediate lock.
+        import sqlite3
 
-        self._conn.execute(
-            "INSERT INTO site_graph_revisions (product_id, revision, source, yaml, "
-            "created_at, site, graph_version, published) VALUES (?,?,?,?,?,?,?,?)",
-            (
-                product_id,
-                revision,
-                source,
-                yaml_text,
-                now.isoformat(),
-                graph.site,
-                graph.version,
-                int(publish),
-            ),
-        )
-        if publish:
-            self._conn.execute(
-                "UPDATE products SET active_revision = ? WHERE product_id = ?",
-                (revision, product_id),
-            )
-        return SiteGraphRevision(
-            product_id=product_id,
-            revision=revision,
-            source=source,
-            yaml=yaml_text,
-            created_at=now,
-            site=graph.site,
-            graph_version=graph.version,
-            published=publish,
-        )
+        last_exc: Exception | None = None
+        for _attempt in range(6):
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                revision = (
+                    self._conn.execute(
+                        "SELECT COALESCE(MAX(revision), 0) + 1 AS next "
+                        "FROM site_graph_revisions WHERE product_id = ?",
+                        (product_id,),
+                    ).fetchone()["next"]
+                )
+                self._conn.execute(
+                    "INSERT INTO site_graph_revisions (product_id, revision, source, yaml, "
+                    "created_at, site, graph_version, published) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        product_id,
+                        revision,
+                        source,
+                        yaml_text,
+                        now.isoformat(),
+                        graph.site,
+                        graph.version,
+                        int(publish),
+                    ),
+                )
+                if publish:
+                    self._conn.execute(
+                        "UPDATE products SET active_revision = ? WHERE product_id = ?",
+                        (revision, product_id),
+                    )
+                self._conn.execute("COMMIT")
+                return SiteGraphRevision(
+                    product_id=product_id,
+                    revision=revision,
+                    source=source,
+                    yaml=yaml_text,
+                    created_at=now,
+                    site=graph.site,
+                    graph_version=graph.version,
+                    published=publish,
+                )
+            except sqlite3.IntegrityError as exc:
+                last_exc = exc
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                continue
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+        assert last_exc is not None
+        raise last_exc
 
     def latest_revision(self, product_id: str) -> SiteGraphRevision:
         """The newest revision, published or not -- what the Client is editing."""

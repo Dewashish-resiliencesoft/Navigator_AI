@@ -96,7 +96,7 @@ def test_mp_gate_phase_roundtrip():
 
     ns = SimpleNamespace(phase="setup")
     flagged: list = []
-    gate = _MpGate(ns, flagged)
+    gate = _MpGate(ns, flagged, [])
     assert gate.phase == "setup"
     gate.phase = "capturing"
     assert ns.phase == "capturing"

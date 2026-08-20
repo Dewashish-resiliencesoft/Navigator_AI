@@ -2369,6 +2369,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Client Guided Task Patch
+      description: 'Phase B: insert/replace steps on the single guided flow (draft only).'
+      operationId: client_guided_task_patch_client_api_guided_task_plan_patch
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuidedTaskPatchBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Task Patch Client Api Guided Task Plan Patch
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/guided-task/status:
     get:
       summary: Client Guided Task Status
@@ -2462,6 +2496,7 @@ paths:
   /client/api/guided-task/hands/stop:
     post:
       summary: Client Guided Hands Stop
+      description: "Idempotent \u2014 OK even if recording already ended."
       operationId: client_guided_hands_stop_client_api_guided_task_hands_stop_post
       parameters:
       - name: authorization
@@ -2515,6 +2550,90 @@ paths:
                 type: object
                 additionalProperties: true
                 title: Response Client Guided Hands Answer Client Api Guided Task Hands Answer Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/hands/pause:
+    post:
+      summary: Client Guided Hands Pause
+      operationId: client_guided_hands_pause_client_api_guided_task_hands_pause_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Hands Pause Client Api Guided Task Hands Pause Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/hands/resume:
+    post:
+      summary: Client Guided Hands Resume
+      operationId: client_guided_hands_resume_client_api_guided_task_hands_resume_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Hands Resume Client Api Guided Task Hands Resume Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/hands/barge:
+    post:
+      summary: Client Guided Hands Barge
+      operationId: client_guided_hands_barge_client_api_guided_task_hands_barge_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Hands Barge Client Api Guided Task Hands Barge Post
         '422':
           description: Validation Error
           content:
@@ -2997,6 +3116,7 @@ components:
           - $ref: '#/components/schemas/FillField'
           - $ref: '#/components/schemas/Navigate'
           - $ref: '#/components/schemas/WaitFor'
+          - $ref: '#/components/schemas/ScrollPage'
           title: Tool Call
           discriminator:
             propertyName: tool
@@ -3004,6 +3124,7 @@ components:
               click_element: '#/components/schemas/ClickElement'
               fill_field: '#/components/schemas/FillField'
               navigate: '#/components/schemas/Navigate'
+              scroll_page: '#/components/schemas/ScrollPage'
               wait_for: '#/components/schemas/WaitFor'
         expected_postcondition:
           $ref: '#/components/schemas/Postcondition'
@@ -3663,6 +3784,11 @@ components:
           - type: string
           - type: 'null'
           title: Live Question
+        value_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Value Ref
       type: object
       required:
       - expects
@@ -3741,6 +3867,15 @@ components:
           - type: integer
           - type: 'null'
           title: Candidate Index
+        value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Value
+        skip:
+          type: boolean
+          title: Skip
+          default: false
       additionalProperties: false
       type: object
       required:
@@ -3755,6 +3890,36 @@ components:
       additionalProperties: false
       type: object
       title: GuidedHandsStartBody
+    GuidedTaskPatchBody:
+      properties:
+        steps:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Steps
+        insert_at:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Insert At
+        new_step:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: New Step
+        flow_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Flow Name
+      additionalProperties: false
+      type: object
+      title: GuidedTaskPatchBody
+      description: 'Phase B: edit guided plan steps (insert USER_INPUT, reorder).'
     GuidedTaskPlanBody:
       properties:
         task:
@@ -4205,6 +4370,38 @@ components:
       - api_key
       title: RegisteredProduct
       description: Registration response. The API key is shown exactly once.
+    ScrollPage:
+      properties:
+        expects:
+          $ref: '#/components/schemas/Postcondition'
+        spoken:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Spoken
+        tool:
+          type: string
+          const: scroll_page
+          title: Tool
+          default: scroll_page
+        x:
+          type: integer
+          title: X
+          default: 0
+        y:
+          type: integer
+          title: Y
+          default: 0
+        selector:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Selector
+      type: object
+      required:
+      - expects
+      title: ScrollPage
+      description: Scroll the document (or a scrollable container) to an absolute position.
     SessionTokenRequest:
       properties:
         intake:
@@ -4284,6 +4481,7 @@ components:
           - recorded
           - explored
           - sdk
+          - guided
           title: Source
         yaml:
           type: string
@@ -4325,6 +4523,7 @@ components:
           - recorded
           - explored
           - sdk
+          - guided
           title: Source
           default: yaml
         publish:

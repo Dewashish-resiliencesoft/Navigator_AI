@@ -324,7 +324,7 @@ def refine(
         if not refined:
             merged.append(old)
             continue
-        if old and len(refined.split()) < max(3, int(len(old.split()) * 0.55)):
+        if old and len(refined.split()) < max(3, int(len(old.split()) * 0.7)):
             merged.append(old if old.strip() else refined)
             continue
         merged.append(refined)

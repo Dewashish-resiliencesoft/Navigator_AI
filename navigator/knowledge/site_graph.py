@@ -19,6 +19,7 @@ from navigator.core.schemas import (
     Navigate,
     Persona,
     Postcondition,
+    ScrollPage,
     ToolCall,
     tool_selector,
 )
@@ -419,6 +420,13 @@ def _check_call(
             f"{where}: {call.tool} targets unknown selector {alias!r} "
             f"on page {page_id!r}"
         )
+
+    if isinstance(call, ScrollPage) and call.selector:
+        if call.selector not in page.selectors:
+            raise SiteGraphError(
+                f"{where}: scroll_page targets unknown selector {call.selector!r} "
+                f"on page {page_id!r}"
+            )
 
     if isinstance(call, Navigate):
         if call.page_id not in graph.pages:

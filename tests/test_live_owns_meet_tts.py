@@ -83,7 +83,7 @@ def test_start_live_agent_tries_next_key(monkeypatch):
             return None
 
     monkeypatch.setattr(
-        "navigator.core.gemini_keys.gemini_key_candidates", lambda: ["k1", "k2"]
+        "navigator.core.gemini_keys.gemini_live_key_candidates", lambda: ["k1", "k2"]
     )
     monkeypatch.setattr("navigator.voice.live_agent.LiveAgent", FakeAgent)
     monkeypatch.setattr(

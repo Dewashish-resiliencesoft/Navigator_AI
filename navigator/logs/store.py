@@ -95,6 +95,9 @@ class ActionLog:
         if self.db_path.parent != Path():
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        # ponytail: throttle prune across list_runs polls (ceiling: stale rows ≤60s).
+        self._prune_lock = threading.Lock()
+        self._last_prune_monotonic = 0.0
         self._conn.executescript(_SCHEMA)
         self._migrate()
 
@@ -122,6 +125,7 @@ class ActionLog:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = conn
         return conn
 
@@ -640,7 +644,7 @@ class ActionLog:
         days: int = 7,
         now: datetime | None = None,
     ) -> list[dict]:
-        self.prune_runs(days=days, now=now)
+        self._maybe_prune_runs(days=days, now=now)
         when = now or utcnow()
         cutoff = (when - timedelta(days=max(1, days))).isoformat()
         rows = self._conn.execute(
@@ -649,6 +653,17 @@ class ActionLog:
             (product_id, cutoff),
         ).fetchall()
         return [_row_to_run(r, self._fail_count(r)) for r in rows]
+
+    def _maybe_prune_runs(self, days: int = 7, now: datetime | None = None) -> None:
+        """Prune at most once per 60s — dashboard polls list_runs often."""
+        import time
+
+        now_m = time.monotonic()
+        with self._prune_lock:
+            if now_m - self._last_prune_monotonic < 60.0:
+                return
+            self._last_prune_monotonic = now_m
+        self.prune_runs(days=days, now=now)
 
     def prune_runs(self, days: int = 7, now: datetime | None = None) -> None:
         when = now or utcnow()

@@ -4,6 +4,15 @@ export type UserPreferences = {
   hide_get_started_card: boolean;
   onboarding_wizard_dismissed: boolean;
   onboarding_wizard_completed: boolean;
+  email: string;
+  product_name: string;
+  product_id?: string;
+};
+
+export type AccountInfo = {
+  email: string;
+  product_name: string;
+  product_id: string;
 };
 
 export type DemoOrigin = "dashboard_test" | "public_embed";
@@ -357,18 +366,6 @@ export type GuidedHandsStatus = {
   barged?: boolean;
 };
 
-export type PendingCorrection = {
-  id: string;
-  product_id: string;
-  session_id: string;
-  page: string;
-  tool_call_type: string;
-  rule: string;
-  source_call_id: string;
-  created_at: string;
-  status: string;
-};
-
 /** One frame off the exploration WebSocket. `type` discriminates the payload. */
 export type ExploreEvent = {
   type: string;
@@ -621,8 +618,12 @@ export const api = {
   },
 
   getUserPreferences: () => get<UserPreferences>("/client/api/user/preferences"),
-  putUserPreferences: (patch: Partial<UserPreferences>) =>
-    send<UserPreferences>("/client/api/user/preferences", "PUT", patch),
+  getAccount: () => get<AccountInfo>("/client/api/account"),
+  putUserPreferences: (patch: {
+    hide_get_started_card?: boolean;
+    onboarding_wizard_dismissed?: boolean;
+    onboarding_wizard_completed?: boolean;
+  }) => send<UserPreferences>("/client/api/user/preferences", "PUT", patch),
   bootstrap: () =>
     request<{ ok: boolean; product_id: string; api_key: string | null; message: string }>(
       "/client/api/bootstrap",
@@ -657,40 +658,84 @@ export const api = {
   getBio: () => get<{ fields: BioField[] }>("/client/api/bio"),
   putBio: (fields: BioField[]) => send<unknown>("/client/api/bio", "PUT", { fields }),
 
-  getKnowledge: () => get<{ markdown: string }>("/client/api/knowledge"),
+  getKnowledge: () =>
+    get<{
+      markdown: string;
+      user_markdown?: string;
+      explore_markdown?: string;
+      merged_at?: string | null;
+    }>("/client/api/knowledge"),
   putKnowledge: (markdown: string) =>
     send<unknown>("/client/api/knowledge", "PUT", { markdown }),
+  putKnowledgeUser: (markdown: string) =>
+    send<{
+      ok: boolean;
+      markdown: string;
+      user_markdown: string;
+      explore_markdown: string;
+      merged_at?: string | null;
+    }>("/client/api/knowledge/user", "PUT", { markdown }),
 
-  listPendingCorrections: () =>
-    get<PendingCorrection[]>("/client/api/corrections/pending"),
-  approveCorrection: (id: string, rule?: string) =>
-    send<{ id: string; status: string; rule: string }>(
-      `/client/api/corrections/${id}/approve`,
+  getProductExplore: () =>
+    get<{
+      active: boolean;
+      phase?: string;
+      pages_seen?: number;
+      max_pages?: number;
+      progress_pct?: number;
+      current_url?: string;
+      current_title?: string;
+      looking_at?: string;
+      error?: string | null;
+      done?: boolean;
+      start_url?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore"),
+  startProductExplore: (start_url?: string) =>
+    send<{
+      active: boolean;
+      phase?: string;
+      pages_seen?: number;
+      max_pages?: number;
+      progress_pct?: number;
+      current_url?: string;
+      current_title?: string;
+      looking_at?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>(
+      "/client/api/product-explore/start",
       "POST",
-      rule ? { rule } : {},
+      { start_url: start_url || "" },
     ),
-  rejectCorrection: (id: string) =>
-    send<{ id: string; status: string }>(
-      `/client/api/corrections/${id}/reject`,
-      "POST",
+  stopProductExplore: () =>
+    send<{
+      active: boolean;
+      progress_pct?: number;
+      looking_at?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore/stop", "POST"),
+  getProductTopology: () =>
+    get<{ yaml: string; updated_at: string | null; page_count: number }>(
+      "/client/api/product-explore/topology",
     ),
 
   getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
   putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),
-  getTier2: () => get<{ enabled: boolean }>("/client/api/tier2"),
-  putTier2: (enabled: boolean) =>
-    send<{ ok: boolean; enabled: boolean }>("/client/api/tier2", "PUT", { enabled }),
-
-  getAutonomyMode: () =>
-    get<{ mode: AutonomyMode; tier2_enabled: boolean; handoff_webhook_url: string }>(
-      "/client/api/autonomy-mode",
-    ),
-  putAutonomyMode: (mode: AutonomyMode) =>
-    send<{ ok: boolean; mode: AutonomyMode; tier2_enabled: boolean }>(
-      "/client/api/autonomy-mode",
-      "PUT",
-      { mode },
-    ),
 
   getDemoReadiness: (origin: DemoOrigin = "dashboard_test") =>
     get<DemoReadiness>(`/client/api/demo-readiness?origin=${origin}`),

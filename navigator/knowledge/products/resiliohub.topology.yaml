@@ -1,0 +1,76 @@
+site: resiliohub
+base_url: https://Resiliohub.com/
+version: 1
+pages:
+  resiliohub_dashboard_login_access_your_whatsapp_:
+    url: https://resiliohub.com/login/
+    title: ResilioHub Dashboard Login | Access Your WhatsApp Shared Inbox | ResilioHub
+    selectors:
+      email: '#email'
+      password: '#password'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm:
+    url: https://resiliohub.com/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors: {}
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_2:
+    url: https://resiliohub.com/forgot-password/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      email: '#email'
+    flows: {}
+  sign_up_for_resiliohub_whatsapp_business_api_crm:
+    url: https://resiliohub.com/signup/
+    title: Sign Up for ResilioHub | WhatsApp Business API & CRM | ResilioHub
+    selectors:
+      full_name: '#name'
+      work_email: '#email'
+      phone: '#phone'
+      password: '#password'
+      confirm_password: '#confirmPassword'
+    flows: {}
+  about_resiliohub_resiliohub:
+    url: https://resiliohub.com/about/
+    title: About ResilioHub | ResilioHub
+    selectors: {}
+    flows: {}
+  contact_us_resiliohub:
+    url: https://resiliohub.com/contact/
+    title: Contact Us | ResilioHub
+    selectors: {}
+    flows: {}
+  features_resiliohub_whatsapp_business_api_ai_crm:
+    url: https://resiliohub.com/features/
+    title: Features | ResilioHub WhatsApp Business API & AI CRM | ResilioHub
+    selectors: {}
+    flows: {}
+  faq_resiliohub_resiliohub:
+    url: https://resiliohub.com/faq/
+    title: FAQ | ResilioHub | ResilioHub
+    selectors: {}
+    flows: {}
+  resiliohub_dashboard_login_access_your_whatsapp__2:
+    url: https://resiliohub.com/login/
+    title: ResilioHub Dashboard Login | Access Your WhatsApp Shared Inbox | ResilioHub
+    selectors: {}
+    flows: {}
+  privacy_policy_resiliohub:
+    url: https://resiliohub.com/privacy-policy/
+    title: Privacy Policy | ResilioHub
+    selectors: {}
+    flows: {}
+  terms_and_conditions_resiliohub:
+    url: https://resiliohub.com/terms-and-conditions/
+    title: Terms and Conditions | ResilioHub
+    selectors: {}
+    flows: {}
+  delete_account_resiliohub:
+    url: https://resiliohub.com/delete-account/
+    title: Delete Account | ResilioHub
+    selectors: {}
+    flows: {}
+demo_playlist: []
+_meta:
+  source: product_explore
+  non_demo: true

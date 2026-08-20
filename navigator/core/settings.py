@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     gemini_api_key_backup: str = ""
     #: Comma-separated Gemini keys (vision, Live TTS, reflection).
     gemini_api_keys: str = ""
+    #: Optional Live-only key(s). Tried before gemini_api_key for Gemini Live mouth.
+    gemini_live_api_key: str = ""
+    gemini_live_api_keys: str = ""
     openai_api_key: str = ""
     chroma_path: Path = Path("chroma")
     #: Self-hosted Attendee. Not 8000 (Navigator's own API) and not 8001

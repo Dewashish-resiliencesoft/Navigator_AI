@@ -14,8 +14,10 @@ import {
   Input,
   Textarea,
 } from "../components/ui";
+import { ProductExplorePanel } from "../components/ProductExplorePanel";
 import { DemoScriptPanel } from "../components/DemoScriptPanel";
 import { errText, useUi } from "../store";
+import { useProductExploreSession } from "../lib/productExploreSession";
 
 const EXTENDED_DEFAULT_FIELDS: BioField[] = [
   { key: "company_name", label: "Company name", value: "" },
@@ -45,6 +47,7 @@ export function SiteGraph() {
   const tab = useUi((s) => s.tab);
   const ok = useUi((s) => s.ok);
   const err = useUi((s) => s.err);
+  const coachTarget = useUi((s) => s.coach?.target);
   const epoch = useProductData((s) => s.epoch);
   const playlist = useProductData((s) => s.playlist);
   const invalidate = useProductData((s) => s.invalidate);
@@ -55,6 +58,18 @@ export function SiteGraph() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
   const [dirty, setDirty] = useState(false);
+  const [view, setView] = useState<"manual" | "automated">("manual");
+  const [topoYaml, setTopoYaml] = useState("");
+  const [topoMeta, setTopoMeta] = useState<{ updated_at: string | null; page_count: number }>({
+    updated_at: null,
+    page_count: 0,
+  });
+
+  useEffect(() => {
+    if (coachTarget === "graph-publish" || coachTarget === "graph-editor") {
+      setView("manual");
+    }
+  }, [coachTarget]);
 
   const playlistKey = playlist
     .map((p) => `${p.order ?? 0}:${p.page_id ?? ""}:${p.flow_id ?? ""}`)
@@ -72,17 +87,27 @@ export function SiteGraph() {
     }
   }, [err]);
 
-  // Refetch when flows/explore mutate the draft, and whenever the Client opens
-  // this tab — saving playlist order on Flows must show up in demo_playlist here.
+  const loadTopo = useCallback(async () => {
+    try {
+      const t = await api.getProductTopology();
+      setTopoYaml(t.yaml ?? "");
+      setTopoMeta({ updated_at: t.updated_at, page_count: t.page_count ?? 0 });
+    } catch (e) {
+      err(errText(e));
+    }
+  }, [err]);
+
+  // Refetch when flows mutate the draft, and whenever the Client opens this tab.
   useEffect(() => {
     if (tab !== "graph") return;
     void load();
-  }, [load, epoch, tab, playlistKey]);
+    void loadTopo();
+  }, [load, loadTopo, epoch, tab, playlistKey]);
 
   const save = async () => {
     if (yaml === null) return;
     if (!yaml.trim()) {
-      err("Site graph YAML cannot be empty. Use Clear all to reset for a new explore.");
+      err("Site graph YAML cannot be empty.");
       return;
     }
     try {
@@ -103,7 +128,7 @@ export function SiteGraph() {
       setYaml(d.yaml ?? "");
       setRevision(d.revision);
       invalidate();
-      ok("Site graph and demo script cleared — run Auto-Explore to build a new walkthrough.");
+      ok("Site graph and demo script cleared — record flows manually or run Product Explore for a map.");
     } catch (e) {
       err(errText(e));
     }
@@ -124,12 +149,25 @@ export function SiteGraph() {
 
   return (
     <motion.div variants={stagger()} initial="hidden" animate="show" className={fullScreen ? "fixed inset-4 z-50 flex flex-col" : ""}>
-      <Card className={fullScreen ? "flex-1 flex flex-col min-h-0" : ""}>
+      <Card className={fullScreen ? "flex-1 flex flex-col min-h-0" : ""} dataCoach="graph-editor">
         <CardTitle
-          hint="Your product's pages, selectors, and flows. Saving creates a draft — visitors keep seeing the published revision until you publish."
+          hint={
+            view === "manual"
+              ? "Manual demo graph: pages, selectors, and recorded flows. Saving creates a draft — visitors keep the published revision until you publish."
+              : "Automated product map from Product Explore — orientation for the agent. Not editable and not used as the live walkthrough."
+          }
           right={
             <div className="flex items-center gap-3">
-              {revision !== null && (
+              <select
+                className="rounded-lg border bg-transparent px-2 py-1.5 text-[0.78rem]"
+                style={{ borderColor: "var(--line)" }}
+                value={view}
+                onChange={(e) => setView(e.target.value as "manual" | "automated")}
+              >
+                <option value="manual">Manual demo graph</option>
+                <option value="automated">Automated product map</option>
+              </select>
+              {view === "manual" && revision !== null && (
                 <span className="font-mono text-[0.72rem] rounded-full border px-2 py-0.5" style={{ borderColor: "var(--line)", backgroundColor: "var(--panel)" }}>
                   rev {revision}
                   <span className={liveRevision === revision ? "text-emerald-500 ml-1" : "text-amber-500 ml-1"}>
@@ -140,21 +178,45 @@ export function SiteGraph() {
               <Button variant="ghost" onClick={() => setFullScreen(!fullScreen)} className="px-2">
                 {fullScreen ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
               </Button>
-              <Button variant="secondary" onClick={() => setConfirmClear(true)} disabled={yaml === null}>
-                <Trash2 size={14} /> Clear all
-              </Button>
-              <Button onClick={save} disabled={yaml === null}>
-                <Save size={14} /> Save draft
-              </Button>
-              <Button onClick={() => setConfirmPublish(true)} disabled={liveRevision === revision}>
-                <Save size={14} /> Publish
-              </Button>
+              {view === "manual" && (
+                <>
+                  <Button variant="secondary" onClick={() => setConfirmClear(true)} disabled={yaml === null}>
+                    <Trash2 size={14} /> Clear all
+                  </Button>
+                  <Button onClick={save} disabled={yaml === null}>
+                    <Save size={14} /> Save draft
+                  </Button>
+                  <span data-coach="graph-publish" className="inline-flex">
+                    <Button onClick={() => setConfirmPublish(true)} disabled={liveRevision === revision}>
+                      <Save size={14} /> Publish
+                    </Button>
+                  </span>
+                </>
+              )}
             </div>
           }
         >
-          Site graph (YAML)
+          Site graph
         </CardTitle>
-        {yaml === null ? (
+        {view === "automated" ? (
+          <>
+            <p className="mb-2 text-[0.74rem] text-[var(--muted)]">
+              {topoMeta.page_count
+                ? `${topoMeta.page_count} pages`
+                : "No map yet"}
+              {topoMeta.updated_at ? ` · updated ${topoMeta.updated_at}` : ""}
+              {" · "}
+              Re-run from Knowledge → Product Explore.
+            </p>
+            <Textarea
+              value={topoYaml || "# Run Product Explore from the Knowledge tab to generate this map."}
+              onChange={() => {}}
+              readOnly
+              rows={fullScreen ? 30 : 22}
+              mono
+            />
+          </>
+        ) : yaml === null ? (
           <BarLoader label="Loading site graph…" />
         ) : (
           <div className={`relative ${fullScreen ? "flex-1 flex flex-col min-h-0" : ""}`}>
@@ -175,12 +237,14 @@ export function SiteGraph() {
           </div>
         )}
       </Card>
-      <DemoScriptPanel
-        revision={revision}
-        liveRevision={liveRevision}
-        epoch={epoch}
-        onSaved={invalidate}
-      />
+      {view === "manual" && (
+        <DemoScriptPanel
+          revision={revision}
+          liveRevision={liveRevision}
+          epoch={epoch}
+          onSaved={invalidate}
+        />
+      )}
       {confirmPublish && (
         <ConfirmDialog
           title="Publish revision?"
@@ -192,7 +256,7 @@ export function SiteGraph() {
       {confirmClear && (
         <ConfirmDialog
           title="Clear site graph and demo script?"
-          message="Resets the draft to a minimal empty shell: no flows, no explored pages, no demo script. Persona and product URL stay. Run Auto-Explore to build a new walkthrough. Publish later to make changes live."
+          message="Resets the draft to a minimal empty shell: no flows, no demo script. Persona and product URL stay. Record new flows manually. Publish later to make changes live."
           confirmLabel="Clear all"
           danger
           onConfirm={() => {
@@ -206,28 +270,47 @@ export function SiteGraph() {
 }
 
 export function Knowledge() {
-  const { ok, err } = useUi();
+  const { ok, err, setTab } = useUi();
   const epoch = useProductData((s) => s.epoch);
   const invalidate = useProductData((s) => s.invalidate);
-  const [md, setMd] = useState<string | null>(null);
+  const [canonical, setCanonical] = useState<string | null>(null);
+  const [userMd, setUserMd] = useState("");
+  const [exploreMd, setExploreMd] = useState("");
+  const [mergedAt, setMergedAt] = useState<string | null>(null);
+  const [pane, setPane] = useState<"canonical" | "user" | "explore">("canonical");
+  const bootstrapExplore = useProductExploreSession((s) => s.bootstrap);
+  const exploreActive = useProductExploreSession((s) => s.status.active);
+  const exploreEpoch = useProductData((s) => s.epoch);
 
   const load = useCallback(async () => {
     try {
       const d = await api.getKnowledge();
-      setMd(d.markdown ?? "");
+      setCanonical(d.markdown ?? "");
+      setUserMd(d.user_markdown ?? "");
+      setExploreMd(d.explore_markdown ?? "");
+      setMergedAt(d.merged_at ?? null);
     } catch (e) {
       err(errText(e));
     }
   }, [err]);
 
   useEffect(() => {
-    void load();
-  }, [load, epoch]);
+    bootstrapExplore();
+  }, [bootstrapExplore]);
 
-  const save = async () => {
-    if (md === null) return;
+  useEffect(() => {
+    void load();
+  }, [load, epoch, exploreEpoch]);
+
+  // Reload knowledge when explore finishes (invalidate bumps epoch).
+  useEffect(() => {
+    if (!exploreActive) void load();
+  }, [exploreActive, load]);
+
+  const saveCanonical = async () => {
+    if (canonical === null) return;
     try {
-      await api.putKnowledge(md);
+      await api.putKnowledge(canonical);
       invalidate();
       ok("Knowledge saved and indexed.");
     } catch (e) {
@@ -235,23 +318,91 @@ export function Knowledge() {
     }
   };
 
+  const saveUser = async () => {
+    try {
+      const d = await api.putKnowledgeUser(userMd);
+      setUserMd(d.user_markdown ?? userMd);
+      setExploreMd(d.explore_markdown ?? exploreMd);
+      setCanonical(d.markdown ?? "");
+      setMergedAt(d.merged_at ?? null);
+      invalidate();
+      ok("User knowledge saved — merged into canonical.");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
   return (
-    <motion.div variants={stagger()} initial="hidden" animate="show">
+    <motion.div className="space-y-5" variants={stagger()} initial="hidden" animate="show">
+      <ProductExplorePanel />
+      <p className="-mt-2 text-[0.74rem] text-[var(--muted)]">
+        <button
+          type="button"
+          className="cursor-pointer underline-offset-2 hover:underline"
+          onClick={() => setTab("graph")}
+        >
+          View automated map on Site graph
+        </button>
+      </p>
+
       <Card>
         <CardTitle
-          hint="Markdown knowledge base — how the bot should talk about your product."
+          hint="User source + explore source auto-merge into canonical (editable). Agent reads canonical."
           right={
-            <Button onClick={save} disabled={md === null}>
-              <Save size={14} /> Save
-            </Button>
+            <div className="flex gap-2" data-coach="knowledge-editor">
+              {pane === "user" ? (
+                <Button onClick={() => void saveUser()}>
+                  <Save size={14} /> Save user
+                </Button>
+              ) : pane === "canonical" ? (
+                <Button onClick={() => void saveCanonical()} disabled={canonical === null}>
+                  <Save size={14} /> Save canonical
+                </Button>
+              ) : null}
+            </div>
           }
         >
           Knowledge
         </CardTitle>
-        {md === null ? (
+        <div className="mb-3 flex flex-wrap gap-2 text-[0.78rem]">
+          {(
+            [
+              ["canonical", "Canonical (merged)"],
+              ["user", "Your markdown"],
+              ["explore", "Explore markdown"],
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              className={`rounded-lg border px-3 py-1.5 ${
+                pane === id ? "border-[var(--accent)] bg-[var(--accent)]/5" : ""
+              }`}
+              style={{ borderColor: pane === id ? undefined : "var(--line)" }}
+              onClick={() => setPane(id)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        {mergedAt && (
+          <p className="mb-2 text-[0.72rem] text-[var(--muted)]">
+            Last auto-merge: {mergedAt}
+          </p>
+        )}
+        {canonical === null ? (
           <BarLoader label="Loading knowledge…" />
+        ) : pane === "explore" ? (
+          <Textarea value={exploreMd} onChange={() => {}} rows={18} mono readOnly placeholder="Run Product Explore to generate…" />
+        ) : pane === "user" ? (
+          <Textarea value={userMd} onChange={setUserMd} rows={18} mono placeholder="# Your product knowledge" />
         ) : (
-          <Textarea value={md} onChange={setMd} rows={20} mono placeholder="# Knowledge" />
+          <Textarea value={canonical} onChange={setCanonical} rows={18} mono placeholder="# Knowledge" />
+        )}
+        {pane === "explore" && (
+          <p className="mt-2 text-[0.72rem] text-[var(--muted)]">
+            Explore markdown is regenerated by Product Explore (not edited here).
+          </p>
         )}
       </Card>
     </motion.div>

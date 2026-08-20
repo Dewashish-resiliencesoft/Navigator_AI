@@ -210,15 +210,8 @@ function BeatRow({
 
           {beat.kind === "pending_approval" && beat.needs_approval !== false && (
             <p className="mt-1 text-[0.65rem] text-[var(--muted)]">
-              Approve or drop in the{" "}
-              <button
-                type="button"
-                className="font-medium text-[var(--accent)] underline-offset-2 hover:underline"
-                onClick={() => useUi.getState().setTab("execution")}
-              >
-                Execution
-              </button>{" "}
-              tab before this click runs live.
+              This step still needs Client approval in the site graph before it
+              runs live.
             </p>
           )}
 

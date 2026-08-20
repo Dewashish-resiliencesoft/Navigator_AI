@@ -175,6 +175,34 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/account:
+    get:
+      tags:
+      - auth
+      summary: Get Account
+      operationId: get_account_client_api_account_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountView'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /v1/products:
     post:
       summary: Register Product
@@ -709,119 +737,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /v1/products/corrections/pending:
-    get:
-      summary: Pending Corrections
-      description: 'Reflection output awaiting human approval.
-
-
-        Never auto-promoted: an agent that can silently rewrite its own rules is
-
-        not debuggable.'
-      operationId: pending_corrections_v1_products_corrections_pending_get
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: true
-                title: Response Pending Corrections V1 Products Corrections Pending Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /v1/products/corrections/{correction_id}/approve:
-    post:
-      summary: Approve Correction
-      description: "Human approves a pending rule \u2192 live Chroma corrections collection."
-      operationId: approve_correction_v1_products_corrections__correction_id__approve_post
-      parameters:
-      - name: correction_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Correction Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      requestBody:
-        content:
-          application/json:
-            schema:
-              anyOf:
-              - $ref: '#/components/schemas/ApproveCorrectionBody'
-              - type: 'null'
-              title: Body
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Approve Correction V1 Products Corrections  Correction Id  Approve Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /v1/products/corrections/{correction_id}/reject:
-    post:
-      summary: Reject Correction
-      operationId: reject_correction_v1_products_corrections__correction_id__reject_post
-      parameters:
-      - name: correction_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Correction Id
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Reject Correction V1 Products Corrections  Correction Id  Reject Post
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /v1/products/knowledge:
     post:
       summary: Ingest Knowledge
@@ -1202,7 +1117,7 @@ paths:
   /client/api/tier2:
     get:
       summary: Client Get Tier2
-      description: Per-product opt-in for constrained live Tier-2 fallback. Default OFF.
+      description: "Legacy: always off \u2014 product autonomy is guided-only."
       operationId: client_get_tier2_client_api_tier2_get
       parameters:
       - name: authorization
@@ -1230,6 +1145,7 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Tier2
+      description: "Legacy no-op \u2014 forces guided / Tier-2 off."
       operationId: client_put_tier2_client_api_tier2_put
       parameters:
       - name: authorization
@@ -1291,6 +1207,7 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Autonomy Mode
+      description: "Legacy no-op \u2014 always guided."
       operationId: client_put_autonomy_mode_client_api_autonomy_mode_put
       parameters:
       - name: authorization
@@ -1908,6 +1825,7 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
     put:
       summary: Client Put Knowledge
+      description: Save canonical (editable merged) knowledge and re-index.
       operationId: client_put_knowledge_client_api_knowledge_put
       parameters:
       - name: authorization
@@ -1939,48 +1857,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /client/api/corrections/pending:
-    get:
-      summary: Client Pending Corrections
-      description: Pending rules for the Client dashboard. Same store as /v1, JWT-scoped.
-      operationId: client_pending_corrections_client_api_corrections_pending_get
+  /client/api/knowledge/user:
+    put:
+      summary: Client Put Knowledge User
+      description: Save Client-authored source MD, auto-merge into canonical, re-index.
+      operationId: client_put_knowledge_user_client_api_knowledge_user_put
       parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  type: object
-                  additionalProperties: true
-                title: Response Client Pending Corrections Client Api Corrections Pending Get
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /client/api/corrections/{correction_id}/approve:
-    post:
-      summary: Client Approve Correction
-      operationId: client_approve_correction_client_api_corrections__correction_id__approve_post
-      parameters:
-      - name: correction_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Correction Id
       - name: authorization
         in: header
         required: false
@@ -1990,13 +1872,11 @@ paths:
           - type: 'null'
           title: Authorization
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              anyOf:
-              - $ref: '#/components/schemas/ApproveCorrectionBody'
-              - type: 'null'
-              title: Body
+              $ref: '#/components/schemas/KnowledgeBody'
       responses:
         '200':
           description: Successful Response
@@ -2005,25 +1885,18 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
-                title: Response Client Approve Correction Client Api Corrections  Correction Id  Approve
-                  Post
+                title: Response Client Put Knowledge User Client Api Knowledge User Put
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /client/api/corrections/{correction_id}/reject:
-    post:
-      summary: Client Reject Correction
-      operationId: client_reject_correction_client_api_corrections__correction_id__reject_post
+  /client/api/product-explore/topology:
+    get:
+      summary: Client Product Explore Topology
+      operationId: client_product_explore_topology_client_api_product_explore_topology_get
       parameters:
-      - name: correction_id
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Correction Id
       - name: authorization
         in: header
         required: false
@@ -2040,8 +1913,97 @@ paths:
               schema:
                 type: object
                 additionalProperties: true
-                title: Response Client Reject Correction Client Api Corrections  Correction Id  Reject
-                  Post
+                title: Response Client Product Explore Topology Client Api Product Explore Topology Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/product-explore:
+    get:
+      summary: Client Product Explore Status
+      operationId: client_product_explore_status_client_api_product_explore_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Product Explore Status Client Api Product Explore Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/product-explore/start:
+    post:
+      summary: Client Product Explore Start
+      operationId: client_product_explore_start_client_api_product_explore_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProductExploreStartBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Product Explore Start Client Api Product Explore Start Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/product-explore/stop:
+    post:
+      summary: Client Product Explore Stop
+      operationId: client_product_explore_stop_client_api_product_explore_stop_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Product Explore Stop Client Api Product Explore Stop Post
         '422':
           description: Validation Error
           content:
@@ -2337,7 +2299,6 @@ paths:
   /client/api/guided-task/plan:
     post:
       summary: Client Guided Task Plan
-      description: "Parse Agent Task \u2192 soft stub flows on the draft site graph."
       operationId: client_guided_task_plan_client_api_guided_task_plan_post
       parameters:
       - name: authorization
@@ -2348,21 +2309,12 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuidedTaskPlanBody'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Task Plan Client Api Guided Task Plan Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2371,7 +2323,6 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
     patch:
       summary: Client Guided Task Patch
-      description: 'Phase B: insert/replace steps on the single guided flow (draft only).'
       operationId: client_guided_task_patch_client_api_guided_task_plan_patch
       parameters:
       - name: authorization
@@ -2382,21 +2333,12 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuidedTaskPatchBody'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Task Patch Client Api Guided Task Plan Patch
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2421,10 +2363,7 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Task Status Client Api Guided Task Status Get
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2444,21 +2383,12 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuidedHandsStartBody'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Hands Start Client Api Guided Task Hands Start Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2483,10 +2413,7 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Hands Tick Client Api Guided Task Hands Tick Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2496,7 +2423,6 @@ paths:
   /client/api/guided-task/hands/stop:
     post:
       summary: Client Guided Hands Stop
-      description: "Idempotent \u2014 OK even if recording already ended."
       operationId: client_guided_hands_stop_client_api_guided_task_hands_stop_post
       parameters:
       - name: authorization
@@ -2512,10 +2438,7 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Hands Stop Client Api Guided Task Hands Stop Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2535,21 +2458,12 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GuidedHandsAnswerBody'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Hands Answer Client Api Guided Task Hands Answer Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2574,10 +2488,7 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Hands Pause Client Api Guided Task Hands Pause Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2602,10 +2513,7 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Hands Resume Client Api Guided Task Hands Resume Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2630,10 +2538,7 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Guided Hands Barge Client Api Guided Task Hands Barge Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2710,21 +2615,12 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ExploreStartBody'
       responses:
-        '202':
+        '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Explore Start Client Api Explore Start Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2749,10 +2645,7 @@ paths:
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Explore Stop Client Api Explore Stop Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2762,7 +2655,6 @@ paths:
   /client/api/explore/answer:
     post:
       summary: Client Explore Answer
-      description: Answer the pending business-specific field question; exploration resumes.
       operationId: client_explore_answer_client_api_explore_answer_post
       parameters:
       - name: authorization
@@ -2773,21 +2665,12 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ExploreAnswerBody'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Explore Answer Client Api Explore Answer Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -2797,7 +2680,6 @@ paths:
   /client/api/explore/flagged:
     post:
       summary: Client Explore Flagged
-      description: Allow a skipped control for this explore, or dismiss it from the review list.
       operationId: client_explore_flagged_client_api_explore_flagged_post
       parameters:
       - name: authorization
@@ -2808,21 +2690,12 @@ paths:
           - type: string
           - type: 'null'
           title: Authorization
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ExploreFlaggedBody'
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema:
-                type: object
-                additionalProperties: true
-                title: Response Client Explore Flagged Client Api Explore Flagged Post
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -3093,6 +2966,23 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
+    AccountView:
+      properties:
+        email:
+          type: string
+          title: Email
+        product_name:
+          type: string
+          title: Product Name
+        product_id:
+          type: string
+          title: Product Id
+      type: object
+      required:
+      - email
+      - product_name
+      - product_id
+      title: AccountView
     ActionLogEntry:
       properties:
         call_id:
@@ -3327,16 +3217,6 @@ components:
           title: Llamacpp Base Url
       type: object
       title: AgentSettingsBody
-    ApproveCorrectionBody:
-      properties:
-        rule:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Rule
-      type: object
-      title: ApproveCorrectionBody
-      description: Optional override when promoting a pending rule into Chroma.
     AutonomyModeBody:
       properties:
         mode:
@@ -3635,123 +3515,6 @@ components:
       - actions
       - failures
       title: DemoView
-    ExploreAnswerBody:
-      properties:
-        qid:
-          type: string
-          minLength: 1
-          title: Qid
-        value:
-          type: string
-          title: Value
-          default: ''
-        skip:
-          type: boolean
-          title: Skip
-          default: false
-      type: object
-      required:
-      - qid
-      title: ExploreAnswerBody
-    ExploreFlaggedBody:
-      properties:
-        action:
-          type: string
-          pattern: ^(allow|dismiss)$
-          title: Action
-        selector:
-          type: string
-          title: Selector
-          default: ''
-        label:
-          type: string
-          title: Label
-          default: ''
-        element_key:
-          type: string
-          title: Element Key
-          default: ''
-      type: object
-      required:
-      - action
-      title: ExploreFlaggedBody
-      description: 'Client reviews a guardrail skip: allow for this run, or dismiss from the list.'
-    ExploreStartBody:
-      properties:
-        base_url:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Base Url
-        max_pages:
-          type: integer
-          maximum: 200.0
-          minimum: 1.0
-          title: Max Pages
-          default: 25
-        max_steps:
-          type: integer
-          maximum: 1000.0
-          minimum: 1.0
-          title: Max Steps
-          default: 120
-        max_wall_clock_s:
-          type: number
-          maximum: 7200.0
-          minimum: 30.0
-          title: Max Wall Clock S
-          default: 600.0
-        answer_timeout_s:
-          type: number
-          maximum: 3600.0
-          minimum: 10.0
-          title: Answer Timeout S
-          default: 300.0
-        save_mode:
-          type: string
-          pattern: ^(new|update)$
-          title: Save Mode
-          default: new
-        target_flow_id:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Target Flow Id
-        target_flow_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Target Flow Name
-        new_flow_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: New Flow Name
-        focus_hint:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Focus Hint
-        include_paths:
-          items:
-            type: string
-          type: array
-          maxItems: 50
-          title: Include Paths
-        exclude_paths:
-          items:
-            type: string
-          type: array
-          maxItems: 50
-          title: Exclude Paths
-        exclude_labels:
-          items:
-            type: string
-          type: array
-          maxItems: 50
-          title: Exclude Labels
-      type: object
-      title: ExploreStartBody
     FillField:
       properties:
         expects:
@@ -3856,85 +3619,6 @@ components:
       required:
       - playlist
       title: FlowsBody
-    GuidedHandsAnswerBody:
-      properties:
-        qid:
-          type: string
-          minLength: 1
-          title: Qid
-        candidate_index:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Candidate Index
-        value:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Value
-        skip:
-          type: boolean
-          title: Skip
-          default: false
-      additionalProperties: false
-      type: object
-      required:
-      - qid
-      title: GuidedHandsAnswerBody
-    GuidedHandsStartBody:
-      properties:
-        flow_index:
-          type: integer
-          title: Flow Index
-          default: 0
-      additionalProperties: false
-      type: object
-      title: GuidedHandsStartBody
-    GuidedTaskPatchBody:
-      properties:
-        steps:
-          anyOf:
-          - items:
-              additionalProperties: true
-              type: object
-            type: array
-          - type: 'null'
-          title: Steps
-        insert_at:
-          anyOf:
-          - type: integer
-          - type: 'null'
-          title: Insert At
-        new_step:
-          anyOf:
-          - additionalProperties: true
-            type: object
-          - type: 'null'
-          title: New Step
-        flow_name:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Flow Name
-      additionalProperties: false
-      type: object
-      title: GuidedTaskPatchBody
-      description: 'Phase B: edit guided plan steps (insert USER_INPUT, reorder).'
-    GuidedTaskPlanBody:
-      properties:
-        task:
-          type: string
-          minLength: 3
-          title: Task
-        page_id:
-          type: string
-          title: Page Id
-          default: dashboard
-      additionalProperties: false
-      type: object
-      required:
-      - task
-      title: GuidedTaskPlanBody
     HTTPValidationError:
       properties:
         detail:
@@ -4272,6 +3956,14 @@ components:
       required:
       - base_url
       title: ProductDomainBody
+    ProductExploreStartBody:
+      properties:
+        start_url:
+          type: string
+          title: Start Url
+          default: ''
+      type: object
+      title: ProductExploreStartBody
     ProductLoginBody:
       properties:
         login_url:
@@ -4734,6 +4426,18 @@ components:
         onboarding_wizard_completed:
           type: boolean
           title: Onboarding Wizard Completed
+        email:
+          type: string
+          title: Email
+          default: ''
+        product_name:
+          type: string
+          title: Product Name
+          default: ''
+        product_id:
+          type: string
+          title: Product Id
+          default: ''
       type: object
       required:
       - hide_get_started_card

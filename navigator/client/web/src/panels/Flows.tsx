@@ -4,29 +4,14 @@ import {
   ArrowDown,
   ArrowUp,
   Circle,
-  Clock,
-  Compass,
-  Loader2,
   Plus,
   Save,
-  ShieldAlert,
   Square,
   Trash2,
-  Wand2,
 } from "lucide-react";
-import { api, type ExploreFlagged, type Flow, type GuidedHandsStatus, type GuidedTaskStatus, type RecorderStatus } from "../lib/api";
-import {
-  exploreDraftProgressPct,
-  exploreIsLive,
-  exploreIsPersisting,
-  exploreIsTerminal,
-  formatExploreElapsed,
-  useExploreElapsed,
-  useExploreSession,
-} from "../lib/exploreSession";
+import { api, type Flow, type RecorderStatus } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
-import { ExploreWatch } from "../components/ExploreWatch";
 import {
   BarLoader,
   Button,
@@ -44,21 +29,6 @@ import { errText, useUi } from "../store";
 
 const isRecording = (s: RecorderStatus) =>
   !!(s.recording || s.active || s.status === "recording");
-
-function FlowDraftLoader({ pct, label }: { pct: number; label?: string }) {
-  const n = Math.min(100, Math.max(0, Math.round(pct)));
-  return (
-    <div
-      className="flex min-w-[4.5rem] flex-col items-end gap-0.5 px-1"
-      title={label}
-    >
-      <Loader2 size={16} className="animate-spin text-[var(--accent)]" />
-      <span className="font-mono text-[0.68rem] tabular-nums text-[var(--muted)]">
-        {n}%
-      </span>
-    </div>
-  );
-}
 
 function FlowFieldCell({
   label,
@@ -97,36 +67,8 @@ export function Flows() {
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
-  const [agentTask, setAgentTask] = useState("");
-  const [guidedStatus, setGuidedStatus] = useState<GuidedTaskStatus | null>(null);
-  const [guidedPlanning, setGuidedPlanning] = useState(false);
-  const [guidedHands, setGuidedHands] = useState<GuidedHandsStatus | null>(null);
   const timer = useRef<number | null>(null);
-  const handsTimer = useRef<number | null>(null);
 
-  const exploreStatus = useExploreSession((s) => s.status);
-  const exploreSaveMode = useExploreSession((s) => s.saveMode);
-  const exploreTargetFlowId = useExploreSession((s) => s.targetFlowId);
-  const exploreTargetFlowName = useExploreSession((s) => s.targetFlowName);
-  const exploreShowMeter = useExploreSession((s) => s.showMeter);
-  const exploreDraftPct = exploreDraftProgressPct(exploreStatus);
-  const exploreDrafting =
-    exploreStatus.active ||
-    exploreIsPersisting(exploreStatus) ||
-    (exploreShowMeter && !exploreIsTerminal(exploreStatus.phase) && !exploreStatus.flow_id);
-  const exploreUpdatingFlowId =
-    exploreDrafting && exploreSaveMode === "update" ? exploreTargetFlowId.trim() : "";
-  const pendingNewFlowName =
-    exploreStatus.target_flow_name?.trim() ||
-    exploreTargetFlowName.trim() ||
-    "New explored flow";
-  const showPendingNewRow =
-    exploreDrafting &&
-    exploreSaveMode === "new" &&
-    !(
-      exploreStatus.flow_id &&
-      rows?.some((r) => r.flow_id === exploreStatus.flow_id)
-    );
   const recordFlows = (rows ?? []).filter((f) => !!f.flow_id?.trim());
 
   const load = useCallback(async () => {
@@ -136,14 +78,6 @@ export function Flows() {
       setRows(playlist);
       // ponytail: setPlaylist only — applyPlaylist would re-bump epoch and loop load
       setPlaylist(playlist);
-      try {
-        const guided = await api.guidedTaskStatus();
-        setGuidedStatus(guided);
-        setGuidedHands(guided.hands ?? null);
-      } catch {
-        setGuidedStatus(null);
-        setGuidedHands(null);
-      }
 
       const counts: Record<string, number> = {};
       let inFlows = false;
@@ -177,162 +111,6 @@ export function Flows() {
 
   useEffect(() => stopPolling, []);
 
-  const stopHandsPolling = () => {
-    if (handsTimer.current !== null) {
-      clearInterval(handsTimer.current);
-      handsTimer.current = null;
-    }
-  };
-
-  useEffect(() => stopHandsPolling, []);
-
-  const refreshGuided = useCallback(async () => {
-    try {
-      const g = await api.guidedTaskStatus();
-      setGuidedStatus(g);
-      setGuidedHands(g.hands ?? null);
-    } catch {
-      /* optional */
-    }
-  }, []);
-
-  const pollHands = useCallback(async () => {
-    try {
-      const g = await api.guidedTaskStatus();
-      setGuidedStatus(g);
-      setGuidedHands(g.hands ?? null);
-      const hands = g.hands;
-      if (
-        hands?.active &&
-        hands.phase !== "awaiting_input" &&
-        hands.phase !== "paused" &&
-        hands.phase !== "barged" &&
-        !hands.client_paused &&
-        !hands.barged
-      ) {
-        await api.guidedHandsTick();
-        const again = await api.guidedTaskStatus();
-        setGuidedStatus(again);
-        setGuidedHands(again.hands ?? null);
-        if (!again.hands?.active) stopHandsPolling();
-      }
-    } catch (e) {
-      err(errText(e));
-    }
-  }, [err]);
-
-  const runGuidedPlan = async () => {
-    if (!agentTask.trim()) return err("Describe what the demo should cover.");
-    setGuidedPlanning(true);
-    try {
-      const r = await api.guidedTaskPlan(agentTask.trim());
-      setGuidedStatus(r.guided);
-      applyPlaylist(r.playlist);
-      setRows(r.playlist);
-      ok(
-        `Plan created — ${r.flows_created} flow${r.flows_created === 1 ? "" : "s"}, ${r.steps_total} steps. Record each flow (Update existing) to bind selectors.`,
-      );
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setGuidedPlanning(false);
-    }
-  };
-
-  const startGuidedHands = async () => {
-    if (!recording || recPhase !== "capturing") {
-      return err("Start recording and click Start capturing before guided hands.");
-    }
-    try {
-      const h = await api.guidedHandsStart(0);
-      setGuidedHands(h);
-      stopHandsPolling();
-      handsTimer.current = window.setInterval(pollHands, 2000);
-      ok("Guided hands running — Pause / Take over anytime; Resume to continue.");
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const stopGuidedHands = async () => {
-    try {
-      await api.guidedHandsStop();
-      stopHandsPolling();
-      await refreshGuided();
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const pauseGuidedHands = async () => {
-    try {
-      const h = await api.guidedHandsPause();
-      setGuidedHands(h);
-      ok("Paused — click Resume when ready.");
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const resumeGuidedHands = async () => {
-    try {
-      const h = await api.guidedHandsResume();
-      setGuidedHands(h);
-      stopHandsPolling();
-      handsTimer.current = window.setInterval(pollHands, 2000);
-      ok("Resumed guided hands.");
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const bargeGuidedHands = async () => {
-    try {
-      const h = await api.guidedHandsBarge();
-      setGuidedHands(h);
-      ok("Your turn — click in the browser, then Resume.");
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const answerGuidedHands = async (
-    qid: string,
-    candidateIndex?: number,
-    value?: string,
-    skip = false,
-  ) => {
-    try {
-      const h = await api.guidedHandsAnswer(qid, candidateIndex, value, skip);
-      setGuidedHands(h);
-      stopHandsPolling();
-      handsTimer.current = window.setInterval(pollHands, 2000);
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const insertAskVisitor = async (insertAt: number) => {
-    const label = window.prompt("What should the demo ask the visitor?", "Your phone number");
-    if (!label?.trim()) return;
-    try {
-      const r = await api.guidedTaskPatch({
-        insert_at: insertAt,
-        new_step: {
-          kind: "USER_INPUT",
-          label: label.trim(),
-          live_question: `Could you share ${label.trim().toLowerCase()}?`,
-          spoken: label.trim(),
-        },
-      });
-      setGuidedStatus(r.guided);
-      ok("Ask-visitor beat added to the script.");
-      void load();
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
   const poll = useCallback(async () => {
     try {
       const s = await api.recordStatus();
@@ -343,7 +121,6 @@ export function Flows() {
       setCapturedSteps(s.steps ?? 0);
       setRecNarrating(!!s.narrate);
       setNarrationChunks(s.narration_chunks ?? 0);
-      void refreshGuided();
       if (!active) {
         if (s.error?.trim()) err(s.error.trim());
         stopPolling();
@@ -352,7 +129,7 @@ export function Flows() {
     } catch (e) {
       err(errText(e));
     }
-  }, [err, load, refreshGuided]);
+  }, [err, load]);
 
   const startRecord = async () => {
     if (!recUrl.trim()) return err("Enter your product start URL.");
@@ -470,10 +247,7 @@ export function Flows() {
       setRows(playlist);
       applyPlaylist(playlist);
       setStepCount({});
-      const explore = useExploreSession.getState();
-      explore.setTargetFlowId("");
-      explore.setTargetFlowName("");
-      ok("Site graph and demo script cleared — run Auto-Explore to build a new walkthrough.");
+      ok("Site graph and demo script cleared — record a new flow to rebuild.");
     } catch (e) {
       err(errText(e));
     }
@@ -502,11 +276,6 @@ export function Flows() {
       const playlist = d.playlist ?? [];
       setRows(playlist);
       applyPlaylist(playlist);
-      const explore = useExploreSession.getState();
-      if (explore.targetFlowId === row.flow_id.trim()) {
-        explore.setTargetFlowId("");
-        explore.setTargetFlowName("");
-      }
       ok(`Deleted “${row.name || row.flow_id}” from the draft site graph.`);
     } catch (e) {
       err(errText(e));
@@ -515,7 +284,7 @@ export function Flows() {
 
   return (
     <motion.div variants={stagger()} initial="hidden" animate="show" className="grid gap-4">
-      <Card>
+      <Card dataCoach="flows-playlist">
         <CardTitle
           hint="Playlist order for guided demos. Top row runs first; demo continues down the list."
           right={
@@ -544,20 +313,14 @@ export function Flows() {
 
         <div className="space-y-1.5">
           <AnimatePresence initial={false}>
-            {rows?.map((f, i) => {
-              const flowId = f.flow_id?.trim() ?? "";
-              const isUpdating = !!exploreUpdatingFlowId && flowId === exploreUpdatingFlowId;
-              const rowDisabled = isUpdating;
-              return (
+            {rows?.map((f, i) => (
               <motion.div
                 key={`${f.flow_id || "row"}-${i}`}
                 layout
                 layoutId={`flow-${f.flow_id || i}`}
                 transition={soft}
                 exit={{ opacity: 0, x: -10 }}
-                className={`grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border px-2 py-1.5 ${
-                  rowDisabled ? "opacity-45 pointer-events-none" : ""
-                }`}
+                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border px-2 py-1.5"
                 style={{ borderColor: "var(--line)" }}
               >
                 <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] flex flex-col justify-center">
@@ -567,10 +330,10 @@ export function Flows() {
                   )}
                 </span>
                 <span className="flex flex-col pt-5">
-                  <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0 || rowDisabled} className="h-5 px-1 py-0">
+                  <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0} className="h-5 px-1 py-0">
                     <ArrowUp size={11} />
                   </Button>
-                  <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === rows.length - 1 || rowDisabled} className="h-5 px-1 py-0">
+                  <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === rows.length - 1} className="h-5 px-1 py-0">
                     <ArrowDown size={11} />
                   </Button>
                 </span>
@@ -579,7 +342,6 @@ export function Flows() {
                     value={f.name ?? ""}
                     onChange={(v) => patch(i, "name", v)}
                     placeholder="e.g. Login tour"
-                    disabled={rowDisabled}
                   />
                 </FlowFieldCell>
                 <FlowFieldCell label="Page ID">
@@ -587,7 +349,6 @@ export function Flows() {
                     value={f.page_id ?? ""}
                     onChange={(v) => patch(i, "page_id", v)}
                     placeholder="e.g. home"
-                    disabled={rowDisabled}
                   />
                 </FlowFieldCell>
                 <FlowFieldCell label="Flow ID">
@@ -595,32 +356,17 @@ export function Flows() {
                     value={f.flow_id ?? ""}
                     onChange={(v) => patch(i, "flow_id", v)}
                     placeholder="e.g. login_flow"
-                    disabled={rowDisabled}
                   />
                 </FlowFieldCell>
-                {isUpdating ? (
-                  <div className="flex items-center self-center pt-4">
-                  <FlowDraftLoader
-                    pct={exploreDraftPct}
-                    label={
-                      exploreIsPersisting(exploreStatus)
-                        ? "Saving explored steps…"
-                        : "Exploring…"
-                    }
-                  />
-                  </div>
-                ) : (
                 <div className="flex items-center self-center pt-4">
                 <Button
                   variant="ghost"
                   onClick={() => setConfirmDelete(i)}
                   className="px-1.5 hover:text-red-500"
-                  disabled={rowDisabled}
                 >
                   <Trash2 size={13} />
                 </Button>
                 </div>
-                )}
                 {(f.verdict || f.purpose || (f.tags && f.tags.length > 0)) && (
                   <div className="col-span-6 flex flex-wrap items-center gap-2 px-1 pb-1 text-[0.68rem]">
                     {f.verdict && (
@@ -653,56 +399,7 @@ export function Flows() {
                   </div>
                 )}
               </motion.div>
-            );
-            })}
-            {showPendingNewRow && (
-              <motion.div
-                key="explore-pending-new-flow"
-                layout
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border border-dashed px-2 py-1.5 opacity-45"
-                style={{ borderColor: "var(--line)" }}
-              >
-                <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] pt-5">
-                  …
-                </span>
-                <span />
-                <FlowFieldCell label="Name">
-                  <Input
-                    value={pendingNewFlowName}
-                    onChange={() => {}}
-                    placeholder="e.g. Login tour"
-                    disabled
-                  />
-                </FlowFieldCell>
-                <FlowFieldCell label="Page ID">
-                  <Input value="main" onChange={() => {}} placeholder="e.g. home" disabled />
-                </FlowFieldCell>
-                <FlowFieldCell label="Flow ID">
-                  <Input
-                    value={
-                      exploreIsPersisting(exploreStatus)
-                        ? "assigning…"
-                        : "exploring…"
-                    }
-                    onChange={() => {}}
-                    placeholder="e.g. login_flow"
-                    disabled
-                  />
-                </FlowFieldCell>
-                <div className="flex items-center self-center pt-4">
-                <FlowDraftLoader
-                  pct={exploreDraftPct}
-                  label={
-                    exploreIsPersisting(exploreStatus)
-                      ? "Creating flow draft…"
-                      : "Exploring product…"
-                  }
-                />
-                </div>
-              </motion.div>
-            )}
+            ))}
           </AnimatePresence>
         </div>
       </Card>
@@ -721,7 +418,7 @@ export function Flows() {
       {confirmClearAll && (
         <ConfirmDialog
           title="Clear all flows?"
-          message="Resets the draft site graph to a minimal empty shell and clears the demo script. Persona and product URL stay. Run Auto-Explore to build a new walkthrough."
+          message="Resets the draft site graph to a minimal empty shell and clears the demo script. Persona and product URL stay. Record a new flow to rebuild."
           confirmLabel="Clear all"
           danger
           onConfirm={() => {
@@ -731,7 +428,7 @@ export function Flows() {
         />
       )}
 
-      <Card>
+      <Card dataCoach="flows-record">
         <CardTitle
           hint="Opens a browser, records clicks, and saves a new flow or replaces an existing one in place."
           right={<StatusPill status={recording ? "recording" : "idle"} />}
@@ -877,1125 +574,6 @@ export function Flows() {
           </div>
         )}
       </Card>
-
-      <Card>
-        <CardTitle
-          hint="Describe the full demo in plain language. Navigator plans sections, creates soft stub flows, then helps click during recording."
-          right={
-            guidedStatus?.has_plan ? (
-              <StatusPill status="idle" label={`${guidedStatus.percent_bound ?? 0}% bound`} />
-            ) : undefined
-          }
-        >
-          Guided Agent
-        </CardTitle>
-        <Field label="Agent task">
-          <textarea
-            value={agentTask}
-            onChange={(e) => setAgentTask(e.target.value)}
-            disabled={guidedPlanning || recording}
-            placeholder="e.g. Ask for phone number, create a demo tag, add contact, open pipeline view…"
-            rows={3}
-            className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 text-[0.8rem] leading-relaxed outline-none focus:ring-1 focus:ring-[var(--accent)]"
-            style={{ borderColor: "var(--line)" }}
-          />
-        </Field>
-        <div className="mt-3 flex flex-wrap gap-2">
-          <Button onClick={() => void runGuidedPlan()} disabled={guidedPlanning || recording}>
-            {guidedPlanning ? (
-              <Loader2 size={13} className="animate-spin" />
-            ) : (
-              <Wand2 size={13} />
-            )}{" "}
-            Run task
-          </Button>
-          <Button
-            variant="secondary"
-            onClick={() => void startGuidedHands()}
-            disabled={!recording || recPhase !== "capturing" || !guidedStatus?.has_plan}
-          >
-            Start guided hands
-          </Button>
-          {guidedHands?.active && (
-            <>
-              <Button
-                variant="secondary"
-                onClick={() => void pauseGuidedHands()}
-                disabled={guidedHands.client_paused || guidedHands.phase === "paused"}
-              >
-                Pause
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => void resumeGuidedHands()}
-                disabled={
-                  !guidedHands.client_paused &&
-                  !guidedHands.barged &&
-                  guidedHands.phase !== "paused" &&
-                  guidedHands.phase !== "barged"
-                }
-              >
-                Resume
-              </Button>
-              <Button
-                variant="secondary"
-                onClick={() => void bargeGuidedHands()}
-                disabled={guidedHands.barged}
-              >
-                Take over
-              </Button>
-              <Button variant="danger" onClick={() => void stopGuidedHands()}>
-                <Square size={13} /> Stop hands
-              </Button>
-            </>
-          )}
-        </div>
-        {guidedStatus?.has_plan && (
-          <div
-            className="mt-4 grid gap-4 lg:grid-cols-2"
-          >
-            <div
-              className="rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
-              style={{ borderColor: "var(--line)" }}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2 text-[0.78rem]">
-                <span className="font-medium tracking-tight">Live drive</span>
-                <StatusPill
-                  status="idle"
-                  label={
-                    guidedHands?.active
-                      ? guidedHands.phase || "active"
-                      : `${guidedStatus.percent_bound ?? 0}% bound`
-                  }
-                />
-              </div>
-              <p className="mt-2 text-[0.72rem] text-[var(--muted)]">
-                Recorder browser is the live canvas. Start capturing, then Start guided hands.
-                Pause / Take over when stuck; Resume continues from the current step.
-              </p>
-              {guidedHands?.active && (
-                <div className="mt-3">
-                  <BarLoader
-                    label={
-                      guidedHands.phase === "awaiting_input"
-                        ? "Waiting for you"
-                        : guidedHands.phase === "barged"
-                          ? "Your clicks"
-                          : guidedHands.phase === "paused"
-                            ? "Paused"
-                            : `Hands — ${guidedHands.progress?.steps_done ?? 0}/${guidedHands.progress?.steps_total ?? 0} steps`
-                    }
-                  />
-                  {guidedHands.current_step && (
-                    <p className="mt-2 text-[0.72rem] text-[var(--muted)]">
-                      Now: {guidedHands.current_flow} → {guidedHands.current_step}
-                    </p>
-                  )}
-                  {guidedHands.question && (
-                    <div className="mt-3 rounded-lg border border-amber-500/50 p-3">
-                      <p className="text-[0.78rem] font-medium">{guidedHands.question.prompt}</p>
-                      {guidedHands.question.kind === "user_input" ? (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          <Button
-                            variant="secondary"
-                            onClick={() =>
-                              void answerGuidedHands(guidedHands.question!.qid, undefined, undefined, true)
-                            }
-                          >
-                            Mark checkpoint (no fill)
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {(guidedHands.question.candidates ?? []).map((c) => (
-                            <Button
-                              key={c.index}
-                              variant="secondary"
-                              onClick={() =>
-                                void answerGuidedHands(guidedHands.question!.qid, c.index)
-                              }
-                            >
-                              {c.label || c.tag || `Option ${c.index + 1}`}
-                            </Button>
-                          ))}
-                        </div>
-                      )}
-                      <p className="mt-2 text-[0.68rem] text-[var(--muted)]">
-                        Or click the control in the browser — the recorder captures it.
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div
-              className="rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
-              style={{ borderColor: "var(--line)" }}
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2 text-[0.78rem]">
-                <span className="font-medium tracking-tight">Script</span>
-                <span className="font-mono tabular-nums text-[var(--muted)]">
-                  {guidedStatus.progress?.steps_bound ?? 0}/
-                  {guidedStatus.progress?.steps_total ?? 0} bound
-                </span>
-              </div>
-              <div
-                className="mt-2 h-2 overflow-hidden rounded-full"
-                style={{ background: "color-mix(in oklab, var(--line) 80%, transparent)" }}
-              >
-                <div
-                  className="h-full rounded-full bg-[var(--accent)] transition-all"
-                  style={{ width: `${guidedStatus.percent_bound ?? 0}%` }}
-                />
-              </div>
-              <ul className="mt-3 max-h-56 space-y-1 overflow-y-auto text-[0.72rem] text-[var(--muted)]">
-                {((guidedStatus.flows ?? [])[0]?.step_list ?? []).map((s, i) => (
-                  <li
-                    key={`${s.alias}-${i}`}
-                    className="flex items-center justify-between gap-2 rounded-md px-1 py-0.5 hover:bg-black/[0.03] dark:hover:bg-white/[0.03]"
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData("text/guided-insert", String(i));
-                    }}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      void insertAskVisitor(i);
-                    }}
-                  >
-                    <span>
-                      <span className="font-mono text-[0.62rem] uppercase text-[var(--muted)]">
-                        {s.kind === "USER_INPUT" ? "ask" : "act"}
-                      </span>{" "}
-                      {i + 1}. {s.label}
-                    </span>
-                    <button
-                      type="button"
-                      className="shrink-0 text-[0.65rem] text-[var(--accent)] underline-offset-2 hover:underline"
-                      onClick={() => void insertAskVisitor(i + 1)}
-                    >
-                      + Ask
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() =>
-                    void insertAskVisitor(guidedStatus.progress?.steps_total ?? 0)
-                  }
-                >
-                  <Plus size={13} /> Ask visitor at end
-                </Button>
-              </div>
-              <p className="mt-2 text-[0.72rem] text-[var(--muted)]">
-                One flow. Use <strong>Update existing</strong> with flow{" "}
-                <span className="font-mono">
-                  {(guidedStatus.flows ?? [])[0]?.flow_id ?? "…"}
-                </span>{" "}
-                so the live demo walks real clicks.
-              </p>
-            </div>
-          </div>
-        )}
-      </Card>
-
-      <AutoExplore onFinished={load} />
     </motion.div>
-  );
-}
-
-/** The second flow-creation path. Same review gate, no human walkthrough. */
-function ExploreMeter({
-  running,
-  elapsedS,
-  progressPct,
-  steps,
-  pages,
-  maxPages,
-}: {
-  running: boolean;
-  elapsedS: number;
-  progressPct: number;
-  steps: number;
-  maxSteps?: number;
-  pages: number;
-  maxPages: number;
-}) {
-  const pct = Math.min(100, Math.max(0, Math.round(progressPct)));
-  const radius = 34;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - pct / 100);
-
-  return (
-    <div
-      className="mt-4 grid gap-3 rounded-xl border p-4 sm:grid-cols-[auto_1fr]"
-      style={{
-        borderColor: "var(--line)",
-        background:
-          "linear-gradient(135deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%)",
-      }}
-    >
-      <div className="relative mx-auto flex h-[88px] w-[88px] items-center justify-center">
-        <svg width="88" height="88" viewBox="0 0 88 88" className="-rotate-90">
-          <circle
-            cx="44"
-            cy="44"
-            r={radius}
-            fill="none"
-            stroke="var(--line)"
-            strokeWidth="7"
-          />
-          <motion.circle
-            cx="44"
-            cy="44"
-            r={radius}
-            fill="none"
-            stroke="var(--accent)"
-            strokeWidth="7"
-            strokeLinecap="round"
-            strokeDasharray={circumference}
-            animate={{ strokeDashoffset: offset }}
-            transition={{ type: "spring", stiffness: 90, damping: 18 }}
-          />
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[1.15rem] font-semibold tracking-tight tabular-nums">
-            {pct}%
-          </span>
-          <span className="text-[0.62rem] uppercase tracking-[0.08em] text-[var(--muted)]">
-            explored
-          </span>
-        </div>
-      </div>
-
-      <div className="flex min-w-0 flex-col justify-center gap-3">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <p className="flex items-center gap-1.5 text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
-              <Clock size={12} />
-              Time elapsed
-            </p>
-            <p className="mt-0.5 font-mono text-[1.35rem] font-semibold tracking-tight tabular-nums">
-              {formatExploreElapsed(elapsedS)}
-              {running && (
-                <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] align-middle" />
-              )}
-            </p>
-          </div>
-          <p className="text-[0.7rem] text-[var(--muted)]">
-            {running ? "Live budget progress" : "Final coverage"}
-          </p>
-        </div>
-
-        <div>
-          <div className="mb-1 flex justify-between text-[0.68rem] text-[var(--muted)]">
-            <span>
-              {pages}/{maxPages} pages in demo
-            </span>
-            <span>
-              {steps} demo step{steps === 1 ? "" : "s"}
-            </span>
-          </div>
-          <div
-            className="h-2 overflow-hidden rounded-full"
-            style={{ background: "color-mix(in oklab, var(--line) 80%, transparent)" }}
-          >
-            <motion.div
-              className="h-full rounded-full bg-[var(--accent)]"
-              initial={false}
-              animate={{ width: `${pct}%` }}
-              transition={{ type: "spring", stiffness: 90, damping: 18 }}
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ExplorePlanBanner({
-  saveMode,
-  flowName,
-  flowId,
-  baseUrl,
-  hasCredentials,
-  phase,
-}: {
-  saveMode: "new" | "update";
-  flowName: string;
-  flowId: string;
-  baseUrl: string;
-  hasCredentials?: boolean;
-  phase?: string;
-}) {
-  const modeLabel =
-    saveMode === "update"
-      ? `Update existing · ${flowName || flowId || "selected flow"}`
-      : "Create new flow · unpublished draft";
-
-  return (
-    <div
-      className="mb-3 rounded-lg border px-3 py-2.5"
-      style={{
-        borderColor: "var(--line)",
-        background: "color-mix(in oklab, var(--accent) 6%, transparent)",
-      }}
-    >
-      <p className="text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
-        Explore options
-      </p>
-      <ul className="mt-1.5 space-y-1 text-[0.78rem] leading-snug">
-        <li>
-          <span className="text-[var(--muted)]">Save as · </span>
-          <span className="font-medium">{modeLabel}</span>
-          {saveMode === "update" && flowId && (
-            <span className="ml-1 font-mono text-[0.68rem] text-[var(--muted)]">
-              ({flowId})
-            </span>
-          )}
-        </li>
-        <li>
-          <span className="text-[var(--muted)]">URL · </span>
-          <span className="break-all font-mono text-[0.72rem]">
-            {baseUrl.trim() || "Product Login URL (default)"}
-          </span>
-        </li>
-        <li>
-          <span className="text-[var(--muted)]">Login · </span>
-          {hasCredentials ? "stored Product Login" : "signed-out pages only"}
-        </li>
-        {phase && (
-          <li>
-            <span className="text-[var(--muted)]">Phase · </span>
-            <span className="font-medium">{phase}</span>
-          </li>
-        )}
-      </ul>
-    </div>
-  );
-}
-
-function AutoExplore({ onFinished }: { onFinished: () => void }) {
-  const { ok, err } = useUi();
-  const status = useExploreSession((s) => s.status);
-  const events = useExploreSession((s) => s.events);
-  const question = useExploreSession((s) => s.question);
-  const answer = useExploreSession((s) => s.answer);
-  const baseUrl = useExploreSession((s) => s.baseUrl);
-  const saveMode = useExploreSession((s) => s.saveMode);
-  const targetFlowId = useExploreSession((s) => s.targetFlowId);
-  const targetFlowName = useExploreSession((s) => s.targetFlowName);
-  const exploreElapsed = useExploreElapsed();
-  const showMeter = useExploreSession((s) => s.showMeter);
-  const setBaseUrl = useExploreSession((s) => s.setBaseUrl);
-  const setAnswer = useExploreSession((s) => s.setAnswer);
-  const setSaveMode = useExploreSession((s) => s.setSaveMode);
-  const setTargetFlowId = useExploreSession((s) => s.setTargetFlowId);
-  const setTargetFlowName = useExploreSession((s) => s.setTargetFlowName);
-  const newFlowName = useExploreSession((s) => s.newFlowName);
-  const focusHint = useExploreSession((s) => s.focusHint);
-  const setNewFlowName = useExploreSession((s) => s.setNewFlowName);
-  const setFocusHint = useExploreSession((s) => s.setFocusHint);
-  const setOnFlowDrafted = useExploreSession((s) => s.setOnFlowDrafted);
-  const hydrate = useExploreSession((s) => s.hydrate);
-  const syncProductUrl = useExploreSession((s) => s.syncProductUrl);
-  const startExplore = useExploreSession((s) => s.start);
-  const stopExplore = useExploreSession((s) => s.stop);
-  const replyExplore = useExploreSession((s) => s.reply);
-  const dismissResult = useExploreSession((s) => s.dismissResult);
-  const logEnd = useRef<HTMLDivElement | null>(null);
-  const logScrollRef = useRef<HTMLDivElement | null>(null);
-  const pinnedToBottom = useRef(true);
-  const flows = useProductData((s) => s.playlist).filter((f) => !!f.flow_id?.trim());
-  const epoch = useProductData((s) => s.epoch);
-
-  useEffect(() => {
-    setOnFlowDrafted(onFinished);
-    return () => setOnFlowDrafted(null);
-  }, [onFinished, setOnFlowDrafted]);
-
-  useEffect(() => {
-    void hydrate();
-  }, [hydrate]);
-
-  useEffect(() => {
-    void syncProductUrl();
-  }, [epoch, syncProductUrl]);
-
-  useEffect(() => {
-    if (!targetFlowId) return;
-    if (flows.some((f) => f.flow_id === targetFlowId)) return;
-    setTargetFlowId("");
-    setTargetFlowName("");
-  }, [flows, targetFlowId, setTargetFlowId, setTargetFlowName]);
-
-  useEffect(() => {
-    if (!pinnedToBottom.current) return;
-    const el = logScrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [events.length]);
-
-  const onLogScroll = () => {
-    const el = logScrollRef.current;
-    if (!el) return;
-    pinnedToBottom.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
-  };
-
-  const start = async () => {
-    try {
-      pinnedToBottom.current = true;
-      const picked = flows.find((f) => f.flow_id === targetFlowId);
-      await startExplore({ targetFlowName: picked?.name });
-      ok(
-        saveMode === "update"
-          ? "Exploring — will overwrite the selected flow draft when done."
-          : "Exploring — will create a new flow draft when done.",
-      );
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const stop = async () => {
-    try {
-      await stopExplore();
-      ok("Stopping — the steps found so far are saved as a draft.");
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const reply = async (skip: boolean) => {
-    try {
-      await replyExplore(skip);
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const running = exploreIsLive({ status, showMeter });
-  const finished = exploreIsTerminal(status.phase);
-  const flagged = status.flagged ?? [];
-  const visitedPaths = status.visited_paths ?? [];
-  const fieldDecisions = status.field_decisions ?? [];
-  const liveInputFields = fieldDecisions.filter(
-    (d) => d.classification === "business_specific",
-  );
-  const progressPct = exploreDraftProgressPct(status);
-  const maxPages = status.budget?.max_pages ?? 25;
-  const planMode = (status.save_mode === "update" ? "update" : saveMode) as
-    | "new"
-    | "update";
-  const planFlowId = status.target_flow_id || targetFlowId;
-  const planFlowName =
-    status.target_flow_name ||
-    status.new_flow_name ||
-    targetFlowName ||
-    (planMode === "new" ? newFlowName : "") ||
-    planFlowId;
-  const resultFlowId = status.flow_id || (planMode === "update" ? planFlowId : "");
-  const resultFlowName =
-    status.target_flow_name ||
-    status.new_flow_name ||
-    newFlowName ||
-    targetFlowName ||
-    flows.find((f) => f.flow_id === resultFlowId)?.name ||
-    resultFlowId;
-  const logLines = events.filter(
-    (e) =>
-      e.type === "log" ||
-      e.type === "flagged" ||
-      e.type === "field" ||
-      e.type === "explored" ||
-      e.type === "repair",
-  );
-  const exploreErrors = (() => {
-    const msgs: string[] = [];
-    if (status.error?.trim()) msgs.push(status.error.trim());
-    for (const e of events) {
-      if (e.type === "error" && e.msg) msgs.push(String(e.msg).trim());
-    }
-    return [...new Set(msgs.filter(Boolean))];
-  })();
-  const exploreWarnings = (() => {
-    const benign =
-      /repairs exhausted|no answer for .* within|skipping field|off-surface URL/i;
-    const msgs: string[] = [];
-    for (const e of events) {
-      if (e.type === "log" && e.level === "warn" && e.msg) {
-        const m = String(e.msg).trim();
-        if (m && !benign.test(m)) msgs.push(m);
-      }
-    }
-    const softBenign = events
-      .filter(
-        (e) =>
-          e.type === "log" &&
-          e.level === "warn" &&
-          e.msg &&
-          benign.test(String(e.msg)),
-      )
-      .map((e) => String(e.msg).trim());
-    if (softBenign.length > 0 && exploreErrors.length === 0) {
-      msgs.push(
-        `${softBenign.length} step(s) needed extra retries (normal on complex UIs)`,
-      );
-    }
-    return [...new Set(msgs.filter(Boolean))];
-  })();
-  const hasResult =
-    finished &&
-    (showMeter ||
-      (status.steps ?? 0) > 0 ||
-      !!status.flow_id ||
-      logLines.length > 0 ||
-      visitedPaths.length > 0 ||
-      exploreErrors.length > 0 ||
-      exploreWarnings.length > 0);
-
-  const pillStatus = running
-    ? question
-      ? "starting"
-      : "running"
-    : finished
-      ? status.phase === "failed"
-        ? "failed"
-        : "finished"
-      : "idle";
-  const pillLabel = running
-    ? question
-      ? "Waiting on you"
-      : undefined
-    : finished
-      ? status.phase === "stopped"
-        ? "Stopped"
-        : status.phase === "failed"
-          ? "Failed"
-          : "Completed"
-      : undefined;
-
-  return (
-    <Card>
-      <CardTitle
-        hint="Explores your product, maps pages, then drafts a clean demo walkthrough (one step per new page — no backtrack noise). Nothing is activated until you review it."
-        right={
-          <StatusPill status={pillStatus} label={pillLabel} />
-        }
-      >
-        Auto-Explore &amp; Generate Flow
-      </CardTitle>
-
-      <div className="grid gap-x-3 sm:grid-cols-2">
-        <Field label="Product URL">
-          <Input
-            value={baseUrl}
-            onChange={setBaseUrl}
-            placeholder="Filled from Product Login / Domain — editable"
-          />
-        </Field>
-        <Field label="Credentials">
-          <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
-            {status.has_credentials
-              ? "Using your saved Product Login. No credentials are entered here."
-              : "No Product Login saved — only your signed-out pages will be explored."}
-          </p>
-        </Field>
-      </div>
-
-      <div className="mt-1 grid gap-3 sm:grid-cols-2">
-        <Field label="Save result as">
-          <div
-            className="flex rounded-lg border p-0.5"
-            style={{ borderColor: "var(--line)" }}
-          >
-            <button
-              type="button"
-              disabled={running}
-              onClick={() => setSaveMode("new")}
-              className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
-                saveMode === "new"
-                  ? "bg-[var(--text)] text-[var(--bg)]"
-                  : "text-[var(--muted)] hover:text-[var(--text)]"
-              }`}
-            >
-              Create new flow
-            </button>
-            <button
-              type="button"
-              disabled={running}
-              onClick={() => setSaveMode("update")}
-              className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
-                saveMode === "update"
-                  ? "bg-[var(--text)] text-[var(--bg)]"
-                  : "text-[var(--muted)] hover:text-[var(--text)]"
-              }`}
-            >
-              Update existing
-            </button>
-          </div>
-        </Field>
-        {saveMode === "update" ? (
-          <Field label="Flow to overwrite">
-            <Select
-              disabled={running || flows.length === 0}
-              value={targetFlowId}
-              onChange={(id) => {
-                setTargetFlowId(id);
-                const hit = flows.find((f) => f.flow_id === id);
-                setTargetFlowName(hit?.name || "");
-              }}
-              options={[
-                { value: "", label: "Select a flow…" },
-                ...flows.map((f) => ({
-                  value: f.flow_id,
-                  label: f.name || f.flow_id,
-                })),
-              ]}
-            />
-            {flows.length === 0 && (
-              <p className="mt-1 text-[0.68rem] text-[var(--muted)]">
-                No flows yet — create new first.
-              </p>
-            )}
-          </Field>
-        ) : (
-          <Field label="New flow name">
-            <Input
-              value={newFlowName}
-              onChange={setNewFlowName}
-              disabled={running}
-              placeholder="e.g. Inbox walkthrough, Billing demo"
-            />
-          </Field>
-        )}
-      </div>
-
-      <div className="mt-1 grid gap-3 sm:grid-cols-2">
-        <Field label="Focus area (optional)">
-          <Input
-            value={focusHint}
-            onChange={setFocusHint}
-            disabled={running}
-            placeholder="Tab or feature name — e.g. Meta accounts, Campaigns"
-          />
-        </Field>
-        <Field label="Demo draft rules">
-          <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
-            Only first visit per page becomes a demo step. Extra clicks still map
-            the site but stay out of the walkthrough. Business-specific form fields
-            are saved as live-input beats (demo asks your visitor).
-          </p>
-        </Field>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={start} disabled={running}>
-          <Compass size={13} /> Start exploring
-        </Button>
-        <Button variant="danger" onClick={stop} disabled={!running}>
-          <Square size={13} /> Stop exploring
-        </Button>
-      </div>
-
-      {running && (
-        <>
-          <div className="mt-4">
-            <ExplorePlanBanner
-              saveMode={planMode}
-              flowName={planFlowName}
-              flowId={planFlowId}
-              baseUrl={baseUrl}
-              hasCredentials={status.has_credentials}
-              phase={status.phase}
-            />
-          </div>
-          <ExploreMeter
-            running={running}
-            elapsedS={exploreElapsed}
-            progressPct={progressPct}
-            steps={status.steps ?? 0}
-            pages={status.visited ?? 0}
-            maxPages={maxPages}
-          />
-
-          {question && (
-            <div
-              className="mt-4 rounded-xl border-2 border-amber-500/60 p-4"
-              style={{ background: "rgb(245 158 11 / 0.06)" }}
-            >
-              <p className="text-[0.78rem] font-medium tracking-tight">Waiting on your input</p>
-              <p className="mt-1 text-[0.8rem]">{question.prompt}</p>
-              <p className="mt-0.5 text-[0.7rem] text-[var(--muted)]">
-                Field <code>{question.alias}</code>
-                {question.context?.url ? ` on ${question.context.url}` : ""}
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Input value={answer} onChange={setAnswer} placeholder="Your answer" />
-                <Button onClick={() => reply(false)} disabled={!answer.trim()}>
-                  Answer &amp; resume
-                </Button>
-                <Button variant="secondary" onClick={() => reply(true)}>
-                  Skip this field
-                </Button>
-              </div>
-            </div>
-          )}
-
-          <ExploreWatch live={running} />
-
-          <div
-            className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
-            style={{ borderColor: "var(--line)" }}
-          >
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[0.78rem] font-medium tracking-tight">Exploration log</p>
-              <Button variant="danger" onClick={stop}>
-                <Square size={12} /> Stop
-              </Button>
-            </div>
-            <BarLoader
-              label={`${status.phase ?? "exploring"} — ${
-                planMode === "update"
-                  ? `updating “${planFlowName || planFlowId}”`
-                  : "creating new flow"
-              }`}
-            />
-            {visitedPaths.length > 0 && (
-              <div className="mt-3">
-                <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages explored</p>
-                <ul className="mt-1 space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
-                  {visitedPaths.map((p) => (
-                    <li key={p}>• {p}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <div
-              ref={logScrollRef}
-              onScroll={onLogScroll}
-              className="mt-3 max-h-72 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed"
-            >
-              {logLines.length === 0 && (
-                <div className="text-[var(--muted)]">Waiting for explorer events…</div>
-              )}
-              {logLines.map((e, i) => (
-                <div
-                  key={i}
-                  className={
-                    e.type === "flagged"
-                      ? "text-amber-600 dark:text-amber-400"
-                      : e.type === "repair"
-                        ? e.ok
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : "text-violet-600 dark:text-violet-400"
-                        : e.type === "explored"
-                          ? "text-sky-600 dark:text-sky-400"
-                          : e.level === "warn"
-                            ? "text-red-500"
-                            : "text-[var(--muted)]"
-                  }
-                >
-                  {e.type === "flagged"
-                    ? `skipped "${e.label}" — ${e.reason}`
-                    : e.type === "field"
-                      ? `filled ${e.alias} (${e.classification})`
-                      : e.type === "repair"
-                        ? e.ok
-                          ? `repaired ${String(e.alias ?? "")} via ${
-                              Array.isArray(e.tactics) ? e.tactics.join(" → ") : "ladder"
-                            }`
-                          : `repairing ${String(e.alias ?? "")} (${String(e.kind ?? "?")})`
-                        : e.type === "explored"
-                          ? `page ${String(e.path ?? e.url ?? "")} (${e.elements ?? "?"} controls)`
-                          : String(e.msg ?? "")}
-                </div>
-              ))}
-              <div ref={logEnd} />
-            </div>
-          </div>
-
-          {flagged.length > 0 && (
-            <div className="mt-4">
-              <p className="flex items-center gap-1.5 text-[0.78rem] font-medium tracking-tight">
-                <ShieldAlert size={14} className="text-amber-500" />
-                Skipped — needs your review ({flagged.length})
-              </p>
-              <p className="mt-1 text-[0.7rem] text-[var(--muted)]">
-                Safety gate blocked these. <strong>Allow</strong> lets the bot click
-                on this explore; <strong>Dismiss</strong> hides without clicking.
-              </p>
-              <div className="mt-2 space-y-2">
-                {flagged.map((f, i) => (
-                  <FlaggedReviewRow
-                    key={`${f.selector}-${f.label}-${i}`}
-                    item={f}
-                    live={running}
-                    onDone={() => void useExploreSession.getState().refresh()}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {hasResult && !running && (
-        <div
-          className="mt-4 rounded-xl border p-4"
-          style={{
-            borderColor: "var(--line)",
-            background:
-              "linear-gradient(135deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%)",
-          }}
-        >
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <p className="text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
-                {status.phase === "failed"
-                  ? "Explore failed"
-                  : status.phase === "stopped"
-                    ? "Explore stopped"
-                    : "Explore completed"}
-              </p>
-              <p className="mt-1 text-[0.95rem] font-semibold tracking-tight">
-                {resultFlowId
-                  ? `Draft flow · ${resultFlowName || resultFlowId}`
-                  : (status.steps ?? 0) > 0
-                    ? "Saving draft…"
-                    : "No demo steps captured"}
-              </p>
-            </div>
-            <Button variant="secondary" onClick={() => dismissResult()}>
-              Clear
-            </Button>
-          </div>
-          <ul className="mt-3 space-y-1 text-[0.78rem] leading-snug">
-            {resultFlowId && (
-              <li>
-                <span className="text-[var(--muted)]">Flow id · </span>
-                <span className="font-mono text-[0.72rem]">{resultFlowId}</span>
-                {status.revision != null && (
-                  <span className="text-[var(--muted)]">
-                    {" "}
-                    · draft revision {status.revision}
-                  </span>
-                )}
-              </li>
-            )}
-            <li>
-              <span className="text-[var(--muted)]">Demo steps · </span>
-              <span className="font-medium">{status.steps ?? 0}</span>
-              <span className="text-[var(--muted)]">
-                {" "}
-                · {status.visited ?? visitedPaths.length} pages ·{" "}
-                {formatExploreElapsed(exploreElapsed)} elapsed
-              </span>
-            </li>
-            <li>
-              <span className="text-[var(--muted)]">Save mode · </span>
-              {planMode === "update"
-                ? `updated existing “${planFlowName || planFlowId}”`
-                : "new unpublished draft"}
-            </li>
-            {status.stop_reason && (
-              <li>
-                <span className="text-[var(--muted)]">Ended · </span>
-                <span className="font-medium">
-                  {status.stop_reason.replace(
-                    /^dead end at blank$/i,
-                    "finished mapping — nothing new to try (recovered from blank page)",
-                  )}
-                </span>
-              </li>
-            )}
-            {flagged.length > 0 && (
-              <li className="text-amber-700 dark:text-amber-400">
-                {flagged.length} control
-                {flagged.length === 1 ? "" : "s"} skipped by safety gate (not in
-                demo)
-              </li>
-            )}
-            {liveInputFields.length > 0 && (
-              <li>
-                <span className="text-[var(--muted)]">Live input fields · </span>
-                <span className="font-medium">{liveInputFields.length}</span>
-                <span className="text-[var(--muted)]">
-                  {" "}
-                  — demo will ask your visitor on these
-                </span>
-              </li>
-            )}
-          </ul>
-          {liveInputFields.length > 0 && (
-            <div
-              className="mt-3 rounded-lg border px-3 py-2.5"
-              style={{ borderColor: "var(--line)", background: "var(--bg)" }}
-            >
-              <p className="text-[0.72rem] font-medium tracking-tight">
-                Fields marked for live visitor input
-              </p>
-              <ul className="mt-2 space-y-1 text-[0.72rem] text-[var(--muted)]">
-                {liveInputFields.map((f) => (
-                  <li key={`${f.alias}-${f.label}`}>
-                    <span className="font-medium text-[var(--text)]">{f.label}</span>
-                    {f.answered_by === "client" && f.value ? (
-                      <span> — example during explore: {f.value}</span>
-                    ) : f.answered_by?.startsWith("skipped") ? (
-                      <span> — skipped during explore (not in demo)</span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {exploreWarnings.length > 0 && exploreErrors.length === 0 && (
-            <div
-              className="mt-3 rounded-lg border border-amber-500/40 px-3 py-2.5"
-              style={{ background: "rgb(245 158 11 / 0.06)" }}
-            >
-              <p className="text-[0.72rem] font-medium text-amber-800 dark:text-amber-300">
-                Notes from explore
-              </p>
-              <ul className="mt-1.5 max-h-36 space-y-1 overflow-y-auto text-[0.72rem] leading-snug text-amber-900 dark:text-amber-200">
-                {exploreWarnings.map((msg) => (
-                  <li key={msg}>• {msg}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {exploreErrors.length > 0 && (
-            <div
-              className="mt-3 rounded-lg border border-red-500/40 px-3 py-2.5"
-              style={{ background: "rgb(239 68 68 / 0.06)" }}
-            >
-              <p className="text-[0.72rem] font-medium text-red-600 dark:text-red-400">
-                Errors during explore ({exploreErrors.length})
-              </p>
-              <ul className="mt-1.5 max-h-36 space-y-1 overflow-y-auto text-[0.72rem] leading-snug text-red-700 dark:text-red-300">
-                {exploreErrors.map((msg) => (
-                  <li key={msg}>• {msg}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {visitedPaths.length > 0 && (
-            <div className="mt-3">
-              <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages covered</p>
-              <ul className="mt-1 max-h-28 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
-                {visitedPaths.map((p) => (
-                  <li key={p}>• {p}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <p className="mt-3 text-[0.7rem] text-[var(--muted)]">
-            Unpublished draft — review in the playlist above, then publish the site
-            graph when ready for visitors
-            {status.repairs_used
-              ? ` (${status.repairs_used} selector repair${status.repairs_used === 1 ? "" : "s"} only go live after Publish)`
-              : ""}
-            .
-          </p>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function humanizeFlagReason(reason: string, source: string): string {
-  const r = (reason || "").trim();
-  const m = /^keyword:(.+)$/i.exec(r);
-  if (m) {
-    return `Label/text contains “${m[1]}” — clicking may send, change, or delete real data.`;
-  }
-  if (source === "llm" || /destructive|mutat/i.test(r)) {
-    return r || "Model judged this control may mutate real data.";
-  }
-  if (source === "fail_closed") {
-    return r || "Blocked because safety could not confirm this is read-only.";
-  }
-  return r || "Blocked as potentially unsafe.";
-}
-
-function FlaggedReviewRow({
-  item,
-  live,
-  onDone,
-}: {
-  item: ExploreFlagged;
-  live: boolean;
-  onDone: () => void;
-}) {
-  const { ok, err } = useUi();
-  const [busy, setBusy] = useState(false);
-
-  const act = async (action: "allow" | "dismiss") => {
-    setBusy(true);
-    try {
-      await api.exploreFlagged({
-        action,
-        selector: item.selector,
-        label: item.label,
-        element_key: item.element_key,
-      });
-      ok(
-        action === "allow"
-          ? `Allowed “${item.label}” — bot may click it on this explore.`
-          : `Dismissed “${item.label}”.`,
-      );
-      onDone();
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      className="rounded-lg border px-3 py-2.5 text-[0.72rem]"
-      style={{ borderColor: "var(--line)" }}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="font-medium tracking-tight">{item.label || item.selector}</p>
-          <p className="mt-0.5 text-[var(--muted)]">
-            {humanizeFlagReason(item.reason, item.source)}
-          </p>
-          {(item.url || item.selector) && (
-            <p className="mt-1 font-mono text-[0.65rem] text-[var(--muted)] truncate">
-              {item.url ? `${item.url}` : ""}
-              {item.url && item.selector ? " · " : ""}
-              {item.selector || ""}
-            </p>
-          )}
-        </div>
-          <div className="flex shrink-0 flex-wrap gap-1.5">
-          <Button
-            variant="secondary"
-            disabled={busy || !live}
-            onClick={() => void act("allow")}
-          >
-            Allow
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={busy}
-            onClick={() => void act("dismiss")}
-          >
-            Dismiss
-          </Button>
-        </div>
-      </div>
-      {!live && (
-        <p className="mt-1.5 text-[0.65rem] text-[var(--muted)]">
-          Allow needs an active explore — start again to let the bot click this.
-        </p>
-      )}
-    </div>
   );
 }

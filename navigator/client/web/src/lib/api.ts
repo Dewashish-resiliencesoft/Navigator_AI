@@ -295,6 +295,59 @@ export type ExploreStatus = {
   pending_question?: ExploreQuestion | null;
 };
 
+export type GuidedTaskProgress = {
+  flows_total: number;
+  flows_bound: number;
+  steps_total: number;
+  steps_bound: number;
+};
+
+export type GuidedTaskStatus = {
+  has_plan: boolean;
+  task_id?: string;
+  prompt?: string;
+  flows?: { name: string; flow_id: string; steps: number }[];
+  progress?: GuidedTaskProgress;
+  percent_bound?: number;
+  hands?: GuidedHandsStatus;
+};
+
+export type GuidedTaskPlanResult = {
+  ok: boolean;
+  task_id: string;
+  flows_created: number;
+  steps_total: number;
+  playlist: Flow[];
+  revision: number;
+  guided: GuidedTaskStatus;
+};
+
+export type GuidedHandsQuestion = {
+  qid: string;
+  alias: string;
+  prompt: string;
+  context?: Record<string, string>;
+  candidates?: { index: number; label: string; tag: string }[];
+};
+
+export type GuidedHandsStatus = {
+  active: boolean;
+  phase?: string;
+  progress?: {
+    flows_total: number;
+    flows_done: number;
+    steps_total: number;
+    steps_done: number;
+    flow_index: number;
+    step_index: number;
+  };
+  current_flow?: string | null;
+  current_flow_id?: string | null;
+  current_step?: string | null;
+  question?: GuidedHandsQuestion;
+  log?: string[];
+};
+
 export type PendingCorrection = {
   id: string;
   product_id: string;
@@ -859,6 +912,19 @@ export const api = {
   }) => send<ExploreStatus>("/client/api/explore/flagged", "POST", body),
   exploreTicket: () =>
     send<{ ticket: string; expires_in_s: number }>("/client/api/explore/ticket", "POST"),
+
+  guidedTaskStatus: () => get<GuidedTaskStatus>("/client/api/guided-task/status"),
+  guidedTaskPlan: (task: string, page_id = "dashboard") =>
+    send<GuidedTaskPlanResult>("/client/api/guided-task/plan", "POST", { task, page_id }),
+  guidedHandsStart: (flow_index = 0) =>
+    send<GuidedHandsStatus>("/client/api/guided-task/hands/start", "POST", { flow_index }),
+  guidedHandsTick: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/tick", "POST"),
+  guidedHandsStop: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/stop", "POST"),
+  guidedHandsAnswer: (qid: string, candidate_index?: number) =>
+    send<GuidedHandsStatus>("/client/api/guided-task/hands/answer", "POST", {
+      qid,
+      candidate_index,
+    }),
 };
 
 /** WebSocket URL for the live exploration log. Ticket is single-use. */

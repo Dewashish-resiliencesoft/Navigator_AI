@@ -503,6 +503,8 @@ class CaptureGate:
     flagged: list[dict[str, Any]] = field(default_factory=list)
     login_config_fn: Any = None  # Callable[[], LoginConfig] | None
     allow_login_steps: bool = False
+    #: Guided Agent hands commands drained in the record wait loop.
+    hands_commands: list[dict[str, Any]] = field(default_factory=list)
 
 
 def record_session(
@@ -580,8 +582,12 @@ def record_session(
                 "'Start capturing this flow' in /client.",
                 flush=True,
             )
+            from navigator.automation.guided_task.session import poll_hands_commands
+
             while not stop_event.wait(0.25):
-                pass
+                cmds = getattr(gate, "hands_commands", None)
+                if cmds:
+                    poll_hands_commands(page, cmds)
         from urllib.parse import urlparse
 
         parsed = urlparse(url)

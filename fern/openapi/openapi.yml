@@ -2334,6 +2334,193 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/plan:
+    post:
+      summary: Client Guided Task Plan
+      description: "Parse Agent Task \u2192 soft stub flows on the draft site graph."
+      operationId: client_guided_task_plan_client_api_guided_task_plan_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuidedTaskPlanBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Task Plan Client Api Guided Task Plan Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/status:
+    get:
+      summary: Client Guided Task Status
+      operationId: client_guided_task_status_client_api_guided_task_status_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Task Status Client Api Guided Task Status Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/hands/start:
+    post:
+      summary: Client Guided Hands Start
+      operationId: client_guided_hands_start_client_api_guided_task_hands_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuidedHandsStartBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Hands Start Client Api Guided Task Hands Start Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/hands/tick:
+    post:
+      summary: Client Guided Hands Tick
+      operationId: client_guided_hands_tick_client_api_guided_task_hands_tick_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Hands Tick Client Api Guided Task Hands Tick Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/hands/stop:
+    post:
+      summary: Client Guided Hands Stop
+      operationId: client_guided_hands_stop_client_api_guided_task_hands_stop_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Hands Stop Client Api Guided Task Hands Stop Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/guided-task/hands/answer:
+    post:
+      summary: Client Guided Hands Answer
+      operationId: client_guided_hands_answer_client_api_guided_task_hands_answer_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuidedHandsAnswerBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Guided Hands Answer Client Api Guided Task Hands Answer Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/explore:
     get:
       summary: Client Explore Status
@@ -3543,6 +3730,46 @@ components:
       required:
       - playlist
       title: FlowsBody
+    GuidedHandsAnswerBody:
+      properties:
+        qid:
+          type: string
+          minLength: 1
+          title: Qid
+        candidate_index:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Candidate Index
+      additionalProperties: false
+      type: object
+      required:
+      - qid
+      title: GuidedHandsAnswerBody
+    GuidedHandsStartBody:
+      properties:
+        flow_index:
+          type: integer
+          title: Flow Index
+          default: 0
+      additionalProperties: false
+      type: object
+      title: GuidedHandsStartBody
+    GuidedTaskPlanBody:
+      properties:
+        task:
+          type: string
+          minLength: 3
+          title: Task
+        page_id:
+          type: string
+          title: Page Id
+          default: dashboard
+      additionalProperties: false
+      type: object
+      required:
+      - task
+      title: GuidedTaskPlanBody
     HTTPValidationError:
       properties:
         detail:

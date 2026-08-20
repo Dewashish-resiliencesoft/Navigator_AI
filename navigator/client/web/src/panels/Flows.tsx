@@ -131,17 +131,19 @@ export function Flows() {
 
   const load = useCallback(async () => {
     try {
-      const [d, g, guided] = await Promise.all([
-        api.getFlows(),
-        api.getSiteGraph(),
-        api.guidedTaskStatus(),
-      ]);
+      const [d, g] = await Promise.all([api.getFlows(), api.getSiteGraph()]);
       const playlist = d.playlist ?? [];
       setRows(playlist);
       // ponytail: setPlaylist only — applyPlaylist would re-bump epoch and loop load
       setPlaylist(playlist);
-      setGuidedStatus(guided);
-      setGuidedHands(guided.hands ?? null);
+      try {
+        const guided = await api.guidedTaskStatus();
+        setGuidedStatus(guided);
+        setGuidedHands(guided.hands ?? null);
+      } catch {
+        setGuidedStatus(null);
+        setGuidedHands(null);
+      }
 
       const counts: Record<string, number> = {};
       let inFlows = false;

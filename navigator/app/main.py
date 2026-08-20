@@ -2166,10 +2166,13 @@ def client_guided_task_plan(
             rev.yaml, plan, page_id=(body.page_id or "dashboard").strip() or "dashboard"
         )
         rev = registry.put_site_graph(
-            product.product_id, new_yaml, "guided-task-plan", publish=False
+            product.product_id, new_yaml, "guided", publish=False
         )
     except SiteGraphError as exc:
         raise HTTPException(422, str(exc)) from None
+    except Exception as exc:  # noqa: BLE001
+        print(f"[guided] plan save failed: {exc}", flush=True)
+        raise HTTPException(500, f"could not save guided plan: {exc}") from None
 
     graph = parse_site_graph(new_yaml)
     playlist = playlist_from_graph(graph)
@@ -2189,16 +2192,17 @@ def client_guided_task_plan(
 @app.get("/client/api/guided-task/status")
 def client_guided_task_status(product: DashboardAuthedProduct, registry: Reg) -> dict:
     from navigator.client.content import guided_task_status
-
-    try:
-        rev = registry.latest_revision(product.product_id)
-    except ProductNotFound as exc:
-        raise HTTPException(404, str(exc)) from None
-    out = guided_task_status(rev.yaml)
     from navigator.automation.guided_task.session import get_guided_hands_session
 
     hands = get_guided_hands_session()
-    out["hands"] = hands.status_dict() if hands is not None else {"active": False}
+    hands_status = hands.status_dict() if hands is not None else {"active": False}
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound:
+        # No site graph yet — empty plan, not a hard 404 (Flows polls this).
+        return {"has_plan": False, "hands": hands_status}
+    out = guided_task_status(rev.yaml)
+    out["hands"] = hands_status
     return out
 
 

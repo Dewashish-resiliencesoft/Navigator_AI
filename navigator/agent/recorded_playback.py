@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from navigator.agent.live_input import needs_live_input, resolve_live_fill
+from navigator.agent.live_input import needs_live_input, resolve_demo_fill
 from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
 from navigator.agent.playback_schedule import build_schedule, fmt_ms
 from navigator.agent.state import CallDeps
@@ -215,8 +215,24 @@ def _execute_call(
         call = call.model_copy(update={"value": pwd})
         from_vault = True
 
-    if isinstance(call, FillField) and needs_live_input(call) and not from_vault:
-        call, _detail = resolve_live_fill(deps, call)
+    if isinstance(call, FillField) and not from_vault:
+        if needs_live_input(call) or (call.value_ref or "").strip():
+            if deps.live_answers is None:
+                deps.live_answers = {}
+
+            def speak(line: str) -> None:
+                try:
+                    deps.speaker.say(line)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live_input] TTS failed: {exc}", flush=True)
+
+            call, _detail = resolve_demo_fill(
+                call,
+                live_answers=deps.live_answers,
+                listen_once=deps.listen_once,
+                extract_entity=deps.extract_entity,
+                speak=speak,
+            )
 
     ran_on = page_id
     on_frame = deps.push_frame

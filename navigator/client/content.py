@@ -482,6 +482,25 @@ def merge_recorded_flow(
                 }
             )
     raw["demo_playlist"] = playlist
+    from navigator.automation.record_studio import demo_variables_from_steps
+
+    meta = raw.setdefault("_meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+        raw["_meta"] = meta
+    prior_vars = meta.get("demo_variables")
+    by_alias: dict[str, dict[str, str]] = {}
+    if isinstance(prior_vars, list):
+        for row in prior_vars:
+            if isinstance(row, dict) and row.get("alias"):
+                by_alias[str(row["alias"])] = {
+                    "alias": str(row["alias"]),
+                    "label": str(row.get("label") or row["alias"]),
+                    "live_question": str(row.get("live_question") or ""),
+                }
+    for row in demo_variables_from_steps(cleaned):
+        by_alias[row["alias"]] = row
+    meta["demo_variables"] = list(by_alias.values())
     parse_site_graph(yaml.safe_dump(raw), origin="<ops-record-merge>")
     return yaml.safe_dump(raw, sort_keys=False)
 
@@ -524,6 +543,9 @@ class _MpGate:
         self.hands_commands = hands_commands
         self.login_config_fn = None
         self.allow_login_steps = False
+        self.stop_event = None
+        self.guided_plan_meta: dict[str, Any] | None = None
+        self.status_sink = None
 
     @property
     def phase(self) -> str:
@@ -549,6 +571,8 @@ def _record_ws_worker(
     hands_commands: Any,
 ) -> None:
     """Own interpreter — uvicorn's asyncio loop breaks Playwright sync+WS."""
+    import json
+
     from navigator.automation.login_match import LoginConfig
     from navigator.automation.record import NarrationCapture, record_session
 
@@ -556,6 +580,20 @@ def _record_ws_worker(
     gate.allow_login_steps = allow_login
     if login_url:
         gate.login_config_fn = lambda: LoginConfig(login_url=login_url)
+    try:
+        raw_plan = str(getattr(ns, "guided_plan_json", "") or "")
+        if raw_plan:
+            gate.guided_plan_meta = json.loads(raw_plan)
+    except Exception:  # noqa: BLE001
+        gate.guided_plan_meta = None
+
+    def _sink(st: dict[str, Any]) -> None:
+        try:
+            ns.studio_status_json = json.dumps(st)
+        except Exception:  # noqa: BLE001
+            pass
+
+    gate.status_sink = _sink
     try:
         record_session(
             start_url,
@@ -612,6 +650,7 @@ def start_recorder(
     narrate: bool = False,
     save_mode: str = "new",
     browser_ws: str = "",
+    guided_plan_meta: dict[str, Any] | None = None,
 ) -> RecorderJob:
     global _active
     mode = (save_mode or "new").strip().lower()
@@ -630,6 +669,7 @@ def start_recorder(
             phase="setup",
             login_config_fn=login_config_fn,
             allow_login_steps=name_suggests_login_walkthrough(fid, flow_name),
+            guided_plan_meta=guided_plan_meta,
         )
         narration = NarrationCapture() if narrate else None
         job = RecorderJob(
@@ -658,6 +698,10 @@ def start_recorder(
         ns.phase = "setup"
         ns.error = ""
         ns.setup_discarded = 0
+        ns.studio_status_json = ""
+        import json as _json
+
+        ns.guided_plan_json = _json.dumps(guided_plan_meta or {})
         steps = mgr.list()
         flagged = mgr.list()
         hands_commands = mgr.list()
@@ -667,6 +711,16 @@ def start_recorder(
         job.steps = steps  # type: ignore[assignment]
         job.hands_commands = hands_commands  # type: ignore[assignment]
         gate.hands_commands = hands_commands  # type: ignore[assignment]
+
+        def _main_sink(st: dict[str, Any]) -> None:
+            import json
+
+            try:
+                ns.studio_status_json = json.dumps(st)
+            except Exception:  # noqa: BLE001
+                pass
+
+        gate.status_sink = _main_sink
         proc = ctx.Process(
             target=_record_ws_worker,
             kwargs={
@@ -757,12 +811,17 @@ def stop_recorder() -> RecorderJob:
             job.mp_stop.set()
     if job.proc is not None:
         job.proc.join(timeout=120)
+        if job.proc.is_alive():
+            job.proc.terminate()
+            job.proc.join(timeout=10)
     elif job.thread:
         job.thread.join(timeout=120)
     if job.gate is not None:
         job.phase = "done"
         job.setup_discarded = job.gate.setup_discarded
         job.flagged = list(job.gate.flagged)
+    job.done = True
+    job.phase = "done"
     return job
 
 
@@ -816,7 +875,15 @@ def guided_task_status(yaml_text: str) -> dict[str, Any]:
         "task_id": gt.get("task_id"),
         "prompt": gt.get("prompt"),
         "flows": [
-            {"name": f.name, "flow_id": f.flow_id, "steps": len(f.steps)}
+            {
+                "name": f.name,
+                "flow_id": f.flow_id,
+                "steps": len(f.steps),
+                "step_list": [
+                    {"kind": s.kind, "label": s.label, "alias": s.alias}
+                    for s in f.steps
+                ],
+            }
             for f in (plan.flows if plan else ())
         ],
         "progress": progress,
@@ -836,3 +903,99 @@ def enqueue_hands_command(cmd: dict[str, Any]) -> None:
         if cmds is None:
             raise RuntimeError("recorder has no hands command channel")
         cmds.append(cmd)
+
+
+def set_recorder_guided_plan(plan_meta: dict[str, Any] | None) -> None:
+    """Attach guided plan meta so browser Start hands / worker can start session."""
+    with _recorder_lock:
+        job = _active
+        if job is None or job.done:
+            return
+        if job.gate is not None:
+            job.gate.guided_plan_meta = plan_meta
+        if job.mp_ns is not None:
+            import json
+
+            try:
+                job.mp_ns.guided_plan_json = json.dumps(plan_meta or {})
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def read_hands_status() -> dict[str, Any]:
+    """Hands status from worker sink (WS) or in-process session (thread)."""
+    import json
+
+    from navigator.automation.guided_task.session import get_guided_hands_session
+
+    with _recorder_lock:
+        job = _active
+        if job is not None and job.mp_ns is not None:
+            raw = getattr(job.mp_ns, "studio_status_json", "") or ""
+            if raw:
+                try:
+                    st = json.loads(raw)
+                    if isinstance(st, dict) and "hands" in st:
+                        return dict(st.get("hands") or {"active": False})
+                except Exception:  # noqa: BLE001
+                    pass
+        sess = get_guided_hands_session()
+        return sess.status_dict() if sess is not None else {"active": False}
+
+
+def drain_pending_guided_plan(registry: Any, product_id: str) -> bool:
+    """Apply plan_meta from recorder worker (Ask-visitor) onto draft site graph."""
+    import json
+
+    from navigator.automation.guided_task.apply import apply_guided_plan
+    from navigator.automation.guided_task.models import GuidedPlan
+
+    meta: dict[str, Any] | None = None
+    with _recorder_lock:
+        job = _active
+        if job is None or job.done:
+            return False
+        dirty = False
+        if job.mp_ns is not None:
+            try:
+                st = json.loads(getattr(job.mp_ns, "studio_status_json", "") or "{}")
+            except Exception:  # noqa: BLE001
+                st = {}
+            dirty = bool(st.get("plan_dirty"))
+            plan_meta = st.get("plan_meta")
+            if not plan_meta:
+                raw = getattr(job.mp_ns, "guided_plan_json", "") or ""
+                try:
+                    plan_meta = json.loads(raw) if raw else None
+                except Exception:  # noqa: BLE001
+                    plan_meta = None
+            if dirty and isinstance(plan_meta, dict):
+                meta = plan_meta
+                st["plan_dirty"] = False
+                try:
+                    job.mp_ns.studio_status_json = json.dumps(st)
+                    job.mp_ns.guided_plan_json = json.dumps(plan_meta)
+                except Exception:  # noqa: BLE001
+                    pass
+        elif job.gate is not None and getattr(job.gate, "guided_plan_meta", None):
+            # Thread mode: apply whenever gate meta was refreshed by mark_ask.
+            flag = getattr(job.gate, "_plan_dirty", False)
+            if flag:
+                meta = dict(job.gate.guided_plan_meta or {})
+                job.gate._plan_dirty = False  # type: ignore[attr-defined]
+
+    if not meta:
+        return False
+    plan = GuidedPlan.from_meta(meta)
+    if plan is None or not plan.flows:
+        return False
+    try:
+        rev = registry.latest_revision(product_id)
+        new_yaml = apply_guided_plan(rev.yaml, plan)
+        registry.put_site_graph(product_id, new_yaml, "guided_ask", publish=False)
+        set_recorder_guided_plan(plan.to_meta())
+        print("[guided-ask] draft site graph updated from Ask visitor", flush=True)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[guided-ask] draft apply failed: {exc}", flush=True)
+        return False

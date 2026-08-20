@@ -306,7 +306,12 @@ export type GuidedTaskStatus = {
   has_plan: boolean;
   task_id?: string;
   prompt?: string;
-  flows?: { name: string; flow_id: string; steps: number }[];
+  flows?: {
+    name: string;
+    flow_id: string;
+    steps: number;
+    step_list?: { kind: string; label: string; alias: string }[];
+  }[];
   progress?: GuidedTaskProgress;
   percent_bound?: number;
   hands?: GuidedHandsStatus;
@@ -326,6 +331,7 @@ export type GuidedHandsQuestion = {
   qid: string;
   alias: string;
   prompt: string;
+  kind?: string;
   context?: Record<string, string>;
   candidates?: { index: number; label: string; tag: string }[];
 };
@@ -344,8 +350,11 @@ export type GuidedHandsStatus = {
   current_flow?: string | null;
   current_flow_id?: string | null;
   current_step?: string | null;
+  current_step_kind?: string | null;
   question?: GuidedHandsQuestion;
   log?: string[];
+  client_paused?: boolean;
+  barged?: boolean;
 };
 
 export type PendingCorrection = {
@@ -920,11 +929,36 @@ export const api = {
     send<GuidedHandsStatus>("/client/api/guided-task/hands/start", "POST", { flow_index }),
   guidedHandsTick: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/tick", "POST"),
   guidedHandsStop: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/stop", "POST"),
-  guidedHandsAnswer: (qid: string, candidate_index?: number) =>
+  guidedHandsPause: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/pause", "POST"),
+  guidedHandsResume: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/resume", "POST"),
+  guidedHandsBarge: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/barge", "POST"),
+  guidedHandsAnswer: (qid: string, candidate_index?: number, value?: string, skip = false) =>
     send<GuidedHandsStatus>("/client/api/guided-task/hands/answer", "POST", {
       qid,
       candidate_index,
+      value,
+      skip,
     }),
+  guidedTaskPatch: (body: {
+    steps?: {
+      kind: string;
+      label: string;
+      alias?: string;
+      live_question?: string;
+      spoken?: string;
+      action_hint?: string;
+    }[];
+    insert_at?: number;
+    new_step?: {
+      kind: string;
+      label: string;
+      alias?: string;
+      live_question?: string;
+      spoken?: string;
+      action_hint?: string;
+    };
+    flow_name?: string;
+  }) => send<{ ok: boolean; guided: GuidedTaskStatus; revision: number }>("/client/api/guided-task/plan", "PATCH", body),
 };
 
 /** WebSocket URL for the live exploration log. Ticket is single-use. */

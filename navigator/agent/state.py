@@ -139,6 +139,8 @@ class CallDeps:
     listen_once: Callable[[str], str] | None = None
     #: Entity extraction for live fills. Signature (key, question, heard) -> str.
     extract_entity: Callable[..., str] | None = None
+    #: Alias → visitor answer collected earlier in this call (for value_ref).
+    live_answers: dict[str, str] | None = None
     #: Unified brain settings (models, autonomy, listen/resume timeouts).
     brain_config: object | None = None
     #: Client webhook when agent hands off to a human.

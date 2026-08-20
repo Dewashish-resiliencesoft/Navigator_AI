@@ -11,7 +11,7 @@ import threading
 import time
 
 from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
-from navigator.agent.live_input import needs_live_input, resolve_live_fill
+from navigator.agent.live_input import needs_live_input, resolve_demo_fill
 from navigator.agent.state import CLEAR, CallDeps, CallState
 from navigator.automation.browser.tools import execute as run_tool
 from navigator.automation.external_links import (
@@ -148,9 +148,10 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         call = call.model_copy(update={"value": pwd})
         from_vault = True
 
-    if isinstance(call, FillField) and needs_live_input(call) and not from_vault:
-        call, live_detail = _resolve_user_fill(deps, call)
-        _trace_live_input(deps, state, call, live_detail)
+    if isinstance(call, FillField) and not from_vault:
+        if needs_live_input(call) or (call.value_ref or "").strip():
+            call, live_detail = _resolve_user_fill(deps, call)
+            _trace_live_input(deps, state, call, live_detail)
 
     ran_on = state["page_id"]
     speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
@@ -214,8 +215,11 @@ def _resolve_user_fill(deps: CallDeps, call: FillField) -> tuple[FillField, str]
         except Exception as exc:  # noqa: BLE001
             print(f"[live_input] TTS failed: {exc}", flush=True)
 
-    return resolve_live_fill(
+    if deps.live_answers is None:
+        deps.live_answers = {}
+    return resolve_demo_fill(
         call,
+        live_answers=deps.live_answers,
         listen_once=deps.listen_once,
         extract_entity=deps.extract_entity,
         speak=speak,

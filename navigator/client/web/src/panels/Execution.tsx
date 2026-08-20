@@ -212,7 +212,8 @@ export function Execution() {
   const [yaml, setYaml] = useState<string | null>(null);
   const [revision, setRevision] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
+  const [busyPendingKey, setBusyPendingKey] = useState<string | null>(null);
+  const [busyCorrectionId, setBusyCorrectionId] = useState<string | null>(null);
   const [corrections, setCorrections] = useState<PendingCorrection[]>([]);
 
   const load = useCallback(async () => {
@@ -241,29 +242,40 @@ export function Execution() {
     [yaml, playlist],
   );
 
-  const saveYaml = async (next: string) => {
-    setBusy(true);
+  const refreshAfterSiteGraphUpdate = async () => {
+    const [g, rows] = await Promise.all([
+      api.getSiteGraph(),
+      api.listPendingCorrections().catch(() => [] as PendingCorrection[]),
+    ]);
+    setYaml(g.yaml ?? "");
+    setRevision(g.revision);
+    setCorrections(rows);
+  };
+
+  const saveYaml = async (next: string, pendingKey: string) => {
+    setBusyPendingKey(pendingKey);
     try {
-      const d = await api.putSiteGraph(next);
-      setYaml(next);
-      setRevision(d.revision);
+      await api.putSiteGraph(next);
+      await refreshAfterSiteGraphUpdate();
       ok("Draft site graph updated.");
       void useProductData.getState().refreshPlaylist();
     } catch (e) {
       err(errText(e));
     } finally {
-      setBusy(false);
+      setBusyPendingKey(null);
     }
   };
 
   const approve = async (row: PendingRow) => {
     if (!yaml) return;
-    await saveYaml(approveInYaml(yaml, row.flow_id, row.idx));
+    const key = `${row.flow_id}:${row.idx}`;
+    await saveYaml(approveInYaml(yaml, row.flow_id, row.idx), key);
   };
 
   const drop = async (row: PendingRow) => {
     if (!yaml) return;
-    await saveYaml(dropInYaml(yaml, row.flow_id, row.page_id, row.idx));
+    const key = `${row.flow_id}:${row.idx}`;
+    await saveYaml(dropInYaml(yaml, row.flow_id, row.page_id, row.idx), key);
   };
 
   return (
@@ -327,9 +339,9 @@ export function Execution() {
                 </p>
                 <div className="mt-2 flex gap-2">
                   <Button
-                    disabled={busy}
+                    disabled={busyCorrectionId === row.id}
                     onClick={async () => {
-                      setBusy(true);
+                      setBusyCorrectionId(row.id);
                       try {
                         await api.approveCorrection(row.id);
                         setCorrections((c) => c.filter((r) => r.id !== row.id));
@@ -337,7 +349,7 @@ export function Execution() {
                       } catch (e) {
                         err(errText(e));
                       } finally {
-                        setBusy(false);
+                        setBusyCorrectionId(null);
                       }
                     }}
                   >
@@ -345,16 +357,16 @@ export function Execution() {
                   </Button>
                   <Button
                     variant="danger"
-                    disabled={busy}
+                    disabled={busyCorrectionId === row.id}
                     onClick={async () => {
-                      setBusy(true);
+                      setBusyCorrectionId(row.id);
                       try {
                         await api.rejectCorrection(row.id);
                         setCorrections((c) => c.filter((r) => r.id !== row.id));
                       } catch (e) {
                         err(errText(e));
                       } finally {
-                        setBusy(false);
+                        setBusyCorrectionId(null);
                       }
                     }}
                   >
@@ -413,12 +425,16 @@ export function Execution() {
                 <div className="flex shrink-0 gap-2">
                   <Button
                     variant="secondary"
-                    disabled={busy}
+                    disabled={busyPendingKey === `${row.flow_id}:${row.idx}`}
                     onClick={() => void approve(row)}
                   >
                     <Check size={14} /> Approve for live demo
                   </Button>
-                  <Button variant="danger" disabled={busy} onClick={() => void drop(row)}>
+                  <Button
+                    variant="danger"
+                    disabled={busyPendingKey === `${row.flow_id}:${row.idx}`}
+                    onClick={() => void drop(row)}
+                  >
                     <Trash2 size={14} /> Drop step
                   </Button>
                 </div>

@@ -3295,6 +3295,26 @@ components:
           - type: integer
           - type: 'null'
           title: Leave Grace Remaining
+        language:
+          type: string
+          title: Language
+          default: en
+        language_code:
+          type: string
+          title: Language Code
+          default: en
+        language_confidence:
+          type: number
+          title: Language Confidence
+          default: 1.0
+        current_narration:
+          type: string
+          title: Current Narration
+          default: ''
+        speech_status:
+          type: string
+          title: Speech Status
+          default: idle
       type: object
       required:
       - demo_id
@@ -3642,6 +3662,26 @@ components:
           - type: integer
           - type: 'null'
           title: Leave Grace Remaining
+        language:
+          type: string
+          title: Language
+          default: en
+        language_code:
+          type: string
+          title: Language Code
+          default: en
+        language_confidence:
+          type: number
+          title: Language Confidence
+          default: 1.0
+        current_narration:
+          type: string
+          title: Current Narration
+          default: ''
+        speech_status:
+          type: string
+          title: Speech Status
+          default: idle
         meeting:
           $ref: '#/components/schemas/MeetingOut'
       type: object

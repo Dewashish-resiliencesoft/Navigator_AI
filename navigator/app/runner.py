@@ -78,6 +78,11 @@ class DemoHandle:
     """True only after Attendee reports joined — safe to share join link."""
     leave_grace_remaining: int | None = None
     """Seconds before auto-ending after the human leaves the meeting."""
+    language: str = "en"
+    language_code: str = "en"
+    language_confidence: float = 1.0
+    current_narration: str = ""
+    speech_status: str = "idle"
 
     _thread: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -98,9 +103,16 @@ class _RecordingSpeaker:
         self._inner = inner
         self._handle = handle
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, *, language: str | None = None, **kwargs) -> None:
         self._handle.said.append(text)
-        self._inner.say(text)
+        self._handle.current_narration = text
+        self._handle.speech_status = "speaking"
+        if language:
+            self._handle.language_code = language
+        try:
+            self._inner.say(text, language=language, **kwargs)
+        except TypeError:
+            self._inner.say(text)
 
 
 class DemoRunner:
@@ -412,6 +424,18 @@ class DemoRunner:
         def on_leave_grace(remaining: int | None) -> None:
             handle.leave_grace_remaining = remaining
 
+        def on_speech(payload: dict) -> None:
+            handle.language = str(payload.get("language") or handle.language)
+            handle.language_code = str(payload.get("language_code") or handle.language_code)
+            try:
+                handle.language_confidence = float(payload.get("language_confidence") or 0)
+            except (TypeError, ValueError):
+                pass
+            narr = payload.get("current_narration")
+            if isinstance(narr, str) and narr.strip():
+                handle.current_narration = narr
+            handle.speech_status = str(payload.get("speech_status") or handle.speech_status)
+
         try:
             if run is None:
                 from navigator.meeting.live_demo import run_live_meet_demo
@@ -441,6 +465,7 @@ class DemoRunner:
                 on_bot_joined=on_bot_joined,
                 on_meeting_ready=on_meeting_ready,
                 on_leave_grace=on_leave_grace,
+                on_speech=on_speech,
             )
             handle.status = "finished"
         except Exception as exc:

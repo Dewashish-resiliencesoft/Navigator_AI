@@ -310,6 +310,11 @@ class DemoView(BaseModel):
     platform: str | None = None
     bot_in_meeting: bool = False
     leave_grace_remaining: int | None = None
+    language: str = "en"
+    language_code: str = "en"
+    language_confidence: float = 1.0
+    current_narration: str = ""
+    speech_status: str = "idle"
 
 
 class DemoRunView(BaseModel):

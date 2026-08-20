@@ -102,6 +102,11 @@ export type Demo = {
   platform: string | null;
   bot_in_meeting: boolean;
   leave_grace_remaining: number | null;
+  language?: string;
+  language_code?: string;
+  language_confidence?: number;
+  current_narration?: string;
+  speech_status?: string;
 };
 
 export type BioField = { key: string; label: string; value: string };

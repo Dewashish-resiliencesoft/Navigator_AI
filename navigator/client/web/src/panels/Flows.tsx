@@ -12,8 +12,9 @@ import {
   ShieldAlert,
   Square,
   Trash2,
+  Wand2,
 } from "lucide-react";
-import { api, type ExploreFlagged, type Flow, type RecorderStatus } from "../lib/api";
+import { api, type ExploreFlagged, type Flow, type GuidedHandsStatus, type GuidedTaskStatus, type RecorderStatus } from "../lib/api";
 import {
   exploreDraftProgressPct,
   exploreIsLive,
@@ -96,7 +97,12 @@ export function Flows() {
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [agentTask, setAgentTask] = useState("");
+  const [guidedStatus, setGuidedStatus] = useState<GuidedTaskStatus | null>(null);
+  const [guidedPlanning, setGuidedPlanning] = useState(false);
+  const [guidedHands, setGuidedHands] = useState<GuidedHandsStatus | null>(null);
   const timer = useRef<number | null>(null);
+  const handsTimer = useRef<number | null>(null);
 
   const exploreStatus = useExploreSession((s) => s.status);
   const exploreSaveMode = useExploreSession((s) => s.saveMode);
@@ -125,11 +131,17 @@ export function Flows() {
 
   const load = useCallback(async () => {
     try {
-      const [d, g] = await Promise.all([api.getFlows(), api.getSiteGraph()]);
+      const [d, g, guided] = await Promise.all([
+        api.getFlows(),
+        api.getSiteGraph(),
+        api.guidedTaskStatus(),
+      ]);
       const playlist = d.playlist ?? [];
       setRows(playlist);
       // ponytail: setPlaylist only — applyPlaylist would re-bump epoch and loop load
       setPlaylist(playlist);
+      setGuidedStatus(guided);
+      setGuidedHands(guided.hands ?? null);
 
       const counts: Record<string, number> = {};
       let inFlows = false;
@@ -163,6 +175,96 @@ export function Flows() {
 
   useEffect(() => stopPolling, []);
 
+  const stopHandsPolling = () => {
+    if (handsTimer.current !== null) {
+      clearInterval(handsTimer.current);
+      handsTimer.current = null;
+    }
+  };
+
+  useEffect(() => stopHandsPolling, []);
+
+  const refreshGuided = useCallback(async () => {
+    try {
+      const g = await api.guidedTaskStatus();
+      setGuidedStatus(g);
+      setGuidedHands(g.hands ?? null);
+    } catch {
+      /* optional */
+    }
+  }, []);
+
+  const pollHands = useCallback(async () => {
+    try {
+      const g = await api.guidedTaskStatus();
+      setGuidedStatus(g);
+      setGuidedHands(g.hands ?? null);
+      if (g.hands?.active && g.hands.phase !== "awaiting_input") {
+        await api.guidedHandsTick();
+        const again = await api.guidedTaskStatus();
+        setGuidedStatus(again);
+        setGuidedHands(again.hands ?? null);
+        if (!again.hands?.active) stopHandsPolling();
+      }
+    } catch (e) {
+      err(errText(e));
+    }
+  }, [err]);
+
+  const runGuidedPlan = async () => {
+    if (!agentTask.trim()) return err("Describe what the demo should cover.");
+    setGuidedPlanning(true);
+    try {
+      const r = await api.guidedTaskPlan(agentTask.trim());
+      setGuidedStatus(r.guided);
+      applyPlaylist(r.playlist);
+      setRows(r.playlist);
+      ok(
+        `Plan created — ${r.flows_created} flow${r.flows_created === 1 ? "" : "s"}, ${r.steps_total} steps. Record each flow (Update existing) to bind selectors.`,
+      );
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setGuidedPlanning(false);
+    }
+  };
+
+  const startGuidedHands = async () => {
+    if (!recording || recPhase !== "capturing") {
+      return err("Start recording and click Start capturing before guided hands.");
+    }
+    try {
+      const h = await api.guidedHandsStart(0);
+      setGuidedHands(h);
+      stopHandsPolling();
+      handsTimer.current = window.setInterval(pollHands, 2000);
+      ok("Guided hands running — agent clicks safe actions; you click when it pauses.");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const stopGuidedHands = async () => {
+    try {
+      await api.guidedHandsStop();
+      stopHandsPolling();
+      await refreshGuided();
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
+  const answerGuidedHands = async (qid: string, candidateIndex: number) => {
+    try {
+      const h = await api.guidedHandsAnswer(qid, candidateIndex);
+      setGuidedHands(h);
+      stopHandsPolling();
+      handsTimer.current = window.setInterval(pollHands, 2000);
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+
   const poll = useCallback(async () => {
     try {
       const s = await api.recordStatus();
@@ -173,6 +275,7 @@ export function Flows() {
       setCapturedSteps(s.steps ?? 0);
       setRecNarrating(!!s.narrate);
       setNarrationChunks(s.narration_chunks ?? 0);
+      void refreshGuided();
       if (!active) {
         if (s.error?.trim()) err(s.error.trim());
         stopPolling();
@@ -181,7 +284,7 @@ export function Flows() {
     } catch (e) {
       err(errText(e));
     }
-  }, [err, load]);
+  }, [err, load, refreshGuided]);
 
   const startRecord = async () => {
     if (!recUrl.trim()) return err("Enter your product start URL.");
@@ -699,6 +802,127 @@ export function Flows() {
                 </p>
               )}
             </div>
+          </div>
+        )}
+      </Card>
+
+      <Card>
+        <CardTitle
+          hint="Describe the full demo in plain language. Navigator plans sections, creates soft stub flows, then helps click during recording."
+          right={
+            guidedStatus?.has_plan ? (
+              <StatusPill status="idle" label={`${guidedStatus.percent_bound ?? 0}% bound`} />
+            ) : undefined
+          }
+        >
+          Guided Agent
+        </CardTitle>
+        <Field label="Agent task">
+          <textarea
+            value={agentTask}
+            onChange={(e) => setAgentTask(e.target.value)}
+            disabled={guidedPlanning || recording}
+            placeholder="e.g. Ask for phone number, create a demo tag, add contact, open pipeline view…"
+            rows={3}
+            className="w-full resize-y rounded-lg border bg-transparent px-3 py-2 text-[0.8rem] leading-relaxed outline-none focus:ring-1 focus:ring-[var(--accent)]"
+            style={{ borderColor: "var(--line)" }}
+          />
+        </Field>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button onClick={() => void runGuidedPlan()} disabled={guidedPlanning || recording}>
+            {guidedPlanning ? (
+              <Loader2 size={13} className="animate-spin" />
+            ) : (
+              <Wand2 size={13} />
+            )}{" "}
+            Run task
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => void startGuidedHands()}
+            disabled={!recording || recPhase !== "capturing" || !guidedStatus?.has_plan}
+          >
+            Start guided hands
+          </Button>
+          {guidedHands?.active && (
+            <Button variant="danger" onClick={() => void stopGuidedHands()}>
+              <Square size={13} /> Stop hands
+            </Button>
+          )}
+        </div>
+        {guidedStatus?.has_plan && (
+          <div
+            className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
+            style={{ borderColor: "var(--line)" }}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[0.78rem]">
+              <span className="font-medium tracking-tight">Plan progress</span>
+              <span className="font-mono tabular-nums text-[var(--muted)]">
+                {guidedStatus.progress?.flows_bound ?? 0}/
+                {guidedStatus.progress?.flows_total ?? 0} flows ·{" "}
+                {guidedStatus.progress?.steps_bound ?? 0}/
+                {guidedStatus.progress?.steps_total ?? 0} steps bound
+              </span>
+            </div>
+            <div
+              className="mt-2 h-2 overflow-hidden rounded-full"
+              style={{ background: "color-mix(in oklab, var(--line) 80%, transparent)" }}
+            >
+              <div
+                className="h-full rounded-full bg-[var(--accent)] transition-all"
+                style={{ width: `${guidedStatus.percent_bound ?? 0}%` }}
+              />
+            </div>
+            <ul className="mt-3 space-y-1 text-[0.72rem] text-[var(--muted)]">
+              {(guidedStatus.flows ?? []).map((f) => (
+                <li key={f.flow_id}>
+                  • {f.name}{" "}
+                  <span className="font-mono text-[0.68rem]">({f.flow_id})</span> — {f.steps}{" "}
+                  step{f.steps === 1 ? "" : "s"}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-[0.72rem] text-[var(--muted)]">
+              Record each flow with <strong>Update existing</strong> to replace stub selectors with
+              real clicks. USER_INPUT steps stay checkpoints — no visitor data while recording.
+            </p>
+          </div>
+        )}
+        {guidedHands?.active && (
+          <div className="mt-4 rounded-xl border p-4" style={{ borderColor: "var(--line)" }}>
+            <BarLoader
+              label={
+                guidedHands.phase === "awaiting_input"
+                  ? "Waiting for you"
+                  : `Hands — ${guidedHands.progress?.steps_done ?? 0}/${guidedHands.progress?.steps_total ?? 0} steps`
+              }
+            />
+            {guidedHands.current_step && (
+              <p className="mt-2 text-[0.72rem] text-[var(--muted)]">
+                Now: {guidedHands.current_flow} → {guidedHands.current_step}
+              </p>
+            )}
+            {guidedHands.question && (
+              <div className="mt-3 rounded-lg border border-amber-500/50 p-3">
+                <p className="text-[0.78rem] font-medium">{guidedHands.question.prompt}</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(guidedHands.question.candidates ?? []).map((c) => (
+                    <Button
+                      key={c.index}
+                      variant="secondary"
+                      onClick={() =>
+                        void answerGuidedHands(guidedHands.question!.qid, c.index)
+                      }
+                    >
+                      {c.label || c.tag || `Option ${c.index + 1}`}
+                    </Button>
+                  ))}
+                </div>
+                <p className="mt-2 text-[0.68rem] text-[var(--muted)]">
+                  Or click the control in the browser — the recorder captures it.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </Card>

@@ -1505,6 +1505,26 @@ class RecordStartBody(BaseModel):
     target_flow_name: str | None = None
 
 
+class GuidedTaskPlanBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task: str = Field(min_length=3)
+    page_id: str = "dashboard"
+
+
+class GuidedHandsStartBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    flow_index: int = 0
+
+
+class GuidedHandsAnswerBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    qid: str = Field(min_length=1)
+    candidate_index: int | None = None
+
+
 @app.get("/client/api/site-graph")
 def client_get_site_graph(product: DashboardAuthedProduct, registry: Reg) -> dict:
     """The revision the Client is editing -- the latest, draft or published."""
@@ -2115,6 +2135,156 @@ def client_record_stop(
         "phase": getattr(job, "phase", "done"),
         "narrated_steps": narrated,
     }
+
+
+@app.post("/client/api/guided-task/plan")
+def client_guided_task_plan(
+    product: DashboardAuthedProduct,
+    body: GuidedTaskPlanBody,
+    registry: Reg,
+) -> dict:
+    """Parse Agent Task → soft stub flows on the draft site graph."""
+    from navigator.automation.explore.runner import groq_asker
+    from navigator.automation.guided_task import apply_guided_plan, plan_from_task
+    from navigator.client.content import guided_task_status
+    from navigator.core.groq_keys import groq_key_candidates
+
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+
+    keys = groq_key_candidates()
+    ask = groq_asker(keys[0]) if keys else None
+    try:
+        plan = plan_from_task(body.task.strip(), ask_text=ask)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    try:
+        new_yaml = apply_guided_plan(
+            rev.yaml, plan, page_id=(body.page_id or "dashboard").strip() or "dashboard"
+        )
+        rev = registry.put_site_graph(
+            product.product_id, new_yaml, "guided-task-plan", publish=False
+        )
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    graph = parse_site_graph(new_yaml)
+    playlist = playlist_from_graph(graph)
+    status = guided_task_status(new_yaml)
+    return {
+        "ok": True,
+        "task_id": plan.task_id,
+        "flows_created": len(plan.flows),
+        "steps_total": sum(len(f.steps) for f in plan.flows),
+        "playlist": playlist,
+        "revision": rev.revision,
+        "published": False,
+        "guided": status,
+    }
+
+
+@app.get("/client/api/guided-task/status")
+def client_guided_task_status(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    from navigator.client.content import guided_task_status
+
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    out = guided_task_status(rev.yaml)
+    from navigator.automation.guided_task.session import get_guided_hands_session
+
+    hands = get_guided_hands_session()
+    out["hands"] = hands.status_dict() if hands is not None else {"active": False}
+    return out
+
+
+@app.post("/client/api/guided-task/hands/start")
+def client_guided_hands_start(
+    product: DashboardAuthedProduct,
+    body: GuidedHandsStartBody,
+    registry: Reg,
+) -> dict:
+    from navigator.automation.guided_task.models import GuidedPlan
+    from navigator.automation.guided_task.session import start_guided_hands
+    from navigator.client.content import guided_task_meta, recorder_status
+
+    rec = recorder_status()
+    if not rec.get("active"):
+        raise HTTPException(409, "start recording before guided hands") from None
+    if rec.get("phase") != "capturing":
+        raise HTTPException(
+            409, "click 'Start capturing this flow' before guided hands"
+        ) from None
+
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+
+    plan = GuidedPlan.from_meta(guided_task_meta(rev.yaml))
+    if plan is None or not plan.flows:
+        raise HTTPException(400, "run Agent Task plan first") from None
+
+    try:
+        sess = start_guided_hands(plan, page=None, flow_index=max(0, body.flow_index))
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+    from navigator.client.content import enqueue_hands_command
+
+    enqueue_hands_command({"action": "tick"})
+    return sess.status_dict()
+
+
+@app.post("/client/api/guided-task/hands/tick")
+def client_guided_hands_tick(product: DashboardAuthedProduct) -> dict:
+    from navigator.automation.guided_task.session import get_guided_hands_session
+    from navigator.client.content import enqueue_hands_command, recorder_status
+
+    if not recorder_status().get("active"):
+        raise HTTPException(409, "no active recording") from None
+    sess = get_guided_hands_session()
+    if sess is None or not sess.active:
+        raise HTTPException(409, "no active guided hands session") from None
+    enqueue_hands_command({"action": "tick"})
+    return sess.status_dict()
+
+
+@app.post("/client/api/guided-task/hands/stop")
+def client_guided_hands_stop(product: DashboardAuthedProduct) -> dict:
+    from navigator.automation.guided_task.session import get_guided_hands_session, stop_guided_hands
+    from navigator.client.content import enqueue_hands_command
+
+    enqueue_hands_command({"action": "stop"})
+    stop_guided_hands()
+    sess = get_guided_hands_session()
+    return sess.status_dict() if sess else {"active": False, "phase": "stopped"}
+
+
+@app.post("/client/api/guided-task/hands/answer")
+def client_guided_hands_answer(
+    product: DashboardAuthedProduct, body: GuidedHandsAnswerBody
+) -> dict:
+    from navigator.automation.guided_task.session import get_guided_hands_session
+    from navigator.client.content import enqueue_hands_command, recorder_status
+
+    if not recorder_status().get("active"):
+        raise HTTPException(409, "no active recording") from None
+    sess = get_guided_hands_session()
+    if sess is None:
+        raise HTTPException(409, "no guided hands session") from None
+    enqueue_hands_command(
+        {
+            "action": "answer",
+            "qid": body.qid,
+            "candidate_index": body.candidate_index,
+        }
+    )
+    return sess.status_dict()
 
 
 def _attach_recorded_narration(

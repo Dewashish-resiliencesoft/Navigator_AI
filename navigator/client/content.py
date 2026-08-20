@@ -507,6 +507,7 @@ class RecorderJob:
     gate: CaptureGate | None = None
     narration: NarrationCapture | None = None
     save_mode: str = "new"  # new | update
+    hands_commands: list[dict[str, Any]] | None = None
 
 
 _recorder_lock = threading.Lock()
@@ -516,10 +517,11 @@ _active: RecorderJob | None = None
 class _MpGate:
     """CaptureGate stand-in whose phase lives in a multiprocessing Namespace."""
 
-    def __init__(self, ns: Any, flagged: Any):
+    def __init__(self, ns: Any, flagged: Any, hands_commands: Any):
         self._ns = ns
         self.setup_discarded = 0
         self.flagged = flagged
+        self.hands_commands = hands_commands
         self.login_config_fn = None
         self.allow_login_steps = False
 
@@ -544,12 +546,13 @@ def _record_ws_worker(
     ns: Any,
     steps: Any,
     flagged: Any,
+    hands_commands: Any,
 ) -> None:
     """Own interpreter — uvicorn's asyncio loop breaks Playwright sync+WS."""
     from navigator.automation.login_match import LoginConfig
     from navigator.automation.record import NarrationCapture, record_session
 
-    gate = _MpGate(ns, flagged)
+    gate = _MpGate(ns, flagged, hands_commands)
     gate.allow_login_steps = allow_login
     if login_url:
         gate.login_config_fn = lambda: LoginConfig(login_url=login_url)
@@ -657,11 +660,13 @@ def start_recorder(
         ns.setup_discarded = 0
         steps = mgr.list()
         flagged = mgr.list()
+        hands_commands = mgr.list()
         mp_stop = ctx.Event()
         job.mp_ns = ns
         job.mp_stop = mp_stop
         job.steps = steps  # type: ignore[assignment]
-        gate.phase = "setup"
+        job.hands_commands = hands_commands  # type: ignore[assignment]
+        gate.hands_commands = hands_commands  # type: ignore[assignment]
         proc = ctx.Process(
             target=_record_ws_worker,
             kwargs={
@@ -676,6 +681,7 @@ def start_recorder(
                 "ns": ns,
                 "steps": steps,
                 "flagged": flagged,
+                "hands_commands": hands_commands,
             },
             name="ops-recorder-ws",
             daemon=False,
@@ -781,3 +787,52 @@ def apply_base_url_to_yaml(yaml_text: str, base_url: str) -> str:
     raw["base_url"] = origin
     parse_site_graph(yaml.safe_dump(raw), origin="<ops-base-url>")
     return yaml.safe_dump(raw, sort_keys=False)
+
+
+def guided_task_meta(yaml_text: str) -> dict[str, Any]:
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        return {}
+    meta = raw.get("_meta") or {}
+    gt = meta.get("guided_task")
+    return dict(gt) if isinstance(gt, dict) else {}
+
+
+def guided_task_status(yaml_text: str) -> dict[str, Any]:
+    from navigator.automation.guided_task.apply import guided_progress
+    from navigator.automation.guided_task.models import GuidedPlan
+
+    raw = yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        return {"has_plan": False}
+    gt = guided_task_meta(yaml_text)
+    plan = GuidedPlan.from_meta(gt)
+    progress = guided_progress(raw)
+    pct = 0
+    if progress["steps_total"] > 0:
+        pct = int(100 * progress["steps_bound"] / progress["steps_total"])
+    return {
+        "has_plan": plan is not None and bool(plan.flows),
+        "task_id": gt.get("task_id"),
+        "prompt": gt.get("prompt"),
+        "flows": [
+            {"name": f.name, "flow_id": f.flow_id, "steps": len(f.steps)}
+            for f in (plan.flows if plan else ())
+        ],
+        "progress": progress,
+        "percent_bound": pct,
+    }
+
+
+def enqueue_hands_command(cmd: dict[str, Any]) -> None:
+    """Queue a guided-hands command for the active recorder worker."""
+    with _recorder_lock:
+        job = _active
+        if job is None or job.done:
+            raise RuntimeError("no active recording")
+        cmds = job.hands_commands
+        if cmds is None and job.gate is not None:
+            cmds = getattr(job.gate, "hands_commands", None)
+        if cmds is None:
+            raise RuntimeError("recorder has no hands command channel")
+        cmds.append(cmd)

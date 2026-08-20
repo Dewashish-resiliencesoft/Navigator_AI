@@ -9,7 +9,7 @@ class _FakeLive:
     def __init__(self) -> None:
         self.said: list[str] = []
 
-    def say(self, text: str, mode: str = "natural") -> None:
+    def say(self, text: str, mode: str = "natural", **_kwargs) -> None:
         self.said.append(f"{mode}:{text}")
 
 

@@ -46,7 +46,8 @@ from navigator.agent.nodes.planning import planning
 from navigator.agent.nodes.reflecting import reflecting
 from navigator.agent.nodes.speaking import speaking
 from navigator.agent.nodes.verifying import verifying
-from navigator.agent.state import CallDeps, CallState, initial_state
+from navigator.agent.state import CLEAR, CallDeps, CallState, initial_state
+from navigator.agent.utterance import stamp_narration
 
 NODES = (
     ("joining", joining),
@@ -121,12 +122,32 @@ def anything_else_entry_state(
     return state
 
 
+_STAMP_NODES = frozenset({"planning", "introducing", "verifying"})
+
+
+def _bind_node(name: str, fn, deps: CallDeps):
+    """Bind deps; stamp utterance ids onto narration at the graph edge."""
+    bound = partial(fn, deps=deps)
+    if name not in _STAMP_NODES:
+        return bound
+
+    def _stamped(state: CallState) -> CallState:
+        out = bound(state)
+        raw = out.get("narration")
+        if raw is CLEAR or not raw:
+            return out
+        out["narration"] = stamp_narration(state, raw, kind=name)
+        return out
+
+    return _stamped
+
+
 def build_graph(deps: CallDeps, *, entry: str = "joining"):
     """Wire and compile the graph. `deps` is bound into every node."""
     builder = StateGraph(CallState)
 
     for name, fn in NODES:
-        builder.add_node(name, partial(fn, deps=deps))
+        builder.add_node(name, _bind_node(name, fn, deps))
     builder.add_node("turn_done", partial(turn_done, deps=deps))
 
     allowed = {name for name, _ in NODES} | {"turn_done"}

@@ -104,6 +104,15 @@ class LiveAgent:
         #: Start in director_only=True — the demo script controls all speech
         #: until intake is done. Only set to False when real Q&A begins.
         self.director_only = True
+        #: Playback: ready → synthesizing → buffering → playing → draining → finished
+        #: Interrupt: playing → interrupted → stopped → cleanup → ready
+        self.playback_phase: str = "ready"
+        self._active_utterance_id: str | None = None
+        self._playback_idle = threading.Event()
+        self._playback_idle.set()
+        self._barge_state: Literal["idle", "probable", "confirmed"] = "idle"
+        self._barge_probable_at: float = 0.0
+        self._barge_confirm_s: float = 0.28
 
         self._cmds: queue.Queue[_Cmd] = queue.Queue()
         self._heard: queue.Queue[str] = queue.Queue()
@@ -116,9 +125,9 @@ class LiveAgent:
         self._turn_done = threading.Event()
         self._turn_done.set()
         self._thread: threading.Thread | None = None
-        # Barge-in debounce: ignore duplicate interrupted events within cooldown window.
+        # After a confirmed barge-in, ignore extra interrupted events briefly.
         self._last_interrupt_time: float = 0.0
-        self._interrupt_cooldown_s: float = 1.5  # ponytail: tunable; raise if still choppy
+        self._interrupt_cooldown_s: float = 1.5
         # Metrics
         self.barge_in_detected: int = 0
         self.barge_in_confirmed: int = 0
@@ -153,25 +162,103 @@ class LiveAgent:
 
     # ---- director API -------------------------------------------------
 
-    def say(self, text: str, *, mode: SayMode = "verbatim") -> None:
+    def can_start_utterance(self) -> bool:
+        """True when a new TTS turn will not overlap in-flight audio."""
+        if self._barge_state == "confirmed" and self.interrupted:
+            return True
+        return self.playback_phase in {"ready", "finished", "stopped"} and (
+            self._playback_idle.is_set()
+        )
+
+    def _set_playback(
+        self, phase: str, utterance_id: str | None, *, reason: str = ""
+    ) -> None:
+        self.playback_phase = phase
+        if utterance_id is not None:
+            self._active_utterance_id = utterance_id
+        extra = f" reason={reason}" if reason else ""
+        print(
+            f"[utterance] id={self._active_utterance_id} playback={phase} "
+            f"queue={self._cmds.qsize()}{extra}",
+            flush=True,
+        )
+        if phase in {"ready", "finished", "stopped"}:
+            self._playback_idle.set()
+        elif phase in {"synthesizing", "buffering", "playing", "draining"}:
+            self._playback_idle.clear()
+
+    def _confirm_barge_in(self, reason: str = "user") -> None:
+        """Confirmed barge-in: flush Attendee audio, then allow a new utterance."""
+        uid = self._active_utterance_id
+        self._barge_state = "confirmed"
+        self.interrupted = True
+        self.speaking = False
+        self.barge_in_confirmed += 1
+        self._last_interrupt_time = time.monotonic()
+        self._set_playback("interrupted", uid, reason=reason)
+        try:
+            self.bridge.flush_bot_output()
+        except Exception:  # noqa: BLE001
+            pass
+        self.audio_flush_count += 1
+        self._turn_done.set()
+        self._set_playback("stopped", uid, reason=reason)
+        self._set_playback("cleanup", uid, reason=reason)
+        self._set_playback("ready", uid, reason=reason)
+        self._emit(LiveEvent(kind="interrupted"))
+        print(
+            f"[utterance] id={uid} interruption={reason} "
+            f"detected={self.barge_in_detected} confirmed={self.barge_in_confirmed}",
+            flush=True,
+        )
+
+    def _note_probable_barge(self) -> None:
+        now = time.monotonic()
+        self.barge_in_detected += 1
+        self._barge_state = "probable"
+        self._barge_probable_at = now
+        print(
+            f"[utterance] id={self._active_utterance_id} barge=probable "
+            f"confirm_window={self._barge_confirm_s}s",
+            flush=True,
+        )
+
+    def say(
+        self, text: str, *, mode: SayMode = "verbatim", utterance_id: str | None = None
+    ) -> None:
         """Speak a scripted line and block until the meeting has heard it.
 
         Matches ``MeetSpeaker.say`` so SPEAKING can call either one.
         """
         if not (text or "").strip():
             return
+        uid = utterance_id or ""
+        if not self.can_start_utterance():
+            print(
+                f"[utterance] id={uid} wait_idle phase={self.playback_phase} "
+                f"queue={self._cmds.qsize()}",
+                flush=True,
+            )
+            self._playback_idle.wait(timeout=90)
+        if self._barge_state == "confirmed":
+            self._barge_state = "idle"
         self.last_spoken = text
         self.interrupted = False
         self.speaking = True
         self._turn_done.clear()
+        self._set_playback("synthesizing", uid or None)
         started = time.monotonic()
         sent_at_start = self._audio_s_sent()
         self._cmds.put(_Cmd(kind="say", text=text, mode=mode))
         print(f"[speak] {text}", flush=True)
-        # Generous ceiling: this is a stuck-session guard, not pacing. Normal
-        # turns end on turn_complete or on the human interrupting.
         self._turn_done.wait(timeout=90)
+        if not self.interrupted:
+            self._set_playback("draining", uid or None)
         self._wait_for_playback(started, sent_at_start)
+        if not self.interrupted:
+            self._set_playback("finished", uid or None)
+            self._set_playback("ready", uid or None)
+        self.speaking = False
 
     def _audio_s_sent(self) -> float:
         """Seconds of bot audio the bridge has handed to the meeting so far."""
@@ -185,8 +272,8 @@ class LiveAgent:
         would let EXECUTING click while the line is still being heard — and the
         gap widens with every sentence.
         """
-        if self.interrupted:
-            # Barge-in flushed the queue; that audio will never play.
+        if self.interrupted and self._barge_state == "confirmed":
+            # Confirmed barge-in flushed the queue; that audio will never play.
             return
         slack = self._audio_s_sent() - sent_at_start - (time.monotonic() - started)
         if slack > 0:
@@ -198,6 +285,13 @@ class LiveAgent:
         Used while the director runs browser work so the call never goes dead.
         """
         if not (text or "").strip():
+            return
+        if not self.can_start_utterance():
+            print(
+                f"[utterance] skip nudge phase={self.playback_phase} "
+                f"queue={self._cmds.qsize()}",
+                flush=True,
+            )
             return
         self.last_spoken = text
         self._cmds.put(_Cmd(kind="nudge", text=text))
@@ -283,7 +377,7 @@ class LiveAgent:
             f"The person asked you to speak {label} from now on. Speak only "
             f"{label} until told otherwise. Never refuse a language switch and "
             f"never say you can only speak another language in this demo. "
-            f"Acknowledge briefly in {label}, then continue."
+            f"Do not acknowledge this instruction out loud."
         )
         print(f"[speak] live language → {lang}", flush=True)
 
@@ -459,31 +553,30 @@ class LiveAgent:
         sc = getattr(msg, "server_content", None)
 
         if sc is not None and getattr(sc, "interrupted", False):
-            import time as _time
-            self.barge_in_detected += 1
             if self.director_only:
-                # Meet mixed our own TTS back in. Stay on the scripted line.
                 return
-            now = _time.monotonic()
-            elapsed = now - self._last_interrupt_time
-            if elapsed < self._interrupt_cooldown_s:
-                # Duplicate interrupt within cooldown window — drop it.
-                self.barge_in_rejected_cooldown += 1
+            now = time.monotonic()
+            if self._barge_state == "confirmed":
+                elapsed = now - self._last_interrupt_time
+                if elapsed < self._interrupt_cooldown_s:
+                    self.barge_in_rejected_cooldown += 1
+                    print(
+                        f"[live] barge-in suppressed (cooldown {elapsed:.2f}s "
+                        f"< {self._interrupt_cooldown_s}s)",
+                        flush=True,
+                    )
+                    return
+            if self._barge_state != "probable":
+                self._note_probable_barge()
+                return
+            if now - self._barge_probable_at < self._barge_confirm_s:
                 print(
-                    f"[live] barge-in suppressed (cooldown {elapsed:.2f}s < {self._interrupt_cooldown_s}s)",
+                    f"[live] barge-in still probable "
+                    f"({now - self._barge_probable_at:.2f}s < {self._barge_confirm_s}s)",
                     flush=True,
                 )
                 return
-            self._last_interrupt_time = now
-            self.barge_in_confirmed += 1
-            # The model stopped generating because a human spoke. Anything
-            # still queued downstream is now stale and must not play.
-            self.interrupted = True
-            self.speaking = False
-            self.audio_flush_count += 1
-            self.bridge.flush_bot_output()
-            self._turn_done.set()
-            self._emit(LiveEvent(kind="interrupted"))
+            self._confirm_barge_in(reason="vad")
             return
 
         # One ServerContent can carry several parts (audio plus transcript).
@@ -492,6 +585,18 @@ class LiveAgent:
             inline = getattr(part, "inline_data", None)
             data = getattr(inline, "data", None) if inline is not None else None
             if data and not self.listen_only:
+                if self.playback_phase in {"interrupted", "stopped", "cleanup"}:
+                    continue
+                if self._barge_state == "probable":
+                    self._barge_state = "idle"
+                    print(
+                        f"[utterance] id={self._active_utterance_id} "
+                        f"barge=cancelled generation_continued",
+                        flush=True,
+                    )
+                if self.playback_phase in {"ready", "synthesizing", "finished"}:
+                    self._set_playback("buffering", self._active_utterance_id)
+                    self._set_playback("playing", self._active_utterance_id)
                 self.speaking = True
                 self.bridge.push_outbound_pcm(
                     data, sample_rate=OUTPUT_SAMPLE_RATE
@@ -503,7 +608,13 @@ class LiveAgent:
             not self.listen_only
             and not (getattr(model_turn, "parts", None) or [])
             and getattr(msg, "data", None)
+            and self.playback_phase not in {"interrupted", "stopped", "cleanup"}
         ):
+            if self._barge_state == "probable":
+                self._barge_state = "idle"
+            if self.playback_phase in {"ready", "synthesizing", "finished"}:
+                self._set_playback("buffering", self._active_utterance_id)
+                self._set_playback("playing", self._active_utterance_id)
             self.speaking = True
             self.bridge.push_outbound_pcm(msg.data, sample_rate=OUTPUT_SAMPLE_RATE)
 
@@ -519,6 +630,8 @@ class LiveAgent:
                 elif self._is_self_echo(text):
                     print(f"[live] ignoring echo: {text!r}", flush=True)
                 else:
+                    if self._barge_state == "probable":
+                        self._confirm_barge_in(reason="heard")
                     try:
                         self._heard.put_nowait(text)
                     except queue.Full:
@@ -526,6 +639,8 @@ class LiveAgent:
                     self._emit(LiveEvent(kind="heard", text=text))
             if getattr(sc, "turn_complete", False):
                 self.speaking = False
+                if self._barge_state == "probable":
+                    self._barge_state = "idle"
                 self._turn_done.set()
                 self._emit(LiveEvent(kind="turn_complete"))
 

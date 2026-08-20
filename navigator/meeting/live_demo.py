@@ -226,10 +226,10 @@ def _own_meet_tts_when_live(meet_speaker, live_box: list) -> None:
     orig_say = meet_speaker.say
     orig_async = getattr(meet_speaker, "say_async", None)
 
-    def _say(text: str, *, mode: str = "natural") -> None:
+    def _say(text: str, *, mode: str = "natural", utterance_id: str | None = None) -> None:
         live = live_box[0] if live_box else None
         if live is not None:
-            live.say(text, mode=mode)
+            live.say(text, mode=mode, utterance_id=utterance_id)
             return
         orig_say(text)
 
@@ -276,10 +276,10 @@ def _talk_speaker(meet_speaker, live_box: list):
                 return getattr(live, "last_spoken", "") or ""
             return getattr(meet_speaker, "last_spoken", "") or ""
 
-        def say(self, text: str, *, mode: str = "natural") -> None:
+        def say(self, text: str, *, mode: str = "natural", utterance_id: str | None = None) -> None:
             live = live_box[0] if live_box else None
             if live is not None:
-                live.say(text, mode=mode)
+                live.say(text, mode=mode, utterance_id=utterance_id)
                 return
             try:
                 meet_speaker.say(text, mode=mode)

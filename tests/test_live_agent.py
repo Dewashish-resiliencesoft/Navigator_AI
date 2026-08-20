@@ -111,7 +111,12 @@ def test_interrupted_flushes_downstream_audio():
     bridge = FakeBridge()
     events: list = []
     agent = _agent(bridge, events)
+    agent.director_only = False
     agent.speaking = True
+    agent._barge_confirm_s = 0.0
+    agent._handle_server_message(_msg(interrupted=True))
+    assert bridge.flushes == 0
+    assert agent.interrupted is False
     agent._handle_server_message(_msg(interrupted=True))
     assert bridge.flushes == 1
     assert agent.interrupted is True
@@ -320,6 +325,7 @@ def test_barge_in_skips_the_drain_wait(monkeypatch):
     """The queue was flushed — that audio will never play, so do not wait."""
     agent = _agent(FakeBridge())
     agent.interrupted = True
+    agent._barge_state = "confirmed"
     assert _drain_wait(agent, monkeypatch, sent_s=3.0, elapsed_s=0.0) == 0.0
 
 

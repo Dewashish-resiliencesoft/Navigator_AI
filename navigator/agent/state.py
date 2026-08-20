@@ -171,8 +171,12 @@ def append_only(existing: list, new: list) -> list:
     return [*existing, *new]
 
 
+class _Clear(list):
+    """Identity-stable empty. A fresh ``[]`` means 'append nothing', not clear."""
+
+
 #: Sentinel a node returns to empty a queue that otherwise only accumulates.
-CLEAR: list = []
+CLEAR: list = _Clear()
 
 
 def queue(existing: list, new: list) -> list:
@@ -180,8 +184,14 @@ def queue(existing: list, new: list) -> list:
 
     Needed because more than one node upstream of SPEAKING queues narration --
     without this, whichever ran last would silently drop the others' lines.
+    Duplicate utterance ids are dropped so a regenerated translation cannot
+    enqueue beside the original logical line.
     """
-    return [] if new is CLEAR else [*existing, *new]
+    if new is CLEAR or isinstance(new, _Clear):
+        return []
+    from navigator.agent.utterance import merge_narration
+
+    return merge_narration(existing or [], new or [])
 
 
 class CallState(TypedDict, total=False):
@@ -198,8 +208,13 @@ class CallState(TypedDict, total=False):
     """page_id the call ran *on*, which differs from page_id after a navigate."""
     transcript: Annotated[list[str], append_only]
     """Everything said, by anyone, in order. Archived by ENDING."""
-    narration: Annotated[list[str], queue]
-    """What SPEAKING should say next. Accumulates across nodes, cleared once spoken."""
+    narration: Annotated[list, queue]
+    """What SPEAKING should say next. Accumulates across nodes, cleared once spoken.
+
+    Items are strings or ``{"id", "text"}``. Same id = same logical utterance.
+    """
+    spoken_utterance_ids: Annotated[list[str], append_only]
+    """Utterance ids SPEAKING already consumed this call. Re-entry must not replay."""
     entries: Annotated[list[ActionLogEntry], append_only]
     """This call's action log, in memory as well as in SQLite."""
     failures: Annotated[list[ActionLogEntry], append_only]
@@ -259,6 +274,7 @@ def initial_state(
         last_page_id=page_id,
         transcript=[],
         narration=[],
+        spoken_utterance_ids=[],
         entries=[],
         failures=[],
         turns=0,

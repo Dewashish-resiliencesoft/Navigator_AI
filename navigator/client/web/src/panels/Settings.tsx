@@ -333,7 +333,7 @@ function ModelFieldSelect({
         <Input
           value={value}
           onChange={onChange}
-          placeholder="e.g. gemini-2.0-flash or llama-3.3-70b-versatile"
+          placeholder="e.g. gemini-3.6-flash or llama-3.3-70b-versatile"
         />
       )}
     </label>

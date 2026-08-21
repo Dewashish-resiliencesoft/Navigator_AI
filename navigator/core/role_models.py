@@ -15,7 +15,8 @@ from navigator.core.agent_settings import (
     DEFAULT_ROLE_SPEAKING_PROVIDER,
     AgentSettings,
 )
-from navigator.core.settings import settings
+from navigator.core.gemini_keys import normalize_gemini_model
+from navigator.core.settings import settings as platform_settings
 
 RoleName = Literal["brain", "listening", "speaking", "hands"]
 
@@ -35,34 +36,44 @@ def _provider(role_provider: str, default: str) -> str:
     return p or default
 
 
-def resolved_runtime_models(settings: AgentSettings) -> dict[str, str]:
+def _gemini(model_id: str) -> str:
+    return normalize_gemini_model(model_id)
+
+
+def resolved_runtime_models(agent: AgentSettings) -> dict[str, str]:
     """Role assignments win over legacy fields; blanks use platform role defaults."""
-    s = settings.with_role_defaults()
+    s = agent.with_role_defaults()
     return {
         "live_conversational_model": _pick(
             s.role_speaking_model,
             s.live_conversational_model,
-            DEFAULT_ROLE_SPEAKING_MODEL or settings.live_conversational_model,
+            DEFAULT_ROLE_SPEAKING_MODEL or platform_settings.live_conversational_model,
         ),
-        "brain_reasoning_model": _pick(
-            s.role_brain_model,
-            s.brain_reasoning_model,
-            DEFAULT_ROLE_BRAIN_MODEL or settings.brain_reasoning_model,
+        "brain_reasoning_model": _gemini(
+            _pick(
+                s.role_brain_model,
+                s.brain_reasoning_model,
+                DEFAULT_ROLE_BRAIN_MODEL or platform_settings.brain_reasoning_model,
+            )
         ),
         "brain_planning_model": _pick(
             s.role_hands_model,
             s.brain_planning_model,
-            DEFAULT_ROLE_HANDS_MODEL or settings.brain_planning_model,
+            DEFAULT_ROLE_HANDS_MODEL or platform_settings.brain_planning_model,
         ),
         "brain_stt_model": _pick(
             s.role_listening_model,
             s.brain_stt_model,
-            settings.brain_stt_model,
+            platform_settings.brain_stt_model,
         ),
-        "brain_phrasing_model": s.brain_phrasing_model or settings.brain_phrasing_model,
-        "brain_classify_model": s.brain_classify_model or settings.brain_classify_model,
-        "brain_vision_text_model": s.brain_vision_text_model or settings.brain_vision_text_model,
-        "brain_vision_image_model": s.brain_vision_image_model or settings.brain_vision_image_model,
+        "brain_phrasing_model": s.brain_phrasing_model or platform_settings.brain_phrasing_model,
+        "brain_classify_model": s.brain_classify_model or platform_settings.brain_classify_model,
+        "brain_vision_text_model": _gemini(
+            s.brain_vision_text_model or platform_settings.brain_vision_text_model
+        ),
+        "brain_vision_image_model": _gemini(
+            s.brain_vision_image_model or platform_settings.brain_vision_image_model
+        ),
         "role_brain_provider": _provider(s.role_brain_provider, DEFAULT_ROLE_BRAIN_PROVIDER),
         "role_listening_provider": _provider(
             s.role_listening_provider, DEFAULT_ROLE_LISTENING_PROVIDER

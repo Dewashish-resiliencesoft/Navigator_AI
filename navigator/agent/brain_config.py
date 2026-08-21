@@ -44,6 +44,8 @@ class BrainConfig:
         vision_image_model: str | None = None,
         reasoning_model: str | None = None,
     ) -> BrainConfig:
+        from navigator.core.gemini_keys import normalize_gemini_model
+
         # Product dashboard no longer offers adaptive/explorer. Runtime is
         # always guided: flows + knowledge (+ optional turn-brain), no Tier-2.
         _ = autonomy_mode, tier2_legacy
@@ -54,9 +56,15 @@ class BrainConfig:
             phrasing_model=phrasing_model or settings.brain_phrasing_model,
             classify_model=classify_model or settings.brain_classify_model,
             stt_model=stt_model or settings.brain_stt_model,
-            vision_text_model=vision_text_model or settings.brain_vision_text_model,
-            vision_image_model=vision_image_model or settings.brain_vision_image_model,
-            reasoning_model=reasoning_model or settings.brain_reasoning_model,
+            vision_text_model=normalize_gemini_model(
+                vision_text_model or settings.brain_vision_text_model
+            ),
+            vision_image_model=normalize_gemini_model(
+                vision_image_model or settings.brain_vision_image_model
+            ),
+            reasoning_model=normalize_gemini_model(
+                reasoning_model or settings.brain_reasoning_model
+            ),
             autonomy_mode="guided",
             listen_timeout_s=settings.brain_listen_timeout_s,
             resume_silence_s=settings.brain_resume_silence_s,

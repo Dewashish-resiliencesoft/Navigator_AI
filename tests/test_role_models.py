@@ -20,7 +20,7 @@ def test_role_models_defaults_when_blank():
 
 def test_role_models_override_legacy():
     settings = merge_agent_settings(
-        '{"role_brain_model":"gpt-4o","brain_reasoning_model":"gemini-2.0-flash",'
+        '{"role_brain_model":"gpt-4o","brain_reasoning_model":"gemini-3.6-flash",'
         '"role_speaking_model":"gemini-live","live_conversational_model":"old-live",'
         '"role_hands_model":"llama-3.3-70b-versatile","role_listening_model":"whisper-large-v3"}'
     )
@@ -29,6 +29,16 @@ def test_role_models_override_legacy():
     assert models["live_conversational_model"] == "gemini-live"
     assert models["brain_planning_model"] == "llama-3.3-70b-versatile"
     assert models["brain_stt_model"] == "whisper-large-v3"
+
+
+def test_retired_gemini_flash_remapped():
+    settings = merge_agent_settings(
+        '{"role_brain_model":"gemini-2.0-flash",'
+        '"brain_vision_text_model":"models/gemini-2.0-flash"}'
+    )
+    models = resolved_runtime_models(settings)
+    assert models["brain_reasoning_model"] == "gemini-3.6-flash"
+    assert models["brain_vision_text_model"] == "gemini-3.6-flash"
 
 
 def test_legacy_stt_when_listening_role_overridden():

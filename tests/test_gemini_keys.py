@@ -65,3 +65,27 @@ def test_is_gemini_live_unavailable() -> None:
     )
     assert gemini_keys.is_gemini_live_unavailable(RuntimeError("503 overloaded"))
     assert not gemini_keys.is_gemini_live_unavailable(RuntimeError("invalid api key"))
+
+
+def test_normalize_gemini_model_remaps_retired_flash() -> None:
+    assert gemini_keys.normalize_gemini_model("gemini-2.0-flash") == "gemini-3.6-flash"
+    assert (
+        gemini_keys.normalize_gemini_model("models/gemini-2.0-flash")
+        == "gemini-3.6-flash"
+    )
+    assert gemini_keys.normalize_gemini_model("gemini-3.6-flash") == "gemini-3.6-flash"
+
+
+def test_is_gemini_model_served_drops_shutdown_families() -> None:
+    assert not gemini_keys.is_gemini_model_served("gemini-2.0-flash")
+    assert not gemini_keys.is_gemini_model_served("models/gemini-1.5-pro")
+    assert gemini_keys.is_gemini_model_served("gemini-2.5-flash")
+    assert gemini_keys.is_gemini_model_served("gemini-3.6-flash")
+    assert gemini_keys.is_gemini_model_served("gemini-3.1-flash-live-preview")
+
+
+def test_gemini_description_deprecated() -> None:
+    assert gemini_keys.gemini_description_deprecated(
+        "This model is no longer available."
+    )
+    assert not gemini_keys.gemini_description_deprecated("Gemini 3.6 Flash")

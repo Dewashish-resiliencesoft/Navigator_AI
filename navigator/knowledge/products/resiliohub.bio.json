@@ -33,12 +33,12 @@
     {
       "key": "industry",
       "label": "Industry",
-      "value": ""
+      "value": "Conversational AI & CRM"
     },
     {
       "key": "products",
       "label": "Products",
-      "value": "ResilioHub"
+      "value": "resiliohub_whatsapp_business_api_ai_crm, resiliohub_dashboard_login_access_your_whatsapp_, resiliohub_whatsapp_business_api_ai_crm_2, resiliohub_whatsapp_business_api_ai_crm_3, resiliohub_whatsapp_business_api_ai_crm_4, resiliohub_whatsapp_business_api_ai_crm_5, resiliohub_whatsapp_business_api_ai_crm_6, resiliohub_whatsapp_business_api_ai_crm_7"
     },
     {
       "key": "about",
@@ -48,12 +48,12 @@
     {
       "key": "target_market",
       "label": "Target market",
-      "value": ""
+      "value": "Businesses, sales teams, and marketers looking to automate customer engagement across WhatsApp and Instagram."
     },
     {
       "key": "key_features",
       "label": "Key features",
-      "value": ""
+      "value": "WhatsApp shared inbox, Instagram automation, broadcasting campaigns, Meta template manager, WhatsApp chatbot, Voice AI Agent, AI Calling, Kanban boards, REST API"
     },
     {
       "key": "pricing_model",
@@ -63,7 +63,7 @@
     {
       "key": "usp",
       "label": "Unique selling proposition",
-      "value": ""
+      "value": "All-in-one WhatsApp Business API and AI CRM featuring unified shared inbox, automated broadcasting, and AI voice/chat agents."
     },
     {
       "key": "support_email",

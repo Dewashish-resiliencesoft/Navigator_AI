@@ -167,7 +167,7 @@ sequenceDiagram
 
 ## 5. Interactive agent runtime (primary)
 
-The live demo path is a **real-time multimodal agent system**, not a single model doing everything. Two Gemini model contracts are intentional: **Gemini Live** (`gemini-3.1-flash-live-preview`) for realtime audio, and **Gemini Flash** (configurable; default `gemini-2.0-flash`, target `gemini-3.6-flash`) for deep planning. They are not interchangeable — Live has no substitute for Flash planning, and Flash has no Live API.
+The live demo path is a **real-time multimodal agent system**, not a single model doing everything. Two Gemini model contracts are intentional: **Gemini Live** (`gemini-3.1-flash-live-preview`) for realtime audio, and **Gemini Flash** (configurable; default `gemini-3.6-flash`) for deep planning. They are not interchangeable — Live has no substitute for Flash planning, and Flash has no Live API.
 
 ```mermaid
 flowchart TB

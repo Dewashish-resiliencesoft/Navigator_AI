@@ -12,7 +12,7 @@ from navigator.app.auth_store import AuthStore
 from navigator.app.credential_vault import CredentialVault
 from navigator.app.registry import Registry
 from navigator.app.runner import DemoRunner
-from navigator.client.provider_models import list_groq_models, list_provider_models
+from navigator.client.provider_models import list_gemini_models, list_groq_models, list_provider_models
 from navigator.logs.store import ActionLog
 
 
@@ -52,6 +52,62 @@ def _signup(client: TestClient) -> tuple[str, str]:
     return body["access_token"], body["product_id"]
 
 
+def test_list_gemini_models_skips_shutdown_and_non_agent():
+    live = MagicMock(
+        display_name="Live",
+        description="Realtime audio",
+        supported_actions=["bidiGenerateContent"],
+    )
+    live.name = "models/gemini-3.1-flash-live-preview"
+    flash = MagicMock(
+        display_name="Flash",
+        description="Workhorse",
+        supported_actions=["generateContent"],
+    )
+    flash.name = "models/gemini-3.6-flash"
+    dead = MagicMock(
+        display_name="Old Flash",
+        description="Gemini 2.0 Flash",
+        supported_actions=["generateContent"],
+    )
+    dead.name = "models/gemini-2.0-flash"
+    deprecated = MagicMock(
+        display_name="Deprecated",
+        description="This model is deprecated.",
+        supported_actions=["generateContent"],
+    )
+    deprecated.name = "models/gemini-3.0-something"
+    embed = MagicMock(
+        display_name="Embed",
+        description="Embeddings",
+        supported_actions=["embedContent"],
+    )
+    embed.name = "models/gemini-embedding-001"
+    no_gen = MagicMock(
+        display_name="Count only",
+        description="Tokenizer",
+        supported_actions=["countTokens"],
+    )
+    no_gen.name = "models/gemini-3.6-flash-tokenizer"
+
+    mock_client = MagicMock()
+    mock_client.models.list.return_value = [
+        live,
+        flash,
+        dead,
+        deprecated,
+        embed,
+        no_gen,
+    ]
+
+    with patch("google.genai.Client", return_value=mock_client):
+        models = list_gemini_models("gem-test")
+
+    ids = [m["id"] for m in models]
+    assert ids == ["gemini-3.1-flash-live-preview", "gemini-3.6-flash"]
+    assert models[0]["tags"] == ["live", "chat"]
+
+
 def test_list_groq_models_tags():
     whisper = MagicMock(id="whisper-large-v3-turbo")
     chat = MagicMock(id="llama-3.3-70b-versatile")
@@ -81,7 +137,7 @@ def test_agent_provider_models_api(tmp_path, monkeypatch):
         vault.put_provider_keys(product_id, gemini_api_key="gem-test")
 
         fake = [
-            {"id": "gemini-2.0-flash", "label": "Flash", "tags": ["chat"]},
+            {"id": "gemini-3.6-flash", "label": "Flash", "tags": ["chat"]},
             {"id": "gemini-live", "label": "Live", "tags": ["live"]},
         ]
         with patch(

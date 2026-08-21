@@ -71,17 +71,19 @@ Discovered capabilities:
 """
 
 
-def _call_llm(prompt: str, *, model: str = "gemini-2.5-flash") -> dict | list | None:
+def _call_llm(prompt: str, *, model: str | None = None) -> dict | list | None:
     """Call Gemini Flash for understanding/composition. Returns parsed JSON."""
     try:
-        from navigator.core.gemini_keys import gemini_key_candidates
+        from navigator.core.gemini_keys import gemini_key_candidates, normalize_gemini_model
+        from navigator.core.settings import settings
         import google.generativeai as genai
 
         keys = gemini_key_candidates()
         if not keys:
             return None
+        model_id = normalize_gemini_model(model or settings.brain_reasoning_model)
         genai.configure(api_key=keys[0])
-        client = genai.GenerativeModel(model)
+        client = genai.GenerativeModel(model_id)
         resp = client.generate_content(
             prompt,
             generation_config={"response_mime_type": "application/json"},

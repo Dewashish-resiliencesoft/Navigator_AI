@@ -2,72 +2,196 @@ site: resiliohub
 base_url: https://Resiliohub.com/
 version: 1
 pages:
+  resiliohub_whatsapp_business_api_ai_crm:
+    url: https://resiliohub.com/dashboard/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
   resiliohub_dashboard_login_access_your_whatsapp_:
     url: https://resiliohub.com/login/
     title: ResilioHub Dashboard Login | Access Your WhatsApp Shared Inbox | ResilioHub
-    selectors:
-      email: '#email'
-      password: '#password'
-    flows: {}
-  resiliohub_whatsapp_business_api_ai_crm:
-    url: https://resiliohub.com/
-    title: ResilioHub | WhatsApp Business API & AI CRM
     selectors: {}
     flows: {}
   resiliohub_whatsapp_business_api_ai_crm_2:
-    url: https://resiliohub.com/forgot-password/
+    url: https://resiliohub.com/inbox/
     title: ResilioHub | WhatsApp Business API & AI CRM
     selectors:
-      email: '#email'
+      u: '#radix-_r_1c_'
     flows: {}
-  sign_up_for_resiliohub_whatsapp_business_api_crm:
-    url: https://resiliohub.com/signup/
-    title: Sign Up for ResilioHub | WhatsApp Business API & CRM | ResilioHub
+  resiliohub_whatsapp_business_api_ai_crm_3:
+    url: https://resiliohub.com/kanban/
+    title: ResilioHub | WhatsApp Business API & AI CRM
     selectors:
-      full_name: '#name'
-      work_email: '#email'
-      phone: '#phone'
-      password: '#password'
-      confirm_password: '#confirmPassword'
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  about_resiliohub_resiliohub:
-    url: https://resiliohub.com/about/
-    title: About ResilioHub | ResilioHub
-    selectors: {}
+  resiliohub_whatsapp_business_api_ai_crm_4:
+    url: https://resiliohub.com/phonebook/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  contact_us_resiliohub:
-    url: https://resiliohub.com/contact/
-    title: Contact Us | ResilioHub
-    selectors: {}
+  resiliohub_whatsapp_business_api_ai_crm_5:
+    url: https://resiliohub.com/wa-meta-connect/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  features_resiliohub_whatsapp_business_api_ai_crm:
-    url: https://resiliohub.com/features/
-    title: Features | ResilioHub WhatsApp Business API & AI CRM | ResilioHub
-    selectors: {}
+  resiliohub_whatsapp_business_api_ai_crm_6:
+    url: https://resiliohub.com/instagram-connect/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  faq_resiliohub_resiliohub:
-    url: https://resiliohub.com/faq/
-    title: FAQ | ResilioHub | ResilioHub
-    selectors: {}
+  resiliohub_whatsapp_business_api_ai_crm_7:
+    url: https://resiliohub.com/instagram-automation/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  resiliohub_dashboard_login_access_your_whatsapp__2:
-    url: https://resiliohub.com/login/
-    title: ResilioHub Dashboard Login | Access Your WhatsApp Shared Inbox | ResilioHub
-    selectors: {}
+  resiliohub_whatsapp_business_api_ai_crm_8:
+    url: https://resiliohub.com/rest-api/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  privacy_policy_resiliohub:
-    url: https://resiliohub.com/privacy-policy/
-    title: Privacy Policy | ResilioHub
-    selectors: {}
+  resiliohub_whatsapp_business_api_ai_crm_9:
+    url: https://resiliohub.com/templates/library/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  terms_and_conditions_resiliohub:
-    url: https://resiliohub.com/terms-and-conditions/
-    title: Terms and Conditions | ResilioHub
-    selectors: {}
+  resiliohub_whatsapp_business_api_ai_crm_10:
+    url: https://resiliohub.com/templates/create/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
     flows: {}
-  delete_account_resiliohub:
-    url: https://resiliohub.com/delete-account/
-    title: Delete Account | ResilioHub
+  resiliohub_whatsapp_business_api_ai_crm_11:
+    url: https://resiliohub.com/campaigns/send/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_12:
+    url: https://resiliohub.com/campaigns/dashboard/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_13:
+    url: https://resiliohub.com/meta-insights/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_14:
+    url: https://resiliohub.com/automation/flows/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_15:
+    url: https://resiliohub.com/automation/approvals/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_16:
+    url: https://resiliohub.com/automation/executions/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_17:
+    url: https://resiliohub.com/automation/integrations/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_18:
+    url: https://resiliohub.com/local-sheets/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_19:
+    url: https://resiliohub.com/wa-chatbot/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_20:
+    url: https://resiliohub.com/voice-ai/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_21:
+    url: https://resiliohub.com/ai-calling/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_22:
+    url: https://resiliohub.com/agent-login/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_23:
+    url: https://resiliohub.com/web-notification/
+    title: ResilioHub | WhatsApp Business API & AI CRM
+    selectors:
+      u: '#radix-_r_1c_'
+      toggle_theme: '#radix-_r_1f_'
+      u_29: '#radix-_r_27_'
+    flows: {}
+  resiliohub_whatsapp_business_api_ai_crm_24:
+    url: https://resiliohub.com/
+    title: ResilioHub | WhatsApp Business API & AI CRM
     selectors: {}
     flows: {}
 demo_playlist: []

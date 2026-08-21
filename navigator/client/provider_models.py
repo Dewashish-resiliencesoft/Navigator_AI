@@ -101,10 +101,32 @@ class ProviderModel(TypedDict):
 
 
 def _gemini_id(name: str) -> str:
-    raw = (name or "").strip()
-    if raw.startswith("models/"):
-        return raw.split("/", 1)[1]
-    return raw
+    from navigator.core.gemini_keys import gemini_model_bare_id
+
+    return gemini_model_bare_id(name)
+
+
+# Not used by Navigator agent roles (brain / live / vision-chat).
+_GEMINI_NON_AGENT_MARKERS: tuple[str, ...] = (
+    "embedding",
+    "imagen",
+    "veo",
+    "aqa",
+    "gecko",
+    "robotics",
+    "tts",
+    "-image",
+    "omni-flash",
+)
+
+_GEMINI_USABLE_ACTIONS: frozenset[str] = frozenset(
+    {
+        "generateContent",
+        "generate_content",
+        "bidiGenerateContent",
+        "bidi_generate_content",
+    }
+)
 
 
 def _tag_gemini(model_id: str) -> list[str]:
@@ -114,11 +136,36 @@ def _tag_gemini(model_id: str) -> list[str]:
         tags.append("live")
     if "flash" in low or "pro" in low:
         tags.append("chat")
-    if "vision" in low or "image" in low:
+    if "vision" in low:
         tags.append("vision")
     if not tags:
         tags.append("chat")
     return tags
+
+
+def _gemini_dashboard_model(
+    *,
+    model_id: str,
+    description: str | None,
+    actions: list[str] | None,
+) -> bool:
+    """Keep only served, agent-usable Gemini models for Settings dropdowns."""
+    from navigator.core.gemini_keys import (
+        gemini_description_deprecated,
+        is_gemini_model_served,
+    )
+
+    if not model_id or not is_gemini_model_served(model_id):
+        return False
+    if gemini_description_deprecated(description):
+        return False
+    low = model_id.lower()
+    if any(marker in low for marker in _GEMINI_NON_AGENT_MARKERS):
+        return False
+    if actions:
+        if not _GEMINI_USABLE_ACTIONS.intersection(actions):
+            return False
+    return True
 
 
 def list_gemini_models(api_key: str) -> list[ProviderModel]:
@@ -130,6 +177,14 @@ def list_gemini_models(api_key: str) -> list[ProviderModel]:
     for item in client.models.list():
         model_id = _gemini_id(getattr(item, "name", "") or "")
         if not model_id or model_id in seen:
+            continue
+        actions = list(getattr(item, "supported_actions", None) or [])
+        description = getattr(item, "description", None)
+        if not _gemini_dashboard_model(
+            model_id=model_id,
+            description=description if isinstance(description, str) else None,
+            actions=actions,
+        ):
             continue
         seen.add(model_id)
         label = (getattr(item, "display_name", None) or model_id).strip()
@@ -156,10 +211,25 @@ def list_groq_models(api_key: str) -> list[ProviderModel]:
         model_id = (getattr(item, "id", None) or "").strip()
         if not model_id or model_id in seen:
             continue
+        if _id_looks_deprecated(model_id):
+            continue
         seen.add(model_id)
         out.append({"id": model_id, "label": model_id, "tags": _tag_groq(model_id)})
     out.sort(key=lambda m: (0 if "chat" in m["tags"] else 1, m["id"]))
     return out
+
+
+def _id_looks_deprecated(model_id: str, *extra: str) -> bool:
+    blob = " ".join((model_id, *extra)).lower()
+    return any(
+        marker in blob
+        for marker in (
+            "deprecated",
+            "no longer available",
+            "shut down",
+            "retired",
+        )
+    )
 
 
 def _tag_openai(model_id: str) -> list[str]:
@@ -201,6 +271,8 @@ def list_openai_models(api_key: str) -> list[ProviderModel]:
             model_id = (getattr(item, "id", None) or "").strip()
             if not model_id or model_id in seen:
                 continue
+            if _id_looks_deprecated(model_id):
+                continue
             seen.add(model_id)
             out.append(
                 {"id": model_id, "label": model_id, "tags": _tag_openai(model_id)}
@@ -238,6 +310,8 @@ def list_anthropic_models(api_key: str) -> list[ProviderModel]:
             if not model_id:
                 continue
             label = (item.get("display_name") or model_id).strip()
+            if _id_looks_deprecated(model_id, label):
+                continue
             out.append({"id": model_id, "label": label, "tags": _tag_anthropic(model_id)})
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, KeyError):
         out = []
@@ -312,6 +386,8 @@ def list_openai_compatible_models(
                 continue
             model_id = (item.get("id") or "").strip()
             if not model_id or model_id in seen:
+                continue
+            if _id_looks_deprecated(model_id):
                 continue
             seen.add(model_id)
             out.append(

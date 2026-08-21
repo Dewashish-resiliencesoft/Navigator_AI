@@ -39,7 +39,9 @@ Rules:
 
 class FlashPlanner:
     def __init__(self, *, model: str | None = None) -> None:
-        self.model = model or settings.brain_reasoning_model
+        from navigator.core.gemini_keys import normalize_gemini_model
+
+        self.model = normalize_gemini_model(model or settings.brain_reasoning_model)
 
     def plan(self, *, task_id: UUID, goal: str, world: AgentWorldState) -> AgentPlan | None:
         keys = gemini_key_candidates()

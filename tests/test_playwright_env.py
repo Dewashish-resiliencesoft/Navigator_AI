@@ -46,3 +46,30 @@ def test_ensure_keeps_configured_when_populated(tmp_path, monkeypatch):
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(root))
     monkeypatch.setenv("HOME", str(tmp_path / "unused-home"))
     assert ensure_playwright_browsers() == str(root)
+
+
+def test_ensure_headed_display_uses_env(monkeypatch):
+    from navigator.automation.playwright_env import ensure_headed_display
+
+    monkeypatch.setenv("DISPLAY", ":99")
+    assert ensure_headed_display() == ":99"
+
+
+def test_ensure_headed_display_raises_without_lock(monkeypatch):
+    from navigator.automation import playwright_env as pe
+
+    monkeypatch.delenv("DISPLAY", raising=False)
+
+    class FakePath:
+        def __init__(self, p):
+            self.p = str(p)
+
+        def is_file(self):
+            return False
+
+    monkeypatch.setattr(pe, "Path", FakePath)
+    try:
+        pe.ensure_headed_display()
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "display" in str(exc).lower() or "DISPLAY" in str(exc)

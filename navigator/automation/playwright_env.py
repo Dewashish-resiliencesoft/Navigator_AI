@@ -54,3 +54,27 @@ def ensure_playwright_browsers() -> str | None:
             flush=True,
         )
     return None
+
+
+def ensure_headed_display() -> str | None:
+    """For headful Chromium: set DISPLAY when Xvfb/:0 exists, else raise.
+
+    VPS often runs Xvfb on :0 but uvicorn has no DISPLAY → Missing X server.
+    """
+    current = (os.environ.get("DISPLAY") or "").strip()
+    if current:
+        return current
+    # Common lab Xvfb: /tmp/.X0-lock or /tmp/.X99-lock
+    for n in (0, 99, 1):
+        if Path(f"/tmp/.X{n}-lock").is_file():
+            os.environ["DISPLAY"] = f":{n}"
+            print(f"[playwright] DISPLAY unset — using :{n} (Xvfb lock found)", flush=True)
+            return f":{n}"
+    raise RuntimeError(
+        "Headed Chromium needs a display (Missing X server / $DISPLAY). "
+        "On a VPS either: (1) run Xvfb and set DISPLAY=:0 for uvicorn, or "
+        "(2) record on your laptop — start "
+        "`.venv/bin/python scripts/local_record_server.py` and set "
+        "NAVIGATOR_RECORD_BROWSER_WS=ws://<laptop-lan-ip>:3333 "
+        "(plus NAVIGATOR_RECORD_WS_PATH) on the API host."
+    )

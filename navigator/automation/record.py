@@ -907,6 +907,12 @@ def record_session(
     browser_ws: str = "",
 ) -> Path:
     """Open browser, record clicks/fills until Enter — or until `stop_event` is set."""
+    from navigator.automation.playwright_env import (
+        ensure_headed_display,
+        ensure_playwright_browsers,
+    )
+
+    ensure_playwright_browsers()
     steps: list[RecordedStep] = steps_out if steps_out is not None else []
     # CLI path has no Setup/Recording UI — capture immediately.
     if gate is None:
@@ -923,10 +929,23 @@ def record_session(
                     ".venv/bin/python scripts/local_record_server.py"
                 ) from exc
         else:
-            browser = pw.chromium.launch(
-                headless=not headful,
-                args=["--start-maximized"] if headful else [],
-            )
+            if headful:
+                ensure_headed_display()
+            try:
+                browser = pw.chromium.launch(
+                    headless=not headful,
+                    args=["--start-maximized"] if headful else [],
+                )
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                if "Missing X server" in msg or "DISPLAY" in msg or "Target page, context or browser has been closed" in msg:
+                    raise RuntimeError(
+                        "Headed record failed (no display). On VPS set DISPLAY=:0 "
+                        "with Xvfb, or run scripts/local_record_server.py on your "
+                        "laptop and set NAVIGATOR_RECORD_BROWSER_WS."
+                    ) from exc
+                raise
+
         # Headful record: use the real window size (maximized). A fixed
         # 1280×720 viewport inside a maximized Chrome looks like a white
         # letterbox with the site stuck in one corner.

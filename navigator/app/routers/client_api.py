@@ -958,6 +958,18 @@ def client_product_explore_stop(product: DashboardAuthedProduct) -> dict:
         raise HTTPException(409, "no active product explore for this product")
     return stop_job()
 
+
+@router.post("/client/api/product-explore/ack")
+def client_product_explore_ack(product: DashboardAuthedProduct) -> dict:
+    """Dismiss a finished explore job (clears in-memory done state)."""
+    from navigator.automation.product_explore import ack_job
+
+    try:
+        return ack_job(product_id=product.product_id)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
 @router.get("/client/api/flows")
 def client_get_flows(product: DashboardAuthedProduct, registry: Reg) -> dict:
     try:

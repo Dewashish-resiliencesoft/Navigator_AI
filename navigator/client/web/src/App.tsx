@@ -159,20 +159,27 @@ export default function App() {
   useEffect(() => {
     if (!authed) return;
     if (shouldAutoOpenWizard()) {
+      setTab("overview");
       setShowOnboarding(true);
     }
-  }, [authed]);
+  }, [authed, setTab]);
+
+  useEffect(() => {
+    if (showOnboarding) setTab("overview");
+  }, [showOnboarding, setTab]);
 
   useEffect(() => {
     if (!authed) return;
     let alive = true;
     (async () => {
+      // Account chip first — prefs then /account (no race with empty Sidebar).
+      await refreshAccount();
+      if (!alive) return;
       await hydrate();
       if (!alive) return;
       await hydrateExplore();
       bootstrapProductExplore();
       bootstrapDemoReadiness();
-      void refreshAccount();
     })();
     const t = setInterval(() => {
       void refreshActive();
@@ -186,16 +193,19 @@ export default function App() {
   const enterAuthed = (fromSignup = false, company = "") => {
     // Overwrite any leftover "Signed out." from a prior logout (zustand persists across trees).
     clearToast();
+    setTab("overview");
     if (fromSignup) {
       markSignupPending(company);
       setShowOnboarding(true);
       setOnboardingStartAt(null);
     }
     setAuthed(true);
+    void refreshAccount();
     ok(fromSignup ? "Account created." : "Signed in.");
   };
 
   const openOnboarding = (startAt: OnboardingItemId | null) => {
+    setTab("overview");
     setOnboardingStartAt(startAt);
     setShowOnboarding(true);
   };
@@ -203,6 +213,7 @@ export default function App() {
   const closeOnboarding = () => {
     setShowOnboarding(false);
     setOnboardingStartAt(null);
+    setTab("overview");
   };
 
   const signOut = async () => {
@@ -218,6 +229,7 @@ export default function App() {
     useDemoReadinessSession.getState().reset();
     useAccountSession.getState().reset();
     useUi.getState().clearCoach();
+    setTab("overview");
     clearToast();
     setAuthed(false);
     ok("Signed out.");
@@ -270,7 +282,11 @@ export default function App() {
   return (
     <>
       <div className="flex min-h-screen">
-        <Sidebar onLogout={signOut} onContinueSetup={openOnboarding} />
+        <Sidebar
+          onLogout={signOut}
+          onContinueSetup={openOnboarding}
+          tabsLocked={showOnboarding}
+        />
         <div className="min-w-0 flex-1">
           <header
             className="sticky top-0 z-30 border-b backdrop-blur-md"
@@ -304,7 +320,7 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <MobileTabs />
+      <MobileTabs tabsLocked={showOnboarding} />
             {live && demo && (
               <div
                 className="flex flex-wrap items-center gap-3 border-t px-5 py-2.5 md:px-8"
@@ -366,7 +382,7 @@ export default function App() {
       </div>
       <Toast />
       <ExploreFloat />
-      <ProductExploreFloat />
+      <ProductExploreFloat hidden={showOnboarding} />
       <CoachSpotlight />
       {authed && showConfetti && (
         <Suspense fallback={null}>

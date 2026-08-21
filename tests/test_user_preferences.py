@@ -66,6 +66,10 @@ def test_user_preferences_defaults_and_patch(tmp_path):
             "product_name": "Prefs Co",
             "product_id": "prefs-co",
         }
+        # Regression: signup email + company land on account for Sidebar chip.
+        assert me.json()["email"].endswith("@example.com")
+        assert len(me.json()["product_name"]) > 0
+        assert registry.get("prefs-co").name == "Prefs Co"
 
         user = auth.get_user_by_email("prefs@example.com")
         assert user is not None

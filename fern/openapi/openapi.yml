@@ -253,33 +253,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /client/api/system/health:
-    get:
-      summary: Client System Health
-      description: Real host metrics + Navigator service status for the Client dashboard.
-      operationId: client_system_health_client_api_system_health_get
-      parameters:
-      - name: authorization
-        in: header
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Authorization
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SystemMetrics'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /v1/products/site-graph:
     put:
       summary: Upload Site Graph
@@ -772,52 +745,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /:
-    get:
-      summary: Root
-      description: "Landing URL when the API starts \u2014 Client dashboard, not OpenAPI docs."
-      operationId: root__get
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-  /healthz:
-    get:
-      summary: Healthz
-      operationId: healthz_healthz_get
+  /v1/zoom/zak:
+    post:
+      summary: Zoom Zak Callback
+      description: 'Attendee callback: mint a fresh ZAK so the bot can start Zoom as host.'
+      operationId: zoom_zak_callback_v1_zoom_zak_post
+      parameters:
+      - name: secret
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Secret
+      requestBody:
+        content:
+          application/json:
+            schema:
+              anyOf:
+              - type: object
+                additionalProperties: true
+              - type: 'null'
+              title: Body
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
+                type: object
                 additionalProperties:
                   type: string
-                type: object
-                title: Response Healthz Healthz Get
-  /client:
-    get:
-      summary: Client Console
-      operationId: client_console_client_get
-      responses:
-        '200':
-          description: Successful Response
+                title: Response Zoom Zak Callback V1 Zoom Zak Post
+        '422':
+          description: Validation Error
           content:
-            text/html:
+            application/json:
               schema:
-                type: string
-  /ops:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/system/health:
     get:
-      summary: Legacy Ops Redirect
-      operationId: legacy_ops_redirect_ops_get
+      summary: Client System Health
+      description: Real host metrics + Navigator service status for the Client dashboard.
+      operationId: client_system_health_client_api_system_health_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
-              schema: {}
+              schema:
+                $ref: '#/components/schemas/SystemMetrics'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/demos/start:
     post:
       summary: Client Start Live Demo
@@ -2010,6 +2003,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/product-explore/ack:
+    post:
+      summary: Client Product Explore Ack
+      description: Dismiss a finished explore job (clears in-memory done state).
+      operationId: client_product_explore_ack_client_api_product_explore_ack_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Product Explore Ack Client Api Product Explore Ack Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/flows:
     get:
       summary: Client Get Flows
@@ -2925,45 +2947,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /v1/zoom/zak:
-    post:
-      summary: Zoom Zak Callback
-      description: 'Attendee callback: mint a fresh ZAK so the bot can start Zoom as host.'
-      operationId: zoom_zak_callback_v1_zoom_zak_post
-      parameters:
-      - name: secret
-        in: query
-        required: false
-        schema:
-          anyOf:
-          - type: string
-          - type: 'null'
-          title: Secret
-      requestBody:
-        content:
-          application/json:
-            schema:
-              anyOf:
-              - type: object
-                additionalProperties: true
-              - type: 'null'
-              title: Body
+  /:
+    get:
+      summary: Root
+      description: "Landing URL when the API starts \u2014 Client dashboard, not OpenAPI docs."
+      operationId: root__get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+  /healthz:
+    get:
+      summary: Healthz
+      operationId: healthz_healthz_get
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                type: object
                 additionalProperties:
                   type: string
-                title: Response Zoom Zak Callback V1 Zoom Zak Post
-        '422':
-          description: Validation Error
+                type: object
+                title: Response Healthz Healthz Get
+  /client:
+    get:
+      summary: Client Console
+      operationId: client_console_client_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            text/html:
+              schema:
+                type: string
+  /ops:
+    get:
+      summary: Legacy Ops Redirect
+      operationId: legacy_ops_redirect_ops_get
+      responses:
+        '200':
+          description: Successful Response
           content:
             application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
+              schema: {}
 components:
   schemas:
     AccountView:

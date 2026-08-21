@@ -40,21 +40,30 @@ export const useAccountSession = create<State>((set) => ({
   refresh: async () => {
     set({ loading: true, error: null });
     try {
-      // Prefs first — always present; includes email/product on current API.
+      // Prefs first (includes email/product); then authoritative /account.
       const prefs = await loadUserPreferences();
-      applyAccount(set, prefs);
+      if (prefs.email || prefs.product_name || prefs.product_id) {
+        applyAccount(set, prefs);
+      }
 
       try {
         const me = await api.getAccount();
         applyAccount(set, me);
       } catch {
         /* /account may 404 on stale server — prefs already applied */
+        set((s) => ({ ...s, loading: false }));
       }
     } catch (e) {
-      set({
-        loading: false,
-        error: e instanceof Error ? e.message : String(e),
-      });
+      // Still try /account alone if prefs failed.
+      try {
+        const me = await api.getAccount();
+        applyAccount(set, me);
+      } catch {
+        set({
+          loading: false,
+          error: e instanceof Error ? e.message : String(e),
+        });
+      }
     }
   },
   reset: () =>

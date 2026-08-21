@@ -729,6 +729,18 @@ export const api = {
         status: "pending" | "running" | "ok" | "warn" | "fail";
       }[];
     }>("/client/api/product-explore/stop", "POST"),
+  ackProductExplore: () =>
+    send<{
+      active: boolean;
+      phase?: string;
+      done?: boolean;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore/ack", "POST"),
   getProductTopology: () =>
     get<{ yaml: string; updated_at: string | null; page_count: number }>(
       "/client/api/product-explore/topology",

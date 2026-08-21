@@ -46,11 +46,18 @@ const bubbleSpring = {
 export function Sidebar({
   onLogout,
   onContinueSetup,
+  tabsLocked = false,
 }: {
   onLogout?: () => void;
   onContinueSetup?: (startAt: OnboardingItemId | null) => void;
+  /** While onboarding wizard open — stay on Overview. */
+  tabsLocked?: boolean;
 }) {
   const { tab, setTab } = useUi();
+  const goTab = (id: string) => {
+    if (tabsLocked) return;
+    setTab(id);
+  };
   const { progress } = useOnboardingProgress();
   const [cardHidden, setCardHidden] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -117,10 +124,12 @@ export function Sidebar({
             <button
               key={id}
               type="button"
-              onClick={() => setTab(id)}
+              onClick={() => goTab(id)}
+              disabled={tabsLocked}
               className={cn(
                 "relative flex items-center gap-2.5 rounded-lg px-3 py-2 text-left",
                 "text-[0.83rem] font-medium tracking-tight transition-colors",
+                tabsLocked && "cursor-not-allowed opacity-60",
                 active
                   ? "text-[var(--text)]"
                   : "text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--text)] dark:hover:bg-white/[0.06]",
@@ -160,9 +169,11 @@ export function Sidebar({
         )}
         <button
           type="button"
-          onClick={() => setTab("monitor")}
+          onClick={() => goTab("monitor")}
+          disabled={tabsLocked}
           className={cn(
             "flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-[0.8rem] font-medium transition-colors",
+            tabsLocked && "cursor-not-allowed opacity-60",
             tab === "monitor"
               ? "bg-black/[0.06] text-[var(--text)] dark:bg-white/[0.08]"
               : "text-[var(--muted)] hover:bg-black/[0.04] hover:text-[var(--text)] dark:hover:bg-white/[0.06]",
@@ -253,7 +264,7 @@ export function Sidebar({
   );
 }
 
-export function MobileTabs() {
+export function MobileTabs({ tabsLocked = false }: { tabsLocked?: boolean }) {
   const { tab, setTab } = useUi();
   const items = [...TABS, { id: "monitor" as const, label: "Monitor" }];
   return (
@@ -265,9 +276,14 @@ export function MobileTabs() {
         <button
           key={id}
           type="button"
-          onClick={() => setTab(id)}
+          disabled={tabsLocked}
+          onClick={() => {
+            if (tabsLocked) return;
+            setTab(id);
+          }}
           className={cn(
             "relative shrink-0 rounded-lg px-3 py-1.5 text-[0.78rem] font-medium",
+            tabsLocked && "cursor-not-allowed opacity-60",
             tab === id ? "text-[var(--text)]" : "text-[var(--muted)]",
           )}
         >

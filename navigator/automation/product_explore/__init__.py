@@ -210,7 +210,7 @@ def artifact_checklist(
             "detail": (
                 f"{bio_filled} field{'s' if bio_filled != 1 else ''} filled"
                 if bio_filled
-                else "Fills empty bio fields only"
+                else "Fills empty or weak bio fields"
             ),
             "status": bio_status,
         },
@@ -243,6 +243,21 @@ def stop_job() -> dict[str, Any]:
     if job.thread:
         job.thread.join(timeout=60)
     return status_dict(product_id=pid)
+
+
+def ack_job(*, product_id: str) -> dict[str, Any]:
+    """Clear finished job so refresh does not re-show success UI."""
+    global _active
+    with _lock:
+        job = _active
+        if job is None:
+            return status_dict(product_id=product_id)
+        if job.product_id != product_id:
+            return status_dict(product_id=product_id)
+        if not job.done:
+            raise RuntimeError("product explore still running — stop first")
+        _active = None
+    return status_dict(product_id=product_id)
 
 
 def start_job(
@@ -281,9 +296,16 @@ def start_job(
                 max_pages=max_pages,
             )
         except Exception as exc:  # noqa: BLE001
-            job.error = str(exc)
+            raw = str(exc)
+            if "Executable doesn't exist" in raw or "playwright install" in raw.lower():
+                job.error = (
+                    "Chromium missing for Playwright. "
+                    "Run on the API host: .venv/bin/python -m playwright install chromium"
+                )
+            else:
+                job.error = raw
             job.phase = "error"
-            job.looking_at = "Stopped with an error"
+            job.looking_at = job.error
             print(f"[product-explore] crash:\n{traceback.format_exc()}", flush=True)
         finally:
             job.done = True
@@ -321,11 +343,14 @@ def _crawl_and_write(
     from playwright.sync_api import sync_playwright
 
     from navigator.automation.explore.perceive import inventory
+    from navigator.automation.playwright_env import ensure_playwright_browsers
     from navigator.knowledge.knowledge_merge import (
         auto_merge_knowledge,
         save_explore_markdown,
     )
     from navigator.knowledge.topology import save_topology
+
+    ensure_playwright_browsers()
 
     job.max_pages = max_pages
     pages: dict[str, dict[str, Any]] = {}
@@ -342,7 +367,16 @@ def _crawl_and_write(
         if ws:
             browser = pw.chromium.connect(ws, timeout=20_000)
         else:
-            browser = pw.chromium.launch(headless=True)
+            try:
+                browser = pw.chromium.launch(headless=True)
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                if "Executable doesn't exist" in msg or "playwright install" in msg.lower():
+                    raise RuntimeError(
+                        "Chromium not installed for Playwright. "
+                        "On the API host run: .venv/bin/python -m playwright install chromium"
+                    ) from exc
+                raise
         context = browser.new_context(no_viewport=True)
         page = context.new_page()
         try:
@@ -846,6 +880,10 @@ def _playwright_search_hits(
         hits = _extract_google_result_hrefs(page, limit=limit)
         if len(hits) >= 2:
             return hits
+        print(
+            f"[product-explore] google returned {len(hits)} hit(s) for {query!r} — trying DDG",
+            flush=True,
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"[product-explore] google search failed: {exc}", flush=True)
         hits = []
@@ -989,8 +1027,43 @@ def _brain_web_research(
             )
 
     if not notes:
+        print(
+            f"[product-explore] no external page notes after search "
+            f"(company={company!r} host={host!r}) — DDG fallback",
+            flush=True,
+        )
         return _public_web_notes(company, host, job)
     return notes
+
+
+def _bio_value_is_weak(
+    key: str, value: str, *, company: str = "", enrichable: frozenset[str] | None = None
+) -> bool:
+    """True when explore may overwrite — empty, short, or company-name-only."""
+    keys = enrichable or frozenset(
+        {
+            "about",
+            "products",
+            "industry",
+            "competitors",
+            "tagline",
+            "target_market",
+            "key_features",
+            "usp",
+            "pricing_model",
+        }
+    )
+    v = (value or "").strip()
+    if not v:
+        return True
+    if key not in keys:
+        return False
+    if len(v) < 40:
+        return True
+    c = (company or "").strip().lower()
+    if c and v.lower() == c:
+        return True
+    return False
 
 
 def _fill_bio_from_explore(
@@ -1005,6 +1078,23 @@ def _fill_bio_from_explore(
 ) -> None:
     from navigator.knowledge.company_bio import DEFAULT_BIO_FIELDS, load_bio, save_bio
 
+    enrichable = frozenset(
+        {
+            "about",
+            "products",
+            "industry",
+            "competitors",
+            "tagline",
+            "target_market",
+            "key_features",
+            "usp",
+            "pricing_model",
+        }
+    )
+
+    def _weak(key: str, value: str) -> bool:
+        return _bio_value_is_weak(key, value, company=company, enrichable=enrichable)
+
     bio = load_bio(product_id)
     fields = list(bio.get("fields") or [])
     by_key = {str(f.get("key")): f for f in fields if isinstance(f, dict)}
@@ -1014,12 +1104,10 @@ def _fill_bio_from_explore(
             fields.append(row)
             by_key[d["key"]] = row
 
-    empty_keys = [
-        k
-        for k, row in by_key.items()
-        if not str(row.get("value") or "").strip()
+    need_keys = [
+        k for k, row in by_key.items() if _weak(k, str(row.get("value") or ""))
     ]
-    # Always refresh weak heuristics if empty.
+    # Heuristics fill empty-only basics.
     heuristics = {
         "website": start_url,
         "company_name": company,
@@ -1033,26 +1121,37 @@ def _fill_bio_from_explore(
         row = by_key.get(key)
         if row is None:
             continue
-        if not str(row.get("value") or "").strip():
+        cur = str(row.get("value") or "").strip()
+        if not cur or (key in enrichable and _weak(key, cur)):
+            # Never clobber long user about with raw corpus snippet if already decent.
+            if key == "about" and cur and len(cur) >= 40 and cur.lower() != (company or "").lower():
+                continue
             row["value"] = val
             changed = True
 
-    if empty_keys and not job.stop.is_set():
+    if need_keys and not job.stop.is_set():
         _touch(job, looking_at="Brain extracting company bio fields…")
         schema = [
             {"key": k, "label": str(by_key[k].get("label") or k)}
-            for k in empty_keys
+            for k in need_keys
             if k in by_key
         ]
+        web_block = "\n".join(web_notes)[:5000] if web_notes else "(none)"
+        if not web_notes:
+            print(
+                "[product-explore] web_notes empty — filling bio from on-site corpus only",
+                flush=True,
+            )
         raw = _brain_complete(
             "Extract company/product facts for a demo agent bio form. "
             "Return ONLY JSON object mapping field keys to short string values. "
             "Use empty string when unknown. Do not invent funding rounds or fake emails. "
-            "Prefer official facts from the corpus.",
+            "Prefer official facts from the corpus and public web notes. "
+            "Improve weak/short fields; keep factual.",
             f"Fields needed: {json.dumps(schema)}\n\n"
             f"Product URL: {start_url}\nCompany hint: {company}\n\n"
             f"## On-site crawl\n{corpus[:7000] or '(none)'}\n\n"
-            f"## Public web notes\n{chr(10).join(web_notes)[:5000] or '(none)'}",
+            f"## Public web notes\n{web_block}",
         )
         filled = _parse_json_object(raw)
         for key, val in filled.items():
@@ -1061,9 +1160,18 @@ def _fill_bio_from_explore(
             text = str(val or "").strip()
             if not text:
                 continue
-            if not str(by_key[key].get("value") or "").strip():
-                by_key[key]["value"] = text[:800]
-                changed = True
+            cur = str(by_key[key].get("value") or "").strip()
+            if not _weak(key, cur):
+                continue
+            # Never wipe long user-authored text (≥80 chars, not just company name).
+            if (
+                len(cur) >= 80
+                and cur.lower() != (company or "").lower()
+                and key in enrichable
+            ):
+                continue
+            by_key[key]["value"] = text[:800]
+            changed = True
 
     if changed:
         save_bio(product_id, {"fields": fields})

@@ -107,13 +107,20 @@ function stepCopy(status: {
   };
 }
 
-export function ProductExploreFloat() {
+export function ProductExploreFloat({
+  hidden = false,
+}: {
+  /** Hide while onboarding wizard owns explore progress. */
+  hidden?: boolean;
+}) {
   const setTab = useUi((s) => s.setTab);
   const ok = useUi((s) => s.ok);
   const err = useUi((s) => s.err);
   const status = useProductExploreSession((s) => s.status);
+  const sessionStarted = useProductExploreSession((s) => s.sessionStarted);
   const stopping = useProductExploreSession((s) => s.stopping);
   const stop = useProductExploreSession((s) => s.stop);
+  const ack = useProductExploreSession((s) => s.ack);
   const live = productExploreIsLive(status);
   const pct = productExplorePct(status);
   const site = siteLabel(status.current_url, status.current_title);
@@ -125,21 +132,32 @@ export function ProductExploreFloat() {
   const [sheetOpen, setSheetOpen] = useState(false);
 
   useEffect(() => {
-    if (status.active) {
+    if (hidden) {
+      setSheetOpen(false);
+      return;
+    }
+    if (status.active && sessionStarted) {
       setSheetOpen(true);
       return;
     }
-    if (status.phase === "done" && !status.error) {
+    // Celebrate done only for a run started in this browser session.
+    if (sessionStarted && status.phase === "done" && !status.error) {
       setSheetOpen(true);
-      const t = window.setTimeout(() => setSheetOpen(false), 2000);
+      const t = window.setTimeout(() => {
+        setSheetOpen(false);
+        void ack();
+      }, 2000);
       return () => window.clearTimeout(t);
     }
-    if (status.phase === "error" || status.error) {
-      const t = window.setTimeout(() => setSheetOpen(false), 2200);
+    if (sessionStarted && (status.phase === "error" || status.error)) {
+      const t = window.setTimeout(() => {
+        setSheetOpen(false);
+        void ack();
+      }, 2200);
       return () => window.clearTimeout(t);
     }
     setSheetOpen(false);
-  }, [status.active, status.phase, status.error]);
+  }, [hidden, status.active, status.phase, status.error, sessionStarted, ack]);
 
   const onStop = async () => {
     try {
@@ -149,6 +167,8 @@ export function ProductExploreFloat() {
       err(errText(e));
     }
   };
+
+  if (hidden) return null;
 
   return (
     <AnimatePresence>

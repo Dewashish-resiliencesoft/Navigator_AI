@@ -92,6 +92,90 @@ def test_bio_fill_empty_only(tmp_path, monkeypatch):
     assert vals["website"] == "https://example.com"
 
 
+def test_bio_value_is_weak():
+    from navigator.automation.product_explore import _bio_value_is_weak
+
+    assert _bio_value_is_weak("about", "")
+    assert _bio_value_is_weak("about", "Acme", company="Acme")
+    assert _bio_value_is_weak("about", "short blurb")
+    assert not _bio_value_is_weak(
+        "about",
+        "We help mid-market teams automate customer onboarding end to end.",
+        company="Acme",
+    )
+    assert not _bio_value_is_weak("website", "https://acme.io")  # non-enrichable nonempty
+
+
+def test_fill_bio_enriches_weak_leaves_long(tmp_path, monkeypatch):
+    from navigator.automation.product_explore import (
+        ProductExploreJob,
+        _fill_bio_from_explore,
+    )
+
+    monkeypatch.setattr("navigator.knowledge.company_bio._ROOT", tmp_path)
+    long_about = (
+        "We help mid-market teams automate customer onboarding with AI "
+        "workflows that connect CRM and support tools."
+    )
+    save_bio(
+        "acme",
+        {
+            "fields": [
+                {"key": "company_name", "label": "Company name", "value": "Acme"},
+                {"key": "about", "label": "About", "value": "Acme"},  # weak
+                {"key": "industry", "label": "Industry", "value": ""},
+                {
+                    "key": "usp",
+                    "label": "USP",
+                    "value": long_about,  # long user text — leave alone
+                },
+            ]
+        },
+    )
+
+    def fake_brain(system: str, user: str) -> str:
+        return '{"about": "Acme builds CRM automation for SMBs.", "industry": "SaaS"}'
+
+    monkeypatch.setattr(
+        "navigator.automation.product_explore._brain_complete", fake_brain
+    )
+    job = ProductExploreJob(
+        job_id="j1", product_id="acme", start_url="https://acme.example"
+    )
+    _fill_bio_from_explore(
+        "acme",
+        start_url="https://acme.example",
+        company="Acme",
+        corpus="Acme dashboard Inbox reports",
+        web_notes=["### Acme\nSaaS CRM platform"],
+        page_ids=["home", "inbox"],
+        job=job,
+    )
+    vals = {f["key"]: f["value"] for f in load_bio("acme")["fields"]}
+    assert "CRM" in vals["about"] or "automate" in vals["about"].lower()
+    assert vals["about"] != "Acme"
+    assert vals["industry"] == "SaaS"
+    assert vals["usp"] == long_about
+
+
+def test_ack_clears_done_job():
+    from navigator.automation import product_explore as pe
+
+    prev = pe._active
+    job = pe.ProductExploreJob(
+        job_id="j2", product_id="acme", start_url="https://acme.example"
+    )
+    job.done = True
+    job.phase = "done"
+    pe._active = job
+    try:
+        out = pe.ack_job(product_id="acme")
+        assert pe._active is None
+        assert out.get("active") is False
+    finally:
+        pe._active = prev
+
+
 def test_knowledge_bundle_migrates_canonical_to_user(tmp_path, monkeypatch):
     monkeypatch.setattr("navigator.knowledge.knowledge_merge._ROOT", tmp_path)
     (tmp_path / "acme.md").write_text("# Old brief\n", encoding="utf-8")

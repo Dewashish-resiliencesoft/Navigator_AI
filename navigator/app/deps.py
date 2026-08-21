@@ -24,8 +24,10 @@ from navigator.meeting.providers import (
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
+    from navigator.automation.playwright_env import ensure_playwright_browsers
     from navigator.meeting.attendee_stack import ensure_attendee_stack
 
+    ensure_playwright_browsers()
     ensure_attendee_stack()
     yield
 

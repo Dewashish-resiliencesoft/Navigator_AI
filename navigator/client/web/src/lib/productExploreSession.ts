@@ -31,14 +31,19 @@ type State = {
   status: ProductExploreStatus;
   starting: boolean;
   stopping: boolean;
+  /** True only after this browser session called start() — blocks stale done UI. */
+  sessionStarted: boolean;
   bootstrapped: boolean;
   refresh: () => Promise<ProductExploreStatus>;
   start: (startUrl?: string) => Promise<ProductExploreStatus>;
   stop: () => Promise<ProductExploreStatus>;
+  ack: () => Promise<ProductExploreStatus>;
   bootstrap: () => void;
 };
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+
+const IDLE: ProductExploreStatus = { active: false, artifacts: [] };
 
 function clearPoll() {
   if (pollTimer != null) {
@@ -82,9 +87,10 @@ function ensurePoll(get: () => State) {
 }
 
 export const useProductExploreSession = create<State>((set, get) => ({
-  status: { active: false, artifacts: [] },
+  status: { ...IDLE },
   starting: false,
   stopping: false,
+  sessionStarted: false,
   bootstrapped: false,
 
   refresh: async () => {
@@ -104,7 +110,7 @@ export const useProductExploreSession = create<State>((set, get) => ({
   },
 
   start: async (startUrl) => {
-    set({ starting: true });
+    set({ starting: true, sessionStarted: true });
     try {
       let url = (startUrl || "").trim();
       if (!url) {
@@ -134,7 +140,7 @@ export const useProductExploreSession = create<State>((set, get) => ({
     try {
       const raw = await api.stopProductExplore();
       const status = mapStatus(raw);
-      set({ status, stopping: false });
+      set({ status, stopping: false, sessionStarted: false });
       clearPoll();
       useProductData.getState().invalidate();
       return status;
@@ -144,11 +150,33 @@ export const useProductExploreSession = create<State>((set, get) => ({
     }
   },
 
+  ack: async () => {
+    try {
+      const raw = await api.ackProductExplore();
+      const status = mapStatus(raw);
+      set({
+        status: { ...IDLE, artifacts: status.artifacts ?? [] },
+        sessionStarted: false,
+      });
+      clearPoll();
+      useProductData.getState().invalidate();
+      return get().status;
+    } catch {
+      set({ status: { ...IDLE }, sessionStarted: false });
+      clearPoll();
+      return get().status;
+    }
+  },
+
   bootstrap: () => {
     if (get().bootstrapped) return;
     set({ bootstrapped: true });
     void get().refresh().then((st) => {
+      // Never treat leftover server done as a user-started run.
       if (st.active) ensurePoll(get);
+      else if (st.phase === "done" || st.done) {
+        void get().ack();
+      }
     });
   },
 }));

@@ -113,10 +113,13 @@ def test_narrate_recording_end_to_end():
         transcribe_verbose=transcribe_verbose,
         language="en",
         translate_to="same",
+        enhance=False,
     )
     assert seen.get("language") == "en"
-    assert any("First" in l for l in lines)
-    assert any("Second" in l for l in lines)
+    # Raw STT — enhance=False must not swap in LLM "First clean."
+    assert any("First bit" in l for l in lines)
+    assert any("Second bit" in l for l in lines)
+    assert not any("First clean" in l for l in lines)
     assert timings[0]["idx"] == 0
     # Compact clock: gaps follow line length, not the original 5s click spacing.
     assert timings[0]["speak_ms"] < 10_000
@@ -167,12 +170,13 @@ def test_pace_lines_splits_monologue_onto_silent_steps():
     lines = [_MONO, "", "", "", ""]
     hints = ["dashboard", "campaigns", "create", "name_field", "save"]
     out = narration.pace_lines(lines, hints=hints)
-    assert all(l.strip() for l in out)
-    assert out[0] != _MONO
-    assert all(len(l.split()) <= narration.MAX_WORDS for l in out)
+    # Monologue spills onto later steps; leftover empties stay silent (no hint invent).
+    assert out[0].strip() and out[0] != _MONO
+    assert sum(1 for l in out if l.strip()) >= 2
+    assert all(len(l.split()) <= narration.MAX_WORDS for l in out if l.strip())
     joined = " ".join(out).lower()
     assert "dashboard" in joined or "welcome" in joined
-    assert "campaigns" in joined or "create" in joined
+    assert "campaigns" in joined or "create" in joined or "save" in joined
 
 
 def test_pace_lines_keeps_short_narrated_steps():
@@ -180,14 +184,15 @@ def test_pace_lines_keeps_short_narrated_steps():
     assert narration.pace_lines(lines) == lines
 
 
-def test_pace_lines_fills_empty_from_hints():
+def test_pace_lines_does_not_invent_hint_placeholders():
+    """Silent steps stay silent — no ``Here is inbox`` from UI hints."""
     out = narration.pace_lines(
         ["Welcome.", "", ""],
         hints=["home", "inbox_tab", "compose"],
     )
     assert "Welcome" in out[0]
-    assert out[1].strip() and "inbox" in out[1].lower()
-    assert out[2].strip() and "compose" in out[2].lower()
+    assert out[1] == ""
+    assert out[2] == ""
 
 
 def test_pace_lines_empty_without_hints_stays_empty():

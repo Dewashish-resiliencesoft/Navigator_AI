@@ -150,6 +150,7 @@ def draft_site_graph(
     base_url: str,
     product_name: str,
     steps: list[RecordedStep],
+    agent_tasks: list[Any] | None = None,
 ) -> dict[str, Any]:
     pages: dict[str, Any] = {}
     for step in steps:
@@ -199,7 +200,19 @@ def draft_site_graph(
             call["spoken"] = step.spoken
         page["flows"]["recorded_demo"].append(call)
 
+    from navigator.automation.prompt_command import agent_tasks_to_meta
     from navigator.automation.record_studio import demo_variables_from_steps
+
+    meta: dict[str, Any] = {
+        "draft": True,
+        "note": (
+            "Human must review: rename flows, fix postconditions, "
+            "prefer data-testid. Do not auto-trust guessed expects."
+        ),
+        "demo_variables": demo_variables_from_steps(steps),
+    }
+    if agent_tasks:
+        meta["agent_tasks"] = agent_tasks_to_meta(list(agent_tasks))
 
     return {
         "product": {
@@ -212,14 +225,7 @@ def draft_site_graph(
             },
         },
         "pages": pages,
-        "_meta": {
-            "draft": True,
-            "note": (
-                "Human must review: rename flows, fix postconditions, "
-                "prefer data-testid. Do not auto-trust guessed expects."
-            ),
-            "demo_variables": demo_variables_from_steps(steps),
-        },
+        "_meta": meta,
     }
 
 
@@ -416,6 +422,8 @@ class CaptureGate:
     last_field: dict[str, Any] | None = None
     #: Studio Stop requested — dashboard must POST /record/stop to merge.
     needs_merge: bool = False
+    #: Confirmed AgentTasks from Prompt Listening this session.
+    agent_tasks: list[Any] = field(default_factory=list)
 
 
 def _publish_studio_status(gate: CaptureGate | None, page: Page | None = None) -> dict[str, Any]:
@@ -714,6 +722,43 @@ def _install_listeners(
             st["ok"] = True
             st["added"] = len(extra)
             return st
+        if action == "prompt_parse":
+            from navigator.automation.prompt_command import parse_agent_task_instruction
+
+            try:
+                task = parse_agent_task_instruction(
+                    str(payload.get("instruction") or ""),
+                    current_field=gate.last_field,
+                    use_llm=bool(payload.get("use_llm", True)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            st["agent_task"] = task.to_dict()
+            return st
+        if action == "prompt_confirm":
+            from navigator.automation.prompt_command import AgentTask
+            from navigator.automation.record_studio import apply_confirmed_agent_task
+
+            try:
+                raw_task = payload.get("agent_task") or {}
+                if not isinstance(raw_task, dict):
+                    raise RuntimeError("agent_task required")
+                task = AgentTask.from_dict(raw_task)
+                task.status = "confirmed"
+                apply_confirmed_agent_task(steps, task, page=page)
+                gate.agent_tasks = list(getattr(gate, "agent_tasks", None) or [])
+                gate.agent_tasks.append(task)
+                if narration is not None:
+                    narration.agent_tasks = list(gate.agent_tasks)
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            st["agent_task"] = task.to_dict()
+            st["demo_variables"] = st.get("demo_variables") or []
+            return st
         return {"ok": False, "error": f"unknown action {action}"}
 
     def _studio_cmd(payload: object) -> dict[str, Any]:
@@ -862,6 +907,8 @@ class NarrationCapture:
     chunks: list[bytes] = field(default_factory=list)
     language: str = "auto"
     translate_to: str = "same"
+    #: Confirmed AgentTasks from Prompt Listening (persisted into graph _meta).
+    agent_tasks: list[Any] = field(default_factory=list)
 
     def apply_config(self, payload: object) -> None:
         if not isinstance(payload, dict):
@@ -1064,7 +1111,10 @@ def record_session(
         parsed = urlparse(url)
         base_url = f"{parsed.scheme}://{parsed.netloc}"
         draft = draft_site_graph(
-            base_url=base_url, product_name=product_name, steps=steps
+            base_url=base_url,
+            product_name=product_name,
+            steps=steps,
+            agent_tasks=list(getattr(gate, "agent_tasks", None) or []),
         )
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(yaml.safe_dump(draft, sort_keys=False), encoding="utf-8")

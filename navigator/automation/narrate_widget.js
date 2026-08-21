@@ -122,7 +122,29 @@
           <button type="button" id="nav-studio-capture">Start capturing this flow</button>
           <button type="button" id="nav-studio-stop" class="secondary">Stop</button>
         </div>
+        <div class="nav-row" style="margin-top:6px">
+          <button type="button" id="nav-studio-prompt-btn" class="warn">⚡ Agent Command</button>
+        </div>
         <div class="nav-status" id="nav-studio-status">Setup — log in, then Start capturing this flow.</div>
+        <div class="nav-ask" id="nav-studio-prompt-panel">
+          <div id="nav-studio-prompt-title" style="font-weight:600;margin-bottom:6px">⚡ Prompt Listening</div>
+          <div id="nav-studio-prompt-hint" style="opacity:.85;margin-bottom:6px;font-size:11px">
+            Say what the agent should do at demo time, then click Stop prompt or say “prompt stop”.
+          </div>
+          <label for="nav-studio-prompt-text">Agent instruction</label>
+          <textarea id="nav-studio-prompt-text" rows="3" placeholder="Ask the visitor for their phone number, save as phone_number, fill this field…"></textarea>
+          <div class="nav-row" style="margin-top:6px">
+            <button type="button" id="nav-studio-prompt-stop" class="secondary">Stop prompt</button>
+          </div>
+          <div id="nav-studio-prompt-preview" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">
+            <div style="font-weight:600;margin-bottom:4px">I understood</div>
+            <div id="nav-studio-prompt-summary" style="font-size:11px;line-height:1.4;margin-bottom:8px"></div>
+            <div class="nav-row">
+              <button type="button" id="nav-studio-prompt-continue">Continue</button>
+              <button type="button" id="nav-studio-prompt-edit" class="secondary">Edit</button>
+            </div>
+          </div>
+        </div>
         <div class="nav-field" id="nav-studio-field">
           <div id="nav-studio-field-label" style="margin-bottom:6px;font-weight:600"></div>
           <label for="nav-studio-var">Variable name</label>
@@ -197,6 +219,16 @@
   const varsRow = box.querySelector("#nav-studio-vars");
   const nextPrompt = box.querySelector("#nav-studio-next");
   const btnNextGo = box.querySelector("#nav-studio-next-go");
+  const btnPromptMode = box.querySelector("#nav-studio-prompt-btn");
+  const promptPanel = box.querySelector("#nav-studio-prompt-panel");
+  const promptText = box.querySelector("#nav-studio-prompt-text");
+  const promptTitle = box.querySelector("#nav-studio-prompt-title");
+  const promptHint = box.querySelector("#nav-studio-prompt-hint");
+  const promptPreview = box.querySelector("#nav-studio-prompt-preview");
+  const promptSummary = box.querySelector("#nav-studio-prompt-summary");
+  const btnPromptStop = box.querySelector("#nav-studio-prompt-stop");
+  const btnPromptContinue = box.querySelector("#nav-studio-prompt-continue");
+  const btnPromptEdit = box.querySelector("#nav-studio-prompt-edit");
 
   for (const [val, label] of LANGS) {
     langSel.appendChild(new Option(label, val));
@@ -220,10 +252,182 @@
   let lastField = null;
   let demoVariables = [];
   let lastFieldKey = "";
+  let promptMode = "narration"; // narration | prompt_listening | preview
+  let pendingAgentTask = null;
+  let speechRec = null;
+  let promptBuffer = "";
 
   const fmt = (ms) => {
     const s = Math.floor(ms / 1000);
     return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+  };
+
+  const beep = () => {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      const ctx = new Ctx();
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = promptMode === "prompt_listening" ? 880 : 660;
+      g.gain.value = 0.08;
+      o.connect(g);
+      g.connect(ctx.destination);
+      o.start();
+      setTimeout(() => {
+        o.stop();
+        ctx.close().catch(() => {});
+      }, 120);
+    } catch (e) {
+      /* ignore */
+    }
+  };
+
+  const stopSpeechRec = () => {
+    if (speechRec) {
+      try {
+        speechRec.onresult = null;
+        speechRec.onerror = null;
+        speechRec.stop();
+      } catch (e) {
+        /* ignore */
+      }
+      speechRec = null;
+    }
+  };
+
+  const startSpeechRec = () => {
+    stopSpeechRec();
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      if (promptHint) {
+        promptHint.textContent =
+          "Speech recognition unavailable — type the instruction, then Stop prompt.";
+      }
+      return;
+    }
+    speechRec = new SR();
+    speechRec.continuous = true;
+    speechRec.interimResults = true;
+    speechRec.lang = (langSel && langSel.value !== "auto" ? langSel.value : "en") || "en";
+    speechRec.onresult = (ev) => {
+      let finalBit = "";
+      let interim = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const t = ev.results[i][0].transcript || "";
+        if (ev.results[i].isFinal) finalBit += t;
+        else interim += t;
+      }
+      const chunk = (finalBit || interim || "").trim();
+      if (!chunk) return;
+      const low = chunk.toLowerCase().replace(/\s+/g, " ");
+      if (low === "prompt start" || low.endsWith("prompt start")) {
+        enterPromptListening();
+        return;
+      }
+      if (promptMode === "prompt_listening") {
+        if (low === "prompt stop" || low.endsWith("prompt stop")) {
+          void endPromptListening();
+          return;
+        }
+        if (finalBit) {
+          promptBuffer = (promptBuffer + " " + finalBit).trim();
+          if (promptText) promptText.value = promptBuffer;
+        } else if (promptText && interim) {
+          promptText.value = (promptBuffer + " " + interim).trim();
+        }
+      }
+    };
+    speechRec.onerror = () => {};
+    try {
+      speechRec.start();
+    } catch (e) {
+      /* already started */
+    }
+  };
+
+  const showPromptPanel = (on) => {
+    if (!promptPanel) return;
+    promptPanel.classList.toggle("show", !!on);
+    box.classList.toggle("ask-open", !!on);
+    if (on) box.classList.remove("compact");
+  };
+
+  const enterPromptListening = () => {
+    if (promptMode === "prompt_listening") return;
+    promptMode = "prompt_listening";
+    promptBuffer = "";
+    pendingAgentTask = null;
+    if (promptText) promptText.value = "";
+    if (promptPreview) promptPreview.style.display = "none";
+    if (promptTitle) promptTitle.textContent = "⚡ Prompt Listening";
+    if (promptHint) {
+      promptHint.textContent =
+        "Listening for agent instruction… Say “prompt stop” or click Stop prompt.";
+    }
+    if (btnPromptMode) btnPromptMode.textContent = "⚡ Listening…";
+    showPromptPanel(true);
+    statusEl.textContent = "⚡ Prompt Listening — not narration.";
+    chipLabel.textContent = "Prompt";
+    syncDots("paused");
+    beep();
+    startSpeechRec();
+  };
+
+  const endPromptListening = async () => {
+    stopSpeechRec();
+    const instruction = ((promptText && promptText.value) || promptBuffer || "").trim();
+    beep();
+    if (!instruction) {
+      promptMode = "narration";
+      showPromptPanel(false);
+      if (btnPromptMode) btnPromptMode.textContent = "⚡ Agent Command";
+      statusEl.textContent = "Prompt cancelled — empty instruction.";
+      return;
+    }
+    promptMode = "preview";
+    if (promptTitle) promptTitle.textContent = "⚡ Agent Task";
+    if (promptHint) promptHint.textContent = "Parsing instruction…";
+    statusEl.textContent = "Parsing agent command…";
+    const res = await studioCmd("prompt_parse", {
+      instruction,
+      use_llm: true,
+    });
+    if (!res || res.error) {
+      // Fallback parse without LLM
+      const res2 = await studioCmd("prompt_parse", {
+        instruction,
+        use_llm: false,
+      });
+      if (!res2 || res2.error) {
+        statusEl.textContent = String((res && res.error) || (res2 && res2.error) || "Parse failed");
+        promptMode = "prompt_listening";
+        startSpeechRec();
+        return;
+      }
+      pendingAgentTask = res2.agent_task;
+    } else {
+      pendingAgentTask = res.agent_task;
+    }
+    if (promptSummary) {
+      promptSummary.textContent =
+        (pendingAgentTask && pendingAgentTask.summary) ||
+        "Ask / save / fill (review before Continue)";
+    }
+    if (promptPreview) promptPreview.style.display = "block";
+    if (promptHint) promptHint.textContent = "Confirm or edit before saving into the demo script.";
+    statusEl.textContent = "Prompt captured — Continue or Edit.";
+    if (btnPromptMode) btnPromptMode.textContent = "⚡ Agent Command";
+  };
+
+  const leavePromptToNarration = () => {
+    stopSpeechRec();
+    promptMode = "narration";
+    pendingAgentTask = null;
+    promptBuffer = "";
+    showPromptPanel(false);
+    if (btnPromptMode) btnPromptMode.textContent = "⚡ Agent Command";
   };
 
   const studioCmd = async (action, extra) => {
@@ -531,6 +735,27 @@
       timeEl.textContent = fmt(performance.now() - window.__navNarrateT0);
     }, 500);
     drawWave();
+    // Marker watch: "prompt start" while narrating (Web Speech; optional).
+    if (promptMode === "narration") startSpeechRec();
+    // Mic on ⇒ capture on. Clients narrate + click together; setup-only
+    // discard was wiping flows when they Stopped without the capture button.
+    if (!capturing) {
+      statusEl.textContent = "Mic on — also starting capture…";
+      void studioCmd("begin_capture").then((st) => {
+        if (st && st.error) {
+          statusEl.textContent = String(st.error);
+          return;
+        }
+        capturing = true;
+        if (btnCapture) {
+          btnCapture.disabled = true;
+          btnCapture.textContent = "Capturing…";
+        }
+        syncCompact();
+        statusEl.textContent = "Capturing live — click and narrate, then Stop.";
+        return pollStudio();
+      });
+    }
   };
 
   btnCapture.addEventListener(
@@ -646,6 +871,73 @@
     },
     true,
   );
+
+  if (btnPromptMode) {
+    btnPromptMode.addEventListener(
+      "click",
+      (ev) => {
+        ev.stopPropagation();
+        if (promptMode === "prompt_listening") {
+          void endPromptListening();
+          return;
+        }
+        if (promptMode === "preview") {
+          leavePromptToNarration();
+          return;
+        }
+        enterPromptListening();
+      },
+      true,
+    );
+  }
+  if (btnPromptStop) {
+    btnPromptStop.addEventListener(
+      "click",
+      (ev) => {
+        ev.stopPropagation();
+        void endPromptListening();
+      },
+      true,
+    );
+  }
+  if (btnPromptContinue) {
+    btnPromptContinue.addEventListener(
+      "click",
+      (ev) => {
+        ev.stopPropagation();
+        if (!pendingAgentTask) {
+          statusEl.textContent = "No parsed task — Edit and Stop prompt again.";
+          return;
+        }
+        statusEl.textContent = "Saving agent task into demo…";
+        void studioCmd("prompt_confirm", { agent_task: pendingAgentTask }).then((res) => {
+          if (res && res.error) {
+            statusEl.textContent = String(res.error);
+            return;
+          }
+          statusEl.textContent = "Agent task saved — will run at live demo.";
+          leavePromptToNarration();
+          return pollStudio();
+        });
+      },
+      true,
+    );
+  }
+  if (btnPromptEdit) {
+    btnPromptEdit.addEventListener(
+      "click",
+      (ev) => {
+        ev.stopPropagation();
+        promptMode = "prompt_listening";
+        pendingAgentTask = null;
+        if (promptPreview) promptPreview.style.display = "none";
+        if (promptTitle) promptTitle.textContent = "⚡ Prompt Listening";
+        if (promptHint) promptHint.textContent = "Edit the instruction, then Stop prompt.";
+        startSpeechRec();
+      },
+      true,
+    );
+  }
 
   recBtn.addEventListener(
     "click",

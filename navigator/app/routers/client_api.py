@@ -1260,8 +1260,9 @@ def _attach_recorded_narration(
 ) -> tuple[str, int]:
     """Transcribe the host's walkthrough onto the flow they just recorded.
 
-    Always writes step_clicks + timing + placeholder narration so timeline
-    playback can run even when STT fails. STT overwrites lines when it succeeds.
+    STT lines are the Client's words (no LLM ``Here is {button}`` rewrite).
+    When STT fails, steps stay silent rather than inventing placeholders.
+    Timing / clicks still attach so timeline playback can run.
     """
     narration = getattr(job, "narration", None)
     if narration is None or not job.steps:
@@ -1271,16 +1272,14 @@ def _attach_recorded_narration(
         _append_narration,
         _append_semantics,
         _attach_meta,
-        groq_asker,
     )
     from navigator.automation.narration import (
         compact_timeline,
         narrate_recording,
-        placeholder_narration_lines,
-        rebuild_flow_narration,
         speech_windows_payload,
         step_timings,
     )
+    from navigator.automation.prompt_command import strip_prompt_markers
     from navigator.automation.record_scrub import (
         scrub_recorded_steps,
         step_mouse_paths_payload,
@@ -1293,13 +1292,10 @@ def _attach_recorded_narration(
 
     mouse_paths = step_mouse_paths_payload(scrubbed_steps)
     step_times = [int(getattr(s, "at_ms", 0) or 0) for s in scrubbed_steps]
-    lines = placeholder_narration_lines(scrubbed_steps)
+    # Silent by default — never seed with "Here is phonebook" placeholders.
+    lines = [""] * len(scrubbed_steps)
     speech: list[dict[str, int]] = []
     used_stt = False
-    hints = [
-        str(getattr(s, "alias", "") or "").replace("_", " ").strip()
-        for s in scrubbed_steps
-    ]
 
     audio = narration.audio()
     keys = groq_key_candidates()
@@ -1310,30 +1306,34 @@ def _attach_recorded_narration(
                 audio=audio,
                 steps=scrubbed_steps,
                 api_key=api_key,
-                ask_text=groq_asker(api_key),
+                ask_text=None,  # no enhance / merge
                 language=getattr(narration, "language", "auto") or "auto",
                 translate_to=getattr(narration, "translate_to", "same") or "same",
+                enhance=False,
             )
             if any(str(l).strip() for l in stt_lines):
-                lines = stt_lines
+                # Pad / trim to step count
+                lines = [str(l or "").strip() for l in stt_lines]
+                while len(lines) < len(scrubbed_steps):
+                    lines.append("")
+                lines = lines[: len(scrubbed_steps)]
                 used_stt = True
         except Exception as exc:  # noqa: BLE001
-            print(f"[record] narration STT failed (using placeholders): {exc}", flush=True)
+            print(f"[record] narration STT failed (leaving silent): {exc}", flush=True)
     elif audio and not keys:
         print("[record] narration STT skipped: no Groq API keys", flush=True)
+    elif not audio:
+        print("[record] narration STT skipped: no audio bytes", flush=True)
 
+    click_ms, windows = compact_timeline(lines if used_stt else [""] * len(scrubbed_steps))
     if not used_stt:
-        lines, timings, windows, click_ms = rebuild_flow_narration(
-            lines=lines,
-            step_times_ms=step_times,
-            hints=hints,
-            ask_text=None,
-        )
-    else:
-        click_ms, windows = compact_timeline(lines)
-        timings = step_timings(click_ms, lines)
+        # Keep recorded click clock when no speech lines.
+        click_ms = list(step_times)
+        windows = [None] * len(scrubbed_steps)
+    timings = step_timings(click_ms, lines)
     speech = speech_windows_payload(windows)
     clicks = [{"idx": i, "at_ms": int(t)} for i, t in enumerate(click_ms)]
+    lines = [strip_prompt_markers(str(l or "")) for l in lines]
 
     semantics_payload = {
         "purpose": "",
@@ -1375,12 +1375,63 @@ def _attach_recorded_narration(
         ):
             if rows:
                 yaml_text = _attach_meta(yaml_text, section, job.flow_id, rows)
+    yaml_text = _stamp_spoken_on_flow_steps(yaml_text, job.flow_id, lines)
     narrated = sum(1 for l in lines if str(l).strip())
     print(
         f"[record] narration: {narrated}/{len(lines)} steps have spoken lines",
         flush=True,
     )
     return yaml_text, narrated
+
+
+def _stamp_spoken_on_flow_steps(
+    yaml_text: str, flow_id: str, lines: list[str]
+) -> str:
+    """Write Client narration onto each flow step's ``spoken`` field.
+
+    Live playback and demo script prefer ``call.spoken``; meta alone is easy to
+    drift. Stamping keeps the words the Client said on the step itself.
+    """
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(yaml_text)
+    if not isinstance(raw, dict):
+        return yaml_text
+    pages = raw.get("pages") or {}
+    if not isinstance(pages, dict):
+        return yaml_text
+    page_id = None
+    for pid, page in pages.items():
+        if not isinstance(page, dict):
+            continue
+        flows = page.get("flows")
+        if isinstance(flows, dict) and flow_id in flows:
+            page_id = pid
+            break
+    if not page_id:
+        return yaml_text
+    page = pages[page_id]
+    flows = page.get("flows")
+    if not isinstance(flows, dict):
+        return yaml_text
+    steps = flows.get(flow_id)
+    if not isinstance(steps, list):
+        return yaml_text
+    changed = False
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict):
+            continue
+        if i >= len(lines):
+            break
+        line = str(lines[i] or "").strip()
+        if not line:
+            continue
+        if step.get("spoken") != line:
+            step["spoken"] = line
+            changed = True
+    if not changed:
+        return yaml_text
+    return _yaml.safe_dump(raw, sort_keys=False)
 
 def _append_meta_rows(
     yaml_text: str,

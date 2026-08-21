@@ -237,3 +237,48 @@ def _parse_next_steps(raw: str) -> list[RecordedStep]:
     if not out:
         raise RuntimeError("agent returned empty steps")
     return out
+
+
+def apply_confirmed_agent_task(
+    steps: list[RecordedStep],
+    task: Any,
+    *,
+    page: Any = None,
+) -> list[RecordedStep]:
+    """Apply a confirmed AgentTask onto recorded steps (ask + fill/use).
+
+    Does not drive the browser — only rewrites fill steps for live demo.
+    """
+    from navigator.automation.prompt_command import AgentTask
+
+    if not isinstance(task, AgentTask):
+        raise TypeError("AgentTask required")
+    touched: list[RecordedStep] = []
+    attach_idx = task.step_index
+    for st in task.steps:
+        if st.op == "ask_user":
+            idx = st.step_index if st.step_index is not None else attach_idx
+            step = mark_step_ask_visitor(
+                steps,
+                step_index=idx,
+                var_alias=st.variable,
+                live_question=st.question,
+                page=page,
+            )
+            touched.append(step)
+        elif st.op in {"fill_field", "use_variable"}:
+            idx = st.step_index if st.step_index is not None else attach_idx
+            if idx is None:
+                continue
+            if 0 <= idx < len(steps) and steps[idx].source == "user" and st.op == "fill_field":
+                # Ask already owns this fill.
+                continue
+            step = bind_value_ref(
+                steps,
+                step_index=idx,
+                value_ref=st.variable,
+            )
+            touched.append(step)
+        elif st.op == "save_variable":
+            continue
+    return touched

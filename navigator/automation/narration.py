@@ -427,13 +427,11 @@ def pace_lines(
 ) -> list[str]:
     """One watchable line per step.
 
-    Long monologues spill onto following empty steps. Remaining empties get a
-    hint-based placeholder. Already-short narrated lines stay put.
+    Long monologues spill onto following empty steps. Remaining empties stay
+    silent — never invent ``Here is {ui}`` from hints (Client wants their words).
     """
     n = len(lines)
-    hint_list = [str(h or "") for h in (hints or [])]
-    while len(hint_list) < n:
-        hint_list.append("")
+    _ = hints  # kept for call-site compatibility
     result = [""] * n
     overflow: list[str] = []
 
@@ -455,8 +453,6 @@ def pace_lines(
             continue
         if overflow:
             result[i] = overflow.pop(0)
-            continue
-        result[i] = _hint_line(hint_list[i])
 
     if overflow and n:
         extra = " ".join(overflow).strip()
@@ -661,11 +657,13 @@ def narrate_recording(
     transcribe_verbose: Callable[..., Any] | None = None,
     language: str = "auto",
     translate_to: str = "same",
+    enhance: bool = False,
 ) -> tuple[list[str], list[dict[str, int]], list[tuple[int, int] | None]]:
-    """Full pipeline: audio + steps → (line per step, timing hints, speech windows).
+    """Audio + steps → (line per step, timing, speech windows).
 
-    Returns empty lists when there was no narration, so callers can fall through
-    to the existing generated-narration path unchanged.
+    Default ``enhance=False``: speak what the Client said (STT + align + pace).
+    No LLM refine/merge into ``Here is {button}`` copy. Set ``enhance=True`` only
+    when a caller explicitly wants the old rewrite path.
     """
     if not audio or not steps:
         return [], [], []
@@ -681,10 +679,11 @@ def narrate_recording(
         return [], [], []
 
     lines = align(segments, step_times)
-    try:
-        lines = refine(lines, ask_text=ask_text, language=language)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[narrate] refine skipped: {exc}", flush=True)
+    if enhance and ask_text is not None:
+        try:
+            lines = refine(lines, ask_text=ask_text, language=language)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[narrate] refine skipped: {exc}", flush=True)
     tgt = (translate_to or "same").strip().lower()
     src = (language or "auto").strip().lower()
     if tgt not in {"", "same", "auto"} and tgt != src:
@@ -695,13 +694,12 @@ def narrate_recording(
     hints = [
         str(getattr(s, "alias", "") or "").replace("_", " ").strip() for s in steps
     ]
-    # Pace + merge + compact clock: a 45s monologue on click 0 must not keep a
-    # 45s speech window or a 45s hole before the next click.
+    # Pace monologues across steps; never LLM-merge unless enhance=True.
     lines, timings, windows, _clicks = rebuild_flow_narration(
         lines=lines,
         step_times_ms=step_times,
         hints=hints,
-        ask_text=ask_text,
+        ask_text=ask_text if enhance else None,
     )
     return lines, timings, windows
 

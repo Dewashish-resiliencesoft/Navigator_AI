@@ -57,24 +57,56 @@ def ensure_playwright_browsers() -> str | None:
 
 
 def ensure_headed_display() -> str | None:
-    """For headful Chromium: set DISPLAY when Xvfb/:0 exists, else raise.
+    """For headful Chromium: set DISPLAY when a usable X server exists.
 
-    VPS often runs Xvfb on :0 but uvicorn has no DISPLAY → Missing X server.
+    Prefer an already-working ``DISPLAY``. If unset or unauthorized (common on
+    VPS when uvicorn has ``DISPLAY=:0`` but LightDM xauth blocks the app user),
+    fall back to Xvfb locks ``:99``, ``:0``, ``:1``.
     """
+    candidates: list[str] = []
     current = (os.environ.get("DISPLAY") or "").strip()
     if current:
-        return current
-    # Common lab Xvfb: /tmp/.X0-lock or /tmp/.X99-lock
-    for n in (0, 99, 1):
-        if Path(f"/tmp/.X{n}-lock").is_file():
-            os.environ["DISPLAY"] = f":{n}"
-            print(f"[playwright] DISPLAY unset — using :{n} (Xvfb lock found)", flush=True)
-            return f":{n}"
+        candidates.append(current)
+    for n in (99, 0, 1):
+        disp = f":{n}"
+        if disp not in candidates and Path(f"/tmp/.X{n}-lock").is_file():
+            candidates.append(disp)
+        # Also accept /tmp/.X11-unix/Xn sockets (Xvfb -displayfd may omit lock).
+        sock = Path(f"/tmp/.X11-unix/X{n}")
+        if disp not in candidates and sock.exists():
+            candidates.append(disp)
+
+    for disp in candidates:
+        if _display_usable(disp):
+            if os.environ.get("DISPLAY") != disp:
+                os.environ["DISPLAY"] = disp
+                print(f"[playwright] using DISPLAY={disp}", flush=True)
+            return disp
+
     raise RuntimeError(
         "Headed Chromium needs a display (Missing X server / $DISPLAY). "
-        "On a VPS either: (1) run Xvfb and set DISPLAY=:0 for uvicorn, or "
-        "(2) record on your laptop — start "
+        "On a VPS either: (1) run `Xvfb :99 -screen 0 1920x1080x24 -ac` and "
+        "start uvicorn with DISPLAY=:99, or (2) record on your laptop — start "
         "`.venv/bin/python scripts/local_record_server.py` and set "
         "NAVIGATOR_RECORD_BROWSER_WS=ws://<laptop-lan-ip>:3333 "
         "(plus NAVIGATOR_RECORD_WS_PATH) on the API host."
     )
+
+
+def _display_usable(display: str) -> bool:
+    """True if Chromium could open this DISPLAY (xdpyinfo or socket+no auth fail)."""
+    import subprocess
+
+    try:
+        r = subprocess.run(
+            ["xdpyinfo"],
+            env={**os.environ, "DISPLAY": display},
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+        return r.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        # No xdpyinfo — accept only if socket exists (best-effort).
+        n = display.lstrip(":").split(".")[0]
+        return Path(f"/tmp/.X11-unix/X{n}").exists()

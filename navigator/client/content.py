@@ -346,7 +346,8 @@ def rebuild_yaml_narration(
         lines=lines,
         step_times_ms=times,
         hints=hints,
-        ask_text=ask_text,
+        # Raw Client words only — never LLM-merge into "Here is {ui}".
+        ask_text=None,
         product_name=product_name,
     )
     yaml_text = _attach_meta(yaml_text, "narration_suggestions", fid, new_lines)
@@ -375,6 +376,7 @@ def merge_recorded_flow(
     base_url: str,
     update_existing: bool = False,
     replace_steps: bool = False,
+    agent_tasks: list[Any] | None = None,
 ) -> str:
     raw = yaml.safe_load(yaml_text)
     if not isinstance(raw, dict):
@@ -383,7 +385,10 @@ def merge_recorded_flow(
 
     cleaned = scrub_recorded_steps(list(steps))
     draft = draft_site_graph(
-        base_url=base_url, product_name=product_name, steps=cleaned
+        base_url=base_url,
+        product_name=product_name,
+        steps=cleaned,
+        agent_tasks=agent_tasks,
     )
     draft_pages = draft.get("pages") or {}
     if not draft_pages:
@@ -501,6 +506,23 @@ def merge_recorded_flow(
     for row in demo_variables_from_steps(cleaned):
         by_alias[row["alias"]] = row
     meta["demo_variables"] = list(by_alias.values())
+    if agent_tasks:
+        from navigator.automation.prompt_command import (
+            AgentTask,
+            agent_tasks_to_meta,
+            merge_agent_tasks_into_meta,
+        )
+
+        parsed: list[AgentTask] = []
+        for t in agent_tasks:
+            if isinstance(t, AgentTask):
+                parsed.append(t)
+            elif isinstance(t, dict):
+                parsed.append(AgentTask.from_dict(t))
+        if parsed:
+            merged = merge_agent_tasks_into_meta(meta, parsed)
+            meta.clear()
+            meta.update(merged)
     parse_site_graph(yaml.safe_dump(raw), origin="<ops-record-merge>")
     return yaml.safe_dump(raw, sort_keys=False)
 
@@ -533,6 +555,8 @@ class RecorderJob:
     product_id: str = ""
     #: Cached result from persist_recorder_job (avoid double-merge).
     persist_result: dict[str, Any] | None = None
+    #: Confirmed AgentTasks (prompt channel) if gate not available.
+    agent_tasks: list[Any] = field(default_factory=list)
 
 
 _recorder_lock = threading.Lock()
@@ -554,6 +578,7 @@ class _MpGate:
         self.status_sink = None
         self.steps_ref = None
         self.last_field = None
+        self.agent_tasks: list[Any] = []
 
     @property
     def phase(self) -> str:
@@ -610,6 +635,7 @@ def _record_ws_worker(
             pass
 
     gate.status_sink = _sink
+    narration = NarrationCapture() if narrate else None
     try:
         record_session(
             start_url,
@@ -619,10 +645,24 @@ def _record_ws_worker(
             stop_event=stop,
             steps_out=steps,
             gate=gate,
-            narration=NarrationCapture() if narrate else None,
+            narration=narration,
             browser_ws=browser_ws,
         )
         ns.setup_discarded = gate.setup_discarded
+        # Hand narration bytes to parent before process exits.
+        if narration is not None:
+            audio = narration.audio()
+            if audio:
+                narr_path = Path(out_path).with_suffix(".narrate.bin")
+                narr_path.write_bytes(audio)
+                ns.narration_path = str(narr_path)
+                ns.narration_mime = narration.mime or "audio/webm"
+                ns.narration_language = narration.language
+                ns.narration_translate_to = narration.translate_to
+                print(
+                    f"[record] worker wrote narration {len(audio)} bytes → {narr_path}",
+                    flush=True,
+                )
     except Exception as exc:  # noqa: BLE001
         ns.error = str(exc)
         print(f"[record] worker crash:\n{traceback.format_exc()}", flush=True)
@@ -752,6 +792,10 @@ def start_recorder(
         import json as _json
 
         ns.guided_plan_json = _json.dumps(guided_plan_meta or {})
+        ns.narration_path = ""
+        ns.narration_mime = ""
+        ns.narration_language = "auto"
+        ns.narration_translate_to = "same"
         steps = mgr.list()
         flagged = mgr.list()
         hands_commands = mgr.list()
@@ -806,6 +850,7 @@ def start_recorder(
             job.steps = list(steps)
             needs_merge = bool(getattr(ns, "needs_merge", False))
             job.needs_merge = needs_merge
+            _hydrate_narration_from_worker(job)
             if job.done and job.persist_result is not None:
                 return
             if needs_merge:
@@ -903,6 +948,50 @@ def begin_capture() -> RecorderJob:
         return job
 
 
+def _job_agent_tasks(job: RecorderJob) -> list[Any]:
+    """Confirmed prompt-command tasks from gate / narration / job."""
+    tasks: list[Any] = []
+    if job.gate is not None:
+        tasks = list(getattr(job.gate, "agent_tasks", None) or [])
+    if not tasks and getattr(job, "narration", None) is not None:
+        tasks = list(getattr(job.narration, "agent_tasks", None) or [])
+    if not tasks:
+        tasks = list(getattr(job, "agent_tasks", None) or [])
+    return tasks
+
+
+def _hydrate_narration_from_worker(job: RecorderJob) -> None:
+    """Pull narration audio written by the WS worker into ``job.narration``.
+
+    MediaRecorder chunks live in the child process; without this, STT never runs
+    and the demo script has no Client-spoken lines.
+    """
+    ns = job.mp_ns
+    if ns is None:
+        return
+    path = str(getattr(ns, "narration_path", "") or "").strip()
+    if not path:
+        return
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        print(f"[record] narration file unreadable: {exc}", flush=True)
+        return
+    if not raw:
+        return
+    if job.narration is None:
+        job.narration = NarrationCapture()
+    job.narration.chunks = [raw]
+    job.narration.mime = str(getattr(ns, "narration_mime", "") or job.narration.mime or "")
+    lang = str(getattr(ns, "narration_language", "") or "").strip()
+    if lang:
+        job.narration.language = lang
+    tr = str(getattr(ns, "narration_translate_to", "") or "").strip()
+    if tr:
+        job.narration.translate_to = tr
+    print(f"[record] hydrated narration {len(raw)} bytes from worker", flush=True)
+
+
 def persist_recorder_job(
     job: RecorderJob,
     *,
@@ -912,9 +1001,19 @@ def persist_recorder_job(
 
     Safe to call from the dashboard stop route or from the worker wait thread
     after studio Stop (needs_merge). Idempotent via ``job.persist_result``.
+
+    Refuses to write when zero steps were captured — an empty replace would
+    wipe a real flow down to a stub ``wait_for body``.
     """
     if job.persist_result is not None:
         return job.persist_result
+
+    # Snapshot shared Manager list before anything else (WS worker may die).
+    try:
+        job.steps = list(job.steps)
+    except Exception:  # noqa: BLE001
+        pass
+    _hydrate_narration_from_worker(job)
 
     base_out: dict[str, Any] = {
         "ok": True,
@@ -932,7 +1031,23 @@ def persist_recorder_job(
     product_id = (job.product_id or "").strip()
     if not product_id:
         base_out["error"] = (base_out.get("error") or "") or "missing product_id"
+        base_out["ok"] = False
         job.persist_result = base_out
+        return base_out
+
+    if not job.steps:
+        msg = (
+            "0 steps captured — not saving (would wipe the flow). "
+            "Click “Start capturing this flow” (or start the mic — that also "
+            "starts capture), then click/fill the product UI, then Stop."
+        )
+        print(f"[record] {msg}", flush=True)
+        base_out["ok"] = False
+        base_out["error"] = (base_out.get("error") or "") or msg
+        job.persist_result = base_out
+        job.needs_merge = False
+        job.done = True
+        job.phase = "done"
         return base_out
 
     try:
@@ -960,6 +1075,7 @@ def persist_recorder_job(
             base_url=recording_base_url(job.start_url),
             update_existing=update,
             replace_steps=update,
+            agent_tasks=_job_agent_tasks(job),
         )
         new_yaml, narrated = _attach_recorded_narration(
             new_yaml,
@@ -1034,13 +1150,19 @@ def stop_recorder() -> RecorderJob:
                 job.mp_ns.needs_merge = False
             except Exception:  # noqa: BLE001
                 pass
-    # Short wait — never block dashboard UI for minutes on a stuck Chrome WS.
+    # Wait for Playwright + narration flush. Kill only as last resort.
     if job.proc is not None:
-        job.proc.join(timeout=8)
+        job.proc.join(timeout=45)
         if job.proc.is_alive():
             print("[record] worker slow after stop — terminating", flush=True)
+            # Snapshot shared steps BEFORE kill (Manager may die with process).
+            try:
+                job.steps = list(job.steps)
+            except Exception:  # noqa: BLE001
+                pass
+            _hydrate_narration_from_worker(job)
             job.proc.terminate()
-            job.proc.join(timeout=3)
+            job.proc.join(timeout=5)
             if job.proc.is_alive():
                 try:
                     job.proc.kill()
@@ -1051,8 +1173,9 @@ def stop_recorder() -> RecorderJob:
             job.steps = list(job.steps)
         except Exception:  # noqa: BLE001
             pass
+        _hydrate_narration_from_worker(job)
     elif job.thread:
-        job.thread.join(timeout=8)
+        job.thread.join(timeout=45)
     if job.gate is not None:
         job.setup_discarded = job.gate.setup_discarded
         job.flagged = list(job.gate.flagged)

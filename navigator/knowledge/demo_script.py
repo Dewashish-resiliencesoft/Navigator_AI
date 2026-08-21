@@ -33,7 +33,7 @@ from navigator.meeting.intake import (
 )
 
 BeatKind = Literal[
-    "intake", "flow_step", "live_input", "login", "speak_only", "wrap_up"
+    "intake", "flow_step", "live_input", "login", "speak_only", "wrap_up", "agent_task"
 ]
 
 WRAP_UP_SPOKEN = (
@@ -189,24 +189,24 @@ def resolve_flow_step_spoken(
     if spoken:
         return spoken, "yaml"
 
-    # A human narrated this flow while recording it. Same _meta sections as
-    # explore writes, so timing is what tells the two apart -- and the Client
-    # should see that this line is their own words, not a model's.
+    # Prefer the Client's recorded narration (their own words) over generated copy.
+    narr = graph.flow_narration_lines(flow_id)
+    if narr and step_index < len(narr) and str(narr[step_index] or "").strip():
+        return str(narr[step_index]).strip(), "recorded"
+
     narrated = step_index in graph.flow_step_timing(flow_id)
 
     sem_labels = _semantics_step_labels(graph, flow_id)
     if step_index in sem_labels:
         return sem_labels[step_index], "recorded" if narrated else "semantics"
 
-    narr = graph.flow_narration_suggestions(flow_id)
-    # ponytail: explore narration only when length matches — merged flows drift indices
+    suggestions = graph.flow_narration_suggestions(flow_id)
     if (
-        narr
-        and len(narr) == step_count
-        and step_index < len(narr)
-        and narr[step_index]
+        suggestions
+        and step_index < len(suggestions)
+        and suggestions[step_index]
     ):
-        return narr[step_index], "recorded" if narrated else "explore"
+        return suggestions[step_index], "recorded" if narrated else "explore"
 
     derived = spoken_from_action(graph, page_id, call)
     if derived:
@@ -552,6 +552,27 @@ def compose_full_demo_script(
                 beat["needs_approval"] = not bool(approval.get("approved"))
                 beat["approval_reason"] = str(approval.get("reason") or "")
             beats.append(beat)
+
+    # Prompt-command AgentTasks (record studio) — Client-editable SoT.
+    agent_rows = graph.meta.get("agent_tasks") if isinstance(graph.meta, dict) else None
+    if isinstance(agent_rows, list):
+        for row in agent_rows:
+            if not isinstance(row, dict):
+                continue
+            tid = str(row.get("id") or "").strip() or "task"
+            beats.append(
+                {
+                    "id": _beat_id("agent_task", tid),
+                    "kind": "agent_task",
+                    "spoken": str(row.get("summary") or row.get("raw_instruction") or ""),
+                    "asks_visitor": True,
+                    "spoken_source": "prompt_command",
+                    "agent_task": row,
+                    "flow_id": str(row.get("flow_id") or ""),
+                    "step_index": row.get("step_index"),
+                }
+            )
+            sources_used.add("prompt_command")
 
     if not flow_id_filter:
         beats.append(

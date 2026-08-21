@@ -1251,6 +1251,14 @@ def run_live_meet_demo(
         session_id = session_id or uuid4()
         live_opening_done = True
         with ActionLog(settings.db_path) as log, sync_playwright() as pw:
+            if headful:
+                from navigator.automation.playwright_env import (
+                    ensure_headed_display,
+                    ensure_playwright_browsers,
+                )
+
+                ensure_playwright_browsers()
+                ensure_headed_display()
             browser = pw.chromium.launch(headless=not headful)
             context = browser.new_context(
                 viewport={"width": 1280, "height": 720},

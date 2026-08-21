@@ -56,6 +56,60 @@ def _slug(text: str, fallback: str) -> str:
     return (s[:40] or fallback)
 
 
+def recorded_step_to_dict(step: RecordedStep) -> dict[str, Any]:
+    return {
+        "tool": step.tool,
+        "alias": step.alias,
+        "selector": step.selector,
+        "value": step.value,
+        "page_id": step.page_id,
+        "postcondition": dict(step.postcondition or {}),
+        "source": step.source,
+        "live_question": step.live_question,
+        "value_ref": step.value_ref,
+        "spoken": step.spoken,
+        "needs_approval": bool(step.needs_approval),
+        "approval_reason": step.approval_reason or "",
+        "at_ms": int(step.at_ms or 0),
+        "mouse_path": list(step.mouse_path or []),
+    }
+
+
+def recorded_step_from_dict(raw: dict[str, Any]) -> RecordedStep:
+    return RecordedStep(
+        tool=str(raw.get("tool") or "click_element"),
+        alias=str(raw.get("alias") or "el"),
+        selector=str(raw.get("selector") or "body"),
+        value=raw.get("value"),
+        page_id=str(raw.get("page_id") or "main"),
+        postcondition=dict(raw.get("postcondition") or {}),
+        source=str(raw.get("source") or "agent"),
+        live_question=raw.get("live_question"),
+        value_ref=raw.get("value_ref"),
+        spoken=raw.get("spoken"),
+        needs_approval=bool(raw.get("needs_approval")),
+        approval_reason=str(raw.get("approval_reason") or ""),
+        at_ms=int(raw.get("at_ms") or 0),
+        mouse_path=list(raw.get("mouse_path") or []),
+    )
+
+
+def _publish_steps_snapshot(gate: CaptureGate | None, steps: list[RecordedStep]) -> None:
+    """Mirror steps onto mp Namespace so parent can persist after worker kill."""
+    if gate is None:
+        return
+    ns = getattr(gate, "_ns", None)
+    if ns is None:
+        return
+    import json
+
+    try:
+        ns.steps_json = json.dumps([recorded_step_to_dict(s) for s in list(steps)])
+        ns.step_count = len(steps)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] steps snapshot failed: {exc}", flush=True)
+
+
 def prefer_selector(el_info: dict[str, Any]) -> tuple[str, str]:
     """Return (alias, css) preferring testid/id."""
     testid = el_info.get("testid") or ""
@@ -231,14 +285,37 @@ def draft_site_graph(
 
 _INJECT_JS = """
 (() => {
-  if (document.documentElement.dataset.navigatorRecord === '1') return;
+  // Bump from Python before each reinject (window.__navRecordGen). Soft SPA
+  // navigations keep documentElement but wipe listeners — early return on a
+  // sticky dataset.navigatorRecord='1' left clicks unrecorded and cursor gone.
+  const gen = String(window.__navRecordGen || 0);
+  if (document.documentElement.dataset.navRecGen === gen) return;
+  document.documentElement.dataset.navRecGen = gen;
   document.documentElement.dataset.navigatorRecord = '1';
   const send = (payload) => {
+    let delivered = false;
     try {
-      const r = window.navigatorRecord(payload);
-      if (r && typeof r.catch === 'function') r.catch(() => {});
+      if (typeof window.navigatorRecord === 'function') {
+        const r = window.navigatorRecord(payload);
+        if (r && typeof r.catch === 'function') r.catch(() => {});
+        delivered = true;
+      }
     } catch (e) {
       console.warn('[navigator-record] send failed', e);
+    }
+    // DOM queue — Python drain loop reads this when expose_function is dead.
+    try {
+      const key = 'data-nav-record-q';
+      const el = document.documentElement;
+      let q = [];
+      try { q = JSON.parse(el.getAttribute(key) || '[]'); } catch (e2) { q = []; }
+      if (!Array.isArray(q)) q = [];
+      q.push(payload);
+      if (q.length > 80) q = q.slice(-80);
+      el.setAttribute(key, JSON.stringify(q));
+    } catch (e3) { /* ignore */ }
+    if (!delivered) {
+      console.warn('[navigator-record] queued click (no navigatorRecord binding)');
     }
   };
   const elInfo = (t) => {
@@ -389,12 +466,52 @@ _INJECT_JS = """
 
 def inject_narration_widget(page: Page) -> None:
     """Install record-studio + narrate overlay (idempotent). Always during record."""
-    page.evaluate(_narrate_widget_js())
+    _evaluate_fast(page, _narrate_widget_js())
 
 
-def inject_dom_listeners(page: Page) -> None:
-    """Install click/fill listeners on the current document (idempotent per load)."""
-    page.evaluate(_INJECT_JS)
+def inject_dom_listeners(page: Page, *, force: bool = False) -> None:
+    """Install click/fill listeners (rebinds after SPA wipe via gen bump)."""
+    if not force:
+        try:
+            alive = page.evaluate(
+                "() => document.documentElement.dataset.navigatorRecord === '1'"
+            )
+            if alive:
+                return
+        except Exception:  # noqa: BLE001
+            pass
+    _evaluate_fast(
+        page,
+        "window.__navRecordGen = (window.__navRecordGen || 0) + 1;",
+    )
+    _evaluate_fast(page, _INJECT_JS)
+
+
+def inject_record_cursor(page: Page) -> None:
+    """Visible demo cursor — reinjected with listeners so SPA nav does not drop it."""
+    try:
+        from navigator.automation.browser.cursor import _CURSOR_JS
+
+        _evaluate_fast(page, _CURSOR_JS)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] cursor inject skipped: {exc}", flush=True)
+
+
+def _evaluate_fast(page: Page, script: str) -> None:
+    """Evaluate with a short default timeout so remote CDP cannot hang forever."""
+    prev = 30_000
+    try:
+        prev = int(page.context._timeout_settings.timeout)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        page.set_default_timeout(5_000)
+        page.evaluate(script)
+    finally:
+        try:
+            page.set_default_timeout(prev or 30_000)
+        except Exception:  # noqa: BLE001
+            page.set_default_timeout(30_000)
 
 
 @dataclass
@@ -786,9 +903,40 @@ def _install_listeners(
         except Exception as exc:  # noqa: BLE001
             print(f"[record] dom studio cmd failed: {exc}", flush=True)
 
+    def _drain_dom_record_q() -> None:
+        """Pull queued clicks when navigatorRecord binding is dead after SPA nav."""
+        try:
+            raw = page.evaluate(
+                """() => {
+                  const el = document.documentElement;
+                  const v = el.getAttribute('data-nav-record-q');
+                  if (v) el.removeAttribute('data-nav-record-q');
+                  return v || '';
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            return
+        if not raw:
+            return
+        try:
+            import json as _json
+
+            items = _json.loads(raw)
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(items, list):
+            return
+        for item in items:
+            if isinstance(item, dict):
+                try:
+                    _on_payload(item)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[record] queued payload dropped: {exc}", flush=True)
+
     # Wait loop + reinject call this without closing over install scope.
     if gate is not None:
         gate.drain_dom_studio_cmd = _drain_dom_studio_cmd  # type: ignore[attr-defined]
+        gate.drain_dom_record_q = _drain_dom_record_q  # type: ignore[attr-defined]
 
     already = bool(getattr(page, "_nav_record_bound", False))
     if not already:
@@ -797,32 +945,41 @@ def _install_listeners(
         page.expose_function("navigatorRecord", _on_payload)
         page.expose_function("navigatorStudioCmd", _studio_cmd)
         page.expose_function("navigatorStudioStatus", _studio_status)
+        page.add_init_script(
+            "window.__navRecordGen = (window.__navRecordGen || 0) + 1;"
+        )
         page.add_init_script(_INJECT_JS)
         page.add_init_script(_narrate_widget_js())
+        try:
+            from navigator.automation.browser.cursor import _CURSOR_JS
+
+            page.add_init_script(_CURSOR_JS)
+        except Exception:  # noqa: BLE001
+            pass
         if narration is not None:
             page.expose_function("navigatorNarrate", narration.on_chunk)
             page.expose_function("navigatorNarrateConfig", narration.apply_config)
         page._nav_record_bound = True  # type: ignore[attr-defined]
         print("[record] studio functions bound", flush=True)
 
+    def _mark_need_reinject(*_args: object) -> None:
+        # Never evaluate() from Playwright event handlers — remote CDP deadlocks
+        # the worker (no capture loop → 0 steps). Wait loop does inject.
+        page._nav_need_reinject = True  # type: ignore[attr-defined]
+
+    # Flag-only load hooks — SPA wipe detected in wait loop.
+    if not getattr(page, "_nav_record_load_hook", False):
+        page.on("load", _mark_need_reinject)
+        page.on(
+            "framenavigated",
+            lambda frame: _mark_need_reinject() if frame == page.main_frame else None,
+        )
+        page._nav_record_load_hook = True  # type: ignore[attr-defined]
+
     if bind_only:
         return
 
-    def _reinject() -> None:
-        try:
-            from navigator.automation.browser.cursor import install_cursor
-
-            install_cursor(page)
-            inject_dom_listeners(page)
-            inject_narration_widget(page)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[record] reinject skipped: {exc}", flush=True)
-
-    if not getattr(page, "_nav_record_load_hook", False):
-        page.on("load", lambda *_: _reinject())
-        page.on("framenavigated", lambda frame: _reinject() if frame == page.main_frame else None)
-        page._nav_record_load_hook = True  # type: ignore[attr-defined]
-    _reinject()
+    page._nav_need_reinject = True  # type: ignore[attr-defined]
 
 
 def _step_from_payload(payload: dict[str, Any]) -> RecordedStep:
@@ -1051,28 +1208,127 @@ def record_session(
                 )
             except Exception:  # noqa: BLE001
                 pass
-        else:
-            try:
-                page.bring_to_front()
-            except Exception:  # noqa: BLE001
-                pass
-        if narration is not None and target and "://" in target:
-            from urllib.parse import urlparse as _urlparse
+        # No bring_to_front / post-goto install — both hang remote CDP and block
+        # the capture loop (expose_function callbacks never run → 0 steps).
+        if stop_event is not None:
+            print(
+                "[record] Ops session: use Record studio overlay in the browser "
+                "(Start capturing this flow / Stop), or /client dashboard.",
+                flush=True,
+            )
+            print("[record] capture loop running (injecting listeners…)", flush=True)
+            page._nav_need_reinject = True  # type: ignore[attr-defined]
+            last_phase = gate.phase if gate is not None else "setup"
+            last_step_n = -1
+            inject_ticks = 0
+            mic_tried = False
+            while not stop_event.wait(0.25):
+                drain = getattr(gate, "drain_dom_studio_cmd", None) if gate else None
+                if callable(drain):
+                    try:
+                        drain()
+                    except Exception:  # noqa: BLE001
+                        pass
+                drain_q = getattr(gate, "drain_dom_record_q", None) if gate else None
+                if callable(drain_q):
+                    try:
+                        drain_q()
+                    except Exception:  # noqa: BLE001
+                        pass
+                inject_ticks += 1
+                want = bool(getattr(page, "_nav_need_reinject", False)) or inject_ticks == 1
+                if want or inject_ticks % 8 == 0:
+                    try:
+                        need = {"rec": False, "studio": False, "cursor": False}
+                        try:
+                            page.set_default_timeout(3_000)
+                            need = page.evaluate(
+                                """() => ({
+                                  rec: document.documentElement.dataset.navigatorRecord === '1',
+                                  studio: !!document.getElementById('nav-narrate'),
+                                  cursor: !!document.getElementById('nav-cursor')
+                                })"""
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[record] health eval: {exc}", flush=True)
+                        finally:
+                            try:
+                                page.set_default_timeout(30_000)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        missing = not (
+                            isinstance(need, dict)
+                            and need.get("rec")
+                            and need.get("studio")
+                        )
+                        if want or missing:
+                            inject_dom_listeners(page, force=True)
+                            inject_narration_widget(page)
+                            inject_record_cursor(page)
+                            page._nav_need_reinject = False  # type: ignore[attr-defined]
+                            if not getattr(page, "_nav_inject_ok", False):
+                                page._nav_inject_ok = True  # type: ignore[attr-defined]
+                                print("[record] studio listeners ready", flush=True)
+                            elif missing or want:
+                                print("[record] reinjected after nav", flush=True)
+                        elif isinstance(need, dict) and not need.get("cursor"):
+                            inject_record_cursor(page)
+                            page._nav_need_reinject = False  # type: ignore[attr-defined]
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[record] inject tick: {exc}", flush=True)
+                if (
+                    not mic_tried
+                    and narration is not None
+                    and target
+                    and "://" in target
+                ):
+                    mic_tried = True
+                    try:
+                        from urllib.parse import urlparse as _urlparse
 
-            parsed_origin = _urlparse(target)
+                        parsed_origin = _urlparse(target)
+                        context.grant_permissions(
+                            ["microphone"],
+                            origin=f"{parsed_origin.scheme}://{parsed_origin.netloc}",
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[record] mic permission not granted: {exc}", flush=True)
+                if gate is not None and gate.phase != last_phase:
+                    last_phase = gate.phase
+                    print(f"[record] phase → {last_phase}", flush=True)
+                if len(steps) != last_step_n:
+                    last_step_n = len(steps)
+                    _publish_steps_snapshot(gate, steps)
+                    print(f"[record] steps={last_step_n}", flush=True)
+                if gate is not None and getattr(gate, "needs_merge", False):
+                    if gate.stop_event is not None and not gate.stop_event.is_set():
+                        gate.stop_event.set()
+                    break
+                try:
+                    # Never page.evaluate here — remote CDP can hang forever and
+                    # block navigatorRecord callbacks (0 steps). Namespace sink enough.
+                    _publish_studio_status(gate, None)
+                except Exception:  # noqa: BLE001
+                    pass
+            _publish_steps_snapshot(gate, steps)
+        else:
+            # CLI path — inject once then wait for Enter.
+            if narration is not None and target and "://" in target:
+                from urllib.parse import urlparse as _urlparse
+
+                parsed_origin = _urlparse(target)
+                try:
+                    context.grant_permissions(
+                        ["microphone"],
+                        origin=f"{parsed_origin.scheme}://{parsed_origin.netloc}",
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[record] mic permission not granted: {exc}", flush=True)
             try:
-                context.grant_permissions(
-                    ["microphone"],
-                    origin=f"{parsed_origin.scheme}://{parsed_origin.netloc}",
-                )
+                _install_listeners(page, steps, gate=gate, narration=narration)
+                print("[record] studio listeners ready", flush=True)
             except Exception as exc:  # noqa: BLE001
-                print(f"[record] mic permission not granted: {exc}", flush=True)
-        try:
-            _install_listeners(page, steps, gate=gate, narration=narration)
-            print("[record] studio listeners ready", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[record] post-goto inject skipped: {exc}", flush=True)
-        if stop_event is None:
+                print(f"[record] post-goto inject skipped: {exc}", flush=True)
             print(
                 "[record] Click through the demo in the browser "
                 "(each click/fill should print [record] +… here).\n"
@@ -1084,28 +1340,6 @@ def record_session(
                 input()
             except EOFError:
                 pass
-        else:
-            print(
-                "[record] Ops session: use Record studio overlay in the browser "
-                "(Start capturing this flow / Stop), or /client dashboard.",
-                flush=True,
-            )
-            last_phase = gate.phase if gate is not None else "setup"
-            while not stop_event.wait(0.25):
-                drain = getattr(gate, "drain_dom_studio_cmd", None) if gate else None
-                if callable(drain):
-                    try:
-                        drain()
-                    except Exception:  # noqa: BLE001
-                        pass
-                if gate is not None and gate.phase != last_phase:
-                    last_phase = gate.phase
-                    print(f"[record] phase → {last_phase}", flush=True)
-                if gate is not None and getattr(gate, "needs_merge", False):
-                    if gate.stop_event is not None and not gate.stop_event.is_set():
-                        gate.stop_event.set()
-                    break
-                _publish_studio_status(gate, page)
         from urllib.parse import urlparse
 
         parsed = urlparse(url)

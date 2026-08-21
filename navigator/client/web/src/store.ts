@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { coachForCheck, type CoachGuide } from "./lib/coachTargets";
+import { initialTab, rememberTab } from "./lib/tabPersistence";
 
 type Toast = { kind: "ok" | "err"; text: string } | null;
 
@@ -18,15 +19,19 @@ type State = {
 };
 
 export const useUi = create<State>((set) => ({
-  tab: "overview",
+  tab: initialTab(),
   toast: null,
   logsSessionId: null,
   coach: null,
-  setTab: (tab) => set({ tab }),
+  setTab: (tab) => {
+    rememberTab(tab);
+    set({ tab });
+  },
   setLogsSessionId: (logsSessionId) => set({ logsSessionId }),
   startCoach: (checkId) => {
     const guide = coachForCheck(checkId);
     if (!guide) return;
+    rememberTab(guide.tab);
     set({ tab: guide.tab, coach: guide });
   },
   clearCoach: () => set({ coach: null }),

@@ -796,6 +796,8 @@ def start_recorder(
         ns.narration_mime = ""
         ns.narration_language = "auto"
         ns.narration_translate_to = "same"
+        ns.steps_json = "[]"
+        ns.step_count = 0
         steps = mgr.list()
         flagged = mgr.list()
         hands_commands = mgr.list()
@@ -850,6 +852,7 @@ def start_recorder(
             job.steps = list(steps)
             needs_merge = bool(getattr(ns, "needs_merge", False))
             job.needs_merge = needs_merge
+            _hydrate_steps_from_worker(job)
             _hydrate_narration_from_worker(job)
             if job.done and job.persist_result is not None:
                 return
@@ -945,6 +948,7 @@ def begin_capture() -> RecorderJob:
                 job.mp_ns.phase_seq = int(getattr(job.mp_ns, "phase_seq", 0) or 0) + 1
             except Exception:  # noqa: BLE001
                 pass
+        print("[record] begin_capture → capturing", flush=True)
         return job
 
 
@@ -992,6 +996,36 @@ def _hydrate_narration_from_worker(job: RecorderJob) -> None:
     print(f"[record] hydrated narration {len(raw)} bytes from worker", flush=True)
 
 
+def _hydrate_steps_from_worker(job: RecorderJob) -> None:
+    """Recover steps from Namespace JSON when Manager list is empty after kill."""
+    if job.steps:
+        return
+    ns = job.mp_ns
+    if ns is None:
+        return
+    import json
+
+    from navigator.automation.record import recorded_step_from_dict
+
+    raw = str(getattr(ns, "steps_json", "") or "").strip()
+    if not raw or raw == "[]":
+        return
+    try:
+        rows = json.loads(raw)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] steps_json parse failed: {exc}", flush=True)
+        return
+    if not isinstance(rows, list) or not rows:
+        return
+    restored: list[RecordedStep] = []
+    for row in rows:
+        if isinstance(row, dict):
+            restored.append(recorded_step_from_dict(row))
+    if restored:
+        job.steps = restored
+        print(f"[record] hydrated {len(restored)} steps from worker snapshot", flush=True)
+
+
 def persist_recorder_job(
     job: RecorderJob,
     *,
@@ -1013,6 +1047,7 @@ def persist_recorder_job(
         job.steps = list(job.steps)
     except Exception:  # noqa: BLE001
         pass
+    _hydrate_steps_from_worker(job)
     _hydrate_narration_from_worker(job)
 
     base_out: dict[str, Any] = {
@@ -1160,6 +1195,7 @@ def stop_recorder() -> RecorderJob:
                 job.steps = list(job.steps)
             except Exception:  # noqa: BLE001
                 pass
+            _hydrate_steps_from_worker(job)
             _hydrate_narration_from_worker(job)
             job.proc.terminate()
             job.proc.join(timeout=5)
@@ -1173,6 +1209,7 @@ def stop_recorder() -> RecorderJob:
             job.steps = list(job.steps)
         except Exception:  # noqa: BLE001
             pass
+        _hydrate_steps_from_worker(job)
         _hydrate_narration_from_worker(job)
     elif job.thread:
         job.thread.join(timeout=45)

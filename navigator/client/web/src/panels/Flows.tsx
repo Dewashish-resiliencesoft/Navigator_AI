@@ -68,6 +68,7 @@ export function Flows() {
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const timer = useRef<number | null>(null);
+  const mergingRef = useRef(false);
 
   const recordFlows = (rows ?? []).filter((f) => !!f.flow_id?.trim());
 
@@ -111,6 +112,45 @@ export function Flows() {
 
   useEffect(() => stopPolling, []);
 
+  const stopRecord = useCallback(async () => {
+    setRecPhase("stopping");
+    try {
+      const r = await api.recordStop();
+      setRecording(false);
+      setRecPhase("");
+      stopPolling();
+      await load();
+      const flagged = r.flagged?.length ?? 0;
+      const narrated = r.narrated_steps ?? 0;
+      const base = r.error
+        ? `Stopped with error: ${r.error}`
+        : `Recorded ${r.steps ?? 0} steps.`;
+      const extra =
+        (flagged > 0
+          ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"} (re-record after login if unexpected).`
+          : "") +
+        (narrated > 0
+          ? ` Narration aligned to ${narrated} step${narrated === 1 ? "" : "s"}.`
+          : "");
+      ok(base + extra);
+    } catch (e) {
+      const msg = errText(e);
+      setRecording(false);
+      setRecPhase("");
+      stopPolling();
+      try {
+        await load();
+      } catch {
+        /* ignore */
+      }
+      if (/no active recording/i.test(msg)) {
+        ok("Recording already stopped — flow saved.");
+      } else {
+        err(msg);
+      }
+    }
+  }, [err, load, ok]);
+
   const poll = useCallback(async () => {
     try {
       const s = await api.recordStatus();
@@ -121,15 +161,54 @@ export function Flows() {
       setCapturedSteps(s.steps ?? 0);
       setRecNarrating(!!s.narrate);
       setNarrationChunks(s.narration_chunks ?? 0);
+      if (s.needs_merge && !mergingRef.current) {
+        mergingRef.current = true;
+        ok("Studio stopped — saving flow…");
+        try {
+          await stopRecord();
+        } finally {
+          mergingRef.current = false;
+        }
+        return;
+      }
       if (!active) {
         if (s.error?.trim()) err(s.error.trim());
+        setRecording(false);
+        setRecPhase("");
         stopPolling();
-        load();
+        void load();
       }
     } catch (e) {
       err(errText(e));
     }
-  }, [err, load]);
+  }, [err, load, ok, stopRecord]);
+
+  // Resume poll if a session is already running (refresh / tab switch).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = await api.recordStatus();
+        if (cancelled || !isRecording(s)) return;
+        setRecording(true);
+        setRecPhase(s.phase || "");
+        setSetupDiscarded(s.setup_discarded ?? 0);
+        setCapturedSteps(s.steps ?? 0);
+        setRecNarrating(!!s.narrate);
+        setNarrationChunks(s.narration_chunks ?? 0);
+        if (timer.current === null) {
+          timer.current = window.setInterval(() => {
+            void poll();
+          }, 1000);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [poll]);
 
   const startRecord = async () => {
     if (!recUrl.trim()) return err("Enter your product start URL.");
@@ -154,15 +233,17 @@ export function Flows() {
       setRecNarrating(!!r.narrate);
       setNarrationChunks(0);
       stopPolling();
-      timer.current = window.setInterval(poll, 1500);
+      timer.current = window.setInterval(() => {
+        void poll();
+      }, 1000);
       ok(
         recSaveMode === "update"
           ? recNarrate
-            ? `Setup — replacing ${flowName}. Click Narrate (top-right in browser) when ready.`
-            : `Setup — replacing ${flowName}. Log in, then Start capturing.`
+            ? `Setup — replacing ${flowName}. Use Record studio in Chrome (Start capturing / Stop). Mic Narrate is optional.`
+            : `Setup — replacing ${flowName}. In Chrome studio: Start capturing when ready, Stop when done.`
           : recNarrate
-            ? "Setup — log in, then Start capturing. Click Narrate (top-right in browser) to speak while you click."
-            : "Setup — log in and navigate to where the flow should begin, then Start capturing.",
+            ? "Setup — log in in Chrome, then Start capturing in Record studio. Optional: Narrate mic."
+            : "Setup — log in in Chrome, then Start capturing in Record studio. Dashboard buttons are backup.",
       );
     } catch (e) {
       err(errText(e));
@@ -172,42 +253,13 @@ export function Flows() {
   const startCapture = async () => {
     try {
       const r = await api.recordCapture();
-      setRecPhase(r.phase);
+      setRecPhase(r.phase || "capturing");
       setSetupDiscarded(r.setup_discarded);
       setCapturedSteps(r.steps);
       ok(
-        `Capturing — ${r.setup_discarded} setup action${r.setup_discarded === 1 ? "" : "s"} ignored.`,
+        `Capturing live — ${r.setup_discarded} setup action${r.setup_discarded === 1 ? "" : "s"} ignored. Same as Chrome studio button.`,
       );
     } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const stopRecord = async () => {
-    try {
-      const r = await api.recordStop();
-      setRecording(false);
-      setRecPhase("");
-      stopPolling();
-      await load();
-      const flagged = r.flagged?.length ?? 0;
-      const narrated = r.narrated_steps ?? 0;
-      const base = r.error
-        ? `Stopped with error: ${r.error}`
-        : `Recorded ${r.steps} steps.`;
-      const extra =
-        (flagged > 0
-          ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"} (re-record after login if unexpected).`
-          : "") +
-        (narrated > 0
-          ? ` Narration aligned to ${narrated} step${narrated === 1 ? "" : "s"}.`
-          : "");
-      ok(base + extra);
-    } catch (e) {
-      // Always leave the recording UI so Client is not stuck if merge/save 500s.
-      setRecording(false);
-      setRecPhase("");
-      stopPolling();
       err(errText(e));
     }
   };
@@ -523,11 +575,15 @@ export function Flows() {
           </Button>
           <Button
             onClick={startCapture}
-            disabled={!recording || recPhase === "capturing"}
+            disabled={!recording || recPhase === "capturing" || recPhase === "stopping"}
           >
             Start capturing this flow
           </Button>
-          <Button variant="danger" onClick={stopRecord} disabled={!recording}>
+          <Button
+            variant="danger"
+            onClick={() => void stopRecord()}
+            disabled={!recording}
+          >
             <Square size={13} /> Stop
           </Button>
         </div>
@@ -539,7 +595,7 @@ export function Flows() {
                 Setup
               </div>
               <div className="h-[2px] flex-1 mx-3 bg-black/10 dark:bg-white/10" />
-              <div className={`flex items-center gap-2 ${recPhase === "capturing" ? "text-emerald-500" : "text-[var(--muted)]"}`}>
+              <div className={`flex items-center gap-2 ${recPhase === "capturing" || recPhase === "stopping" ? "text-emerald-500" : "text-[var(--muted)]"}`}>
                 <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-current">2</div>
                 Capturing
               </div>
@@ -547,23 +603,19 @@ export function Flows() {
             <div className="space-y-2">
               <BarLoader
                 label={
-                  recPhase === "capturing"
-                    ? `Recording — ${capturedSteps} step${capturedSteps === 1 ? "" : "s"} captured`
-                    : `Setup — ${setupDiscarded} action${setupDiscarded === 1 ? "" : "s"} ignored`
+                  recPhase === "stopping"
+                    ? "Stopping — saving flow…"
+                    : recPhase === "capturing"
+                      ? `Capturing live — ${capturedSteps} step${capturedSteps === 1 ? "" : "s"}`
+                      : `Setup — ${setupDiscarded} action${setupDiscarded === 1 ? "" : "s"} ignored (not saved yet)`
                 }
               />
               <p className="text-[0.72rem] text-[var(--muted)] leading-relaxed">
-                {recPhase === "capturing"
-                  ? recNarrating
-                    ? "Only actions from this point are saved. Click Narrate in the browser (top-right) to record your voice."
-                    : recSaveMode === "update"
-                      ? "New recording replaces the selected flow from this point."
-                      : "Only actions from this point are saved as the flow."
-                  : recNarrating
-                    ? "Log in and get to the starting screen. Use the Narrate widget in the browser when you begin capturing."
-                    : recSaveMode === "update"
-                      ? "Log in and navigate to where the new walkthrough should begin. Old steps are discarded on stop."
-                      : "Log in and get to the flow’s starting screen. Nothing is saved yet."}
+                {recPhase === "stopping"
+                  ? "Saving into your draft site graph. Chrome window will close."
+                  : recPhase === "capturing"
+                    ? "Capturing is live in Chrome. Use Record studio Start capturing / Stop — same as these buttons. Both stay in sync."
+                    : "In Chrome Record studio (top-right): Start capturing when ready, Stop when done. Dashboard buttons match."}
               </p>
               {recNarrating && narrationChunks > 0 && (
                 <p className="text-[0.72rem] text-emerald-600 dark:text-emerald-400">

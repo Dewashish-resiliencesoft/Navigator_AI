@@ -119,51 +119,31 @@
           <strong style="font-size:13px">Record studio</strong>
         </div>
         <div class="nav-row">
-          <button type="button" id="nav-studio-capture" class="secondary">Start capturing</button>
+          <button type="button" id="nav-studio-capture">Start capturing this flow</button>
           <button type="button" id="nav-studio-stop" class="secondary">Stop</button>
         </div>
-        <div class="nav-row">
-          <button type="button" id="nav-studio-hands">Start hands</button>
-          <button type="button" id="nav-studio-pause" class="secondary" disabled>Pause</button>
-        </div>
-        <div class="nav-row">
-          <button type="button" id="nav-studio-resume" class="secondary" disabled>Resume</button>
-          <button type="button" id="nav-studio-barge" class="warn" disabled>Take over</button>
-        </div>
-        <div class="nav-status" id="nav-studio-status">Setup — log in, then Start capturing.</div>
+        <div class="nav-status" id="nav-studio-status">Setup — log in, then Start capturing this flow.</div>
         <div class="nav-field" id="nav-studio-field">
           <div id="nav-studio-field-label" style="margin-bottom:6px;font-weight:600"></div>
           <label for="nav-studio-var">Variable name</label>
-          <input type="text" id="nav-studio-var" placeholder="work_email" autocomplete="off" />
-          <label for="nav-studio-field-q" style="margin-top:6px">Ask visitor</label>
-          <textarea id="nav-studio-field-q" rows="2" placeholder="Could you share your work email?"></textarea>
+          <input type="text" id="nav-studio-var" placeholder="phone_number" autocomplete="off" />
+          <label for="nav-studio-field-q" style="margin-top:6px">Agent prompt (ask End User)</label>
+          <textarea id="nav-studio-field-q" rows="2" placeholder="Ask the visitor for their phone number"></textarea>
           <div class="nav-row" style="margin-top:6px">
-            <button type="button" id="nav-studio-field-ask">Ask visitor</button>
+            <button type="button" id="nav-studio-field-ask">Save for demo</button>
           </div>
           <div class="nav-row">
             <button type="button" id="nav-studio-field-keep" class="secondary">Keep as agent fill</button>
             <button type="button" id="nav-studio-field-dismiss" class="secondary">Dismiss</button>
           </div>
           <div id="nav-studio-vars-wrap" style="margin-top:8px;display:none">
-            <label>Drag a prior variable onto this field</label>
+            <label>Available variables — drag onto a field</label>
             <div class="nav-var-row" id="nav-studio-vars"></div>
-          </div>
-        </div>
-        <div class="nav-ask" id="nav-studio-ask">
-          <div id="nav-studio-ask-text" style="margin-bottom:6px"></div>
-          <label for="nav-studio-prompt">What should we ask the visitor here?</label>
-          <textarea id="nav-studio-prompt" rows="3" placeholder="e.g. Ask for their work email before continuing"></textarea>
-          <div class="nav-row" style="margin-top:6px">
-            <button type="button" id="nav-studio-ask-visitor">Ask visitor this</button>
-          </div>
-          <div class="nav-row">
-            <button type="button" id="nav-studio-click-me" class="warn">I'll click</button>
-            <button type="button" id="nav-studio-skip" class="secondary">Skip</button>
           </div>
         </div>
         <div class="nav-sec" id="nav-next-sec" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.1)">
           <label for="nav-studio-next">What to do next</label>
-          <textarea id="nav-studio-next" rows="2" placeholder="e.g. send campaign using this number"></textarea>
+          <textarea id="nav-studio-next" rows="2" placeholder="e.g. open campaign send using this number"></textarea>
           <div class="nav-row" style="margin-top:6px">
             <button type="button" id="nav-studio-next-go" class="secondary">Plan next steps</button>
           </div>
@@ -204,18 +184,8 @@
   const canvas = box.querySelector("#nav-narrate-wave");
   const ctx = canvas.getContext("2d");
   const statusEl = box.querySelector("#nav-studio-status");
-  const askBox = box.querySelector("#nav-studio-ask");
-  const askText = box.querySelector("#nav-studio-ask-text");
-  const askPrompt = box.querySelector("#nav-studio-prompt");
-  const btnAskVisitor = box.querySelector("#nav-studio-ask-visitor");
-  const btnClickMe = box.querySelector("#nav-studio-click-me");
   const btnCapture = box.querySelector("#nav-studio-capture");
   const btnStop = box.querySelector("#nav-studio-stop");
-  const btnHands = box.querySelector("#nav-studio-hands");
-  const btnPause = box.querySelector("#nav-studio-pause");
-  const btnResume = box.querySelector("#nav-studio-resume");
-  const btnBarge = box.querySelector("#nav-studio-barge");
-  const btnSkip = box.querySelector("#nav-studio-skip");
   const fieldBox = box.querySelector("#nav-studio-field");
   const fieldLabel = box.querySelector("#nav-studio-field-label");
   const fieldVar = box.querySelector("#nav-studio-var");
@@ -247,10 +217,9 @@
   let recording = false;
   let paused = false;
   let capturing = false;
-  let handsActive = false;
-  let pendingQid = null;
   let lastField = null;
   let demoVariables = [];
+  let lastFieldKey = "";
 
   const fmt = (ms) => {
     const s = Math.floor(ms / 1000);
@@ -258,13 +227,34 @@
   };
 
   const studioCmd = async (action, extra) => {
+    const payload = Object.assign({ action }, extra || {});
+    // DOM bridge — works even when Playwright expose_function is dead after nav.
     try {
-      if (typeof window.navigatorStudioCmd !== "function") return null;
-      return await window.navigatorStudioCmd(Object.assign({ action }, extra || {}));
+      document.documentElement.setAttribute(
+        "data-nav-studio-cmd",
+        JSON.stringify(payload),
+      );
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      if (typeof window.navigatorStudioCmd === "function") {
+        return await window.navigatorStudioCmd(payload);
+      }
     } catch (e) {
       console.warn("[navigator-studio] cmd failed", e);
-      return null;
     }
+    // Wait briefly for Python drain loop to flip phase, then read status.
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      if (typeof window.navigatorStudioStatus === "function") {
+        return await window.navigatorStudioStatus();
+      }
+      if (window.__navStudioStatus) return window.__navStudioStatus;
+    } catch (e) {
+      /* ignore */
+    }
+    return null;
   };
 
   const pushConfig = () => {
@@ -338,22 +328,30 @@
     }
   };
 
-  const showFieldPanel = (lf) => {
+  const showFieldPanel = (lf, { forceReset } = {}) => {
     lastField = lf && typeof lf === "object" ? lf : null;
-    if (!lastField || !capturing || handsActive) {
+    if (!lastField || !capturing) {
       fieldBox.classList.remove("show");
       box.classList.remove("field-open");
       return;
     }
     const alias = String(lastField.alias || "field");
+    const key =
+      String(lastField.step_index ?? "") +
+      "|" +
+      alias +
+      "|" +
+      String(lastField.selector || "");
+    const isNew = forceReset || key !== lastFieldKey;
+    lastFieldKey = key;
     fieldLabel.textContent =
-      (lastField.source === "user" ? "Ask visitor · " : "Field · ") +
+      (lastField.source === "user" ? "Ask End User · " : "Field · ") +
       (lastField.label || alias);
-    if (fieldVar && !fieldVar.value) fieldVar.value = alias;
-    if (fieldQ && !fieldQ.value) {
+    if (fieldVar && (isNew || !fieldVar.value)) fieldVar.value = alias;
+    if (fieldQ && (isNew || !fieldQ.value)) {
       fieldQ.value =
         lastField.live_question ||
-        "Could you share your " + alias.replace(/_/g, " ") + "?";
+        "Ask the visitor for their " + alias.replace(/_/g, " ");
     }
     fieldBox.classList.add("show");
     box.classList.add("field-open");
@@ -365,53 +363,34 @@
     if (!st || typeof st !== "object") return;
     const phase = String(st.phase || "setup");
     capturing = phase === "capturing";
-    btnCapture.disabled = capturing;
-    btnCapture.textContent = capturing ? "Capturing…" : "Start capturing";
-    const hands = st.hands || {};
-    handsActive = !!hands.active;
-    btnHands.disabled = !capturing || handsActive;
-    btnPause.disabled = !handsActive || !!hands.client_paused || hands.phase === "paused";
-    btnResume.disabled =
-      !handsActive ||
-      (!hands.client_paused && !hands.barged && hands.phase !== "paused" && hands.phase !== "barged");
-    btnBarge.disabled = !handsActive || !!hands.barged;
+    const stopping = phase === "stopping" || !!st.needs_merge;
+    const stopped = phase === "done";
+    btnCapture.disabled = capturing || stopping || stopped;
+    btnCapture.textContent = capturing
+      ? "Capturing…"
+      : "Start capturing this flow";
+    btnStop.disabled = stopping || stopped;
+    btnStop.textContent = stopping ? "Stopping…" : stopped ? "Stopped" : "Stop";
     demoVariables = Array.isArray(st.demo_variables) ? st.demo_variables : [];
-    let line = capturing ? "Capturing — clicks enter the flow." : "Setup — log in, then Start capturing.";
-    if (handsActive) {
-      line =
-        hands.phase === "awaiting_input"
-          ? "Hands paused — needs your answer."
-          : hands.phase === "barged"
-            ? "You took over — Resume when ready."
-            : hands.phase === "paused"
-              ? "Hands paused."
-              : `Hands — ${hands.progress?.steps_done || 0}/${hands.progress?.steps_total || 0}`;
-      if (hands.current_step) line += ` · ${hands.current_step}`;
-    }
+    let line = "Setup — log in, then Start capturing this flow.";
+    if (stopped) line = "Stopped — flow saved. Close this window or return to Flows.";
+    else if (stopping) line = "Stopping — saving flow…";
+    else if (capturing) line = "Capturing live — clicks become flow steps.";
     statusEl.textContent = line;
-    const q = hands.question;
-    if (handsActive && q && q.qid) {
-      pendingQid = q.qid;
-      askText.textContent = q.prompt || "Need your help on this step.";
-      askBox.classList.add("show");
-      box.classList.add("ask-open");
-      box.classList.remove("compact");
-      fieldBox.classList.remove("show");
-      box.classList.remove("field-open");
-    } else {
-      pendingQid = null;
-      askBox.classList.remove("show");
-      box.classList.remove("ask-open");
-      if (askPrompt) askPrompt.value = "";
-      showFieldPanel(st.last_field);
-    }
-    if (hands.phase === "awaiting_input" || hands.phase === "paused" || hands.phase === "barged") {
-      syncDots("paused");
-    } else if (handsActive || capturing) {
-      syncDots("live");
-    } else {
-      syncDots("");
-    }
+    showFieldPanel(st.last_field);
+    if (capturing) syncDots("live");
+    else if (stopping) syncDots("paused");
+    else if (stopped) syncDots("");
+    else syncDots("");
+    chipLabel.textContent = stopped
+      ? "Stopped"
+      : stopping
+        ? "Stopping"
+        : capturing
+          ? "Capturing"
+          : recording
+            ? "Recording"
+            : "Studio";
     syncCompact();
   };
 
@@ -424,6 +403,8 @@
       /* ignore */
     }
   };
+
+  window.__navStudioApply = applyStudioStatus;
 
   const drawWave = () => {
     if (!analyser) return;
@@ -556,7 +537,16 @@
     "click",
     (ev) => {
       ev.stopPropagation();
-      void studioCmd("begin_capture").then(() => pollStudio());
+      ev.preventDefault();
+      statusEl.textContent = "Starting capture…";
+      void studioCmd("begin_capture").then((st) => {
+        if (st && st.error) {
+          statusEl.textContent = String(st.error);
+          return;
+        }
+        if (st) applyStudioStatus(st);
+        else return pollStudio();
+      });
     },
     true,
   );
@@ -564,75 +554,21 @@
     "click",
     (ev) => {
       ev.stopPropagation();
-      void studioCmd("stop_record");
-    },
-    true,
-  );
-  btnHands.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      void studioCmd("hands_start").then(() => pollStudio());
-    },
-    true,
-  );
-  btnPause.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      void studioCmd("hands_pause").then(() => pollStudio());
-    },
-    true,
-  );
-  btnResume.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      void studioCmd("hands_resume").then(() => pollStudio());
-    },
-    true,
-  );
-  btnBarge.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      void studioCmd("hands_barge").then(() => pollStudio());
-    },
-    true,
-  );
-  btnAskVisitor.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      if (!pendingQid) return;
-      const prompt = (askPrompt && askPrompt.value) || "";
-      if (!String(prompt).trim()) {
-        statusEl.textContent = "Type what to ask the visitor first.";
-        return;
-      }
-      statusEl.textContent = "Capturing screen + drafting ask…";
-      void studioCmd("hands_mark_ask", { qid: pendingQid, prompt }).then(() =>
-        pollStudio(),
-      );
-    },
-    true,
-  );
-  btnClickMe.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      void studioCmd("hands_click_myself").then(() => pollStudio());
-    },
-    true,
-  );
-  btnSkip.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      if (!pendingQid) return;
-      void studioCmd("hands_answer", { qid: pendingQid, skip: true }).then(() =>
-        pollStudio(),
-      );
+      ev.preventDefault();
+      statusEl.textContent = "Stopping — saving flow…";
+      syncDots("paused");
+      chipLabel.textContent = "Stopping";
+      btnStop.disabled = true;
+      btnCapture.disabled = true;
+      void studioCmd("stop_record").then((st) => {
+        if (st && st.error) {
+          statusEl.textContent = String(st.error);
+          btnStop.disabled = false;
+          return;
+        }
+        if (st) applyStudioStatus(Object.assign({}, st, { phase: "stopping", needs_merge: true }));
+        else return pollStudio();
+      });
     },
     true,
   );
@@ -648,17 +584,17 @@
       const varAlias = (fieldVar && fieldVar.value) || lastField.alias || "";
       const q = (fieldQ && fieldQ.value) || "";
       if (!String(q).trim()) {
-        statusEl.textContent = "Type the visitor question first.";
+        statusEl.textContent = "Type the agent prompt first.";
         return;
       }
-      statusEl.textContent = "Marking Ask visitor…";
+      statusEl.textContent = "Saving ask-visitor variable…";
       void studioCmd("mark_field_ask", {
         var_alias: varAlias,
         live_question: q,
         step_index: lastField.step_index,
       }).then((res) => {
         if (res && res.error) statusEl.textContent = String(res.error);
-        else statusEl.textContent = "Saved — visitor will be asked live.";
+        else statusEl.textContent = "Saved — End User will be asked live.";
         return pollStudio();
       });
     },

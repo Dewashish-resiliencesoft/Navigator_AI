@@ -1156,6 +1156,7 @@ def client_record_start(
             save_mode=mode,
             browser_ws=browser_ws,
             guided_plan_meta=plan_meta,
+            product_id=product.product_id,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
@@ -1194,73 +1195,15 @@ def client_record_stop(
     vault: Vault,
     page_id: Annotated[str, Query()] = "dashboard",
 ) -> dict:
+    from navigator.client.content import persist_recorder_job
+
     try:
         job = stop_recorder()
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
-    # Always clear the Client UI recording state even if merge/save fails.
-    base_out = {
-        "ok": True,
-        "steps": len(job.steps),
-        "error": job.error,
-        "flow_id": job.flow_id,
-        "flagged": list(getattr(job, "flagged", []) or []),
-        "setup_discarded": int(getattr(job, "setup_discarded", 0) or 0),
-        "phase": "done",
-        "narrated_steps": 0,
-        "published": False,
-    }
-    try:
-        rev = registry.latest_revision(product.product_id)
-        persona = parse_site_graph(rev.yaml).effective_persona()
-        pid = page_id or "dashboard"
-        update = getattr(job, "save_mode", "new") == "update"
-        if update:
-            resolved = resolve_flow_page_id(rev.yaml, job.flow_id)
-            if resolved:
-                pid = resolved
-        new_yaml = merge_recorded_flow(
-            rev.yaml,
-            flow_name=job.flow_name,
-            flow_id=job.flow_id,
-            page_id=pid,
-            steps=list(job.steps),
-            product_name=persona.product_name,
-            base_url=recording_base_url(job.start_url),
-            update_existing=update,
-            replace_steps=update,
-        )
-        new_yaml, narrated = _attach_recorded_narration(
-            new_yaml,
-            job,
-            update_existing=update,
-            replace_steps=update,
-        )
-        _reject_login_in_yaml(
-            product.product_id,
-            new_yaml,
-            vault,
-            allow_flows=frozenset({(pid, job.flow_id)}),
-        )
-        rev = registry.put_site_graph(
-            product.product_id, new_yaml, "recorded", publish=False
-        )
-        graph = parse_site_graph(new_yaml)
-        playlist = playlist_from_graph(graph)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[record] stop merge/save failed: {exc}", flush=True)
-        base_out["error"] = (base_out.get("error") or "") or str(exc)
-        base_out["playlist"] = []
-        base_out["revision"] = None
-        return base_out
-    base_out.update(
-        {
-            "playlist": playlist,
-            "revision": rev.revision,
-            "narrated_steps": narrated,
-        }
-    )
-    return base_out
+    if not getattr(job, "product_id", ""):
+        job.product_id = product.product_id
+    return persist_recorder_job(job, page_id=page_id or "dashboard")
 
 _GUIDED_RETIRED = "Guided task retired — use manual record."
 

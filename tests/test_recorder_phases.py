@@ -103,6 +103,91 @@ def test_mp_gate_phase_roundtrip():
     assert gate.phase == "capturing"
 
 
+def test_mp_gate_needs_merge_roundtrip():
+    from types import SimpleNamespace
+
+    from navigator.client.content import _MpGate
+
+    ns = SimpleNamespace(phase="capturing", needs_merge=False)
+    gate = _MpGate(ns, [], [])
+    gate.needs_merge = True
+    assert ns.needs_merge is True
+    assert gate.needs_merge is True
+
+
+def test_recorder_status_reads_mp_ns_phase():
+    """Studio begin_capture flips worker ns — status must not stay on main gate setup."""
+    from types import SimpleNamespace
+
+    job = RecorderJob(job_id="t-mp", flow_name="demo", flow_id="demo")
+    job.gate = CaptureGate(phase="setup")
+    job.mp_ns = SimpleNamespace(phase="capturing", needs_merge=False, setup_discarded=0)
+    content._active = job
+    try:
+        st = recorder_status()
+        assert st["phase"] == "capturing"
+        assert st["active"] is True
+        assert st["needs_merge"] is False
+    finally:
+        content._active = None
+
+
+def test_studio_stop_sets_needs_merge_keeps_active():
+    from types import SimpleNamespace
+
+    job = RecorderJob(job_id="t-nm", flow_name="demo", flow_id="demo")
+    job.gate = CaptureGate(phase="capturing")
+    job.steps = []
+    job.mp_ns = SimpleNamespace(phase="stopping", needs_merge=True, setup_discarded=2)
+    job.needs_merge = False
+    job.done = False
+    content._active = job
+    try:
+        st = recorder_status()
+        assert st["needs_merge"] is True
+        assert st["active"] is True
+        assert st["phase"] == "stopping"
+        assert st["done"] is False
+    finally:
+        content._active = None
+
+
+def test_stop_recorder_clears_needs_merge():
+    job = RecorderJob(job_id="t-clr", flow_name="demo", flow_id="demo")
+    job.gate = CaptureGate(phase="stopping", needs_merge=True)
+    job.needs_merge = True
+    job.done = False
+    content._active = job
+    try:
+        from navigator.client.content import stop_recorder
+
+        out = stop_recorder()
+        assert out.needs_merge is False
+        assert out.done is True
+        assert out.phase == "done"
+        st = recorder_status()
+        assert st["needs_merge"] is False
+        assert st["active"] is False
+    finally:
+        content._active = None
+
+
+def test_stop_recorder_returns_already_done_job():
+    job = RecorderJob(job_id="t-done", flow_name="demo", flow_id="demo")
+    job.done = True
+    job.phase = "done"
+    job.persist_result = {"ok": True, "steps": 3, "phase": "done"}
+    content._active = job
+    try:
+        from navigator.client.content import stop_recorder
+
+        out = stop_recorder()
+        assert out is job
+        assert out.persist_result["steps"] == 3
+    finally:
+        content._active = None
+
+
 def test_start_recorder_update_requires_flow_id():
     import pytest
 

@@ -399,40 +399,39 @@ class CaptureGate:
     restarting Playwright.
     """
 
-    phase: str = "setup"  # setup | capturing | done
+    phase: str = "setup"  # setup | capturing | stopping | done
     setup_discarded: int = 0
     flagged: list[dict[str, Any]] = field(default_factory=list)
     login_config_fn: Any = None  # Callable[[], LoginConfig] | None
     allow_login_steps: bool = False
-    #: Guided Agent hands commands drained in the record wait loop.
-    hands_commands: list[dict[str, Any]] = field(default_factory=list)
     #: stop_event for in-browser Stop button (set by record_session).
     stop_event: threading.Event | None = None
-    #: Optional guided plan meta so worker-side hands_start can build a session.
+    #: Optional guided plan meta (legacy; hands UI removed from studio).
     guided_plan_meta: dict[str, Any] | None = None
-    #: Callable[[dict], None] — publish hands/studio status (mp ns or local).
+    #: Callable[[dict], None] — publish studio status (mp ns or local).
     status_sink: Any = None
     #: Same list the recorder appends to (for studio mark-ask / vars).
     steps_ref: list[RecordedStep] | None = None
     #: Last focused/filled field summary for the studio chip.
     last_field: dict[str, Any] | None = None
+    #: Studio Stop requested — dashboard must POST /record/stop to merge.
+    needs_merge: bool = False
 
 
 def _publish_studio_status(gate: CaptureGate | None, page: Page | None = None) -> dict[str, Any]:
-    from navigator.automation.guided_task.session import get_guided_hands_session
     from navigator.automation.record_studio import demo_variables_from_steps
 
     phase = gate.phase if gate is not None else "setup"
-    sess = get_guided_hands_session()
-    hands = sess.status_dict() if sess is not None else {"active": False}
     steps = getattr(gate, "steps_ref", None) if gate is not None else None
     variables = demo_variables_from_steps(steps or [])
     last_field = getattr(gate, "last_field", None) if gate is not None else None
+    needs_merge = bool(getattr(gate, "needs_merge", False)) if gate is not None else False
     out = {
         "phase": phase,
-        "hands": hands,
+        "hands": {"active": False},
         "last_field": last_field,
         "demo_variables": variables,
+        "needs_merge": needs_merge,
     }
     sink = getattr(gate, "status_sink", None) if gate is not None else None
     if callable(sink):
@@ -583,7 +582,18 @@ def _install_listeners(
     def _studio_status(_: object = None) -> dict[str, Any]:
         return _publish_studio_status(gate, page)
 
-    def _studio_cmd(payload: object) -> dict[str, Any]:
+    def _handle_studio_action(payload: object) -> dict[str, Any]:
+        """Shared handler for expose_function + DOM data-nav-studio-cmd bridge."""
+        if isinstance(payload, str):
+            raw = payload.strip()
+            if not raw:
+                return {"ok": False, "error": "empty"}
+            try:
+                import json as _json
+
+                payload = _json.loads(raw)
+            except Exception:  # noqa: BLE001
+                payload = {"action": raw}
         if not isinstance(payload, dict):
             return {"ok": False, "error": "bad payload"}
         action = str(payload.get("action") or "").strip()
@@ -594,17 +604,20 @@ def _install_listeners(
             print("[record] studio: begin_capture", flush=True)
             return _publish_studio_status(gate, page)
         if action == "stop_record":
-            print("[record] studio: stop_record", flush=True)
+            print("[record] studio: stop_record → needs_merge", flush=True)
+            gate.needs_merge = True
+            gate.phase = "stopping"
             if gate.stop_event is not None:
                 gate.stop_event.set()
-            return {"ok": True, "phase": "stopping"}
+            st = _publish_studio_status(gate, page)
+            st["ok"] = True
+            return st
         if action == "mark_field_ask":
             from navigator.automation.record_studio import mark_step_ask_visitor
 
             try:
                 idx = payload.get("step_index")
                 if idx is None and gate.last_field and gate.last_field.get("step_index") is None:
-                    # Focused field never emitted a fill yet — seed one.
                     lf = gate.last_field
                     steps.append(
                         RecordedStep(
@@ -629,7 +642,6 @@ def _install_listeners(
                 )
             except Exception as exc:  # noqa: BLE001
                 return {"ok": False, "error": str(exc)}
-            # Prefer the rewritten step index (last fill).
             for i in range(len(steps) - 1, -1, -1):
                 if steps[i] is step or (
                     steps[i].alias == step.alias and steps[i].source == "user"
@@ -702,51 +714,36 @@ def _install_listeners(
             st["ok"] = True
             st["added"] = len(extra)
             return st
-        cmds = gate.hands_commands
-        if action == "hands_start":
-            plan_meta = payload.get("plan") or gate.guided_plan_meta or {}
-            cmds.append(
-                {
-                    "action": "hands_start",
-                    "plan": plan_meta,
-                    "flow_index": int(payload.get("flow_index") or 0),
-                }
-            )
-            cmds.append({"action": "tick"})
-            return {"ok": True}
-        if action == "hands_pause":
-            cmds.append({"action": "pause"})
-            return {"ok": True}
-        if action == "hands_resume":
-            cmds.append({"action": "resume"})
-            return {"ok": True}
-        if action == "hands_barge":
-            cmds.append({"action": "barge"})
-            return {"ok": True}
-        if action == "hands_answer":
-            cmds.append(
-                {
-                    "action": "answer",
-                    "qid": str(payload.get("qid") or ""),
-                    "candidate_index": payload.get("candidate_index"),
-                    "value": payload.get("value"),
-                    "skip": bool(payload.get("skip")),
-                }
-            )
-            return {"ok": True}
-        if action == "hands_mark_ask":
-            cmds.append(
-                {
-                    "action": "mark_ask",
-                    "qid": str(payload.get("qid") or ""),
-                    "prompt": str(payload.get("prompt") or ""),
-                }
-            )
-            return {"ok": True, "queued": True}
-        if action == "hands_click_myself":
-            cmds.append({"action": "barge"})
-            return {"ok": True}
         return {"ok": False, "error": f"unknown action {action}"}
+
+    def _studio_cmd(payload: object) -> dict[str, Any]:
+        return _handle_studio_action(payload)
+
+    def _drain_dom_studio_cmd() -> None:
+        """Fallback when expose_function fails on remote CDP after navigation."""
+        try:
+            raw = page.evaluate(
+                """() => {
+                  const el = document.documentElement;
+                  const v = el.getAttribute('data-nav-studio-cmd');
+                  if (v) el.removeAttribute('data-nav-studio-cmd');
+                  return v || '';
+                }"""
+            )
+        except Exception:  # noqa: BLE001
+            return
+        if not raw:
+            return
+        try:
+            st = _handle_studio_action(raw)
+            if isinstance(st, dict) and st.get("phase"):
+                _publish_studio_status(gate, page)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[record] dom studio cmd failed: {exc}", flush=True)
+
+    # Wait loop + reinject call this without closing over install scope.
+    if gate is not None:
+        gate.drain_dom_studio_cmd = _drain_dom_studio_cmd  # type: ignore[attr-defined]
 
     already = bool(getattr(page, "_nav_record_bound", False))
     if not already:
@@ -778,6 +775,7 @@ def _install_listeners(
 
     if not getattr(page, "_nav_record_load_hook", False):
         page.on("load", lambda *_: _reinject())
+        page.on("framenavigated", lambda frame: _reinject() if frame == page.main_frame else None)
         page._nav_record_load_hook = True  # type: ignore[attr-defined]
     _reinject()
 
@@ -966,18 +964,13 @@ def record_session(
             sink = getattr(gate, "status_sink", None)
             if callable(sink):
                 try:
-                    from navigator.automation.guided_task.session import (
-                        get_guided_hands_session,
-                    )
-
-                    sess = get_guided_hands_session()
-                    hands = sess.status_dict() if sess else {"active": False}
                     sink(
                         {
                             "phase": gate.phase,
-                            "hands": hands,
+                            "hands": {"active": False},
                             "plan_meta": meta,
                             "plan_dirty": True,
+                            "needs_merge": bool(getattr(gate, "needs_merge", False)),
                         }
                     )
                 except Exception:  # noqa: BLE001
@@ -1047,33 +1040,24 @@ def record_session(
         else:
             print(
                 "[record] Ops session: use Record studio overlay in the browser "
-                "(Start capturing / Start hands), or /client dashboard.",
+                "(Start capturing this flow / Stop), or /client dashboard.",
                 flush=True,
             )
-            from navigator.automation.guided_task.session import (
-                get_guided_hands_session,
-                poll_hands_commands,
-            )
-
-            tick_i = 0
+            last_phase = gate.phase if gate is not None else "setup"
             while not stop_event.wait(0.25):
-                cmds = getattr(gate, "hands_commands", None)
-                if cmds:
-                    poll_hands_commands(page, cmds)
-                tick_i += 1
-                if tick_i % 4 == 0:
-                    sess = get_guided_hands_session()
-                    if (
-                        sess is not None
-                        and sess.active
-                        and not sess.client_paused
-                        and not sess.barged
-                        and not (
-                            sess.pending_question
-                            and not sess.pending_question.resolved
-                        )
-                    ):
-                        sess.tick()
+                drain = getattr(gate, "drain_dom_studio_cmd", None) if gate else None
+                if callable(drain):
+                    try:
+                        drain()
+                    except Exception:  # noqa: BLE001
+                        pass
+                if gate is not None and gate.phase != last_phase:
+                    last_phase = gate.phase
+                    print(f"[record] phase → {last_phase}", flush=True)
+                if gate is not None and getattr(gate, "needs_merge", False):
+                    if gate.stop_event is not None and not gate.stop_event.is_set():
+                        gate.stop_event.set()
+                    break
                 _publish_studio_status(gate, page)
         from urllib.parse import urlparse
 
@@ -1093,10 +1077,23 @@ def record_session(
                 flush=True,
             )
         try:
-            context.close()
-            # Connected local server must stay up for the next Record click.
-            if not ws:
-                browser.close()
+            # Don't hang dashboard Stop on a wedged remote Chrome context.
+            def _close_browser() -> None:
+                try:
+                    context.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                if not ws:
+                    try:
+                        browser.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            closer = threading.Thread(target=_close_browser, name="record-close", daemon=True)
+            closer.start()
+            closer.join(timeout=4.0)
+            if closer.is_alive():
+                print("[record] browser close timed out — continuing", flush=True)
         except Exception as exc:  # noqa: BLE001
             # User often closes the window before Enter — ignore TargetClosedError noise.
             print(f"[record] browser already closed ({exc.__class__.__name__})", flush=True)

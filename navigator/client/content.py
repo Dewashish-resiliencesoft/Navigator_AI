@@ -520,13 +520,19 @@ class RecorderJob:
     flow_id: str = ""
     start_url: str = ""
     out_path: Path | None = None
-    phase: str = "setup"  # setup | capturing | done
+    phase: str = "setup"  # setup | capturing | stopping | done
     setup_discarded: int = 0
     flagged: list[dict[str, Any]] = field(default_factory=list)
     gate: CaptureGate | None = None
     narration: NarrationCapture | None = None
     save_mode: str = "new"  # new | update
     hands_commands: list[dict[str, Any]] | None = None
+    #: Studio Stop — dashboard must call stop_recorder to merge/save.
+    needs_merge: bool = False
+    #: Tenant that owns this recording (for studio auto-persist).
+    product_id: str = ""
+    #: Cached result from persist_recorder_job (avoid double-merge).
+    persist_result: dict[str, Any] | None = None
 
 
 _recorder_lock = threading.Lock()
@@ -546,6 +552,8 @@ class _MpGate:
         self.stop_event = None
         self.guided_plan_meta: dict[str, Any] | None = None
         self.status_sink = None
+        self.steps_ref = None
+        self.last_field = None
 
     @property
     def phase(self) -> str:
@@ -554,6 +562,14 @@ class _MpGate:
     @phase.setter
     def phase(self, value: str) -> None:
         self._ns.phase = value
+
+    @property
+    def needs_merge(self) -> bool:
+        return bool(getattr(self._ns, "needs_merge", False))
+
+    @needs_merge.setter
+    def needs_merge(self, value: bool) -> None:
+        self._ns.needs_merge = bool(value)
 
 
 def _record_ws_worker(
@@ -616,26 +632,56 @@ def recorder_status() -> dict[str, Any]:
     with _recorder_lock:
         if _active is None:
             return {"active": False}
-        if _active.gate is not None:
-            _active.phase = _active.gate.phase
-            _active.setup_discarded = _active.gate.setup_discarded
-            _active.flagged = list(_active.gate.flagged)
+        job = _active
+        needs_merge = bool(job.needs_merge)
+        if job.mp_ns is not None:
+            # WS worker owns phase / needs_merge on the shared namespace.
+            try:
+                job.phase = str(job.mp_ns.phase or job.phase)
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                needs_merge = needs_merge or bool(getattr(job.mp_ns, "needs_merge", False))
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                job.setup_discarded = int(getattr(job.mp_ns, "setup_discarded", 0) or 0)
+            except Exception:  # noqa: BLE001
+                pass
+        elif job.gate is not None:
+            job.phase = job.gate.phase
+            job.setup_discarded = job.gate.setup_discarded
+            job.flagged = list(job.gate.flagged)
+            needs_merge = needs_merge or bool(getattr(job.gate, "needs_merge", False))
+        job.needs_merge = needs_merge
+        # Stay "active" while merge pending so dashboard poll keeps running.
+        # Once done (incl. studio auto-persist), never keep active via stale flag.
+        if job.done:
+            needs_merge = False
+            job.needs_merge = False
+        active = (not job.done) or needs_merge
+        phase = job.phase
+        if needs_merge and phase not in {"stopping", "done"}:
+            phase = "stopping"
+        if job.done and not needs_merge:
+            phase = "done"
         return {
-            "active": not _active.done,
-            "job_id": _active.job_id,
-            "flow_name": _active.flow_name,
-            "flow_id": _active.flow_id,
-            "steps": len(_active.steps),
-            "error": _active.error,
-            "done": _active.done,
-            "phase": _active.phase if not _active.done else "done",
-            "setup_discarded": _active.setup_discarded,
-            "flagged": list(_active.flagged),
-            "narrate": _active.narration is not None,
-            "save_mode": _active.save_mode,
+            "active": active,
+            "job_id": job.job_id,
+            "flow_name": job.flow_name,
+            "flow_id": job.flow_id,
+            "steps": len(job.steps),
+            "error": job.error,
+            "done": job.done and not needs_merge,
+            "phase": phase,
+            "setup_discarded": job.setup_discarded,
+            "flagged": list(job.flagged),
+            "narrate": job.narration is not None,
+            "save_mode": job.save_mode,
             "narration_chunks": (
-                len(_active.narration.chunks) if _active.narration else 0
+                len(job.narration.chunks) if job.narration else 0
             ),
+            "needs_merge": needs_merge,
         }
 
 
@@ -651,6 +697,7 @@ def start_recorder(
     save_mode: str = "new",
     browser_ws: str = "",
     guided_plan_meta: dict[str, Any] | None = None,
+    product_id: str = "",
 ) -> RecorderJob:
     global _active
     mode = (save_mode or "new").strip().lower()
@@ -682,6 +729,7 @@ def start_recorder(
             gate=gate,
             narration=narration,
             save_mode=mode,
+            product_id=(product_id or "").strip(),
         )
         _active = job
 
@@ -699,6 +747,8 @@ def start_recorder(
         ns.error = ""
         ns.setup_discarded = 0
         ns.studio_status_json = ""
+        ns.needs_merge = False
+        ns.phase_seq = 0
         import json as _json
 
         ns.guided_plan_json = _json.dumps(guided_plan_meta or {})
@@ -717,6 +767,11 @@ def start_recorder(
 
             try:
                 ns.studio_status_json = json.dumps(st)
+                ph = str((st or {}).get("phase") or "")
+                if ph:
+                    ns.phase = ph
+                if (st or {}).get("needs_merge"):
+                    ns.needs_merge = True
             except Exception:  # noqa: BLE001
                 pass
 
@@ -749,9 +804,32 @@ def start_recorder(
             job.setup_discarded = int(ns.setup_discarded or 0)
             job.flagged = list(flagged)
             job.steps = list(steps)
-            job.phase = "done"
-            gate.phase = "done"
-            job.done = True
+            needs_merge = bool(getattr(ns, "needs_merge", False))
+            job.needs_merge = needs_merge
+            if job.done and job.persist_result is not None:
+                return
+            if needs_merge:
+                job.phase = "stopping"
+                if job.gate is not None:
+                    job.gate.phase = "stopping"
+                    job.gate.needs_merge = True
+                print(
+                    "[record] studio Stop — auto-persisting flow (needs_merge)",
+                    flush=True,
+                )
+                try:
+                    persist_recorder_job(job)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[record] auto-persist crashed: {exc}", flush=True)
+                    job.done = True
+                    job.phase = "done"
+                    job.error = (job.error or "") or str(exc)
+            else:
+                # Dashboard Stop owns persist; just mark worker finished.
+                if not job.done:
+                    job.phase = "done"
+                    gate.phase = "done"
+                    job.done = True
             if job.error:
                 print(f"[record] local Chrome worker failed: {job.error}", flush=True)
 
@@ -774,11 +852,30 @@ def start_recorder(
             job.error = str(exc)
             print(f"[record] thread crash:\n{traceback.format_exc()}", flush=True)
         finally:
-            gate.phase = "done"
-            job.phase = "done"
+            needs_merge = bool(getattr(gate, "needs_merge", False))
+            job.needs_merge = needs_merge
             job.setup_discarded = gate.setup_discarded
             job.flagged = list(gate.flagged)
-            job.done = True
+            if job.done and job.persist_result is not None:
+                return
+            if needs_merge:
+                gate.phase = "stopping"
+                job.phase = "stopping"
+                print(
+                    "[record] studio Stop — auto-persisting flow (needs_merge)",
+                    flush=True,
+                )
+                try:
+                    persist_recorder_job(job)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[record] auto-persist crashed: {exc}", flush=True)
+                    job.done = True
+                    job.phase = "done"
+                    job.error = (job.error or "") or str(exc)
+            else:
+                gate.phase = "done"
+                job.phase = "done"
+                job.done = True
 
     t = threading.Thread(target=_run, name="ops-recorder", daemon=True)
     job.thread = t
@@ -798,30 +895,180 @@ def begin_capture() -> RecorderJob:
         job.phase = "capturing"
         if job.mp_ns is not None:
             job.mp_ns.phase = "capturing"
+            try:
+                # Nudge worker overlay on next status tick.
+                job.mp_ns.phase_seq = int(getattr(job.mp_ns, "phase_seq", 0) or 0) + 1
+            except Exception:  # noqa: BLE001
+                pass
         return job
 
 
+def persist_recorder_job(
+    job: RecorderJob,
+    *,
+    page_id: str = "dashboard",
+) -> dict[str, Any]:
+    """Merge recorded steps into the Client draft site graph.
+
+    Safe to call from the dashboard stop route or from the worker wait thread
+    after studio Stop (needs_merge). Idempotent via ``job.persist_result``.
+    """
+    if job.persist_result is not None:
+        return job.persist_result
+
+    base_out: dict[str, Any] = {
+        "ok": True,
+        "steps": len(job.steps),
+        "error": job.error,
+        "flow_id": job.flow_id,
+        "flagged": list(getattr(job, "flagged", []) or []),
+        "setup_discarded": int(getattr(job, "setup_discarded", 0) or 0),
+        "phase": "done",
+        "narrated_steps": 0,
+        "published": False,
+        "playlist": [],
+        "revision": None,
+    }
+    product_id = (job.product_id or "").strip()
+    if not product_id:
+        base_out["error"] = (base_out.get("error") or "") or "missing product_id"
+        job.persist_result = base_out
+        return base_out
+
+    try:
+        from navigator.app.deps import get_registry, get_vault
+        from navigator.app.route_helpers import _reject_login_in_yaml
+        from navigator.app.routers.client_api import _attach_recorded_narration
+
+        registry = get_registry()
+        vault = get_vault()
+        rev = registry.latest_revision(product_id)
+        persona = parse_site_graph(rev.yaml).effective_persona()
+        pid = page_id or "dashboard"
+        update = getattr(job, "save_mode", "new") == "update"
+        if update:
+            resolved = resolve_flow_page_id(rev.yaml, job.flow_id)
+            if resolved:
+                pid = resolved
+        new_yaml = merge_recorded_flow(
+            rev.yaml,
+            flow_name=job.flow_name,
+            flow_id=job.flow_id,
+            page_id=pid,
+            steps=list(job.steps),
+            product_name=persona.product_name,
+            base_url=recording_base_url(job.start_url),
+            update_existing=update,
+            replace_steps=update,
+        )
+        new_yaml, narrated = _attach_recorded_narration(
+            new_yaml,
+            job,
+            update_existing=update,
+            replace_steps=update,
+        )
+        _reject_login_in_yaml(
+            product_id,
+            new_yaml,
+            vault,
+            allow_flows=frozenset({(pid, job.flow_id)}),
+        )
+        rev = registry.put_site_graph(product_id, new_yaml, "recorded", publish=False)
+        graph = parse_site_graph(new_yaml)
+        playlist = playlist_from_graph(graph)
+        base_out.update(
+            {
+                "playlist": playlist,
+                "revision": rev.revision,
+                "narrated_steps": narrated,
+                "steps": len(job.steps),
+            }
+        )
+        print(
+            f"[record] persisted {len(job.steps)} steps → flow {job.flow_id!r} "
+            f"rev {rev.revision}",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] persist failed: {exc}\n{traceback.format_exc()}", flush=True)
+        base_out["error"] = (base_out.get("error") or "") or str(exc)
+
+    job.persist_result = base_out
+    job.needs_merge = False
+    job.done = True
+    job.phase = "done"
+    if job.gate is not None:
+        job.gate.needs_merge = False
+        job.gate.phase = "done"
+    if job.mp_ns is not None:
+        try:
+            job.mp_ns.needs_merge = False
+            job.mp_ns.phase = "done"
+        except Exception:  # noqa: BLE001
+            pass
+    return base_out
+
+
 def stop_recorder() -> RecorderJob:
+    """Signal the browser session to end and wait briefly for the worker/thread.
+
+    Does not merge by itself — callers use ``persist_recorder_job``. If studio
+    Stop already auto-persisted, returns the finished job immediately.
+    """
     with _recorder_lock:
         job = _active
         if job is None:
             raise RuntimeError("no active recording")
+        if job.done:
+            return job
         job.stop.set()
         if job.mp_stop is not None:
             job.mp_stop.set()
+        if job.gate is not None:
+            job.gate.phase = "stopping"
+            job.gate.needs_merge = False
+        job.phase = "stopping"
+        if job.mp_ns is not None:
+            try:
+                job.mp_ns.phase = "stopping"
+                job.mp_ns.needs_merge = False
+            except Exception:  # noqa: BLE001
+                pass
+    # Short wait — never block dashboard UI for minutes on a stuck Chrome WS.
     if job.proc is not None:
-        job.proc.join(timeout=120)
+        job.proc.join(timeout=8)
         if job.proc.is_alive():
+            print("[record] worker slow after stop — terminating", flush=True)
             job.proc.terminate()
-            job.proc.join(timeout=10)
+            job.proc.join(timeout=3)
+            if job.proc.is_alive():
+                try:
+                    job.proc.kill()
+                except Exception:  # noqa: BLE001
+                    pass
+                job.proc.join(timeout=2)
+        try:
+            job.steps = list(job.steps)
+        except Exception:  # noqa: BLE001
+            pass
     elif job.thread:
-        job.thread.join(timeout=120)
+        job.thread.join(timeout=8)
     if job.gate is not None:
-        job.phase = "done"
         job.setup_discarded = job.gate.setup_discarded
         job.flagged = list(job.gate.flagged)
-    job.done = True
-    job.phase = "done"
+        job.gate.needs_merge = False
+        job.gate.phase = "done"
+    if job.mp_ns is not None:
+        try:
+            job.mp_ns.needs_merge = False
+            job.mp_ns.phase = "done"
+            job.setup_discarded = int(getattr(job.mp_ns, "setup_discarded", 0) or job.setup_discarded)
+        except Exception:  # noqa: BLE001
+            pass
+    if not job.done:
+        job.done = True
+        job.phase = "done"
+        job.needs_merge = False
     return job
 
 

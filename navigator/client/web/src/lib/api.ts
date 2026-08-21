@@ -240,12 +240,14 @@ export type RecorderStatus = {
   steps?: number;
   flow_name?: string | null;
   error?: string | null;
-  phase?: "setup" | "capturing" | "done" | string;
+  phase?: "setup" | "capturing" | "stopping" | "done" | string;
   setup_discarded?: number;
   flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
   narrate?: boolean;
   narration_chunks?: number;
   save_mode?: "new" | "update" | string;
+  /** Studio Stop — dashboard must POST /record/stop to merge/save. */
+  needs_merge?: boolean;
 };
 
 export type ExploreQuestion = {

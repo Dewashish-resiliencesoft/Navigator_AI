@@ -4,7 +4,7 @@ Invariant: no DemoStep can advance until its required browser state transition
 has been verified. This is enforced by code, never by the LLM or timing.
 
 Flow for each DemoStep:
-  1. Prepare narration (emit DEMO_STEP_STARTED)
+  1. Emit DEMO_STEP_STARTED
   2. Capture DOM fingerprint before action
   3. Execute action (one atomic Playwright call)
   4. Wait for settled state
@@ -17,6 +17,7 @@ Speech and browser are synchronised by the step boundary, not by a clock.
 
 from __future__ import annotations
 
+import re
 import time
 from typing import Any, Callable
 
@@ -58,6 +59,8 @@ def execute_demo_step(
     page: Page,
     emit: Callable,
     speak: Callable[[str], None] | None = None,
+    speak_error: Callable[[str], None] | None = None,
+    interaction_engine: Any | None = None,
     on_frame: Callable[[], None] | None = None,
 ) -> tuple[DemoStepStatus, AgentWorldState, StructuredError | None]:
     """Execute one DemoStep. Returns (status, updated_world, error_or_None)."""
@@ -65,10 +68,8 @@ def execute_demo_step(
     flow_id = world.execution.flow_id
     step_id = step.id
 
-    # 1. Narrate (speak before acting)
-    narration = step.narration.default or step.narration.source_transcript
-    if narration and speak:
-        speak(narration)
+    # 1. Announce the step boundary. Completion narration is not spoken until
+    # verification passes below; it is a factual claim, not a pacing cue.
     emit(AgentEventKind.DEMO_STEP_STARTED, flow_id=flow_id, step_id=step_id,
          payload={"objective": step.objective, "safety": step.safety.value})
 
@@ -79,6 +80,56 @@ def execute_demo_step(
         emit(AgentEventKind.DEMO_STEP_FAILED, flow_id=flow_id, step_id=step_id,
              payload={"reason": "not_approved"})
         return DemoStepStatus.failed, world, err
+
+    # Resolve visitor input immediately before the action. The engine owns the
+    # session context, which is shared by all flows in one demo playlist.
+    action_value = step.action.value
+    if step.interaction.mode.value != "none":
+        if interaction_engine is None:
+            err = _make_error(
+                world, step, "InteractionUnavailable",
+                "Step requires visitor interaction but no interaction engine is configured.",
+            )
+            emit(AgentEventKind.DEMO_STEP_FAILED, flow_id=flow_id, step_id=step_id,
+                 payload={"reason": "interaction_unavailable"})
+            if speak_error:
+                speak_error(err.visitor_message)
+            return _apply_recovery(step, world, err)
+
+        # Dashboard test demos intentionally use the recorder's sample instead
+        # of waiting for an End User who is not present on that surface.
+        if (
+            world.session.origin == "dashboard_test"
+            and step.interaction.mode.value == "ask"
+            and step.interaction.fallback_value
+        ):
+            interaction_engine.session_context.set(
+                step.interaction.input_name, step.interaction.fallback_value
+            )
+            from navigator.agent_runtime.interaction import InteractionResult
+
+            interaction = InteractionResult(step.interaction.fallback_value)
+        else:
+            interaction = interaction_engine.resolve(step)
+        if interaction.declined or (interaction.timed_out and not interaction.value):
+            err = _make_error(
+                world, step, "InteractionUnavailable",
+                "Visitor input was not available for this step.",
+            )
+            emit(AgentEventKind.DEMO_STEP_FAILED, flow_id=flow_id, step_id=step_id,
+                 payload={"reason": "interaction_unresolved"})
+            if speak_error:
+                speak_error(err.visitor_message)
+            return _apply_recovery(step, world, err)
+
+        # Confirmation only gates the action; it is never typed into a field.
+        if step.interaction.mode.value != "confirm":
+            action_value = _resolve_action_value(
+                step.action.value,
+                context=interaction_engine.session_context,
+                resolved=interaction.value,
+                input_name=step.interaction.input_name,
+            )
 
     # 2. Capture pre-action DOM fingerprint
     pre_fp = _dom_fingerprint_before(page)
@@ -103,7 +154,7 @@ def execute_demo_step(
                 label=step.action.target.semantic_id.replace("_", " "),
                 page_id=step.action.target.page_id,
             ),
-            value=step.action.value,
+            value=action_value,
             reason=step.objective,
             non_interruptible=True,
         )
@@ -158,6 +209,9 @@ def execute_demo_step(
                  payload={"reason": reason, "attempts": attempt})
             emit(AgentEventKind.DEMO_STEP_COMPLETE, flow_id=flow_id, step_id=step_id,
                  payload={"latency_ms": elapsed})
+            narration = step.narration.default or step.narration.source_transcript
+            if narration and speak:
+                speak(narration)
             return DemoStepStatus.complete, world, None
 
         # Verification failed
@@ -174,7 +228,31 @@ def execute_demo_step(
 
     # Recovery
     emit(AgentEventKind.DEMO_STEP_FAILED, flow_id=flow_id, step_id=step_id)
-    return _apply_recovery(step, world, last_error)
+    status, world, error = _apply_recovery(step, world, last_error)
+    if speak_error and error:
+        speak_error(error.visitor_message)
+    return status, world, error
+
+
+_PLACEHOLDER = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}")
+
+
+def _resolve_action_value(
+    value: str,
+    *,
+    context: Any,
+    resolved: str,
+    input_name: str,
+) -> str:
+    """Resolve ``{{session_key}}`` only at the point the browser acts."""
+
+    def replace(match: re.Match[str]) -> str:
+        key = match.group(1)
+        if key == input_name and resolved:
+            return resolved
+        return context.get(key, match.group(0))
+
+    return _PLACEHOLDER.sub(replace, value or "")
 
 
 def _apply_recovery(

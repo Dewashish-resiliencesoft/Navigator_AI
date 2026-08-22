@@ -398,6 +398,16 @@ def _wait_meet_utterance(
     return ""
 
 
+def _timed_live_stage(stage: str, operation: Callable[[], Any]) -> Any:
+    """Run one startup stage and emit its delta only when explicitly enabled."""
+    started = time.perf_counter()
+    try:
+        return operation()
+    finally:
+        if settings.live_timing_enabled:
+            print(f"[live-timing] stage={stage} delta_ms={int((time.perf_counter() - started) * 1000)}", flush=True)
+
+
 def assert_live_site_graph(path: Path) -> None:
     text = path.read_text()
     if "tests/fixtures" in text or "crm_dashboard.html" in text:
@@ -857,8 +867,9 @@ def run_live_meet_demo(
             from navigator.meeting.audio_bridge import AudioBridge
 
             audio_bridge = AudioBridge().start()
-            audio_tunnel = start_tunnel(
-                audio_bridge.port, binary=settings.tunnel_bin, ready_path=None
+            audio_tunnel = _timed_live_stage(
+                "audio_tunnel_start",
+                lambda: start_tunnel(audio_bridge.port, binary=settings.tunnel_bin, ready_path=None),
             )
             audio_ws_url = audio_tunnel.public_url.replace("https://", "wss://").replace(
                 "http://", "ws://"
@@ -944,7 +955,7 @@ def run_live_meet_demo(
                 flush=True,
             )
         reserve, zoom_sdk = share_media_join_opts(is_zoom=zoom_native)
-        bot = client.join(
+        bot = _timed_live_stage("attendee_join", lambda: client.join(
             meeting_url,
             bot_name=(persona.agent_name or "Navigator AI").strip() or "Navigator AI",
             reserve_voice_agent=reserve,
@@ -952,7 +963,7 @@ def run_live_meet_demo(
             google_meet_use_login=settings.google_meet_use_login,
             zoom_tokens_url=zoom_tokens_url,
             zoom_sdk=zoom_sdk,
-        )
+        ))
         bot_id = bot.id
         if on_bot_joined is not None:
             on_bot_joined(bot_id)
@@ -983,7 +994,10 @@ def run_live_meet_demo(
         # Screenshare tunnel after bot join (Meet + Zoom web SDK).
         public_agent: str | None = None
         print("[live] starting screenshare tunnel…", flush=True)
-        tunnel = start_tunnel(relay.port, binary=settings.tunnel_bin)
+        tunnel = _timed_live_stage(
+            "screenshare_tunnel_start",
+            lambda: start_tunnel(relay.port, binary=settings.tunnel_bin),
+        )
         public_view = f"{tunnel.public_url}/view"
         public_agent = f"{tunnel.public_url}/agent"
         print(f"[live] screenshare URL ready: {public_view}", flush=True)
@@ -1259,7 +1273,9 @@ def run_live_meet_demo(
 
                 ensure_playwright_browsers()
                 ensure_headed_display()
-            browser = pw.chromium.launch(headless=not headful)
+            browser = _timed_live_stage(
+                "browser_launch", lambda: pw.chromium.launch(headless=not headful)
+            )
             context = browser.new_context(
                 viewport={"width": 1280, "height": 720},
                 device_scale_factor=1,
@@ -1268,7 +1284,7 @@ def run_live_meet_demo(
             install_cursor(page)
 
             def _do_login(*, url: str, email: str, password: str, **_kw) -> None:
-                login_product(
+                return _timed_live_stage("login_flow", lambda: login_product(
                     page,
                     url=url,
                     email=email,
@@ -1276,7 +1292,7 @@ def run_live_meet_demo(
                     visible=show_login,
                     skip_open=show_login,
                     on_progress=_push if show_login else None,
-                )
+                ))
 
             def _real_origin() -> str:
                 """Prefer site-graph base_url; fall back to NAVIGATOR_PRODUCT_URL."""

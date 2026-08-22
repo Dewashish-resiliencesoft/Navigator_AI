@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     #: a business landing page later; share the link via email instead.
     open_meet_in_browser: bool = False
     tunnel_bin: str = "cloudflared"
+    #: Emit per-stage live-demo startup timings when enabled.
+    live_timing_enabled: bool = False
     meet_live: bool = False
     live_walkthrough_flow: str = "default_walkthrough"
     live_max_turns: int = 50

@@ -839,6 +839,8 @@ def run_demo_flow_gated(
     demo_flow,  # DemoFlow from DemoGraph
     speak: "Callable[[str], None] | None" = None,
     emit: "Callable | None" = None,
+    world=None,
+    interaction_engine=None,
     on_frame: "Callable[[], None] | None" = None,
 ) -> dict:
     """Run a DemoFlow using the new DemoStepExecutor (Phase-6/9).
@@ -853,33 +855,53 @@ def run_demo_flow_gated(
         AgentSession,
         AgentWorldState,
         BrowserSlice,
+        DemoSessionContext,
         DemoStepStatus,
         ExecutionSlice,
     )
-    from uuid import uuid4 as _uuid4
+    from navigator.agent_runtime.interaction import InteractionEngine
 
     _speak = speak or (lambda t: None)
     _emit = emit or (lambda *a, **kw: None)
 
-    # Build a minimal world state for the executor
+    # Build one world when invoked for a single flow. Playlist callers pass the
+    # same world and InteractionEngine to every flow so visitor values survive
+    # flow boundaries for the entire demo call.
     page_id = getattr(demo_flow, "page_id", "dashboard") if hasattr(demo_flow, "page_id") else "dashboard"
-    session = AgentSession(
-        session_id=session_id,
-        product_id=deps.product_id,
-        origin=getattr(deps, "demo_origin", "dashboard_test"),
-    )
-    world = AgentWorldState(
-        session=session,
-        browser=BrowserSlice(
-            url=deps.page.url if deps.page else "",
-            page_id=page_id,
-        ),
-        execution=ExecutionSlice(flow_id=flow_id),
-    )
+    if world is None:
+        session = AgentSession(
+            session_id=session_id,
+            product_id=deps.product_id,
+            origin=getattr(deps, "demo_origin", "dashboard_test"),
+        )
+        world = AgentWorldState(
+            session=session,
+            browser=BrowserSlice(
+                url=deps.page.url if deps.page else "",
+                page_id=page_id,
+            ),
+            execution=ExecutionSlice(flow_id=flow_id),
+            demo_session=DemoSessionContext(),
+        )
+    else:
+        world = world.model_copy(
+            update={"execution": world.execution.model_copy(update={"flow_id": flow_id})}
+        )
+
+    if interaction_engine is None:
+        interaction_engine = InteractionEngine(
+            speak=_speak,
+            wait_for_utterance=lambda _timeout: (
+                deps.listen_once("") if getattr(deps, "listen_once", None) else None
+            ),
+            emit=_emit,
+            session_context=world.demo_session,
+        )
 
     completed = 0
     failed = 0
     hard_fail = False
+    errors = []
 
     for step in demo_flow.steps:
         if getattr(deps, "stop_event", None) and deps.stop_event.is_set():
@@ -892,6 +914,8 @@ def run_demo_flow_gated(
             page=deps.page,
             emit=_emit,
             speak=_speak,
+            speak_error=_speak,
+            interaction_engine=interaction_engine,
             on_frame=on_frame,
         )
 
@@ -899,6 +923,8 @@ def run_demo_flow_gated(
             completed += 1
         elif status == DemoStepStatus.failed:
             failed += 1
+            if error is not None:
+                errors.append(error)
             if step.recovery.on_failure.value == "fail":
                 hard_fail = True
                 break
@@ -913,4 +939,80 @@ def run_demo_flow_gated(
             import time as _time
             _time.sleep(min(pause_ms / 1000.0, 2.0))
 
-    return {"completed": completed, "failed": failed, "hard_fail": hard_fail}
+    return {
+        "completed": completed,
+        "failed": failed,
+        "hard_fail": hard_fail,
+        "errors": errors,
+        "world": world,
+        "interaction_engine": interaction_engine,
+    }
+
+
+def run_demo_playlist_gated(
+    deps: "CallDeps",
+    *,
+    session_id: UUID,
+    demo_graph,
+    speak: "Callable[[str], None] | None" = None,
+    emit: "Callable | None" = None,
+    on_frame: "Callable[[], None] | None" = None,
+) -> dict:
+    """Run a DemoGraph playlist with one session context for every flow."""
+    from navigator.agent_runtime.interaction import InteractionEngine
+    from navigator.agent_runtime.models import AgentSession, AgentWorldState, BrowserSlice, ExecutionSlice
+
+    _speak = speak or (lambda _t: None)
+    _emit = emit or (lambda *a, **kw: None)
+    session = AgentSession(
+        session_id=session_id,
+        product_id=deps.product_id,
+        origin=getattr(deps, "demo_origin", "dashboard_test"),
+    )
+    world = AgentWorldState(
+        session=session,
+        browser=BrowserSlice(url=deps.page.url if deps.page else ""),
+        execution=ExecutionSlice(),
+    )
+    interaction_engine = InteractionEngine(
+        speak=_speak,
+        wait_for_utterance=lambda _timeout: (
+            deps.listen_once("") if getattr(deps, "listen_once", None) else None
+        ),
+        emit=_emit,
+        session_context=world.demo_session,
+    )
+    completed = failed = 0
+    hard_fail = False
+    errors = []
+
+    for flow_id in demo_graph.playlist.flows:
+        flow = demo_graph.flows.get(flow_id)
+        if flow is None or _stopped(deps):
+            continue
+        outcome = run_demo_flow_gated(
+            deps,
+            session_id=session_id,
+            flow_id=flow_id,
+            demo_flow=flow,
+            speak=_speak,
+            emit=_emit,
+            world=world,
+            interaction_engine=interaction_engine,
+            on_frame=on_frame,
+        )
+        world = outcome["world"]
+        completed += outcome["completed"]
+        failed += outcome["failed"]
+        errors.extend(outcome.get("errors") or [])
+        if outcome["hard_fail"]:
+            hard_fail = True
+            break
+
+    return {
+        "completed": completed,
+        "failed": failed,
+        "hard_fail": hard_fail,
+        "errors": errors,
+        "world": world,
+    }

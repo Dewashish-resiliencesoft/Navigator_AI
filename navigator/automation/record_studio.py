@@ -26,6 +26,10 @@ def demo_variables_from_steps(steps: list[RecordedStep]) -> list[dict[str, str]]
                 "label": alias.replace("_", " "),
                 "live_question": (step.live_question or "").strip()
                 or f"Could you share your {alias.replace('_', ' ')}?",
+                "input_name": (step.input_name or alias).strip(),
+                "input_type": step.input_type or "text",
+                "prompt": (step.prompt or step.live_question or "").strip(),
+                "fallback_value": step.fallback_value or "",
             }
         )
     return out
@@ -37,6 +41,8 @@ def mark_step_ask_visitor(
     step_index: int | None = None,
     var_alias: str = "",
     live_question: str = "",
+    input_type: str = "text",
+    fallback_value: str | None = None,
     page: Any = None,
 ) -> RecordedStep:
     """Rewrite a recorded fill as source=user; clear typed demo value."""
@@ -70,10 +76,41 @@ def mark_step_ask_visitor(
     if not question:
         question = f"Could you share your {alias.replace('_', ' ')}?"
 
+    sample = step.fallback_value if step.fallback_value is not None else step.value or ""
     step.alias = alias
     step.source = "user"
     step.live_question = question
-    step.value = ""
+    step.input_name = alias
+    step.input_type = (input_type or "text").strip() or "text"
+    step.prompt = question
+    step.fallback_value = sample if fallback_value is None else fallback_value
+    # Keep a semantic reference in the executable flow; the recorded sample is
+    # retained separately as fallback_value rather than replayed by accident.
+    step.value = f"{{{{{alias}}}}}"
+    step.value_ref = None
+    steps[idx] = step
+    return step
+
+
+def mark_step_replay_recorded_value(
+    steps: list[RecordedStep], *, step_index: int | None = None
+) -> RecordedStep:
+    """Restore a field to the default, non-interactive recorded-value mode."""
+    if not steps:
+        raise RuntimeError("no recorded steps yet")
+    idx = step_index if step_index is not None else _last_fill_index(steps)
+    if idx is None:
+        raise RuntimeError("click or fill a field first")
+    step = steps[idx]
+    if step.tool != "fill_field":
+        raise RuntimeError("only recorded fields can replay a value")
+    step.source = "agent"
+    step.value = step.fallback_value if step.fallback_value is not None else step.value
+    step.live_question = None
+    step.input_name = None
+    step.input_type = "text"
+    step.prompt = None
+    step.fallback_value = None
     step.value_ref = None
     steps[idx] = step
     return step

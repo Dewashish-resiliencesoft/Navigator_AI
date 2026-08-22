@@ -6,6 +6,7 @@ from navigator.agent.live_input import needs_live_input, resolve_demo_fill
 from navigator.automation.record import RecordedStep, draft_site_graph, guess_postcondition
 from navigator.automation.record_studio import (
     bind_value_ref,
+    mark_step_replay_recorded_value,
     demo_variables_from_steps,
     mark_step_ask_visitor,
 )
@@ -28,10 +29,35 @@ def test_mark_ask_visitor_clears_typed_value_and_sets_source_user():
         page=None,
     )
     assert step.source == "user"
-    assert step.value == ""
+    assert step.value == "{{work_email}}"
+    assert step.fallback_value == "demo@example.com"
+    assert step.input_name == "work_email"
     assert step.alias == "work_email"
     assert "email" in (step.live_question or "").lower()
     assert demo_variables_from_steps(steps)[0]["alias"] == "work_email"
+
+
+def test_ask_visitor_compiles_to_interaction_schema():
+    from navigator.agent_runtime.demo_compiler import compile_step
+    from navigator.agent_runtime.models import InteractionMode
+
+    step = RecordedStep(tool="fill_field", alias="phone_field", selector="#phone", value="5550102000")
+    mark_step_ask_visitor(steps := [step], var_alias="phone", input_type="phone", live_question="What phone number should I use?")
+    compiled = compile_step(steps[0])
+    assert compiled.action.value == "{{phone}}"
+    assert compiled.interaction.mode == InteractionMode.ask
+    assert compiled.interaction.input_name == "phone"
+    assert compiled.interaction.input_type == "phone"
+    assert compiled.interaction.fallback_value == "5550102000"
+
+
+def test_replay_recorded_value_restores_noninteractive_field():
+    steps = [RecordedStep(tool="fill_field", alias="email", selector="#email", value="sample@acme.test")]
+    mark_step_ask_visitor(steps, var_alias="email", live_question="Email?")
+    restored = mark_step_replay_recorded_value(steps)
+    assert restored.source == "agent"
+    assert restored.value == "sample@acme.test"
+    assert restored.input_name is None
 
 
 def test_draft_persists_source_user_and_demo_variables():
@@ -52,6 +78,9 @@ def test_draft_persists_source_user_and_demo_variables():
     call = draft["pages"]["main"]["flows"]["recorded_demo"][0]
     assert call["source"] == "user"
     assert call["value"] == ""
+    assert "fallback_value" not in call
+    assert call["input_name"] == "work_email"
+    assert call["input_type"] == "text"
     assert call["live_question"]
     assert draft["_meta"]["demo_variables"][0]["alias"] == "work_email"
     # Visitor fill must not assert empty value_equals.

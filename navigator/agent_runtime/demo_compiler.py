@@ -110,6 +110,23 @@ def _build_verification(step: RecordedStep) -> DemoStepVerification:
 
 
 def _build_interaction(step: RecordedStep, safety: SafetyClass) -> DemoStepInteraction:
+    if step.source == "user" or step.input_name:
+        input_name = step.input_name or step.alias or "value"
+        prompt = step.prompt or step.live_question or (
+            f"Could you share your {input_name.replace('_', ' ')}?"
+        )
+        return DemoStepInteraction(
+            mode=InteractionMode.ask,
+            input_name=input_name,
+            input_type=step.input_type or "text",
+            prompt=prompt,
+            fallback_after_ms=8000,
+            fallback_value=(
+                step.fallback_value
+                if step.fallback_value is not None
+                else (step.value or "")
+            ),
+        )
     if safety == SafetyClass.user_input:
         alias = re.sub(r"[_-]", " ", step.alias or "field")
         return DemoStepInteraction(
@@ -139,7 +156,7 @@ def compile_step(step: RecordedStep, *, objective: str = "") -> DemoStep:
     """Convert one RecordedStep into a DemoStep."""
     safety = _classify_safety(step)
     intent = _semantic_intent(step)
-    spoken = step.spoken if hasattr(step, "spoken") else ""
+    spoken = (step.spoken if hasattr(step, "spoken") else "") or ""
 
     narration = DemoStepNarration(
         default=_default_narration(intent, objective) if not spoken else spoken,

@@ -294,10 +294,6 @@ class AgentOrchestrator:
                 self._mark_task(TaskStatus.failed)
                 return
 
-            if step.spoken:
-                # Step narration — use result-speech path, not acknowledge.
-                self._speak_result(step.spoken)
-
             self.store.update(
                 lambda s, st=step: s.model_copy(
                     update={
@@ -366,6 +362,11 @@ class AgentOrchestrator:
                 self.store.update(
                     lambda s, f=fp: s.model_copy(update={"watchdog": _wd.record_state(s.watchdog, f)})
                 )
+                # Completion narration is deliberately held until the declared
+                # postcondition has passed. LiveAdapter.speak_result() is a
+                # factual-result channel, never a pre-action pacing channel.
+                if step.spoken:
+                    self._speak_result(step.spoken)
             else:
                 self._emit(AgentEventKind.VERIFICATION_FAILED, task_id=plan.task_id, action_id=step.action_id)
                 self.store.update(

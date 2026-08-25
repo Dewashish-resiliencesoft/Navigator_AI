@@ -28,6 +28,7 @@ def demo_variables_from_steps(steps: list[RecordedStep]) -> list[dict[str, str]]
                 or f"Could you share your {alias.replace('_', ' ')}?",
                 "input_name": (step.input_name or alias).strip(),
                 "input_type": step.input_type or "text",
+                "input_options": list(step.input_options or []),
                 "prompt": (step.prompt or step.live_question or "").strip(),
                 "fallback_value": step.fallback_value or "",
             }

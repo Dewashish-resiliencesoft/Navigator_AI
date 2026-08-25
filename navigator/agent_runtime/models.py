@@ -366,6 +366,7 @@ class DemoStepInteraction(BaseModel):
     mode: InteractionMode = InteractionMode.none
     input_name: str = ""
     input_type: str = "text"
+    input_options: list[str] = Field(default_factory=list)
     prompt: str = ""
     fallback_after_ms: int = 8000
     fallback_value: str = ""

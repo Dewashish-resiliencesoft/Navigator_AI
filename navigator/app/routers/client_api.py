@@ -26,6 +26,10 @@ from navigator.client.content import (
     start_recorder,
     stop_recorder,
 )
+from navigator.automation.record_studio import (
+    bind_value_ref,
+    mark_step_replay_recorded_value,
+)
 from navigator.knowledge.company_bio import load_bio, save_bio
 from navigator.knowledge.product_brief import load_product_brief, save_product_brief
 from navigator.knowledge.demo_script import (
@@ -1204,6 +1208,94 @@ def client_record_stop(
     if not getattr(job, "product_id", ""):
         job.product_id = product.product_id
     return persist_recorder_job(job, page_id=page_id or "dashboard")
+
+
+@router.post("/client/api/record/bind-value-ref")
+def client_record_bind_value_ref(
+    product: DashboardAuthedProduct,
+    step_index: Annotated[int, Query()],
+    value_ref: Annotated[str, Query()],
+    registry: Reg,
+) -> dict:
+    """Point a fill step at a prior visitor variable (no live ask on this step)."""
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    try:
+        graph = parse_site_graph(rev.yaml)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    # Find the flow/page being recorded
+    page_id = "dashboard"
+    flow_id = ""
+    for item in graph.demo_playlist:
+        flow_id = item.flow_id
+        page_id = item.page_id
+        break
+
+    steps = graph.pages.get(page_id, {}).flows.get(flow_id, ())
+    if not steps:
+        raise HTTPException(404, "No steps in current flow")
+
+    step_list = list(steps)
+    try:
+        bind_value_ref(step_list, step_index=step_index, value_ref=value_ref)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    # Reconstruct flow
+    new_flows = {**graph.pages[page_id].flows, flow_id: tuple(step_list)}
+    new_pages = {**graph.pages, page_id: graph.pages[page_id].model_copy(update={"flows": new_flows})}
+    new_graph = graph.model_copy(update={"pages": new_pages})
+    new_yaml = new_graph.model_dump_yaml()
+
+    rev = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
+    return {"ok": True, "revision": rev.revision, "playlist": playlist_from_graph(parse_site_graph(new_yaml))}
+
+
+@router.post("/client/api/record/replay-recorded-value")
+def client_record_replay_recorded_value(
+    product: DashboardAuthedProduct,
+    step_index: Annotated[int, Query()],
+    registry: Reg,
+) -> dict:
+    """Restore a field to the default, non-interactive recorded-value mode."""
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    try:
+        graph = parse_site_graph(rev.yaml)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    page_id = "dashboard"
+    flow_id = ""
+    for item in graph.demo_playlist:
+        flow_id = item.flow_id
+        page_id = item.page_id
+        break
+
+    steps = graph.pages.get(page_id, {}).flows.get(flow_id, ())
+    if not steps:
+        raise HTTPException(404, "No steps in current flow")
+
+    step_list = list(steps)
+    try:
+        mark_step_replay_recorded_value(step_list, step_index=step_index)
+    except RuntimeError as exc:
+        raise HTTPException(422, str(exc)) from None
+
+    new_flows = {**graph.pages[page_id].flows, flow_id: tuple(step_list)}
+    new_pages = {**graph.pages, page_id: graph.pages[page_id].model_copy(update={"flows": new_flows})}
+    new_graph = graph.model_copy(update={"pages": new_pages})
+    new_yaml = new_graph.model_dump_yaml()
+
+    rev = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
+    return {"ok": True, "revision": rev.revision, "playlist": playlist_from_graph(parse_site_graph(new_yaml))}
+
 
 _GUIDED_RETIRED = "Guided task retired — use manual record."
 

@@ -101,7 +101,7 @@ class InteractionEngine:
         reply = self._wait(timeout_s)
 
         if reply:
-            value = _extract_value(reply, spec.input_type)
+            value = _extract_value(reply, spec.input_type, spec.input_options)
             self._ctx.set(spec.input_name, value)
             self._emit(AgentEventKind.INTERACTION_RESOLVED, payload={
                 "step_id": step.id, "timed_out": False,
@@ -144,7 +144,7 @@ class InteractionEngine:
         return InteractionResult(value="", declined=True)
 
 
-def _extract_value(utterance: str, input_type: str) -> str:
+def _extract_value(utterance: str, input_type: str, options: list[str] | None = None) -> str:
     """Basic extraction — takes the whole utterance for most types."""
     utterance = utterance.strip()
     if input_type == "phone":
@@ -159,4 +159,12 @@ def _extract_value(utterance: str, input_type: str) -> str:
         import re
         match = re.search(r"\d[\d,]*", utterance)
         return match.group(0) if match else utterance
+    if input_type == "selection" and options:
+        # Try to match utterance against options (case-insensitive)
+        lower_utterance = utterance.lower()
+        for opt in options:
+            if opt.lower() == lower_utterance or opt.lower() in lower_utterance:
+                return opt
+        # If no match, return first option as fallback
+        return options[0] if options else utterance
     return utterance

@@ -194,6 +194,8 @@ export type DemoScriptBeat = {
   tool?: string;
   fill_mode?: "sample" | "ask" | "ref";
   input_type?: string;
+  /** Dropdown options for SELECTION input type */
+  input_options?: string[];
   confirm_before?: boolean;
   value_ref?: string | null;
   live_question?: string;
@@ -983,6 +985,18 @@ export const api = {
       setup_discarded?: number;
       narrated_steps?: number;
     }>("/client/api/record/stop", "POST"),
+  recordBindValueRef: (step_index: number, value_ref: string) =>
+    send<{ ok: boolean; revision: number; playlist: Flow[] }>(
+      "/client/api/record/bind-value-ref",
+      "POST",
+      { step_index, value_ref },
+    ),
+  recordReplayRecordedValue: (step_index: number) =>
+    send<{ ok: boolean; revision: number; playlist: Flow[] }>(
+      "/client/api/record/replay-recorded-value",
+      "POST",
+      { step_index },
+    ),
 
   exploreStatus: () => get<ExploreStatus>("/client/api/explore"),
   exploreFrame: () =>

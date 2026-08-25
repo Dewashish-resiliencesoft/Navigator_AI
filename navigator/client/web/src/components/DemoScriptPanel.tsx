@@ -353,6 +353,26 @@ function BeatRow({
                       ))}
                     </select>
                   </label>
+                  {beat.input_type === "selection" && (
+                    <label className="block text-[0.72rem]">
+                      <span className="mb-1 block text-[var(--muted)]">
+                        Options (comma-separated)
+                      </span>
+                      <Textarea
+                        value={(beat.input_options ?? []).join(", ")}
+                        onChange={(v) =>
+                          onPatch(beat.id, {
+                            input_options: v.split(",").map((s) => s.trim()).filter(Boolean),
+                            fill_mode: "ask",
+                            spoken_source: "manual",
+                          })
+                        }
+                        rows={2}
+                        className="text-[0.78rem] font-mono"
+                        placeholder="Option A, Option B, Option C"
+                      />
+                    </label>
+                  )}
                   <label className="block text-[0.72rem]">
                     <span className="mb-1 block text-[var(--muted)]">Example if unclear</span>
                     <Textarea

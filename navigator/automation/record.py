@@ -40,6 +40,7 @@ class RecordedStep:
     #: Explicit InteractionEngine metadata authored in the recorder studio.
     input_name: str | None = None
     input_type: str = "text"
+    input_options: list[str] = field(default_factory=list)
     prompt: str | None = None
     #: The value typed while recording; retained when source becomes user.
     fallback_value: str | None = None
@@ -74,6 +75,7 @@ def recorded_step_to_dict(step: RecordedStep) -> dict[str, Any]:
         "live_question": step.live_question,
         "input_name": step.input_name,
         "input_type": step.input_type,
+        "input_options": list(step.input_options or []),
         "prompt": step.prompt,
         "fallback_value": step.fallback_value,
         "value_ref": step.value_ref,
@@ -98,6 +100,7 @@ def recorded_step_from_dict(raw: dict[str, Any]) -> RecordedStep:
         value_ref=raw.get("value_ref"),
         input_name=raw.get("input_name"),
         input_type=str(raw.get("input_type") or "text"),
+        input_options=list(raw.get("input_options") or []),
         prompt=raw.get("prompt"),
         fallback_value=raw.get("fallback_value"),
         spoken=raw.get("spoken"),

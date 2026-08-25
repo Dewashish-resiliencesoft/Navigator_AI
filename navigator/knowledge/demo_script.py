@@ -836,6 +836,9 @@ def _sync_fill_mode_to_step(step: dict[str, Any], beat: dict[str, Any]) -> None:
             step["input_name"] = alias
         if input_type:
             step["input_type"] = input_type
+        input_options = beat.get("input_options")
+        if input_options:
+            step["input_options"] = list(input_options)
         if sample:
             step["fallback_value"] = sample
         step["value"] = f"{{{{{alias}}}}}" if alias else step.get("value") or ""
@@ -848,6 +851,9 @@ def _sync_fill_mode_to_step(step: dict[str, Any], beat: dict[str, Any]) -> None:
     step["source"] = "agent"
     if input_type:
         step["input_type"] = input_type
+    input_options = beat.get("input_options")
+    if input_options:
+        step["input_options"] = list(input_options)
     if ref:
         step["value_ref"] = ref
         step["value"] = f"{{{{{ref}}}}}"

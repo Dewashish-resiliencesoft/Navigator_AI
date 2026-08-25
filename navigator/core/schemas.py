@@ -113,6 +113,8 @@ class FillField(_ToolCallBase):
     """Author-authored question asked before an interactive fill."""
     input_type: str = "text"
     """Expected visitor input shape: phone, email, text, number, and so on."""
+    input_options: list[str] = Field(default_factory=list)
+    """Dropdown options for SELECTION input type."""
     fallback_value: str | None = None
     """Recorded sample used only when the visitor cannot provide a value."""
     confirm_before: bool = False

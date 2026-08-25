@@ -110,6 +110,14 @@ def _build_verification(step: RecordedStep) -> DemoStepVerification:
 
 
 def _build_interaction(step: RecordedStep, safety: SafetyClass) -> DemoStepInteraction:
+    if step.value_ref:
+        # Reuse variable from earlier step - no interaction needed, value resolved at runtime
+        return DemoStepInteraction(
+            mode=InteractionMode.none,
+            input_name=step.value_ref,
+            input_type=step.input_type or "text",
+            fallback_value=step.fallback_value or step.value or "",
+        )
     if step.source == "user" or step.input_name:
         input_name = step.input_name or step.alias or "value"
         prompt = step.prompt or step.live_question or (
@@ -119,6 +127,7 @@ def _build_interaction(step: RecordedStep, safety: SafetyClass) -> DemoStepInter
             mode=InteractionMode.ask,
             input_name=input_name,
             input_type=step.input_type or "text",
+            input_options=getattr(step, "input_options", []) or [],
             prompt=prompt,
             fallback_after_ms=8000,
             fallback_value=(

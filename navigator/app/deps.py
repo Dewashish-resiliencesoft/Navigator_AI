@@ -29,7 +29,21 @@ async def _lifespan(_app: FastAPI):
 
     ensure_playwright_browsers()
     ensure_attendee_stack()
+    # Keep infra warm (attendee, Cloudflare base URL, parked product browser) so
+    # "Show me the demo" skips cold starts. Best-effort; never blocks startup.
+    try:
+        from navigator.meeting.warm_pool import start_warm_pool
+
+        start_warm_pool()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[warm] pool start skipped: {exc}", flush=True)
     yield
+    try:
+        from navigator.meeting.warm_pool import get_warm_pool
+
+        get_warm_pool().stop()
+    except Exception:  # noqa: BLE001
+        pass
 
 def get_registry() -> Registry:
     return _registry

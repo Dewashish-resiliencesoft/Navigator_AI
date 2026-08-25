@@ -3304,6 +3304,10 @@ components:
         selector:
           type: string
           title: Selector
+        confirm_before:
+          type: boolean
+          title: Confirm Before
+          default: false
       type: object
       required:
       - expects
@@ -3581,6 +3585,29 @@ components:
           - type: string
           - type: 'null'
           title: Value Ref
+        input_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Input Name
+        prompt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Prompt
+        input_type:
+          type: string
+          title: Input Type
+          default: text
+        fallback_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Fallback Value
+        confirm_before:
+          type: boolean
+          title: Confirm Before
+          default: false
       type: object
       required:
       - expects

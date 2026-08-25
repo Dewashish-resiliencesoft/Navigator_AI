@@ -138,6 +138,9 @@ def demo_variables_from_beats(beats: list[dict[str, Any]]) -> list[dict[str, str
                 "label": alias.replace("_", " "),
                 "live_question": str(beat.get("live_question") or "").strip(),
                 "example_value": str(beat.get("example_value") or "").strip(),
+                "input_type": str(beat.get("input_type") or "text").strip() or "text",
+                "flow_id": str(beat.get("flow_id") or ""),
+                "step_index": beat.get("step_index"),
             }
         )
     return out
@@ -559,6 +562,12 @@ def compose_full_demo_script(
                 value_ref = (call.value_ref or "").strip()
                 if beat_id in manual and manual[beat_id].get("value_ref") is not None:
                     value_ref = str(manual[beat_id]["value_ref"]).strip()
+                input_type = (call.input_type or "text").strip() or "text"
+                if beat_id in manual and manual[beat_id].get("input_type"):
+                    input_type = str(manual[beat_id]["input_type"]).strip() or input_type
+                confirm_before = bool(getattr(call, "confirm_before", False))
+                if beat_id in manual and manual[beat_id].get("confirm_before") is not None:
+                    confirm_before = bool(manual[beat_id]["confirm_before"])
                 fill_beat: dict[str, Any] = {
                     "id": beat_id,
                     "kind": "live_input" if fill_mode == "ask" else "flow_step",
@@ -568,6 +577,8 @@ def compose_full_demo_script(
                     "tool": "fill_field",
                     "field_alias": alias,
                     "fill_mode": fill_mode,
+                    "input_type": input_type,
+                    "confirm_before": confirm_before,
                     "action": action,
                     "on_screen": on_screen,
                     "spoken": spoken or (q if fill_mode == "ask" else spoken),
@@ -602,6 +613,12 @@ def compose_full_demo_script(
                 "spoken_source": spoken_source,
                 "knowledge_refs": knowledge_refs,
             }
+            if isinstance(call, ClickElement):
+                beat["tool"] = "click_element"
+                cb = bool(getattr(call, "confirm_before", False))
+                if beat_id in manual and manual[beat_id].get("confirm_before") is not None:
+                    cb = bool(manual[beat_id]["confirm_before"])
+                beat["confirm_before"] = cb
             if step_index in spoken_len:
                 beat["speak_ms"] = spoken_len[step_index]
             elif step_index in timing:
@@ -788,6 +805,14 @@ def _sync_fill_mode_to_step(step: dict[str, Any], beat: dict[str, Any]) -> None:
     alias = str(beat.get("field_alias") or step.get("selector") or "field").strip()
     example = beat.get("example_value")
     sample = "" if example is None else str(example).strip()
+    input_type = str(beat.get("input_type") or "").strip()
+    confirm_before = beat.get("confirm_before")
+
+    if confirm_before is not None:
+        if bool(confirm_before):
+            step["confirm_before"] = True
+        else:
+            step.pop("confirm_before", None)
 
     if mode == "sample":
         step["source"] = "agent"
@@ -809,16 +834,20 @@ def _sync_fill_mode_to_step(step: dict[str, Any], beat: dict[str, Any]) -> None:
             step["prompt"] = lq
         if alias:
             step["input_name"] = alias
+        if input_type:
+            step["input_type"] = input_type
         if sample:
             step["fallback_value"] = sample
         step["value"] = f"{{{{{alias}}}}}" if alias else step.get("value") or ""
         return
 
-    # ref
+    # ref — reuse an earlier visitor answer; sample is the fallback if missing.
     ref = str(beat.get("value_ref") or "").strip()
     step.pop("live_question", None)
     step.pop("prompt", None)
     step["source"] = "agent"
+    if input_type:
+        step["input_type"] = input_type
     if ref:
         step["value_ref"] = ref
         step["value"] = f"{{{{{ref}}}}}"
@@ -866,7 +895,8 @@ def apply_script_patch(
                 or kind == "live_input"
             )
             sync_spoken = beat.get("spoken_source") == "manual"
-            if not sync_spoken and not is_fill:
+            has_confirm = beat.get("confirm_before") is not None
+            if not sync_spoken and not is_fill and not has_confirm:
                 continue
             if kind not in {"flow_step", "live_input"} and not is_fill:
                 continue
@@ -893,6 +923,14 @@ def apply_script_patch(
                     step["spoken"] = spoken
             if is_fill and str(step.get("tool") or "") == "fill_field":
                 _sync_fill_mode_to_step(step, beat)
+            elif (
+                beat.get("confirm_before") is not None
+                and str(step.get("tool") or "") == "click_element"
+            ):
+                if bool(beat.get("confirm_before")):
+                    step["confirm_before"] = True
+                else:
+                    step.pop("confirm_before", None)
 
     new_yaml = yaml.safe_dump(raw, sort_keys=False)
     parse_site_graph(new_yaml, origin="<demo-script-patch>")

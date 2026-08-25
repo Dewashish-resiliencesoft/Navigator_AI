@@ -134,7 +134,142 @@ def test_compose_live_input_beat():
     assert len(live) == 1
     assert live[0]["field_alias"] == "email_field"
     assert live[0]["asks_visitor"] is True
+    assert live[0]["fill_mode"] == "ask"
+    assert live[0]["tool"] == "fill_field"
     assert "email" in live[0]["live_question"].lower()
+    assert any(v["alias"] == "email_field" for v in script["demo_variables"])
+
+
+def test_compose_sample_fill_emits_fill_mode():
+    raw = yaml.safe_load(_minimal_graph_yaml())
+    raw["pages"]["home"]["flows"]["tour"][1] = {
+        "tool": "fill_field",
+        "selector": "email_field",
+        "value": "demo@acme.test",
+        "spoken": "Filling email.",
+        "expects": {"check": "visible", "selector": "email_field"},
+    }
+    graph = parse_site_graph(yaml.safe_dump(raw))
+    script = compose_full_demo_script(graph, intake_enabled=False)
+    fills = [b for b in script["beats"] if b.get("tool") == "fill_field"]
+    assert len(fills) == 1
+    assert fills[0]["fill_mode"] == "sample"
+    assert fills[0]["kind"] == "flow_step"
+    assert fills[0]["example_value"] == "demo@acme.test"
+    assert fills[0]["asks_visitor"] is False
+
+
+def test_apply_script_patch_fill_mode_sample_ask_ref():
+    yaml_text = _minimal_graph_yaml()
+    graph = parse_site_graph(yaml_text)
+    script = compose_full_demo_script(graph, intake_enabled=False)
+    beats = script["beats"]
+    fill = next(b for b in beats if b.get("tool") == "fill_field")
+    # ask → sample
+    fill["fill_mode"] = "sample"
+    fill["kind"] = "flow_step"
+    fill["asks_visitor"] = False
+    fill["example_value"] = "sample@acme.test"
+    fill["spoken_source"] = "manual"
+    new_yaml = apply_script_patch(yaml_text, beats=beats)
+    raw = yaml.safe_load(new_yaml)
+    step = raw["pages"]["home"]["flows"]["tour"][1]
+    assert step["source"] == "agent"
+    assert step["value"] == "sample@acme.test"
+    assert "live_question" not in step or not step.get("live_question")
+    assert "value_ref" not in step
+
+    # sample → ask
+    fill["fill_mode"] = "ask"
+    fill["kind"] = "live_input"
+    fill["asks_visitor"] = True
+    fill["live_question"] = "What email?"
+    fill["field_alias"] = "work_email"
+    fill["example_value"] = "fallback@acme.test"
+    new_yaml = apply_script_patch(new_yaml, beats=beats)
+    raw = yaml.safe_load(new_yaml)
+    step = raw["pages"]["home"]["flows"]["tour"][1]
+    assert step["source"] == "user"
+    assert step["live_question"] == "What email?"
+    assert step["fallback_value"] == "fallback@acme.test"
+    assert step["value"] == "{{work_email}}"
+    assert step.get("input_name") == "work_email"
+
+    # ask → ref (reuse phone from another ask — alias only)
+    fill["fill_mode"] = "ref"
+    fill["kind"] = "flow_step"
+    fill["asks_visitor"] = False
+    fill["value_ref"] = "work_email"
+    new_yaml = apply_script_patch(new_yaml, beats=beats)
+    raw = yaml.safe_load(new_yaml)
+    step = raw["pages"]["home"]["flows"]["tour"][1]
+    assert step["value_ref"] == "work_email"
+    assert step.get("source") == "agent"
+    assert "live_question" not in step or not step.get("live_question")
+
+
+def test_apply_script_patch_input_type_and_confirm():
+    yaml_text = _minimal_graph_yaml()
+    graph = parse_site_graph(yaml_text)
+    script = compose_full_demo_script(graph, intake_enabled=False)
+    beats = script["beats"]
+    fill = next(b for b in beats if b.get("tool") == "fill_field")
+    fill["fill_mode"] = "ask"
+    fill["kind"] = "live_input"
+    fill["asks_visitor"] = True
+    fill["field_alias"] = "visitor_email"
+    fill["input_type"] = "email"
+    fill["confirm_before"] = True
+    fill["spoken_source"] = "manual"
+    new_yaml = apply_script_patch(yaml_text, beats=beats)
+    raw = yaml.safe_load(new_yaml)
+    step = raw["pages"]["home"]["flows"]["tour"][1]
+    assert step["source"] == "user"
+    assert step["input_type"] == "email"
+    assert step["confirm_before"] is True
+    # Recompose surfaces input_type + confirm on the beat and demo_variables.
+    graph2 = parse_site_graph(new_yaml)
+    script2 = compose_full_demo_script(graph2, intake_enabled=False)
+    fb = next(b for b in script2["beats"] if b.get("tool") == "fill_field")
+    assert fb["input_type"] == "email"
+    assert fb["confirm_before"] is True
+    assert any(
+        v["alias"] == "visitor_email" and v.get("input_type") == "email"
+        for v in script2["demo_variables"]
+    )
+
+
+def test_confirm_before_is_affirmative():
+    from navigator.agent.live_input import is_affirmative
+
+    assert is_affirmative("yes please")
+    assert is_affirmative("go ahead")
+    assert not is_affirmative("no, change the email")
+    assert not is_affirmative("")
+
+
+def test_value_ref_falls_back_to_sample_when_missing():
+    from navigator.core.schemas import FillField, Postcondition
+    from navigator.agent.live_input import resolve_demo_fill
+
+    call = FillField(
+        selector="email_field",
+        value="{{work_email}}",
+        value_ref="work_email",
+        fallback_value="sample@acme.test",
+        expects=Postcondition(check="visible", selector="email_field"),
+    )
+    answers: dict[str, str] = {}
+    # No cached answer, listener returns nothing → unclear → sample fallback.
+    updated, detail = resolve_demo_fill(
+        call,
+        live_answers=answers,
+        listen_once=lambda _q: "",
+        extract_entity=lambda *_a: "",
+        speak=lambda _l: None,
+    )
+    assert updated.value == "sample@acme.test"
+    assert "example" in detail
 
 
 def test_spoken_priority_yaml_over_explore():

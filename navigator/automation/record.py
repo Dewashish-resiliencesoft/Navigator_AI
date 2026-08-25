@@ -489,21 +489,67 @@ def inject_narration_widget(page: Page) -> None:
     _evaluate_fast(page, _narrate_widget_js())
 
 
+def _inject_studio_chrome(page: Page, *, reason: str = "") -> None:
+    """Force listeners + narrate box + cursor. Each piece isolated so one hang/fail
+    does not skip the others. Remote CDP: always use short-timeout evaluate.
+    """
+    tag = f" ({reason})" if reason else ""
+    try:
+        inject_dom_listeners(page, force=True)
+        print(f"[record] inject listeners ok{tag}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] inject listeners failed{tag}: {exc}", flush=True)
+    try:
+        inject_narration_widget(page)
+        print(f"[record] inject narrate ok{tag}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] inject narrate failed{tag}: {exc}", flush=True)
+    try:
+        inject_record_cursor(page)
+        # Hide OS pointer so the custom #nav-cursor is obvious while capturing.
+        _evaluate_fast(
+            page,
+            """() => {
+              if (document.getElementById('nav-cursor-hide-os')) return;
+              const s = document.createElement('style');
+              s.id = 'nav-cursor-hide-os';
+              s.textContent = 'html.nav-rec-cursor, html.nav-rec-cursor * { cursor: none !important; }';
+              document.documentElement.appendChild(s);
+              document.documentElement.classList.add('nav-rec-cursor');
+            }""",
+            timeout_ms=1_500,
+        )
+        print(f"[record] inject cursor ok{tag}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] inject cursor failed{tag}: {exc}", flush=True)
+
+
 def _context_init_scripts(context: Any) -> None:
     """Register inject + narrate + cursor on the browser context before new_page.
 
     Context-level init_script runs on every navigation (including remote CDP)
     without a post-goto evaluate — required when evaluate hangs the sync driver.
+    Each script wrapped so one throw does not kill the rest.
     """
     context.add_init_script(
         "window.__navRecordGen = (window.__navRecordGen || 0) + 1;"
     )
-    context.add_init_script(_INJECT_JS)
-    context.add_init_script(_narrate_widget_js())
+    context.add_init_script(
+        "try {\n" + _INJECT_JS + "\n} catch (e) { console.warn('[nav] inject init', e); }"
+    )
+    context.add_init_script(
+        "try {\n"
+        + _narrate_widget_js()
+        + "\n} catch (e) { console.warn('[nav] narrate init', e); }"
+    )
     try:
         from navigator.automation.browser.cursor import _CURSOR_JS
 
-        context.add_init_script(_CURSOR_JS)
+        context.add_init_script(
+            "try {\n"
+            + _CURSOR_JS
+            + "\n} catch (e) { console.warn('[nav] cursor init', e); }"
+        )
     except Exception:  # noqa: BLE001
         pass
 
@@ -512,8 +558,10 @@ def inject_dom_listeners(page: Page, *, force: bool = False) -> None:
     """Install click/fill listeners (rebinds after SPA wipe via gen bump)."""
     if not force:
         try:
-            alive = page.evaluate(
-                "() => document.documentElement.dataset.navigatorRecord === '1'"
+            alive = _evaluate_fast(
+                page,
+                "() => document.documentElement.dataset.navigatorRecord === '1'",
+                timeout_ms=1_500,
             )
             if alive:
                 return
@@ -522,8 +570,9 @@ def inject_dom_listeners(page: Page, *, force: bool = False) -> None:
     _evaluate_fast(
         page,
         "window.__navRecordGen = (window.__navRecordGen || 0) + 1;",
+        timeout_ms=1_500,
     )
-    _evaluate_fast(page, _INJECT_JS)
+    _evaluate_fast(page, _INJECT_JS, timeout_ms=2_500)
 
 
 def inject_record_cursor(page: Page) -> None:
@@ -536,16 +585,19 @@ def inject_record_cursor(page: Page) -> None:
         print(f"[record] cursor inject skipped: {exc}", flush=True)
 
 
-def _evaluate_fast(page: Page, script: str) -> None:
-    """Evaluate with a short default timeout so remote CDP cannot hang forever."""
+def _evaluate_fast(page: Page, script: str, *, timeout_ms: int = 2_500) -> Any:
+    """Evaluate with a short timeout so remote CDP cannot hang the sync driver.
+
+    Long/blocking evaluate on remote CDP starves expose_function callbacks → 0 steps.
+    """
     prev = 30_000
     try:
         prev = int(page.context._timeout_settings.timeout)  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001
         pass
     try:
-        page.set_default_timeout(5_000)
-        page.evaluate(script)
+        page.set_default_timeout(max(500, int(timeout_ms)))
+        return page.evaluate(script)
     finally:
         try:
             page.set_default_timeout(prev or 30_000)
@@ -596,6 +648,7 @@ def _publish_studio_status(gate: CaptureGate | None, page: Page | None = None) -
         "last_field": last_field,
         "demo_variables": variables,
         "needs_merge": needs_merge,
+        "steps": len(steps) if isinstance(steps, list) else 0,
     }
     sink = getattr(gate, "status_sink", None) if gate is not None else None
     if callable(sink):
@@ -603,19 +656,9 @@ def _publish_studio_status(gate: CaptureGate | None, page: Page | None = None) -
             sink(out)
         except Exception:  # noqa: BLE001
             pass
-    if page is not None:
-        try:
-            page.evaluate(
-                """(st) => {
-                  try {
-                    window.__navStudioStatus = st;
-                    if (typeof window.__navStudioApply === 'function') window.__navStudioApply(st);
-                  } catch (e) {}
-                }""",
-                out,
-            )
-        except Exception:  # noqa: BLE001
-            pass
+    # Never page.evaluate here. Remote CDP evaluate blocks expose_function
+    # callbacks on the sync driver → 0 steps. Overlay polls via binding/status.
+    _ = page
     return out
 
 
@@ -701,27 +744,34 @@ def _install_listeners(
             and gate.login_config_fn is not None
             and not gate.allow_login_steps
         ):
-            from navigator.automation.login_match import looks_like_login
+            from navigator.automation.login_match import is_password_field
 
-            reason = looks_like_login(
-                config=gate.login_config_fn(),
-                element={
+            # Only drop true credential secrets — a password field must never be
+            # stored in the site graph (vault fills it at demo time). Everything
+            # else on the login page IS recorded: a demo flow legitimately lives
+            # on /login (lead-entry, sign-up), and credential-shaped fields can
+            # be marked "Ask Visitor" in the Demo Script. Blanket URL/selector
+            # drops here previously nuked whole flows → 0 steps captured.
+            is_secret = step.tool == "fill_field" and is_password_field(
+                {
                     "type": payload.get("type") or "",
                     "autocomplete": payload.get("autocomplete") or "",
-                },
-                url=str(payload.get("url") or page.url or ""),
-                selector=step.selector or step.alias or "",
+                }
             )
-            if reason:
+            if is_secret:
                 gate.flagged.append(
                     {
                         "tool": step.tool,
                         "selector": step.selector,
                         "alias": step.alias,
-                        "reason": reason,
+                        "reason": "targets a password field",
                     }
                 )
-                print(f"[record] flagged login step: {reason}", flush=True)
+                print(
+                    "[record] skip password fill (secret never stored; "
+                    "vault fills at demo)",
+                    flush=True,
+                )
                 return
         # Coalesce consecutive scrolls into the final resting position.
         if (
@@ -769,6 +819,8 @@ def _install_listeners(
             return {"ok": False, "error": "no gate"}
         if action == "begin_capture":
             gate.phase = "capturing"
+            # Soft SPA wipes listeners; force reinject on next wait-loop tick.
+            page._nav_need_reinject = True  # type: ignore[attr-defined]
             print("[record] studio: begin_capture", flush=True)
             return _publish_studio_status(gate, page)
         if action == "stop_record":
@@ -947,13 +999,15 @@ def _install_listeners(
     def _drain_dom_studio_cmd() -> None:
         """Fallback when expose_function fails on remote CDP after navigation."""
         try:
-            raw = page.evaluate(
+            raw = _evaluate_fast(
+                page,
                 """() => {
                   const el = document.documentElement;
                   const v = el.getAttribute('data-nav-studio-cmd');
                   if (v) el.removeAttribute('data-nav-studio-cmd');
                   return v || '';
-                }"""
+                }""",
+                timeout_ms=1_500,
             )
         except Exception:  # noqa: BLE001
             return
@@ -969,13 +1023,15 @@ def _install_listeners(
     def _drain_dom_record_q() -> None:
         """Pull queued clicks when navigatorRecord binding is dead after SPA nav."""
         try:
-            raw = page.evaluate(
+            raw = _evaluate_fast(
+                page,
                 """() => {
                   const el = document.documentElement;
                   const v = el.getAttribute('data-nav-record-q');
                   if (v) el.removeAttribute('data-nav-record-q');
                   return v || '';
-                }"""
+                }""",
+                timeout_ms=1_500,
             )
         except Exception:  # noqa: BLE001
             return
@@ -1263,65 +1319,77 @@ def record_session(
             print(f"[record] bind-before-goto failed: {exc}", flush=True)
         print(f"[record] opening {target!r}", flush=True)
         try:
-            page.goto(target, wait_until="domcontentloaded", timeout=60_000)
+            # commit = navigation started; domcontentloaded often hangs on SPAs
+            # / flaky LAN and blocks inject forever (no narrate, no cursor).
+            page.goto(target, wait_until="commit", timeout=20_000)
             print(f"[record] loaded {page.url!r}", flush=True)
         except Exception as exc:  # noqa: BLE001
-            print(f"[record] goto failed: {exc}", flush=True)
+            print(f"[record] goto failed/soft: {exc}", flush=True)
             try:
-                page.set_content(
-                    "<html><body style='font:16px system-ui;padding:2rem'>"
-                    "<h1>Could not open start URL</h1>"
-                    f"<p><code>{target}</code></p>"
-                    f"<pre>{exc}</pre>"
-                    "<p>Check the Start URL in the dashboard and try again.</p>"
-                    "</body></html>"
-                )
+                # Page may still be usable mid-load — keep going to inject chrome.
+                print(f"[record] continuing with url={page.url!r}", flush=True)
             except Exception:  # noqa: BLE001
-                pass
-        # No bring_to_front / post-goto install — both hang remote CDP and block
-        # the capture loop (expose_function callbacks never run → 0 steps).
+                try:
+                    page.set_content(
+                        "<html><body style='font:16px system-ui;padding:2rem'>"
+                        "<h1>Could not open start URL</h1>"
+                        f"<p><code>{target}</code></p>"
+                        f"<pre>{exc}</pre>"
+                        "<p>Check the Start URL in the dashboard and try again.</p>"
+                        "</body></html>"
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+        # Inject immediately — do not wait for a perfect load. Init_script alone
+        # is often wiped by SPAs before the Client sees the overlay.
+        try:
+            _inject_studio_chrome(page, reason="post-goto")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[record] post-goto studio chrome failed: {exc}", flush=True)
         if stop_event is not None:
             print(
                 "[record] Ops session: use Record studio overlay in the browser "
                 "(Start capturing this flow / Stop), or /client dashboard.",
                 flush=True,
             )
-            # Remote laptop CDP (NAVIGATOR_RECORD_BROWSER_WS): any page.evaluate in
-            # this loop can hang the sync Playwright driver on flaky LAN/hotspot.
-            # That blocks expose_function callbacks → 0 steps → stop saves nothing.
-            # Bindings + add_init_script already ran before goto — trust those.
+            # Remote laptop CDP: never use long/blocking evaluate — it starves
+            # expose_function → 0 steps. Short-timeout drain + reinject is required:
+            # soft SPA wipes listeners while sticky navRecGen skips reattach, and
+            # clicks queue on data-nav-record-q until drained. Cursor also wiped.
             remote_cdp = bool(ws)
             if remote_cdp:
                 print(
-                    "[record] remote CDP — evaluate-free wait "
-                    "(context init_script + navigatorRecord bindings only)",
+                    "[record] remote CDP — event reinject only "
+                    "(no per-tick evaluate; keeps navigatorRecord alive)",
                     flush=True,
                 )
-                # One optional short inject — never block the wait loop if it fails.
-                try:
-                    inject_narration_widget(page)
-                    print(
-                        "[record] remote: #nav-narrate inject attempted "
-                        "(init_script is primary)",
-                        flush=True,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    print(
-                        f"[record] remote: narrate inject skipped ({exc}); "
-                        "relying on context add_init_script",
-                        flush=True,
-                    )
+                # One inject after goto already ran (post-goto). Do not hammer
+                # evaluate here — sync Playwright cannot deliver click callbacks
+                # while evaluate is in flight (→ toast: 0 steps captured).
                 page._nav_inject_ok = True  # type: ignore[attr-defined]
+                page._nav_need_reinject = False  # type: ignore[attr-defined]
                 print("[record] studio listeners ready (remote)", flush=True)
             else:
                 print("[record] capture loop running (injecting listeners…)", flush=True)
                 page._nav_need_reinject = True  # type: ignore[attr-defined]
+                _inject_studio_chrome(page, reason="local-start")
             last_phase = gate.phase if gate is not None else "setup"
             last_step_n = -1
             inject_ticks = 0
             mic_tried = False
             while not stop_event.wait(0.25):
-                if not remote_cdp:
+                inject_ticks += 1
+                if remote_cdp:
+                    # Event-driven only: load/framenavigated / begin_capture set
+                    # _nav_need_reinject. Never health-poll or drain via evaluate.
+                    if bool(getattr(page, "_nav_need_reinject", False)):
+                        try:
+                            _inject_studio_chrome(page, reason="remote-nav")
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[record] remote reinject: {exc}", flush=True)
+                        page._nav_need_reinject = False  # type: ignore[attr-defined]
+                else:
+                    # Local headed: drain DOM bridges + periodic health reinject.
                     drain = getattr(gate, "drain_dom_studio_cmd", None) if gate else None
                     if callable(drain):
                         try:
@@ -1334,47 +1402,51 @@ def record_session(
                             drain_q()
                         except Exception:  # noqa: BLE001
                             pass
-                    inject_ticks += 1
                     want = (
                         bool(getattr(page, "_nav_need_reinject", False))
                         or inject_ticks == 1
+                        or inject_ticks % 8 == 0
                     )
-                    if want or inject_ticks % 8 == 0:
+                    if want:
                         try:
                             need = {"rec": False, "studio": False, "cursor": False}
                             try:
-                                page.set_default_timeout(3_000)
-                                need = page.evaluate(
+                                need = _evaluate_fast(
+                                    page,
                                     """() => ({
                                       rec: document.documentElement.dataset.navigatorRecord === '1',
                                       studio: !!document.getElementById('nav-narrate'),
                                       cursor: !!document.getElementById('nav-cursor')
-                                    })"""
-                                )
+                                    })""",
+                                    timeout_ms=3_000,
+                                ) or need
                             except Exception as exc:  # noqa: BLE001
                                 print(f"[record] health eval: {exc}", flush=True)
-                            finally:
-                                try:
-                                    page.set_default_timeout(30_000)
-                                except Exception:  # noqa: BLE001
-                                    pass
+                                need = {"rec": False, "studio": False, "cursor": False}
                             missing = not (
                                 isinstance(need, dict)
                                 and need.get("rec")
                                 and need.get("studio")
                             )
-                            if want or missing:
-                                inject_dom_listeners(page, force=True)
-                                inject_narration_widget(page)
-                                inject_record_cursor(page)
+                            cursor_missing = not (
+                                isinstance(need, dict) and need.get("cursor")
+                            )
+                            if missing or cursor_missing or inject_ticks == 1 or bool(
+                                getattr(page, "_nav_need_reinject", False)
+                            ):
+                                _inject_studio_chrome(page, reason="wait-loop")
                                 page._nav_need_reinject = False  # type: ignore[attr-defined]
                                 if not getattr(page, "_nav_inject_ok", False):
                                     page._nav_inject_ok = True  # type: ignore[attr-defined]
                                     print("[record] studio listeners ready", flush=True)
-                                elif missing or want:
-                                    print("[record] reinjected after nav", flush=True)
-                            elif isinstance(need, dict) and not need.get("cursor"):
-                                inject_record_cursor(page)
+                                elif missing or cursor_missing:
+                                    print(
+                                        "[record] reinjected "
+                                        f"(rec={need.get('rec')} studio={need.get('studio')} "
+                                        f"cursor={need.get('cursor')})",
+                                        flush=True,
+                                    )
+                            else:
                                 page._nav_need_reinject = False  # type: ignore[attr-defined]
                         except Exception as exc:  # noqa: BLE001
                             print(f"[record] inject tick: {exc}", flush=True)
@@ -1398,6 +1470,8 @@ def record_session(
                 if gate is not None and gate.phase != last_phase:
                     last_phase = gate.phase
                     print(f"[record] phase → {last_phase}", flush=True)
+                    if last_phase == "capturing":
+                        page._nav_need_reinject = True  # type: ignore[attr-defined]
                 if len(steps) != last_step_n:
                     last_step_n = len(steps)
                     _publish_steps_snapshot(gate, steps)
@@ -1407,8 +1481,6 @@ def record_session(
                         gate.stop_event.set()
                     break
                 try:
-                    # Never page.evaluate here — remote CDP can hang forever and
-                    # block navigatorRecord callbacks (0 steps). Namespace sink enough.
                     _publish_studio_status(gate, None)
                 except Exception:  # noqa: BLE001
                     pass

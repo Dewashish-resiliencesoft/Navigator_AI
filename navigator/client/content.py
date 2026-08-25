@@ -77,6 +77,24 @@ def _flow_meta(graph: SiteGraph, flow_id: str) -> dict[str, Any]:
             out["risk_score"] = val["risk_score"]
         if "pass_rate" in val:
             out["pass_rate"] = val["pass_rate"]
+
+    # Count human-interaction steps in this flow
+    asks = 0
+    reuses = 0
+    for page in graph.pages.values():
+        steps = page.flows.get(flow_id)
+        if steps:
+            for step in steps:
+                if getattr(step, "source", None) == "user":
+                    asks += 1
+                elif getattr(step, "value_ref", None):
+                    reuses += 1
+            break
+    if asks:
+        out["asks_visitor_count"] = asks
+    if reuses:
+        out["reuses_variable_count"] = reuses
+
     return out
 
 

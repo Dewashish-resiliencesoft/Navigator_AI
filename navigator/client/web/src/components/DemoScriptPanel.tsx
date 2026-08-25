@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ChevronDown, MessageSquare, Monitor, RefreshCw, Save, ShieldAlert, UserCircle } from "lucide-react";
-import { api, type DemoScriptBeat, type DemoScriptResponse } from "../lib/api";
+import { api, INPUT_TYPES, type DemoScriptBeat, type DemoScriptResponse } from "../lib/api";
 import { LiveNarrationBanner } from "./LiveNarrationBanner";
 import { BarLoader, Button, Card, CardTitle, Empty, Textarea } from "./ui";
 import { errText, useUi } from "../store";
@@ -112,9 +112,11 @@ function buildSections(
 
 function BeatRow({
   beat,
+  variables,
   onPatch,
 }: {
   beat: DemoScriptBeat;
+  variables: { alias: string; label?: string }[];
   onPatch: (id: string, patch: Partial<DemoScriptBeat>) => void;
 }) {
   const phaseLabel =
@@ -122,10 +124,40 @@ function BeatRow({
       ? String(beat.phase).charAt(0).toUpperCase() + String(beat.phase).slice(1)
       : null;
 
+  const isFill =
+    beat.tool === "fill_field" ||
+    beat.fill_mode != null ||
+    beat.kind === "live_input";
+  const fillMode = beat.fill_mode ?? (beat.kind === "live_input" ? "ask" : "sample");
+  const otherVars = variables.filter(
+    (v) => v.alias && v.alias !== (beat.field_alias || ""),
+  );
+
+  const setFillMode = (mode: "sample" | "ask" | "ref") => {
+    const patch: Partial<DemoScriptBeat> = {
+      fill_mode: mode,
+      tool: "fill_field",
+      spoken_source: "manual",
+      asks_visitor: mode === "ask",
+      kind: mode === "ask" ? "live_input" : "flow_step",
+    };
+    if (mode === "sample") {
+      patch.value_ref = null;
+    }
+    if (mode === "ref" && !beat.value_ref && otherVars[0]) {
+      patch.value_ref = otherVars[0].alias;
+    }
+    if (mode === "ask" && !beat.live_question) {
+      const alias = (beat.field_alias || "field").replace(/_/g, " ");
+      patch.live_question = `Could you share your ${alias}?`;
+    }
+    onPatch(beat.id, patch);
+  };
+
   return (
     <div
       className={`rounded-lg border px-3 py-2.5 ${
-        beat.asks_visitor
+        beat.asks_visitor || fillMode === "ask"
           ? "border-amber-500/40 bg-amber-500/[0.04]"
           : beat.kind === "pending_approval"
             ? "border-amber-500/30 bg-amber-500/[0.03]"
@@ -133,7 +165,9 @@ function BeatRow({
       }`}
       style={{
         borderColor:
-          beat.asks_visitor || beat.kind === "pending_approval" ? undefined : "var(--line)",
+          beat.asks_visitor || fillMode === "ask" || beat.kind === "pending_approval"
+            ? undefined
+            : "var(--line)",
       }}
     >
       <div className="flex items-start gap-2">
@@ -146,9 +180,14 @@ function BeatRow({
             {beat.on_screen && beat.kind !== "speak_only" && (
               <span className="text-[0.72rem] font-medium text-[var(--text)]">{beat.on_screen}</span>
             )}
-            {beat.asks_visitor && (
+            {(beat.asks_visitor || fillMode === "ask") && (
               <span className="rounded bg-amber-500/15 px-1.5 py-0.5 text-[0.62rem] font-medium text-amber-800 dark:text-amber-300">
                 Asks visitor
+              </span>
+            )}
+            {fillMode === "ref" && beat.value_ref && (
+              <span className="rounded bg-sky-500/15 px-1.5 py-0.5 text-[0.62rem] font-medium text-sky-800 dark:text-sky-300">
+                Uses {beat.value_ref}
               </span>
             )}
             {beat.kind === "pending_approval" && beat.needs_approval !== false && (
@@ -221,31 +260,183 @@ function BeatRow({
             </p>
           )}
 
-          {beat.kind === "live_input" && (
-            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-              <label className="block text-[0.72rem]">
-                <span className="mb-1 block text-[var(--muted)]">Live question</span>
-                <Textarea
-                  value={beat.live_question ?? ""}
-                  onChange={(v) =>
-                    onPatch(beat.id, { live_question: v, spoken_source: "manual" })
-                  }
-                  rows={2}
-                  className="text-[0.78rem]"
-                />
-              </label>
-              <label className="block text-[0.72rem]">
-                <span className="mb-1 block text-[var(--muted)]">Example if unclear</span>
-                <Textarea
-                  value={beat.example_value ?? ""}
-                  onChange={(v) =>
-                    onPatch(beat.id, { example_value: v, spoken_source: "manual" })
-                  }
-                  rows={2}
-                  className="text-[0.78rem]"
-                />
-              </label>
+          {isFill && (
+            <div className="mt-2 space-y-2">
+              <div>
+                <span className="mb-1 block text-[0.65rem] font-medium uppercase tracking-wide text-[var(--muted)]">
+                  Fill with
+                </span>
+                <div
+                  className="inline-flex flex-wrap rounded-md border p-0.5 text-[0.72rem]"
+                  style={{ borderColor: "var(--line)" }}
+                  role="group"
+                  aria-label="Fill mode"
+                >
+                  {(
+                    [
+                      ["sample", "Sample data"],
+                      ["ask", "Ask visitor"],
+                      ["ref", "Use variable"],
+                    ] as const
+                  ).map(([mode, label]) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      className={`rounded px-2 py-1 font-medium ${
+                        fillMode === mode
+                          ? "bg-[var(--accent)] text-white"
+                          : "text-[var(--muted)] hover:text-[var(--text)]"
+                      }`}
+                      onClick={() => setFillMode(mode)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {fillMode === "sample" && (
+                <label className="block text-[0.72rem]">
+                  <span className="mb-1 block text-[var(--muted)]">Sample value</span>
+                  <Textarea
+                    value={beat.example_value ?? ""}
+                    onChange={(v) =>
+                      onPatch(beat.id, {
+                        example_value: v,
+                        fill_mode: "sample",
+                        spoken_source: "manual",
+                      })
+                    }
+                    rows={2}
+                    className="text-[0.78rem]"
+                  />
+                </label>
+              )}
+
+              {fillMode === "ask" && (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <label className="block text-[0.72rem]">
+                    <span className="mb-1 block text-[var(--muted)]">
+                      Variable name ({beat.field_alias || "field"})
+                    </span>
+                    <Textarea
+                      value={beat.field_alias ?? ""}
+                      onChange={(v) =>
+                        onPatch(beat.id, {
+                          field_alias: v.trim().replace(/\s+/g, "_"),
+                          fill_mode: "ask",
+                          spoken_source: "manual",
+                        })
+                      }
+                      rows={1}
+                      className="text-[0.78rem] font-mono"
+                    />
+                  </label>
+                  <label className="block text-[0.72rem]">
+                    <span className="mb-1 block text-[var(--muted)]">Input type</span>
+                    <select
+                      className="w-full rounded-md border bg-transparent px-2 py-1.5 text-[0.78rem]"
+                      style={{ borderColor: "var(--line)" }}
+                      value={beat.input_type ?? "text"}
+                      onChange={(e) =>
+                        onPatch(beat.id, {
+                          input_type: e.target.value,
+                          fill_mode: "ask",
+                          spoken_source: "manual",
+                        })
+                      }
+                    >
+                      {INPUT_TYPES.map((t) => (
+                        <option key={t} value={t}>
+                          {t}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-[0.72rem]">
+                    <span className="mb-1 block text-[var(--muted)]">Example if unclear</span>
+                    <Textarea
+                      value={beat.example_value ?? ""}
+                      onChange={(v) =>
+                        onPatch(beat.id, {
+                          example_value: v,
+                          fill_mode: "ask",
+                          spoken_source: "manual",
+                        })
+                      }
+                      rows={2}
+                      className="text-[0.78rem]"
+                    />
+                  </label>
+                  <label className="block text-[0.72rem]">
+                    <span className="mb-1 block text-[var(--muted)]">Live question</span>
+                    <Textarea
+                      value={beat.live_question ?? ""}
+                      onChange={(v) =>
+                        onPatch(beat.id, {
+                          live_question: v,
+                          fill_mode: "ask",
+                          spoken_source: "manual",
+                        })
+                      }
+                      rows={2}
+                      className="text-[0.78rem]"
+                    />
+                  </label>
+                </div>
+              )}
+
+              {fillMode === "ref" && (
+                <label className="block text-[0.72rem]">
+                  <span className="mb-1 block text-[var(--muted)]">
+                    Reuse answer from (earlier Ask visitor)
+                  </span>
+                  {otherVars.length === 0 ? (
+                    <p className="text-[0.7rem] text-[var(--muted)]">
+                      No ask variables yet. Mark an earlier fill as Ask visitor,
+                      or order flows in the playlist so the ask runs first.
+                    </p>
+                  ) : (
+                    <select
+                      className="w-full rounded-md border bg-transparent px-2 py-1.5 text-[0.78rem]"
+                      style={{ borderColor: "var(--line)" }}
+                      value={beat.value_ref ?? ""}
+                      onChange={(e) =>
+                        onPatch(beat.id, {
+                          value_ref: e.target.value,
+                          fill_mode: "ref",
+                          spoken_source: "manual",
+                        })
+                      }
+                    >
+                      <option value="">Select variable…</option>
+                      {otherVars.map((v) => (
+                        <option key={v.alias} value={v.alias}>
+                          {v.label || v.alias}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </label>
+              )}
             </div>
+          )}
+
+          {(isFill || beat.tool === "click_element") && (
+            <label className="mt-2 flex items-center gap-2 text-[0.72rem] text-[var(--muted)]">
+              <input
+                type="checkbox"
+                checked={!!beat.confirm_before}
+                onChange={(e) =>
+                  onPatch(beat.id, {
+                    confirm_before: e.target.checked,
+                    tool: beat.tool || (isFill ? "fill_field" : "click_element"),
+                    spoken_source: "manual",
+                  })
+                }
+              />
+              <span>Confirm with visitor before this step (e.g. submit / pay)</span>
+            </label>
           )}
 
           {beat.knowledge_refs && beat.knowledge_refs.length > 0 && (
@@ -313,6 +504,27 @@ export function DemoScriptPanel({
     [beats, data?.flow_total_ms],
   );
 
+  const demoVariables = useMemo(() => {
+    const fromBeats = beats
+      .filter(
+        (b) =>
+          (b.fill_mode === "ask" || b.kind === "live_input") &&
+          (b.field_alias || "").trim(),
+      )
+      .map((b) => ({
+        alias: String(b.field_alias).trim(),
+        label: String(b.field_alias).trim().replace(/_/g, " "),
+      }));
+    const seen = new Set<string>();
+    const out: { alias: string; label?: string }[] = [];
+    for (const v of [...(data?.demo_variables ?? []), ...fromBeats]) {
+      if (!v.alias || seen.has(v.alias)) continue;
+      seen.add(v.alias);
+      out.push(v);
+    }
+    return out;
+  }, [beats, data?.demo_variables]);
+
   useEffect(() => {
     setOpenSections((prev) => {
       const next = { ...prev };
@@ -332,7 +544,17 @@ export function DemoScriptPanel({
           ? {
               ...b,
               ...patch,
-              spoken_source: patch.spoken !== undefined ? "manual" : b.spoken_source,
+              spoken_source:
+                patch.spoken_source ??
+                (patch.spoken !== undefined ||
+                patch.fill_mode !== undefined ||
+                patch.example_value !== undefined ||
+                patch.live_question !== undefined ||
+                patch.value_ref !== undefined ||
+                patch.input_type !== undefined ||
+                patch.confirm_before !== undefined
+                  ? "manual"
+                  : b.spoken_source),
             }
           : b,
       ),
@@ -455,6 +677,70 @@ export function DemoScriptPanel({
             )}
           </div>
 
+          <p className="mb-3 text-[0.72rem] text-[var(--muted)]">
+            Playlist order = demo order. Ask-visitor variables carry forward across
+            flows — use <strong>Use variable</strong> on later fills to reuse them.
+          </p>
+
+          {(() => {
+            const collected = new Map<
+              string,
+              { type: string; at: number; where: string }
+            >();
+            const used = new Map<string, number[]>();
+            beats.forEach((b, i) => {
+              const alias = (b.field_alias || "").trim();
+              if ((b.fill_mode === "ask" || b.kind === "live_input") && alias) {
+                if (!collected.has(alias)) {
+                  collected.set(alias, {
+                    type: b.input_type || "text",
+                    at: i + 1,
+                    where: b.flow_id || "",
+                  });
+                }
+              }
+              if (b.fill_mode === "ref" && (b.value_ref || "").trim()) {
+                const r = String(b.value_ref);
+                used.set(r, [...(used.get(r) || []), i + 1]);
+              }
+            });
+            if (collected.size === 0) return null;
+            return (
+              <div
+                className="mb-4 rounded-lg border px-3 py-2 text-[0.72rem]"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <div className="mb-1 font-semibold text-[var(--text)]">
+                  Visitor variables ({collected.size})
+                </div>
+                <ul className="space-y-1">
+                  {[...collected.entries()].map(([alias, info]) => {
+                    const reuse = used.get(alias) || [];
+                    return (
+                      <li key={alias} className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-mono text-[var(--text)]">{alias}</span>
+                        <span className="rounded bg-black/[0.06] px-1 py-0.5 text-[0.6rem] uppercase text-[var(--muted)] dark:bg-white/[0.08]">
+                          {info.type}
+                        </span>
+                        <span className="text-[var(--muted)]">
+                          collected @ step {info.at}
+                        </span>
+                        {reuse.length > 0 && (
+                          <span className="text-sky-700 dark:text-sky-300">
+                            → reused @ step {reuse.join(", ")}
+                          </span>
+                        )}
+                        {reuse.length === 0 && (
+                          <span className="text-[var(--muted)]">· not reused</span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            );
+          })()}
+
           {data?.context && (
             <details className="mb-4 text-[0.72rem] text-[var(--muted)]">
               <summary className="cursor-pointer font-medium text-[var(--text)]">
@@ -511,7 +797,12 @@ export function DemoScriptPanel({
                   {open && (
                     <div className="space-y-1 border-t px-2 pb-2 pt-1" style={{ borderColor: "var(--line)" }}>
                       {section.beats.map((beat) => (
-                        <BeatRow key={beat.id} beat={beat} onPatch={patchBeat} />
+                        <BeatRow
+                          key={beat.id}
+                          beat={beat}
+                          variables={demoVariables}
+                          onPatch={patchBeat}
+                        />
                       ))}
                     </div>
                   )}

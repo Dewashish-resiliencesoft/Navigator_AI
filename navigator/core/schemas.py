@@ -82,6 +82,12 @@ class _ToolCallBase(BaseModel):
 class ClickElement(_ToolCallBase):
     tool: Literal["click_element"] = "click_element"
     selector: str
+    confirm_before: bool = False
+    """Live demo: ask the End User to confirm before running this (submit/pay).
+
+    On "no / change", the agent re-asks the flow's source=user fields, replaces
+    the stored answers, then resumes here. Recorded/test demos ignore it.
+    """
 
 
 class FillField(_ToolCallBase):
@@ -109,6 +115,9 @@ class FillField(_ToolCallBase):
     """Expected visitor input shape: phone, email, text, number, and so on."""
     fallback_value: str | None = None
     """Recorded sample used only when the visitor cannot provide a value."""
+    confirm_before: bool = False
+    """Live demo: confirm with the End User before this fill (e.g. a final field
+    before submit). See ClickElement.confirm_before."""
 class Navigate(_ToolCallBase):
     tool: Literal["navigate"] = "navigate"
     page_id: str

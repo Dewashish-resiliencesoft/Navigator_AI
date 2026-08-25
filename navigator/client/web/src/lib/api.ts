@@ -191,6 +191,11 @@ export type DemoScriptBeat = {
   phase?: string;
   field?: string;
   field_alias?: string;
+  tool?: string;
+  fill_mode?: "sample" | "ask" | "ref";
+  input_type?: string;
+  confirm_before?: boolean;
+  value_ref?: string | null;
   live_question?: string;
   example_value?: string;
   knowledge_refs?: string[];
@@ -204,11 +209,34 @@ export type DemoScriptBeat = {
   approval_reason?: string;
 };
 
+export type DemoVariable = {
+  alias: string;
+  label?: string;
+  live_question?: string;
+  example_value?: string;
+  input_type?: string;
+  flow_id?: string;
+  step_index?: number;
+};
+
+export const INPUT_TYPES = [
+  "text",
+  "name",
+  "email",
+  "phone",
+  "company",
+  "number",
+  "date",
+  "selection",
+  "confirmation",
+] as const;
+
 export type DemoScriptResponse = {
   revision: number;
   published_revision: number | null;
   playlist: Flow[];
   beats: DemoScriptBeat[];
+  demo_variables?: DemoVariable[];
   context?: string;
   sources_used?: string[];
   /** Recorded length of each flow in ms, keyed by flow_id. */
@@ -231,6 +259,10 @@ export type Flow = {
   verdict?: "ready" | "needs_review" | "broken" | string;
   risk_score?: number;
   pass_rate?: number;
+  /** Number of steps that ask the visitor for input */
+  asks_visitor_count?: number;
+  /** Number of steps that reuse a visitor variable */
+  reuses_variable_count?: number;
 };
 
 export type RecorderStatus = {

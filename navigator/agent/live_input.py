@@ -21,6 +21,21 @@ _UNCLEAR = re.compile(
 )
 
 
+_AFFIRM = re.compile(
+    r"\b(yes|yeah|yep|yup|sure|correct|confirm(ed)?|go ahead|proceed|submit|"
+    r"send|ok|okay|looks good|perfect|all good|that'?s right|do it)\b",
+    re.I,
+)
+
+
+def is_affirmative(text: str) -> bool:
+    """True when the End User approved a confirm-before step."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return bool(_AFFIRM.search(t))
+
+
 def needs_live_input(call: FillField) -> bool:
     if (call.value_ref or "").strip():
         return False
@@ -54,11 +69,19 @@ def resolve_demo_fill(
         cached = (answers.get(ref) or "").strip()
         if cached:
             return _with_value(call, cached), f"value_ref {ref}={cached!r}"
+        # Variable not collected yet (or empty). Re-ask, but keep the recorded
+        # sample as the fallback so a missing/unclear answer never wedges the
+        # flow. The ask copy must carry a real fallback, not the {{ref}} token.
+        sample = call.fallback_value if call.fallback_value is not None else ""
+        if not str(sample).strip():
+            v = str(call.value or "").strip()
+            sample = "" if v.startswith("{{") and v.endswith("}}") else v
         ask = call.model_copy(
             update={
                 "source": "user",
                 "live_question": call.live_question
                 or f"What is your {ref.replace('_', ' ')}?",
+                "fallback_value": sample,
             }
         )
         updated, detail = resolve_live_fill(
@@ -106,6 +129,15 @@ def resolve_live_fill(
         heard2 = _ask(listen_once, speak, reask)
         cleaned = _extract(extract_entity, prompt, heard2)
         if is_unclear(cleaned):
+            # Tell the End User why their data isn't used, then use the sample.
+            if speak is not None and str(example or "").strip():
+                try:
+                    speak(
+                        "No problem — I couldn't quite catch that, so I'll use a "
+                        "sample value here and we can keep going."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live_input] speak fallback notice failed: {exc}", flush=True)
             updated = _with_value(call, example)
             return updated, f"live_input unclear after re-ask; used example {example!r}"
 

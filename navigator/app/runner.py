@@ -253,6 +253,14 @@ class DemoRunner:
     def _finalize_live_demo(handle: DemoHandle, *, operator_stopped: bool = False) -> None:
         """Clear meeting flag and append a terminal transcript line once."""
         handle.bot_in_meeting = False
+        # Return the warm parked browser to the product landing page so the
+        # product is on screen and ready before the next demo.
+        try:
+            from navigator.meeting.warm_pool import park_browser_after_demo
+
+            park_browser_after_demo()
+        except Exception:  # noqa: BLE001
+            pass
         tail = [s.lower() for s in handle.said[-3:]]
         if any(
             t.startswith(("demo ended", "demo completed", "demo failed")) for t in tail

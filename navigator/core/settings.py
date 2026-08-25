@@ -113,6 +113,12 @@ class Settings(BaseSettings):
     #: a business landing page later; share the link via email instead.
     open_meet_in_browser: bool = False
     tunnel_bin: str = "cloudflared"
+    #: Keep infra warm so a live demo starts fast: attendee/docker health, a
+    #: standing Cloudflare public base URL, and a parked headed Chromium sitting
+    #: on the product landing page. Off in tests.
+    warm_pool: bool = True
+    #: Seconds between warm-pool health passes.
+    warm_pool_interval_s: float = 45.0
     #: Emit per-stage live-demo startup timings when enabled.
     live_timing_enabled: bool = False
     meet_live: bool = False

@@ -391,7 +391,7 @@ export function Flows() {
                 layoutId={`flow-${f.flow_id || i}`}
                 transition={soft}
                 exit={{ opacity: 0, x: -10 }}
-                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border px-2 py-1.5"
+                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border px-2 py-1.5"
                 style={{ borderColor: "var(--line)" }}
               >
                 <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] flex flex-col justify-center">
@@ -428,6 +428,23 @@ export function Flows() {
                     onChange={(v) => patch(i, "flow_id", v)}
                     placeholder="e.g. login_flow"
                   />
+                </FlowFieldCell>
+                <FlowFieldCell label="Interaction">
+                  <div className="flex items-center gap-1.5">
+                    {(f.asks_visitor_count ?? 0) > 0 && (
+                      <span className="rounded bg-violet-500/15 px-2 py-0.5 text-[0.6rem] font-medium text-violet-700 dark:text-violet-300">
+                        👤 Asks visitor ×{f.asks_visitor_count}
+                      </span>
+                    )}
+                    {(f.reuses_variable_count ?? 0) > 0 && (
+                      <span className="rounded bg-sky-500/15 px-2 py-0.5 text-[0.6rem] font-medium text-sky-700 dark:text-sky-300">
+                        ↩️ Reuses ×{f.reuses_variable_count}
+                      </span>
+                    )}
+                    {(f.asks_visitor_count ?? 0) === 0 && (f.reuses_variable_count ?? 0) === 0 && (
+                      <span className="text-[0.6rem] text-[var(--muted)]">—</span>
+                    )}
+                  </div>
                 </FlowFieldCell>
                 <div className="flex items-center self-center pt-4">
                 <Button

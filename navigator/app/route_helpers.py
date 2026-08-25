@@ -113,6 +113,35 @@ def _run_live_demo(
     except SiteGraphError as exc:
         raise HTTPException(422, str(exc)) from None
 
+    # Stage 2 warm pool: claim a pre-joined Meet (bot already in meeting) so
+    # dashboard "Start Demo" returns the join link without cold-start join.
+    # Skip when intake / custom platform / custom topic need a fresh meeting.
+    can_claim = (
+        settings.warm_pool
+        and origin == "dashboard_test"
+        and not (token_intake or spec.intake)
+        and (spec.platform is None or spec.platform in ("google_meet", "zoom"))
+        and not (spec.topic and spec.topic.strip())
+    )
+    if can_claim:
+        from navigator.meeting.warm_pool import claim_warm_session
+
+        claimed = claim_warm_session(
+            product.product_id,
+            revision=revision,
+            page_id=page_id,
+            flow_id=flow_id,
+            origin=origin,
+            platform=spec.platform,
+        )
+        if claimed is not None:
+            print(
+                f"[api] claimed warm session {claimed.demo_id} "
+                f"for {product.product_id}",
+                flush=True,
+            )
+            return claimed
+
     try:
         topic = spec.topic or f"Navigator demo — {product.name}"
         meeting = providers(spec.platform).create_meeting(

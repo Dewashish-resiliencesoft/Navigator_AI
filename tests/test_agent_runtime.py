@@ -8,7 +8,26 @@ from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
 from navigator.agent_runtime.dom.builder import semantic_id_for
-from navigator.agent_runtime.models import AgentSession, AgentWorldState, TaskStatus
+from navigator.agent_runtime.models import (
+    AgentAction,
+    AgentPlan,
+    AgentSession,
+    AgentWorldState,
+    DemoFlow,
+    DemoGraph,
+    DemoPlaylist,
+    DemoStep,
+    DemoStepAction,
+    DemoStepInteraction,
+    DemoStepRecovery,
+    DemoStepVerification,
+    InteractionMode,
+    RecoveryPolicy,
+    SemanticTarget,
+    ToolResult,
+    VerificationResult,
+    TaskStatus,
+)
 from navigator.agent_runtime.planning.router import (
     ROUTE_BACKCHANNEL,
     ROUTE_ANSWER,
@@ -167,6 +186,99 @@ def test_orchestrator_no_recursive_task_on_interrupt():
 
     # Release the gate
     gate.set()
+
+
+def test_orchestrator_does_not_speak_step_result_when_verification_fails():
+    """A failed action must never leak its completion narration to the transcript."""
+    orch = _make_orch()
+    spoken: list[str] = []
+    orch.speak = spoken.append
+    step = AgentAction(tool="click", spoken="The contact was created.")
+    plan = AgentPlan(task_id=uuid4(), goal="Create a contact", steps=[step])
+
+    with (
+        patch("navigator.agent_runtime.orchestrator.execute_action", return_value=(None, None, "home", None)),
+        patch(
+            "navigator.agent_runtime.orchestrator.build_verification",
+            return_value=VerificationResult(action_id=step.action_id, passed=False),
+        ),
+        patch.object(orch, "refresh_browser_state"),
+    ):
+        orch._execute_plan(plan)
+
+    assert "The contact was created." not in spoken
+    assert spoken == ["That step didn't verify — I'll try another approach."]
+
+
+def test_gated_playlist_reuses_asked_phone_across_flows():
+    """Flow B resolves Flow A's visitor value without prompting a second time."""
+    from navigator.agent.recorded_playback import run_demo_playlist_gated
+    from navigator.agent.state import CallDeps
+
+    phone_step = DemoStep(
+        id="ask-phone",
+        action=DemoStepAction(
+            tool="type", target=SemanticTarget(semantic_id="phone_field"), value="{{phone}}"
+        ),
+        verification=DemoStepVerification(),
+        interaction=DemoStepInteraction(
+            mode=InteractionMode.ask,
+            input_name="phone",
+            input_type="phone",
+            prompt="What phone number should I use?",
+        ),
+        recovery=DemoStepRecovery(on_failure=RecoveryPolicy.fail),
+    )
+    reuse_step = phone_step.model_copy(
+        update={
+            "id": "reuse-phone",
+            "action": DemoStepAction(
+                tool="type", target=SemanticTarget(semantic_id="confirm_phone"), value="{{phone}}"
+            ),
+            "interaction": DemoStepInteraction(
+                mode=InteractionMode.ask,
+                input_name="phone",
+                input_type="phone",
+                prompt="What phone number should I use?",
+            ),
+        }
+    )
+    demo_graph = DemoGraph(
+        flows={"collect": DemoFlow(flow_id="collect", steps=[phone_step]), "reuse": DemoFlow(flow_id="reuse", steps=[reuse_step])},
+        playlist=DemoPlaylist(flows=["collect", "reuse"]),
+    )
+    page = MagicMock()
+    page.url = "https://acme.test/"
+    action_values: list[str] = []
+    prompts: list[str] = []
+    events: list[tuple[object, dict]] = []
+
+    def _execute(*, action, **_kwargs):
+        action_values.append(action.value)
+        return None, ToolResult(ok=True, tool="fill_field", detail="ok", duration_ms=1), "home", None
+
+    deps = CallDeps(
+        graph=MagicMock(), page=page, log=MagicMock(), speaker=MagicMock(), product_id="acme",
+        listen_once=lambda _prompt: "+1 (555) 010-2000",
+    )
+    with (
+        patch("navigator.agent_runtime.execution.demo_step_executor.execute_action", side_effect=_execute),
+        patch("navigator.agent_runtime.execution.demo_step_executor.wait_settled", return_value=True),
+        patch("navigator.agent_runtime.execution.demo_step_executor.verify_step", return_value=(True, "ok")),
+        patch("navigator.agent_runtime.execution.demo_step_executor._dom_fingerprint_before", return_value="before"),
+    ):
+        result = run_demo_playlist_gated(
+            deps,
+            session_id=uuid4(),
+            demo_graph=demo_graph,
+            speak=prompts.append,
+            emit=lambda kind, **kwargs: events.append((kind, kwargs)),
+        )
+
+    assert result["failed"] == 0, [e.developer_message for e in result["errors"]]
+    assert result["completed"] == 2
+    assert action_values == ["+1 (555) 010-2000", "+1 (555) 010-2000"]
+    assert prompts == ["What phone number should I use?"]
 
 
 # ── Live bridge ────────────────────────────────────────────────────────────

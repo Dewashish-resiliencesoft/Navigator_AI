@@ -34,6 +34,7 @@ Rules:
 - navigate uses target.page_id (site graph page key).
 - Keep plans short (1-6 steps).
 - Include verification expectations for navigation and major clicks.
+- Prefer relevant values in demo_session over asking the visitor again or inventing placeholders.
 """
 
 
@@ -57,6 +58,7 @@ class FlashPlanner:
             "elements": world.browser.semantic_elements[:40],
             "memory": world.memory.relevant_context,
             "failures": world.memory.previous_failures[-3:],
+            "demo_session": world.demo_session.model_dump(exclude_none=True),
         }
         user = json.dumps(user_payload, ensure_ascii=False)
 

@@ -147,15 +147,25 @@
         </div>
         <div class="nav-field" id="nav-studio-field">
           <div id="nav-studio-field-label" style="margin-bottom:6px;font-weight:600"></div>
-          <label for="nav-studio-var">Variable name</label>
-          <input type="text" id="nav-studio-var" placeholder="phone_number" autocomplete="off" />
-          <label for="nav-studio-field-q" style="margin-top:6px">Agent prompt (ask End User)</label>
-          <textarea id="nav-studio-field-q" rows="2" placeholder="Ask the visitor for their phone number"></textarea>
+          <label for="nav-studio-field-mode">Value at demo time</label>
+          <select id="nav-studio-field-mode">
+            <option value="replay">Replay recorded value</option>
+            <option value="ask">Ask visitor for this</option>
+          </select>
+          <div id="nav-studio-interaction-fields">
+            <label for="nav-studio-var">Input name</label>
+            <input type="text" id="nav-studio-var" placeholder="phone" autocomplete="off" />
+            <label for="nav-studio-field-type" style="margin-top:6px">Input type</label>
+            <select id="nav-studio-field-type"><option value="text">Text</option><option value="phone">Phone</option><option value="email">Email</option><option value="number">Number</option></select>
+            <label for="nav-studio-field-q" style="margin-top:6px">Prompt</label>
+            <textarea id="nav-studio-field-q" rows="2" placeholder="Ask the visitor for their phone number"></textarea>
+            <label for="nav-studio-field-fallback" style="margin-top:6px">Fallback value</label>
+            <input type="text" id="nav-studio-field-fallback" placeholder="Recorded sample value" autocomplete="off" />
+          </div>
           <div class="nav-row" style="margin-top:6px">
-            <button type="button" id="nav-studio-field-ask">Save for demo</button>
+            <button type="button" id="nav-studio-field-ask">Save field setting</button>
           </div>
           <div class="nav-row">
-            <button type="button" id="nav-studio-field-keep" class="secondary">Keep as agent fill</button>
             <button type="button" id="nav-studio-field-dismiss" class="secondary">Dismiss</button>
           </div>
           <div id="nav-studio-vars-wrap" style="margin-top:8px;display:none">
@@ -210,7 +220,11 @@
   const btnStop = box.querySelector("#nav-studio-stop");
   const fieldBox = box.querySelector("#nav-studio-field");
   const fieldLabel = box.querySelector("#nav-studio-field-label");
+  const fieldMode = box.querySelector("#nav-studio-field-mode");
+  const interactionFields = box.querySelector("#nav-studio-interaction-fields");
   const fieldVar = box.querySelector("#nav-studio-var");
+  const fieldType = box.querySelector("#nav-studio-field-type");
+  const fieldFallback = box.querySelector("#nav-studio-field-fallback");
   const fieldQ = box.querySelector("#nav-studio-field-q");
   const btnFieldAsk = box.querySelector("#nav-studio-field-ask");
   const btnFieldKeep = box.querySelector("#nav-studio-field-keep");
@@ -551,7 +565,11 @@
     fieldLabel.textContent =
       (lastField.source === "user" ? "Ask End User · " : "Field · ") +
       (lastField.label || alias);
-    if (fieldVar && (isNew || !fieldVar.value)) fieldVar.value = alias;
+    if (fieldMode) fieldMode.value = lastField.source === "user" ? "ask" : "replay";
+    if (interactionFields) interactionFields.style.display = fieldMode && fieldMode.value === "ask" ? "block" : "none";
+    if (fieldVar && (isNew || !fieldVar.value)) fieldVar.value = lastField.input_name || alias;
+    if (fieldType && (isNew || !fieldType.value)) fieldType.value = lastField.input_type || "text";
+    if (fieldFallback && (isNew || !fieldFallback.value)) fieldFallback.value = lastField.fallback_value || "";
     if (fieldQ && (isNew || !fieldQ.value)) {
       fieldQ.value =
         lastField.live_question ||
@@ -806,6 +824,10 @@
         statusEl.textContent = "Click a field first.";
         return;
       }
+      if (fieldMode && fieldMode.value === "replay") {
+        void studioCmd("keep_agent_fill", { step_index: lastField.step_index }).then(() => pollStudio());
+        return;
+      }
       const varAlias = (fieldVar && fieldVar.value) || lastField.alias || "";
       const q = (fieldQ && fieldQ.value) || "";
       if (!String(q).trim()) {
@@ -816,6 +838,8 @@
       void studioCmd("mark_field_ask", {
         var_alias: varAlias,
         live_question: q,
+        input_type: (fieldType && fieldType.value) || "text",
+        fallback_value: (fieldFallback && fieldFallback.value) || "",
         step_index: lastField.step_index,
       }).then((res) => {
         if (res && res.error) statusEl.textContent = String(res.error);
@@ -825,14 +849,11 @@
     },
     true,
   );
-  btnFieldKeep.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      void studioCmd("keep_agent_fill").then(() => pollStudio());
-    },
-    true,
-  );
+  if (fieldMode) {
+    fieldMode.addEventListener("change", () => {
+      if (interactionFields) interactionFields.style.display = fieldMode.value === "ask" ? "block" : "none";
+    });
+  }
   btnFieldDismiss.addEventListener(
     "click",
     (ev) => {

@@ -69,9 +69,10 @@ class InteractionEngine:
         if spec.mode == InteractionMode.none or spec.mode == InteractionMode.auto:
             return InteractionResult(value=spec.fallback_value or "")
 
-        # Check session context first — visitor may have already given this
+        # Check session context first — a value collected in an earlier step or
+        # flow is session-scoped and must not trigger a duplicate question.
         cached = self._ctx.get(spec.input_name)
-        if cached and spec.mode not in (InteractionMode.ask, InteractionMode.confirm):
+        if cached and spec.mode != InteractionMode.confirm:
             return InteractionResult(value=cached)
 
         if spec.mode == InteractionMode.confirm:
@@ -82,6 +83,11 @@ class InteractionEngine:
 
         # ASK or OPTIONAL
         return self._ask(step)
+
+    @property
+    def session_context(self) -> DemoSessionContext:
+        """The call-scoped context used to resolve placeholders at action time."""
+        return self._ctx
 
     def _ask(self, step: DemoStep) -> InteractionResult:
         spec = step.interaction
@@ -102,9 +108,10 @@ class InteractionEngine:
             })
             return InteractionResult(value=value)
 
-        # Timed out → use fallback if OPTIONAL, else fail
+        # A recorded sample is an explicit fallback for either ASK or OPTIONAL.
+        # ASK still asks first; test-mode callers bypass this path entirely.
         self._emit(AgentEventKind.INTERACTION_TIMED_OUT, payload={"step_id": step.id})
-        if spec.mode == InteractionMode.optional and spec.fallback_value:
+        if spec.mode in (InteractionMode.ask, InteractionMode.optional) and spec.fallback_value:
             fallback_msg = f"I'll use a sample {spec.input_name.replace('_', ' ')} instead."
             self._speak(fallback_msg)
             return InteractionResult(value=spec.fallback_value, timed_out=True)

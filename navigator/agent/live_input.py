@@ -97,7 +97,7 @@ def resolve_live_fill(
     Returns (updated FillField, detail for DecisionTrace).
     """
     prompt = live_prompt(call)
-    example = call.value
+    example = call.fallback_value if call.fallback_value is not None else call.value
     heard = _ask(listen_once, speak, prompt)
     cleaned = _extract(extract_entity, prompt, heard)
 

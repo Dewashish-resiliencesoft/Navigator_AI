@@ -65,8 +65,15 @@ def _steps_from_graph(graph: SiteGraph, page_id: str, flow_id: str) -> list[Reco
             page_id=page_id,
             postcondition=pc,
             source="agent",
+            input_name=getattr(call, "input_name", None),
+            input_type=getattr(call, "input_type", "text"),
+            prompt=getattr(call, "prompt", None),
+            fallback_value=getattr(call, "fallback_value", None),
             needs_approval=needs_approval,
         )
+        if getattr(call, "source", "agent") == "user":
+            step.source = "user"
+            step.live_question = getattr(call, "live_question", None)
         # Attach narration
         object.__setattr__(step, "spoken", spoken) if hasattr(step, "__dataclass_fields__") else None
         try:

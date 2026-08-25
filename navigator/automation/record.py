@@ -37,6 +37,12 @@ class RecordedStep:
     #: "user" → live demo pauses for End User input (requires_live_input).
     source: str = "agent"
     live_question: str | None = None
+    #: Explicit InteractionEngine metadata authored in the recorder studio.
+    input_name: str | None = None
+    input_type: str = "text"
+    prompt: str | None = None
+    #: The value typed while recording; retained when source becomes user.
+    fallback_value: str | None = None
     #: Reuse earlier visitor answer (alias from a source=user fill).
     value_ref: str | None = None
     #: Optional spoken line for this step (next-prompt agent / mic merge).
@@ -66,6 +72,10 @@ def recorded_step_to_dict(step: RecordedStep) -> dict[str, Any]:
         "postcondition": dict(step.postcondition or {}),
         "source": step.source,
         "live_question": step.live_question,
+        "input_name": step.input_name,
+        "input_type": step.input_type,
+        "prompt": step.prompt,
+        "fallback_value": step.fallback_value,
         "value_ref": step.value_ref,
         "spoken": step.spoken,
         "needs_approval": bool(step.needs_approval),
@@ -86,6 +96,10 @@ def recorded_step_from_dict(raw: dict[str, Any]) -> RecordedStep:
         source=str(raw.get("source") or "agent"),
         live_question=raw.get("live_question"),
         value_ref=raw.get("value_ref"),
+        input_name=raw.get("input_name"),
+        input_type=str(raw.get("input_type") or "text"),
+        prompt=raw.get("prompt"),
+        fallback_value=raw.get("fallback_value"),
         spoken=raw.get("spoken"),
         needs_approval=bool(raw.get("needs_approval")),
         approval_reason=str(raw.get("approval_reason") or ""),
@@ -229,6 +243,12 @@ def draft_site_graph(
                 call["source"] = "user"
                 if step.live_question:
                     call["live_question"] = step.live_question
+                call["input_name"] = step.input_name or step.alias
+                call["input_type"] = step.input_type or "text"
+                if step.prompt:
+                    call["prompt"] = step.prompt
+                if step.fallback_value is not None:
+                    call["fallback_value"] = step.fallback_value
             if step.value_ref:
                 call["value_ref"] = step.value_ref
         elif step.tool == "click_element":
@@ -589,6 +609,10 @@ def _field_chip(step: RecordedStep, *, step_index: int) -> dict[str, Any]:
         "source": step.source,
         "value_ref": step.value_ref,
         "live_question": step.live_question,
+        "input_name": step.input_name,
+        "input_type": step.input_type,
+        "prompt": step.prompt,
+        "fallback_value": step.fallback_value,
         "label": (step.alias or "field").replace("_", " "),
     }
 
@@ -763,6 +787,12 @@ def _install_listeners(
                     live_question=str(
                         payload.get("live_question") or payload.get("prompt") or ""
                     ),
+                    input_type=str(payload.get("input_type") or "text"),
+                    fallback_value=(
+                        str(payload["fallback_value"])
+                        if payload.get("fallback_value") is not None
+                        else None
+                    ),
                     page=page,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -810,7 +840,21 @@ def _install_listeners(
             st["ok"] = True
             return st
         if action == "keep_agent_fill":
-            gate.last_field = None
+            from navigator.automation.record_studio import mark_step_replay_recorded_value
+
+            try:
+                idx = payload.get("step_index")
+                if idx is None and gate.last_field:
+                    idx = gate.last_field.get("step_index")
+                step = mark_step_replay_recorded_value(
+                    steps, step_index=int(idx) if idx is not None else None
+                )
+                for i in range(len(steps) - 1, -1, -1):
+                    if steps[i] is step:
+                        gate.last_field = _field_chip(step, step_index=i)
+                        break
+            except Exception as exc:  # noqa: BLE001
+                return {"ok": False, "error": str(exc)}
             st = _publish_studio_status(gate, page)
             st["ok"] = True
             return st

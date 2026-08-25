@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 from uuid import uuid4
 
+from navigator.automation.explore import semantics
+from navigator.automation.explore.episode import EpisodeStore, StopReason
 from navigator.automation.explore.explorer import EXPLORE_PAGE_ID, ExplorerDeps, explore
 from navigator.automation.explore.session import ExplorationBudget, ExplorationSession
 from navigator.automation.record import RecordedStep
@@ -155,24 +157,86 @@ def draft_narration(
 # -- providers ----------------------------------------------------------------
 
 
-def groq_asker(api_key: str) -> Callable[[str], str] | None:
-    """Text reasoning via Groq — same model the live planner uses."""
+def groq_asker(
+    api_key: str,
+    stop_event: threading.Event | None = None,
+) -> Callable[[str], str] | None:
+    """Text reasoning via Groq — same model the live planner uses.
+
+    Rate-limit (429 / TPD) gets a short backoff retry instead of instantly
+    fail-closing every guardrail / reason call for the rest of the run.
+    Sleep is interruptible so Stop exploring does not wait out the backoff.
+    """
     if not api_key.strip():
         return None
 
     def ask(prompt: str) -> str:
+        import time
+
         from groq import Groq
 
         from navigator.automation.explore.reason import MODEL
 
-        resp = Groq(api_key=api_key).chat.completions.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        return resp.choices[0].message.content or ""
+        client = Groq(api_key=api_key)
+        last: Exception | None = None
+        for attempt in range(4):
+            if stop_event is not None and stop_event.is_set():
+                raise RuntimeError("stopped by client")
+            try:
+                resp = client.chat.completions.create(
+                    model=MODEL,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2,
+                )
+                return resp.choices[0].message.content or ""
+            except Exception as exc:  # noqa: BLE001
+                if stop_event is not None and stop_event.is_set():
+                    raise RuntimeError("stopped by client") from exc
+                last = exc
+                msg = str(exc).lower()
+                if "429" not in msg and "rate_limit" not in msg:
+                    raise
+                # Groq often says "try again in XmYs" — parse lightly, else exponential.
+                wait_s = _groq_retry_wait_s(str(exc), attempt)
+                print(
+                    f"[explore] groq rate-limited; retry in {wait_s:.0f}s "
+                    f"(attempt {attempt + 1}/4)",
+                    flush=True,
+                )
+                _sleep_interruptible(wait_s, stop_event)
+        assert last is not None
+        raise last
 
     return ask
+
+
+def _sleep_interruptible(
+    seconds: float, stop_event: threading.Event | None
+) -> None:
+    """Sleep in short slices so a client Stop can cut the wait short."""
+    import time
+
+    deadline = time.monotonic() + max(0.0, seconds)
+    while True:
+        if stop_event is not None and stop_event.is_set():
+            raise RuntimeError("stopped by client")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        time.sleep(min(0.4, left))
+
+
+def _groq_retry_wait_s(message: str, attempt: int) -> float:
+    """Seconds to sleep before the next Groq attempt."""
+    import re
+
+    m = re.search(r"try again in (\d+)m([\d.]+)s", message, re.I)
+    if m:
+        return min(90.0, int(m.group(1)) * 60 + float(m.group(2)) + 1.0)
+    m = re.search(r"try again in ([\d.]+)s", message, re.I)
+    if m:
+        return min(90.0, float(m.group(1)) + 1.0)
+    return min(90.0, 15.0 * (2**attempt))
 
 
 _VISION_SYSTEM = (
@@ -204,6 +268,10 @@ def vision_asker() -> Callable[[str, str], str] | None:
 # -- run ----------------------------------------------------------------------
 
 
+def _clean_list(values: Sequence[str]) -> tuple[str, ...]:
+    return tuple(v.strip() for v in values if str(v).strip())
+
+
 def start_exploration(
     *,
     product_id: str,
@@ -211,18 +279,95 @@ def start_exploration(
     product_name: str,
     budget: ExplorationBudget | None = None,
     headful: bool | None = None,
+    save_mode: str = "new",
+    target_flow_id: str = "",
+    target_flow_name: str = "",
+    new_flow_name: str = "",
+    focus_hint: str = "",
+    include_paths: Sequence[str] = (),
+    exclude_paths: Sequence[str] = (),
+    exclude_labels: Sequence[str] = (),
     on_complete: Callable[[ExplorationSession], None] | None = None,
 ) -> ExplorationSession:
     """Launch a run on a daemon thread. Raises if one is already active."""
     global _active
+    mode = (save_mode or "new").strip().lower()
+    if mode not in {"new", "update"}:
+        raise RuntimeError("save_mode must be 'new' or 'update'")
+    flow_target = (target_flow_id or "").strip()
+    if mode == "update" and not flow_target:
+        raise RuntimeError("target_flow_id required when save_mode is update")
     with _lock:
         if _active is not None and _active.phase not in {"done", "failed", "stopped"}:
-            raise RuntimeError("an exploration session is already running")
+            stale_s = _active.budget.max_wall_clock_s + 180.0
+            if _active.elapsed_s() > stale_s:
+                _active.phase = "failed"
+                _active.error = (
+                    "exploration session expired — previous run did not finish cleanly"
+                )
+                _active.emit({"type": "error", "msg": _active.error})
+                _active = None
+            else:
+                raise RuntimeError("an exploration session is already running")
         session = ExplorationSession(
             product_id=product_id,
             base_url=base_url,
             budget=budget or ExplorationBudget(),
+            phase="starting",
+            save_mode=mode,
+            target_flow_id=flow_target,
+            target_flow_name=(target_flow_name or "").strip(),
+            new_flow_name=(new_flow_name or "").strip(),
+            focus_hint=(focus_hint or "").strip(),
+            include_paths=_clean_list(include_paths),
+            exclude_paths=_clean_list(exclude_paths),
+            exclude_labels=_clean_list(exclude_labels),
         )
+        if session.include_paths or session.exclude_paths or session.exclude_labels:
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        "scope: "
+                        + (f"only {list(session.include_paths)}; " if session.include_paths else "")
+                        + (f"never {list(session.exclude_paths)}; " if session.exclude_paths else "")
+                        + (f"skip labels {list(session.exclude_labels)}" if session.exclude_labels else "")
+                    ).rstrip("; "),
+                }
+            )
+        if mode == "update":
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        f"plan: update existing flow "
+                        f"“{session.target_flow_name or flow_target}” "
+                        f"({flow_target})"
+                    ),
+                }
+            )
+        else:
+            session.emit(
+                {
+                    "type": "log",
+                    "level": "info",
+                    "msg": (
+                        "plan: create new flow (unpublished draft)"
+                        + (
+                            f" — “{session.new_flow_name}”"
+                            if session.new_flow_name
+                            else ""
+                        )
+                        + (
+                            f"; focus: {session.focus_hint}"
+                            if session.focus_hint
+                            else ""
+                        )
+                    ),
+                }
+            )
         _active = session
 
     def _run() -> None:
@@ -232,6 +377,20 @@ def start_exploration(
             session.error = str(exc)
             session.phase = "failed"
             session.emit({"type": "error", "msg": str(exc)})
+            if session.steps:
+                try:
+                    _persist(
+                        session,
+                        product_name=product_name,
+                        narration=[],
+                        flow_semantics=None,
+                        ask_text=None,
+                    )
+                except Exception as persist_exc:  # noqa: BLE001
+                    print(
+                        f"[explore] partial save after failure failed: {persist_exc}",
+                        flush=True,
+                    )
         finally:
             if session.phase not in {"failed", "stopped"}:
                 session.phase = "done"
@@ -259,7 +418,7 @@ def _run_exploration(
     from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
     from navigator.automation.browser.product_login import login_product
 
-    ask_text = groq_asker(settings.groq_api_key)
+    ask_text = groq_asker(settings.groq_api_key, stop_event=session.stop_event)
     ask_vision = vision_asker()
     corrections = prior_corrections(session.product_id)
     if corrections:
@@ -276,8 +435,11 @@ def _run_exploration(
         context = browser.new_context()
         page = context.new_page()
         try:
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                return
             session.phase = "logging_in"
-            session.emit({"type": "state", "phase": "logging_in"})
+            session.emit({"type": "status", **session.status()})
             try:
                 with CredentialVault(settings.credential_db_path) as vault:
                     creds = vault.credentials_for(session.product_id)
@@ -288,6 +450,9 @@ def _run_exploration(
                     {"type": "log", "level": "warn", "msg": f"vault unavailable: {exc}"}
                 )
                 creds = None
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                return
             if creds:
                 login_url, email, password = creds
                 result = run_login_gate(
@@ -296,6 +461,9 @@ def _run_exploration(
                     email=email,
                     password=password,
                 )
+                if session.stop_event.is_set():
+                    session.phase = "stopped"
+                    return
                 if result is LoginGateResult.failed:
                     raise RuntimeError("product login failed — check stored credentials")
                 session.emit(
@@ -308,6 +476,10 @@ def _run_exploration(
                 )
                 page.goto(session.base_url, wait_until="domcontentloaded", timeout=60_000)
 
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                return
+
             def _on_action(step: RecordedStep, result: ToolResult, verify_result: Any) -> None:
                 failed = not result.ok or (
                     verify_result is not None and not verify_result.passed
@@ -318,6 +490,11 @@ def _run_exploration(
                         result=result, verify_result=verify_result,
                     )
 
+            episode = EpisodeStore(
+                root=settings.explore_episodes_path,
+                product_id=session.product_id,
+                job_id=session.job_id,
+            )
             explore(
                 session,
                 ExplorerDeps(
@@ -328,15 +505,62 @@ def _run_exploration(
                     field_judge=ask_text,
                     corrections=corrections,
                     on_action=_on_action,
+                    episode=episode,
+                    label_ask=ask_text,
                 ),
             )
 
-            session.phase = "drafting"
-            session.emit({"type": "state", "phase": "drafting"})
-            narration = draft_narration(
-                session.steps, product_name=product_name, ask_text=ask_text
+            if session.stop_event.is_set():
+                session.phase = "stopped"
+                # Still draft what we have so Stop does not discard progress.
+            session.phase = "drafting" if not session.stop_event.is_set() else "stopped"
+            if session.phase == "drafting":
+                session.emit({"type": "status", **session.status()})
+            narration = (
+                []
+                if session.stop_event.is_set()
+                else draft_narration(
+                    session.steps, product_name=product_name, ask_text=ask_text
+                )
             )
-            _persist(session, product_name=product_name, narration=narration)
+            flow_semantics = (
+                None
+                if session.stop_event.is_set()
+                else semantics.label_flow(session.step_labels, ask_text=ask_text)
+            )
+            _persist(
+                session,
+                product_name=product_name,
+                narration=narration,
+                flow_semantics=flow_semantics,
+                ask_text=ask_text,
+            )
+            try:
+                episode.finalize(
+                    stop_reason=StopReason.from_budget_text(session.stop_reason or "done"),
+                    budget={
+                        "max_pages": session.budget.max_pages,
+                        "max_steps": session.budget.max_steps,
+                        "max_repairs_per_step": session.budget.max_repairs_per_step,
+                        "max_repairs_total": session.budget.max_repairs_total,
+                    },
+                    steps=len(session.steps),
+                    actions_taken=session.actions_taken,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[explore] episode finalize failed: {exc}", flush=True)
+            try:
+                from navigator.automation.explore import learn as explore_learn
+
+                explore_learn.draft_rules(
+                    episode,
+                    product_id=session.product_id,
+                    session_id=str(session.session_id),
+                    pending_db_path=settings.db_path,
+                    ask_text=ask_text,
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[explore] learn draft failed: {exc}", flush=True)
         finally:
             try:
                 context.close()
@@ -346,16 +570,31 @@ def _run_exploration(
 
 
 def _persist(
-    session: ExplorationSession, *, product_name: str, narration: list[str]
+    session: ExplorationSession,
+    *,
+    product_name: str,
+    narration: list[str],
+    flow_semantics: semantics.FlowSemantics | None = None,
+    ask_text: Callable[[str], str] | None = None,
 ) -> None:
-    """Merge the drafted flow into the site graph as an UNPUBLISHED revision.
+    """Merge drafted flow(s) into the site graph as an UNPUBLISHED revision.
 
-    Reuses `merge_recorded_flow` and `save_revision(publish=False)` so an
-    explored flow lands in exactly the same review-before-activate gate as a
-    manually recorded one. Nothing here activates anything.
+    A long crawl is split into coherent segments (see `segment.segment_steps`)
+    so the Client reviews several named demos instead of one blob. Update-mode
+    stays single-flow: overwriting a target must not invent siblings.
+
+    Reuses `merge_recorded_flow` and `put_site_graph(publish=False)` so explored
+    flows land in the same review-before-activate gate as a manual recording.
+    Nothing here activates anything.
     """
     from navigator.app.main import get_registry
-    from navigator.client.content import merge_recorded_flow
+    from navigator.automation.explore.segment import Segment, segment_steps
+    from navigator.client.content import (
+        existing_flow_step_count,
+        merge_recorded_flow,
+        resolve_flow_page_id,
+        _slug_flow,
+    )
 
     if not session.steps:
         session.emit(
@@ -363,32 +602,177 @@ def _persist(
         )
         return
 
-    flow_id = f"explored_{uuid4().hex[:8]}"
+    session.phase = "saving"
+    session.emit({"type": "status", **session.status()})
+
+    update = session.save_mode == "update" and bool(session.target_flow_id)
     registry = get_registry()
     current = registry.latest_revision(session.product_id)
-    new_yaml = merge_recorded_flow(
-        current.yaml,
-        flow_name=f"Explored — {product_name}",
-        flow_id=flow_id,
-        page_id=EXPLORE_PAGE_ID,
-        steps=session.steps,
-        product_name=product_name,
-        base_url=session.base_url,
-    )
-    if narration:
-        new_yaml = _attach_narration(new_yaml, flow_id, narration)
+    new_yaml = current.yaml
+
+    if update:
+        segments = [
+            Segment(
+                steps=tuple(session.steps),
+                labels=tuple(session.step_labels[: len(session.steps)]),
+                semantics=flow_semantics or semantics.FlowSemantics(),
+            )
+        ]
+    else:
+        segments = segment_steps(
+            session.steps, session.step_labels, ask_text=ask_text
+        )
+        # Fall back to the precomputed whole-run semantics when segmentation
+        # produced a single flow and the caller already labelled it.
+        if len(segments) == 1 and flow_semantics is not None and not segments[0].semantics.purpose:
+            segments = [
+                Segment(
+                    steps=segments[0].steps,
+                    labels=segments[0].labels,
+                    semantics=flow_semantics,
+                )
+            ]
+
+    flow_ids: list[str] = []
+    narr_offset = 0
+    for i, seg in enumerate(segments):
+        if update:
+            flow_id = session.target_flow_id
+            flow_name = session.target_flow_name or f"Explored — {product_name}"
+        elif session.new_flow_name:
+            flow_id = _slug_flow(session.new_flow_name)
+            flow_name = session.new_flow_name
+        else:
+            flow_id = f"explored_{uuid4().hex[:8]}"
+            flow_name = (
+                seg.semantics.auto_name
+                or (f"Explored — {product_name}" if len(segments) == 1 else f"Explored {i + 1} — {product_name}")
+            )
+        if not update and session.new_flow_name and i > 0:
+            flow_id = f"{flow_id}_{i + 1}"
+        persist_page = EXPLORE_PAGE_ID
+        if update:
+            persist_page = resolve_flow_page_id(new_yaml, flow_id) or EXPLORE_PAGE_ID
+        # Read the pre-append count so appended _meta indices line up.
+        prior_steps = (
+            existing_flow_step_count(new_yaml, persist_page, flow_id)
+            if update
+            else 0
+        )
+        new_yaml = merge_recorded_flow(
+            new_yaml,
+            flow_name=flow_name,
+            flow_id=flow_id,
+            page_id=persist_page,
+            steps=list(seg.steps),
+            product_name=product_name,
+            base_url=session.base_url,
+            update_existing=update,
+        )
+        seg_narr: list[str] = []
+        if narration:
+            seg_narr = narration[narr_offset : narr_offset + len(seg.steps)]
+        elif seg.labels:
+            seg_narr = [str(x).strip() for x in seg.labels[: len(seg.steps)]]
+        if seg_narr:
+            new_yaml = (
+                _append_narration(new_yaml, flow_id, seg_narr)
+                if update
+                else _attach_narration(new_yaml, flow_id, seg_narr)
+            )
+        narr_offset += len(seg.steps)
+        if seg.semantics.purpose or seg.labels:
+            payload = seg.semantics.as_dict()
+            payload["steps"] = [
+                {"idx": j, "description": label}
+                for j, label in enumerate(seg.labels)
+                if label
+            ]
+            new_yaml = (
+                _append_semantics(new_yaml, flow_id, payload, offset=prior_steps)
+                if update
+                else _attach_meta(new_yaml, "semantics", flow_id, payload)
+            )
+        live_hints = [
+            d.as_dict()
+            for d in session.field_decisions
+            if d.classification == "business_specific"
+        ]
+        if live_hints:
+            new_yaml = _attach_meta(new_yaml, "live_input_hints", flow_id, live_hints)
+        # Mutating steps recorded but never run. Parked in _meta because extra
+        # keys on a ToolCall are silently dropped by the schema, which would
+        # lose the flag and let an unapproved click reach a live demo.
+        approvals = _approvals_for_segment(session, seg, offset=prior_steps)
+        if approvals:
+            new_yaml = _attach_meta(
+                new_yaml, "pending_approvals", flow_id, approvals
+            )
+        flow_ids.append(flow_id)
+
     rev = registry.put_site_graph(
         session.product_id, new_yaml, "explored", publish=False
     )
-    session.flow_id = flow_id
+    session.flow_id = flow_ids[0] if flow_ids else ""
     session.revision = rev.revision
+    if session.flow_id and session.phase == "saving":
+        session.phase = "done"
+    session.emit({"type": "status", **session.status()})
+    session.emit(
+        {
+            "type": "log",
+            "level": "info",
+            "msg": (
+                f"{'updated' if update else 'created'} "
+                f"{len(flow_ids)} flow(s) ({', '.join(flow_ids)}) — "
+                f"{len(session.steps)} demo step(s), "
+                f"{session.actions_taken} actions explored"
+                + (
+                    f" — {session.repairs_used} selector repair(s) in this "
+                    "unpublished draft; Publish before live visitors use them"
+                    if session.repairs_used
+                    else " — unpublished draft, Publish when ready for visitors"
+                )
+            ),
+        }
+    )
+    try:
+        from navigator.automation.explore import product_areas
+
+        product_areas.sync_from_yaml(
+            registry, session.product_id, new_yaml, product_name=product_name
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[explore] product map sync failed: {exc}", flush=True)
 
 
-def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:
-    """Park narration suggestions under `_meta` for the review UI.
+def _approvals_for_segment(
+    session: ExplorationSession, seg: Any, *, offset: int
+) -> list[dict[str, Any]]:
+    """Per-flow approval entries, indexed against the saved step list."""
+    out: list[dict[str, Any]] = []
+    for i, step in enumerate(seg.steps):
+        if not getattr(step, "needs_approval", False):
+            continue
+        out.append(
+            {
+                "idx": i + offset,
+                "alias": step.alias,
+                "selector": step.selector,
+                "reason": step.approval_reason,
+                "approved": False,
+            }
+        )
+    return out
 
-    Deliberately not inlined into the flow steps: narration is a suggestion the
-    Client edits, and the flow schema validates strictly.
+
+def _attach_meta(yaml_text: str, section: str, flow_id: str, value: Any) -> str:
+    """Park per-flow generated data under `_meta.<section>[flow_id]`.
+
+    Deliberately not inlined into the flow steps. Narration and semantics are
+    suggestions the Client edits, while the flow schema validates strictly --
+    and extra keys on a ToolCall are silently DROPPED rather than rejected, so
+    inlining them would lose data without any error.
     """
     import yaml as _yaml
 
@@ -398,8 +782,64 @@ def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str
     meta = raw.setdefault("_meta", {})
     if not isinstance(meta, dict):
         return yaml_text
-    meta.setdefault("narration_suggestions", {})[flow_id] = narration
+    bucket = meta.setdefault(section, {})
+    if not isinstance(bucket, dict):
+        return yaml_text
+    bucket[flow_id] = value
     return _yaml.safe_dump(raw, sort_keys=False)
+
+
+def _attach_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:
+    """Narration suggestions for one flow, for the review UI."""
+    return _attach_meta(yaml_text, "narration_suggestions", flow_id, narration)
+
+
+def _append_narration(yaml_text: str, flow_id: str, narration: list[str]) -> str:
+    """Update mode: keep the prior run's lines, then add this run's."""
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(yaml_text)
+    prior: list[Any] = []
+    if isinstance(raw, dict):
+        bucket = ((raw.get("_meta") or {}).get("narration_suggestions") or {})
+        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), list):
+            prior = list(bucket[flow_id])
+    return _attach_meta(
+        yaml_text, "narration_suggestions", flow_id, prior + narration
+    )
+
+
+def _append_semantics(
+    yaml_text: str, flow_id: str, payload: dict[str, Any], *, offset: int
+) -> str:
+    """Update mode: merge step descriptions, shifting new ones past the old.
+
+    A wrong offset silently misaligns every spoken line with the click it
+    describes, so this shifts explicitly rather than renumbering later.
+    """
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(yaml_text)
+    prior_steps: list[Any] = []
+    prior: dict[str, Any] = {}
+    if isinstance(raw, dict):
+        bucket = ((raw.get("_meta") or {}).get("semantics") or {})
+        if isinstance(bucket, dict) and isinstance(bucket.get(flow_id), dict):
+            prior = dict(bucket[flow_id])
+            if isinstance(prior.get("steps"), list):
+                prior_steps = list(prior["steps"])
+    shifted = [
+        {**s, "idx": int(s.get("idx", 0)) + offset}
+        for s in payload.get("steps", [])
+        if isinstance(s, dict)
+    ]
+    merged = {**prior, **{k: v for k, v in payload.items() if k != "steps"}}
+    merged["steps"] = prior_steps + shifted
+    # Keep the original purpose/name when the new run did not produce one.
+    for key in ("purpose", "auto_name"):
+        if not merged.get(key) and prior.get(key):
+            merged[key] = prior[key]
+    return _attach_meta(yaml_text, "semantics", flow_id, merged)
 
 
 def stop_exploration() -> dict[str, Any]:

@@ -13,7 +13,7 @@ export function AuthScreen({
   dark,
   toggleTheme,
 }: {
-  onAuthed: () => void;
+  onAuthed: (fromSignup: boolean, company?: string) => void;
   dark: boolean;
   toggleTheme: () => void;
 }) {
@@ -31,10 +31,11 @@ export function AuthScreen({
     try {
       if (mode === "signup") {
         await api.signup(company.trim(), email.trim(), password);
+        onAuthed(true, company.trim());
       } else {
         await api.login(email.trim(), password);
+        onAuthed(false);
       }
-      onAuthed();
     } catch (err) {
       setError(errText(err));
     } finally {

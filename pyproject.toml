@@ -18,12 +18,13 @@ dependencies = [
     "PyJWT>=2.8",
     "bcrypt>=4.0",
     "cryptography>=42.0",
+    "psutil>=7.2.2",
 ]
 
 [project.optional-dependencies]
 api = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
 # Phase 2+ runtime deps. Kept out of the base install so the core stays lean.
-voice = ["piper-tts>=1.4", "silero-vad>=5.1", "groq>=0.11", "websockets>=12"]
+voice = ["silero-vad>=5.1", "groq>=0.11", "websockets>=12"]
 memory = ["chromadb>=0.5"]
 llm = ["google-genai>=1.0", "openai>=1.40"]
 dev = [

@@ -21,13 +21,20 @@ from navigator.logs.store import ActionLog
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
-def graph_yaml(site: str, product_name: str, fixture: str, button: str) -> str:
+def graph_yaml(
+    site: str,
+    product_name: str,
+    fixture: str,
+    button: str,
+    base_url: str | None = None,
+) -> str:
     """A minimal but real site graph pointed at a local fixture."""
+    base_url = base_url or f"{FIXTURES.as_uri()}/"
     return textwrap.dedent(
         f"""
         version: 1
         site: {site}
-        base_url: {FIXTURES.as_uri()}/
+        base_url: {base_url}
         persona:
           product_name: {product_name}
           one_liner: a test product
@@ -70,6 +77,15 @@ def graph_yaml(site: str, product_name: str, fixture: str, button: str) -> str:
 
 ACME = graph_yaml("acme-inbox", "Acme Inbox", "crm_dashboard.html", "#send-btn")
 GLOBEX = graph_yaml("globex-desk", "Globex Desk", "crm_dashboard.html", "#send-btn")
+
+# Demo-start tests fake the runner, so no page is ever loaded — but the live
+# readiness gate rejects fixture URLs, so those tests need a product-shaped graph.
+ACME_LIVE = graph_yaml(
+    "acme-inbox", "Acme Inbox", "inbox", "#send-btn", base_url="https://acme.example.com/"
+)
+GLOBEX_LIVE = graph_yaml(
+    "globex-desk", "Globex Desk", "inbox", "#send-btn", base_url="https://globex.example.com/"
+)
 
 
 @pytest.fixture
@@ -353,64 +369,6 @@ def test_demo_list_is_scoped_per_product(client):
 
     assert len(client.get("/v1/demos", headers=acme["headers"]).json()) == 1
     assert client.get("/v1/demos", headers=globex["headers"]).json() == []
-
-
-def test_pending_corrections_empty_by_default(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(app_module.settings, "db_path", tmp_path / "nav.db")
-    p = register(client, "Acme Inbox", ACME)
-    assert client.get("/v1/products/corrections/pending", headers=p["headers"]).json() == []
-
-
-def test_approve_and_reject_corrections(client, tmp_path, monkeypatch):
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-    from navigator.knowledge.memory.retrieval import retrieve_corrections
-
-    db = tmp_path / "nav.db"
-    chroma = tmp_path / "chroma"
-    monkeypatch.setattr(app_module.settings, "db_path", db)
-    monkeypatch.setattr(app_module.settings, "chroma_path", chroma)
-    p = register(client, "Acme Inbox", ACME)
-
-    with PendingCorrectionStore(db) as store:
-        row = store.add(
-            product_id=p["id"],
-            session_id="s1",
-            page="inbox",
-            tool_call_type="click_element",
-            rule="Always wait for toast",
-            source_call_id="c1",
-        )
-
-    listed = client.get("/v1/products/corrections/pending", headers=p["headers"]).json()
-    assert len(listed) == 1
-    assert listed[0]["id"] == row.id
-
-    ok = client.post(
-        f"/v1/products/corrections/{row.id}/approve",
-        headers=p["headers"],
-        json={},
-    )
-    assert ok.status_code == 200, ok.text
-    assert ok.json()["status"] == "approved"
-    assert client.get("/v1/products/corrections/pending", headers=p["headers"]).json() == []
-    hits = retrieve_corrections(p["id"], "toast", page="inbox", path=chroma)
-    assert any("toast" in h.rule.lower() for h in hits)
-
-    with PendingCorrectionStore(db) as store:
-        row2 = store.add(
-            product_id=p["id"],
-            session_id="s2",
-            page="inbox",
-            tool_call_type="fill_field",
-            rule="bad idea",
-            source_call_id="c2",
-        )
-    rej = client.post(
-        f"/v1/products/corrections/{row2.id}/reject",
-        headers=p["headers"],
-    )
-    assert rej.status_code == 200
-    assert rej.json()["status"] == "rejected"
 
 
 def test_ingest_knowledge(client, tmp_path, monkeypatch):

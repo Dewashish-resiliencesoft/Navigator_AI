@@ -12,10 +12,21 @@ _ROOT = Path(__file__).resolve().parent / "products"
 DEFAULT_BIO_FIELDS: list[dict[str, str]] = [
     {"key": "company_name", "label": "Company name", "value": ""},
     {"key": "owner", "label": "Owner / leadership", "value": ""},
-    {"key": "products", "label": "Products", "value": ""},
-    {"key": "about", "label": "What the company is about", "value": ""},
+    {"key": "founded", "label": "Founded year", "value": ""},
+    {"key": "headquarters", "label": "Headquarters", "value": ""},
+    {"key": "team_size", "label": "Team size", "value": ""},
     {"key": "website", "label": "Website", "value": ""},
     {"key": "industry", "label": "Industry", "value": ""},
+    {"key": "products", "label": "Products", "value": ""},
+    {"key": "about", "label": "What the company is about", "value": ""},
+    {"key": "target_market", "label": "Target market", "value": ""},
+    {"key": "key_features", "label": "Key features", "value": ""},
+    {"key": "pricing_model", "label": "Pricing model", "value": ""},
+    {"key": "usp", "label": "Unique selling proposition", "value": ""},
+    {"key": "support_email", "label": "Support contact", "value": ""},
+    {"key": "social_links", "label": "Social media links", "value": ""},
+    {"key": "linkedin", "label": "LinkedIn", "value": ""},
+    {"key": "twitter", "label": "Twitter / X", "value": ""},
 ]
 
 
@@ -46,6 +57,7 @@ def load_bio(product_id: str) -> dict[str, Any]:
     if not isinstance(fields, list) or not fields:
         return default_bio()
     cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
     for raw in fields:
         if not isinstance(raw, dict):
             continue
@@ -54,6 +66,12 @@ def load_bio(product_id: str) -> dict[str, Any]:
         cleaned.append(
             {"key": key, "label": label, "value": str(raw.get("value") or "")}
         )
+        seen.add(key)
+    # Ensure default schema keys exist so explore can fill gaps.
+    for d in DEFAULT_BIO_FIELDS:
+        if d["key"] not in seen:
+            cleaned.append(dict(d))
+            seen.add(d["key"])
     return {"fields": cleaned} if cleaned else default_bio()
 
 

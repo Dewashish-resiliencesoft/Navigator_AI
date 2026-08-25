@@ -23,6 +23,15 @@ def _fast_cursor_motion(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _clear_semantic_cache():
+    from navigator.agent.brain_router import get_semantic_cache
+
+    get_semantic_cache()._data.clear()
+    yield
+    get_semantic_cache()._data.clear()
+
+
 @pytest.fixture(scope="session")
 def site_graph():
     return load_site_graph(SEED_GRAPH)

@@ -66,3 +66,11 @@ loaded from the active Client's registry / site graph / product brief.
 
 - Regenerate docs after API changes: `python -m navigator.docs build`.
 - Never commit `graphify-out/` or `graphify/`.
+
+## Starting the dev stack
+
+When you start Navigator (uvicorn, docker, scripts) from this repo, **always read
+the logs** before telling the user the stack is ready. Scan for `ERROR`,
+`Traceback`, `WARN`, `[runner]`, `[live]`, `[attendee]`, `[zoom]`. If you see
+errors, diagnose and fix them (or document the blocker) — then restart and
+re-check logs. Do not skip this step.

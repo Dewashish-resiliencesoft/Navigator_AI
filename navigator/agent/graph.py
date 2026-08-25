@@ -24,6 +24,10 @@ Everything that talks routes through SPEAKING, so one node owns all TTS and
 narration can't be spoken twice or dropped. `after_speaking` decides where to go
 based on why SPEAKING was reached.
 
+Speak∥act: when ``pending_calls`` is set, SPEAKING skips TTS and EXECUTING
+starts ``say_async`` then Playwright immediately (overlap). Do not wait for
+prior speech before ``run_tool`` — Live serializes audio in the worker thread.
+
 Every node is a plain function of (CallState, CallDeps) returning a partial state,
 so each is testable on its own with a dict and a fake CallDeps -- no graph, no
 browser, no LangGraph.
@@ -33,6 +37,7 @@ from __future__ import annotations
 
 from functools import partial
 from typing import Literal
+from uuid import UUID
 
 from langgraph.graph import END, StateGraph
 
@@ -45,7 +50,8 @@ from navigator.agent.nodes.planning import planning
 from navigator.agent.nodes.reflecting import reflecting
 from navigator.agent.nodes.speaking import speaking
 from navigator.agent.nodes.verifying import verifying
-from navigator.agent.state import CallDeps, CallState
+from navigator.agent.state import CLEAR, CallDeps, CallState, initial_state
+from navigator.agent.utterance import stamp_narration
 
 NODES = (
     ("joining", joining),
@@ -95,15 +101,63 @@ def turn_done(state: CallState, deps: CallDeps) -> CallState:
     return CallState(turns=state.get("turns", 0) + 1)
 
 
-def build_graph(deps: CallDeps):
+def anything_else_entry_state(
+    session_id: UUID,
+    page_id: str,
+    *,
+    max_turns: int,
+    walkthrough_flow_id: str = "",
+) -> CallState:
+    """State to enter SPEAKING with the post-demo Q&A prompt already queued."""
+    from navigator.agent.end_policy import ANYTHING_ELSE
+    from navigator.core.schemas import Plan
+
+    state = initial_state(
+        session_id,
+        page_id,
+        max_turns=max_turns,
+        walkthrough_flow_id=walkthrough_flow_id,
+        auto_play=False,
+    )
+    state["phase"] = "anything_else"
+    state["plan"] = Plan(spoken_response=ANYTHING_ELSE, tool_calls=[])
+    state["pending_calls"] = []
+    state["narration"] = [ANYTHING_ELSE]
+    return state
+
+
+_STAMP_NODES = frozenset({"planning", "introducing", "verifying"})
+
+
+def _bind_node(name: str, fn, deps: CallDeps):
+    """Bind deps; stamp utterance ids onto narration at the graph edge."""
+    bound = partial(fn, deps=deps)
+    if name not in _STAMP_NODES:
+        return bound
+
+    def _stamped(state: CallState) -> CallState:
+        out = bound(state)
+        raw = out.get("narration")
+        if raw is CLEAR or not raw:
+            return out
+        out["narration"] = stamp_narration(state, raw, kind=name)
+        return out
+
+    return _stamped
+
+
+def build_graph(deps: CallDeps, *, entry: str = "joining"):
     """Wire and compile the graph. `deps` is bound into every node."""
     builder = StateGraph(CallState)
 
     for name, fn in NODES:
-        builder.add_node(name, partial(fn, deps=deps))
+        builder.add_node(name, _bind_node(name, fn, deps))
     builder.add_node("turn_done", partial(turn_done, deps=deps))
 
-    builder.set_entry_point("joining")
+    allowed = {name for name, _ in NODES} | {"turn_done"}
+    if entry not in allowed:
+        raise ValueError(f"unknown graph entry {entry!r}")
+    builder.set_entry_point(entry)
     builder.add_edge("joining", "introducing")
     builder.add_edge("introducing", "speaking")
     builder.add_edge("listening", "planning")

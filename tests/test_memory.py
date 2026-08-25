@@ -70,6 +70,29 @@ def test_retrieve_corrections_filters_by_page_and_tenant(tmp_path):
     assert all(h.product_id == "acme" for h in hits)
 
 
+def test_retrieve_corrections_falls_back_when_page_mismatches(tmp_path):
+    path = tmp_path / "chroma"
+    seed_correction(
+        path,
+        product_id="acme",
+        rule="Click send only after the composer is focused",
+        page="main",
+        tool_call_type="click_element",
+        source_call_id="call-1",
+    )
+    hits = retrieve_corrections(
+        "acme",
+        query="send message",
+        page="inbox",
+        tool_call_type="click_element",
+        k=5,
+        path=path,
+    )
+    assert len(hits) == 1
+    assert hits[0].rule.startswith("Click send")
+    assert hits[0].page == "main"
+
+
 def test_retrieve_product_knowledge_returns_docs(tmp_path):
     path = tmp_path / "chroma"
     seed_knowledge(

@@ -19,13 +19,60 @@ from navigator.agent.nodes.reflecting import classify_correction
 from navigator.agent.state import CallDeps, CallState
 from navigator.core.settings import settings
 from navigator.voice.stt import VoiceSegmenter, transcribe
+from navigator.voice.conversation_language import sync_heard_language
 
 SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"
+
+_FILLER_HEARD = frozenset(
+    {
+        "um",
+        "uh",
+        "yeah",
+        "yep",
+        "mhm",
+        "mm",
+        "hmm",
+        "yes",
+        "ok",
+        "okay",
+        "one sec",
+        "alright",
+        "checking that",
+    }
+)
+
+
+def _ignore_stale_heard(text: str, deps: CallDeps) -> bool:
+    """True for nudge filler or leftover intake answers replayed as barge-in."""
+    raw = (text or "").strip()
+    if not raw:
+        return True
+    low = raw.lower().rstrip(".!?…, ")
+    if low in _FILLER_HEARD:
+        return True
+    intake = getattr(deps, "intake", None)
+    if intake is None:
+        return False
+    name = (getattr(intake, "name", "") or "").strip().lower()
+    if name and (low == name or (low.startswith("my name is") and name in low)):
+        return True
+    looking = (getattr(intake, "looking_for", "") or "").strip().lower()
+    return bool(looking and low == looking)
 
 
 def _aborted(deps: CallDeps) -> bool:
     ev = deps.stop_event
     return ev is not None and getattr(ev, "is_set", lambda: False)()
+
+
+def _want_classify(deps: CallDeps) -> bool:
+    # Playlist / auto-advance: corrections rare; Groq classify after every
+    # utterance adds hundreds of ms before the next reply.
+    if getattr(deps, "playlist_only", False) or getattr(deps, "strict_playlist", False):
+        return False
+    if getattr(deps, "auto_advance_walkthrough", False):
+        return False
+    return True
 
 
 def listening(state: CallState, deps: CallDeps) -> CallState:
@@ -35,15 +82,23 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
         deps.set_status("listening", "Listening…")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("listening")
+    from navigator.voice.conversation_language import publish_speech
+
+    publish_speech(deps, status="listening")
     # Prefer utterance captured during barge-in over a fresh listen wait.
     pending = deps.pending_barge_in
     if pending:
-        utterance = pending.pop(0).strip()
-        if utterance:
+        while pending:
+            utterance = pending.pop(0).strip()
+            if not utterance or _ignore_stale_heard(utterance, deps):
+                if utterance:
+                    print(f"[listen] ignore stale barge-in: {utterance!r}", flush=True)
+                continue
             print(f"[listen] barge-in utterance: {utterance!r}", flush=True)
+            lang = sync_heard_language(deps, utterance)
             last = _last_entry(state, deps)
             is_correction = False
-            if last is not None:
+            if last is not None and _want_classify(deps):
                 try:
                     is_correction = classify_correction(
                         utterance,
@@ -57,14 +112,33 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
             return CallState(
                 transcript=[f"user: {utterance}"],
                 user_correction=is_correction,
+                **lang,
             )
 
     utterance = _capture_utterance(state, deps)
+    lang = sync_heard_language(deps, utterance) if utterance else {}
     if utterance:
         print(f"[listen] heard: {utterance!r}", flush=True)
+    if utterance and deps.on_user_utterance is not None:
+        try:
+            deps.on_user_utterance(utterance)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[listen] on_user_utterance skipped: {exc}", flush=True)
+    if utterance:
+        from navigator.agent_runtime.bridge import on_live_heard
+        from navigator.agent_runtime.planning.router import ROUTE_TASK_HANDOFF
+
+        _heard_decision = on_live_heard(deps, utterance)
+        if _heard_decision is not None and _heard_decision.route == ROUTE_TASK_HANDOFF:
+            return CallState(
+                transcript=[f"user: {utterance}"],
+                user_correction=False,
+                phase=state.get("phase") or "walkthrough",
+                **lang,
+            )
     last = _last_entry(state, deps)
     is_correction = False
-    if last is not None:
+    if last is not None and _want_classify(deps):
         try:
             is_correction = classify_correction(
                 utterance,
@@ -76,9 +150,13 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
         except Exception as exc:  # noqa: BLE001
             print(f"[listen] classify_correction skipped: {exc}", flush=True)
 
+    from navigator.voice.conversation_language import publish_speech
+
+    publish_speech(deps, status="listening")
     return CallState(
         transcript=[f"user: {utterance}"],
         user_correction=is_correction,
+        **lang,
     )
 
 
@@ -86,21 +164,63 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
     phase = state.get("phase") or ""
     anything_else = phase == "anything_else"
     walkthrough = phase == "walkthrough"
+    awaiting_resume = phase == "awaiting_resume"
+
+    if walkthrough and getattr(deps, "auto_advance_walkthrough", False):
+        from navigator.voice.conversation_language import sync_heard_language
+        from navigator.voice.language import detect_language_switch, poll_barge_in_language_switch
+
+        if deps.live_agent is not None:
+            text = _from_live(deps, silence_timeout=0.4)
+            if text:
+                sync_heard_language(deps, text)
+                return text
+            return ""
+        poll_barge_in_language_switch(deps)
+        if deps.audio_frames is not None:
+            text = _from_audio(deps, silence_timeout=2.5)
+            if text:
+                sync_heard_language(deps, text)
+                if detect_language_switch(text) is not None:
+                    return text
+        return ""
 
     if deps.audio_frames is not None:
         try:
-            timeout = SILENCE_S if anything_else else None
+            if phase == "awaiting_resume":
+                from navigator.agent.brain_config import pacing_resume_silence
+                from navigator.agent.end_policy import RESUME_SILENCE_S
+
+                cfg = getattr(deps, "brain_config", None)
+                pacing = "neutral"
+                mem = getattr(deps, "memory", None)
+                if mem is not None and getattr(mem, "pacing_history", None):
+                    pacing = mem.pacing_history[-1]
+                timeout = (
+                    pacing_resume_silence(pacing, cfg)
+                    if cfg is not None
+                    else RESUME_SILENCE_S
+                )
+            elif walkthrough:
+                cfg = getattr(deps, "brain_config", None)
+                timeout = cfg.listen_timeout_s if cfg is not None else 12.0
+            elif anything_else:
+                from navigator.agent.end_policy import SILENCE_S
+
+                timeout = SILENCE_S
+            else:
+                timeout = None
             text = _from_audio(deps, silence_timeout=timeout)
             if text:
                 return text
-            if anything_else or walkthrough:
+            if anything_else or walkthrough or awaiting_resume:
                 # Empty → planning advances walkthrough or runs silence end-policy.
                 return ""
             print("[listen] no Meet audio utterance — falling back", flush=True)
         except RuntimeError as exc:
             # Missing silero-vad/torch — do not invent a fake user question.
             print(f"[listen] STT unavailable ({exc}) — falling back", flush=True)
-            if (anything_else or walkthrough) and not deps.interactive_listen:
+            if (anything_else or walkthrough or awaiting_resume) and not deps.interactive_listen:
                 return ""
 
     if deps.interactive_listen:
@@ -116,9 +236,9 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
             typed = ""
         if typed:
             return typed
-        return "" if (anything_else or walkthrough) else SCRIPTED_UTTERANCE
+        return "" if (anything_else or walkthrough or awaiting_resume) else SCRIPTED_UTTERANCE
 
-    if anything_else or walkthrough:
+    if anything_else or walkthrough or awaiting_resume:
         return ""
     return SCRIPTED_UTTERANCE
 
@@ -134,12 +254,42 @@ def _frames_until_deadline(
         yield frame
 
 
+def _from_live(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
+    """Wait for Live's input transcript via pending_barge_in.
+
+    `_pump_in` already owns the inbound PCM queue. Silero/Whisper here would
+    starve it. Live's `heard` events land on `pending_barge_in`.
+    """
+    pending = deps.pending_barge_in
+    if pending is None:
+        return ""
+    deadline = None if silence_timeout is None else time.monotonic() + silence_timeout
+    while not _aborted(deps) and not getattr(deps.speaker, "bot_ended", False):
+        if pending:
+            text = pending.pop(0).strip()
+            if not text:
+                continue
+            if deps.is_bot_echo is not None and deps.is_bot_echo(text):
+                print(f"[listen] ignoring bot echo: {text!r}", flush=True)
+                continue
+            if _ignore_stale_heard(text, deps):
+                print(f"[listen] ignore stale barge-in: {text!r}", flush=True)
+                continue
+            return text
+        if deadline is not None and time.monotonic() >= deadline:
+            return ""
+        time.sleep(0.05)
+    return ""
+
+
 def _from_audio(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
+    if deps.live_agent is not None:
+        return _from_live(deps, silence_timeout=silence_timeout)
     assert deps.audio_frames is not None
     frames: Iterator[bytes] = deps.audio_frames
     if silence_timeout is not None:
         frames = _frames_until_deadline(deps.audio_frames, silence_timeout)
-    segmenter = VoiceSegmenter()
+    segmenter = VoiceSegmenter(min_silence_ms=settings.live_stt_min_silence_ms)
     for pcm in segmenter.segments(frames):
         if _aborted(deps) or getattr(deps.speaker, "bot_ended", False):
             return ""

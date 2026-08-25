@@ -17,6 +17,26 @@ def _resp(body: bytes, status: int = 200) -> MagicMock:
     return fake
 
 
+def test_join_voice_agents_disabled_hint():
+    from urllib.error import HTTPError
+
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    err = HTTPError(
+        url="https://x/bots",
+        code=400,
+        msg="Bad Request",
+        hdrs=None,
+        fp=MagicMock(read=MagicMock(return_value=b'{"voice_agent_settings":["Voice agents are not enabled"]}')),
+    )
+    with patch("navigator.meeting.attendee.urlopen", side_effect=err):
+        try:
+            client.join("https://meet.google.com/abc-defg-hij")
+        except RuntimeError as exc:
+            assert "ENABLE_VOICE_AGENTS" in str(exc) or "voice agents" in str(exc).lower()
+        else:
+            raise AssertionError("expected RuntimeError")
+
+
 def test_join_reserves_resources_without_screenshare():
     client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
     captured: dict = {}
@@ -164,6 +184,28 @@ def test_leave_posts():
             return_value=_resp(b"{}"),
         ):
             client.leave("bot_1")
+
+
+def test_leave_if_active_skips_post_processing():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    with patch.object(
+        client,
+        "get",
+        return_value=AttendeeClient._bot({"id": "bot_1", "state": "post_processing"}),
+    ):
+        assert client.leave_if_active("bot_1") is False
+
+
+def test_leave_if_active_posts_when_joined():
+    client = AttendeeClient("https://app.attendee.dev/api/v1", "tok")
+    with patch.object(
+        client,
+        "get",
+        return_value=AttendeeClient._bot({"id": "bot_1", "state": "joined_recording"}),
+    ):
+        with patch.object(client, "leave") as leave:
+            assert client.leave_if_active("bot_1") is True
+            leave.assert_called_once_with("bot_1")
 
 
 def test_human_has_left_tracks_join_then_leave():

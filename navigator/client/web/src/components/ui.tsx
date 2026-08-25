@@ -1,5 +1,6 @@
 import { motion, useMotionTemplate, useMotionValue } from "motion/react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "../lib/cn";
 import { cardHover, rise, soft } from "../lib/motion";
 
@@ -10,12 +11,15 @@ export function Card({
   span,
   interactive = true,
   onClick,
+  dataCoach,
 }: {
   children: ReactNode;
   className?: string;
   span?: string;
   interactive?: boolean;
   onClick?: () => void;
+  /** Spotlight coach target id (`data-coach`). */
+  dataCoach?: string;
 }) {
   const mx = useMotionValue(-200);
   const my = useMotionValue(-200);
@@ -26,6 +30,7 @@ export function Card({
       variants={rise}
       {...(interactive ? cardHover : {})}
       onClick={onClick}
+      data-coach={dataCoach}
       onPointerMove={(e) => {
         const r = e.currentTarget.getBoundingClientRect();
         mx.set(e.clientX - r.left);
@@ -133,9 +138,10 @@ export function Button({
 }
 
 const fieldBase =
-  "w-full rounded-lg border bg-white/50 dark:bg-black/20 px-3 py-2 text-[0.85rem] " +
+  "w-full rounded-lg border bg-[var(--panel)] px-3 py-2 text-[0.85rem] text-[var(--text)] " +
   "placeholder:text-[var(--muted)]/70 outline-none " +
-  "focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20";
+  "focus:border-[var(--accent)] focus:ring-2 focus:ring-[var(--accent)]/20 " +
+  "disabled:cursor-not-allowed disabled:opacity-50";
 
 export function Field({
   label,
@@ -151,6 +157,59 @@ export function Field({
       </span>
       {children}
     </label>
+  );
+}
+
+export function Switch({
+  checked,
+  onChange,
+  disabled,
+  label,
+  description,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  label: string;
+  description?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "mb-3 flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5",
+        disabled && "opacity-50",
+      )}
+      style={{ borderColor: "var(--line)" }}
+    >
+      <div className="min-w-0 flex-1">
+        <p className="text-[0.78rem] font-medium tracking-tight">{label}</p>
+        {description && (
+          <p className="mt-0.5 text-[0.68rem] leading-snug text-[var(--muted)]">
+            {description}
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
+        disabled={disabled}
+        onClick={() => onChange(!checked)}
+        className={cn(
+          "relative h-6 w-11 shrink-0 rounded-full transition-colors",
+          "disabled:cursor-not-allowed",
+          checked ? "bg-[var(--accent)]" : "bg-black/15 dark:bg-white/20",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform",
+            checked && "translate-x-5",
+          )}
+        />
+      </button>
+    </div>
   );
 }
 
@@ -198,6 +257,7 @@ export function Textarea({
   rows = 4,
   mono,
   className,
+  readOnly,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -205,12 +265,14 @@ export function Textarea({
   rows?: number;
   mono?: boolean;
   className?: string;
+  readOnly?: boolean;
 }) {
   return (
     <textarea
       value={value}
       rows={rows}
       placeholder={placeholder}
+      readOnly={readOnly}
       onChange={(e) => onChange(e.target.value)}
       className={cn(fieldBase, "resize-y", mono && "font-mono text-[0.78rem]", className)}
       style={{ borderColor: "var(--line)" }}
@@ -222,20 +284,34 @@ export function Select({
   value,
   onChange,
   options,
+  disabled,
+  className,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
+  disabled?: boolean;
+  className?: string;
 }) {
   return (
     <select
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
-      className={cn(fieldBase, "appearance-none pr-8")}
-      style={{ borderColor: "var(--line)" }}
+      className={cn(fieldBase, "appearance-none pr-8", className)}
+      style={{
+        borderColor: "var(--line)",
+        backgroundColor: "var(--panel)",
+        color: "var(--text)",
+        colorScheme: "inherit",
+      }}
     >
       {options.map((o) => (
-        <option key={o.value} value={o.value}>
+        <option
+          key={o.value}
+          value={o.value}
+          style={{ backgroundColor: "var(--panel)", color: "var(--text)" }}
+        >
           {o.label}
         </option>
       ))}
@@ -354,19 +430,40 @@ export function ConfirmDialog({
   confirmLabel?: string;
   danger?: boolean;
 }) {
-  return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 p-4 backdrop-blur-sm">
+  // Portal to body: Card uses overflow-hidden + backdrop-blur, which makes
+  // position:fixed resolve inside the card and clips the dialog.
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4 backdrop-blur-md"
+      role="presentation"
+      onClick={onCancel}
+    >
       <motion.div
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="nav-confirm-title"
+        aria-describedby="nav-confirm-message"
         initial={{ opacity: 0, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={soft}
         className="w-full max-w-[400px] overflow-hidden rounded-xl border bg-[var(--panel)] shadow-xl"
         style={{ borderColor: "var(--line)" }}
+        onClick={(e) => e.stopPropagation()}
       >
         <div className="p-6">
-          <h3 className="mb-2 text-[1.1rem] font-semibold tracking-tight">{title}</h3>
-          <p className="text-[0.85rem] leading-relaxed text-[var(--muted)]">{message}</p>
+          <h3
+            id="nav-confirm-title"
+            className="mb-2 text-[1.1rem] font-semibold tracking-tight"
+          >
+            {title}
+          </h3>
+          <p
+            id="nav-confirm-message"
+            className="text-[0.85rem] leading-relaxed text-[var(--muted)]"
+          >
+            {message}
+          </p>
         </div>
         <div
           className="flex justify-end gap-2 border-t bg-black/[0.02] p-4 dark:bg-white/[0.02]"
@@ -380,6 +477,7 @@ export function ConfirmDialog({
           </Button>
         </div>
       </motion.div>
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -9,6 +9,7 @@ and page reference before returning.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from urllib.parse import urljoin
 
 import yaml
@@ -18,6 +19,7 @@ from navigator.core.schemas import (
     Navigate,
     Persona,
     Postcondition,
+    ScrollPage,
     ToolCall,
     tool_selector,
 )
@@ -51,7 +53,9 @@ class DemoPlaylistItem(BaseModel):
 
 
 class SiteGraph(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    # populate_by_name so `SiteGraph(meta=...)` works in code while YAML keeps
+    # using the `_meta` key it already writes.
+    model_config = ConfigDict(frozen=True, populate_by_name=True)
 
     version: int
     site: str
@@ -61,17 +65,224 @@ class SiteGraph(BaseModel):
     persona: Persona | None = None
     """How the agent introduces this product. Defaults from `site` when absent."""
     demo_playlist: tuple[DemoPlaylistItem, ...] = ()
-    """Ordered demo flows for ops console / default walkthrough pick."""
+    """Ordered demo flows — live demo runs these one by one from the top."""
+    meta: dict[str, Any] = Field(default_factory=dict, alias="_meta")
+    """Generated, Client-editable side data: narration suggestions, semantics.
+
+    Deliberately untyped and never cross-checked. Everything in here is a
+    suggestion produced by a model, so a malformed or stale entry must degrade to
+    "no suggestion" rather than fail a graph that is otherwise valid and could
+    still run a demo.
+    """
 
     def effective_persona(self) -> Persona:
         return self.persona or Persona(product_name=self.site.replace("-", " "))
 
+    def flow_semantics(self, flow_id: str) -> dict[str, Any]:
+        """Generated purpose / tags / step labels for one flow, or empty."""
+        section = self.meta.get("semantics")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        return entry if isinstance(entry, dict) else {}
+
+    def flow_validation(self, flow_id: str) -> dict[str, Any]:
+        """Health-check verdict for one flow, or empty when never validated."""
+        section = self.meta.get("validation")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        return entry if isinstance(entry, dict) else {}
+
+    def flow_narration_suggestions(self, flow_id: str) -> list[str]:
+        """Explore-generated narration lines per step, or empty."""
+        section = self.meta.get("narration_suggestions")
+        if not isinstance(section, dict):
+            return []
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return []
+        return [str(x).strip() for x in entry if str(x).strip()]
+
+    def flow_step_timing(self, flow_id: str) -> dict[int, int]:
+        """step index → how long the human spent narrating it, in ms."""
+        section = self.meta.get("step_timing")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, int] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = int(row.get("speak_ms") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def flow_narration_lines(self, flow_id: str) -> list[str]:
+        """Per-step narration lines indexed by step (empty string when silent)."""
+        section = self.meta.get("narration_suggestions")
+        if not isinstance(section, dict):
+            return []
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return []
+        return [str(x) if x is not None else "" for x in entry]
+
+    def flow_step_clicks(self, flow_id: str) -> dict[int, int]:
+        """step index → milliseconds from flow start when the click happened."""
+        section = self.meta.get("step_clicks")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, int] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = int(row.get("at_ms") or 0)
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def flow_step_speech(self, flow_id: str) -> dict[int, tuple[int, int]]:
+        """step index → (ms narration started, ms it ended) during recording.
+
+        Absent for a silent step, and for flows recorded before this was
+        captured — playback falls back to the click schedule.
+        """
+        section = self.meta.get("step_speech")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, tuple[int, int]] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                start = int(row["start_ms"])
+                out[int(row["idx"])] = (start, max(start, int(row["end_ms"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def has_recorded_playback(self, flow_id: str) -> bool:
+        """True when timeline playback can run (narration + click schedule)."""
+        lines = self.flow_narration_lines(flow_id)
+        clicks = self.flow_step_clicks(flow_id)
+        if clicks and any(str(x).strip() for x in lines):
+            return True
+        if not any(str(x).strip() for x in lines):
+            return False
+        return bool(clicks or self.flow_step_timing(flow_id))
+
+    def flow_step_mouse_paths(self, flow_id: str) -> dict[int, list[dict[str, int]]]:
+        """step index → recorded mouse path points before the action."""
+        section = self.meta.get("step_mouse_paths")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, list[dict[str, int]]] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                idx = int(row["idx"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            points = row.get("points")
+            if not isinstance(points, list):
+                continue
+            parsed: list[dict[str, int]] = []
+            for pt in points:
+                if not isinstance(pt, dict):
+                    continue
+                try:
+                    parsed.append(
+                        {
+                            "x": int(pt.get("x") or 0),
+                            "y": int(pt.get("y") or 0),
+                            "at_ms": int(pt.get("at_ms") or 0),
+                        }
+                    )
+                except (TypeError, ValueError):
+                    continue
+            if parsed:
+                out[idx] = parsed
+        return out
+
+    def flow_pending_approvals(self, flow_id: str) -> dict[int, dict[str, Any]]:
+        """step index → approval record for mutating steps never executed."""
+        section = self.meta.get("pending_approvals")
+        if not isinstance(section, dict):
+            return {}
+        entry = section.get(flow_id)
+        if not isinstance(entry, list):
+            return {}
+        out: dict[int, dict[str, Any]] = {}
+        for row in entry:
+            if not isinstance(row, dict):
+                continue
+            try:
+                out[int(row["idx"])] = row
+            except (KeyError, TypeError, ValueError):
+                continue
+        return out
+
+    def demo_script_meta(self) -> dict[str, Any]:
+        """Client-edited demo script beats under `_meta.demo_script`."""
+        section = self.meta.get("demo_script")
+        return section if isinstance(section, dict) else {}
+
+    def script_spoken_override(
+        self, *, flow_id: str, step_index: int
+    ) -> str | None:
+        """Manual spoken line for one flow step, if set in `_meta.demo_script`."""
+        beats = self.demo_script_meta().get("full_demo", {})
+        if not isinstance(beats, dict):
+            return None
+        raw_beats = beats.get("beats")
+        if not isinstance(raw_beats, list):
+            return None
+        for beat in raw_beats:
+            if not isinstance(beat, dict):
+                continue
+            if beat.get("spoken_source") != "manual":
+                continue
+            if (
+                beat.get("kind") in {"flow_step", "live_input"}
+                and beat.get("flow_id") == flow_id
+                and beat.get("step_index") == step_index
+            ):
+                spoken = str(beat.get("spoken") or "").strip()
+                return spoken or None
+        return None
+
     def primary_flow(self) -> tuple[str, str] | None:
-        """First playlist entry, else None."""
+        """First demo playlist entry — where auto-play demos start."""
         if not self.demo_playlist:
             return None
         first = sorted(self.demo_playlist, key=lambda x: x.order)[0]
         return first.page_id, first.flow_id
+
+    def playlist_pairs(self) -> tuple[tuple[str, str], ...]:
+        """(page_id, flow_id) rows in demo_playlist order."""
+        return tuple(
+            (item.page_id, item.flow_id)
+            for item in sorted(self.demo_playlist or [], key=lambda x: x.order)
+        )
+
+    def flow_in_playlist(self, page_id: str, flow_id: str) -> bool:
+        return (page_id, flow_id) in self.playlist_pairs()
 
     def page(self, page_id: str) -> PageSpec:
         try:
@@ -209,6 +420,13 @@ def _check_call(
             f"{where}: {call.tool} targets unknown selector {alias!r} "
             f"on page {page_id!r}"
         )
+
+    if isinstance(call, ScrollPage) and call.selector:
+        if call.selector not in page.selectors:
+            raise SiteGraphError(
+                f"{where}: scroll_page targets unknown selector {call.selector!r} "
+                f"on page {page_id!r}"
+            )
 
     if isinstance(call, Navigate):
         if call.page_id not in graph.pages:

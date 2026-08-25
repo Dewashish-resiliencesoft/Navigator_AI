@@ -3,12 +3,12 @@
     {
       "key": "company_name",
       "label": "Company Name",
-      "value": "Resiliencesoft"
+      "value": ""
     },
     {
       "key": "product",
       "label": "Product",
-      "value": "ResilioHub"
+      "value": ""
     }
   ]
 }

@@ -148,12 +148,27 @@ def test_planning_handoff_emits_empty_tools_and_fixed_spoken(
     site_graph, page, log, tmp_path, state
 ):
     from navigator.agent.planner import HANDOFF_SPOKEN
+    from navigator.knowledge.context import RetrievalResult
 
-    def fake(**kwargs) -> FlowChoice:
-        return FlowChoice(flow_id=None, spoken_response="ignored")
+    def empty_retrieve(query, product_id, **kw):
+        return RetrievalResult(
+            product_id=product_id,
+            query=query,
+            knowledge_chunks=[],
+            candidate_flows=[],
+            relevant_areas=[],
+            knowledge_based_on_revision=None,
+            current_published_revision=None,
+            is_stale=False,
+        )
 
+    state["phase"] = "walkthrough"
+    state["walkthrough_flow_id"] = "send_test_message"
     state["transcript"] = ["user: show me the billing admin panel"]
-    deps = _llm_deps(site_graph, page, log, tmp_path, fake)
+    deps = _llm_deps(site_graph, page, log, tmp_path, lambda **k: None)
+    deps.retrieve = empty_retrieve
+    deps.use_turn_brain = False
+    deps.phrase = lambda **kw: kw["fallback"]
     out = planning(state, deps)
     assert out["plan"].tool_calls == []
     assert out["pending_calls"] == []
@@ -188,7 +203,8 @@ def test_planning_requires_key_without_scripted_or_chooser(
         groq_api_key=None,
         choose_flow=None,
     )
-    with pytest.raises(RuntimeError, match="scripted_flow"):
+    # Silence with no walkthrough_flow_id — still requires a scripted or live flow id.
+    with pytest.raises(RuntimeError, match="walkthrough_flow_id|scripted_flow"):
         planning(state, deps)
 
 
@@ -216,6 +232,7 @@ def test_planning_passes_retrieved_corrections_into_chooser(
         )
 
     state = initial_state(uuid4(), "inbox")
+    state["phase"] = "anything_else"
     state["transcript"] = ["user: Can you show me how sending a message works?"]
     deps = _llm_deps(site_graph, page, log, tmp_path, fake)
     planning(state, deps)

@@ -10,7 +10,7 @@ from navigator.app.credential_vault import CredentialVault
 from navigator.app.registry import Registry
 from navigator.core.settings import settings
 from navigator.logs.store import ActionLog
-from tests.test_client_dashboard import _cleanup, _client
+from test_client_dashboard import _cleanup, _client
 from test_api import ACME, register
 
 

@@ -1,4 +1,4 @@
-"""Reflection + pending corrections."""
+"""Reflection node + utterance correction classifier."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from uuid import uuid4
 
 from navigator.agent.nodes.reflecting import classify_correction, reflecting
 from navigator.agent.state import CallDeps, initial_state
-from navigator.knowledge.memory.pending import PendingCorrectionStore
 from navigator.core.schemas import (
     ActionLogEntry,
     ClickElement,
@@ -43,11 +42,10 @@ def _failure_entry(session_id, product_id="acme"):
     )
 
 
-def test_reflecting_writes_pending_rule(site_graph, page, log, tmp_path):
+def test_reflecting_is_noop(site_graph, page, log, tmp_path):
     session = uuid4()
     state = initial_state(session, "inbox")
     state["failures"] = [_failure_entry(session)]
-    pending_path = tmp_path / "pending.db"
     deps = CallDeps(
         graph=site_graph,
         page=page,
@@ -56,13 +54,10 @@ def test_reflecting_writes_pending_rule(site_graph, page, log, tmp_path):
         product_id="acme",
         archive_dir=tmp_path / "archives",
         reflect_provider=FakeProvider(),
-        pending_db_path=pending_path,
+        pending_db_path=tmp_path / "pending.db",
     )
-    reflecting(state, deps)
-    with PendingCorrectionStore(pending_path) as store:
-        rows = store.list_pending("acme")
-    assert len(rows) == 1
-    assert "composer" in rows[0].rule
+    out = reflecting(state, deps)
+    assert out == {} or dict(out) == {}
 
 
 def test_classify_correction_yes():

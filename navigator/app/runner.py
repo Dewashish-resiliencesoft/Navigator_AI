@@ -76,6 +76,13 @@ class DemoHandle:
     """Attendee bot id once joined — End uses this to leave the meeting."""
     bot_in_meeting: bool = False
     """True only after Attendee reports joined — safe to share join link."""
+    leave_grace_remaining: int | None = None
+    """Seconds before auto-ending after the human leaves the meeting."""
+    language: str = "en"
+    language_code: str = "en"
+    language_confidence: float = 1.0
+    current_narration: str = ""
+    speech_status: str = "idle"
 
     _thread: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -96,9 +103,16 @@ class _RecordingSpeaker:
         self._inner = inner
         self._handle = handle
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, *, language: str | None = None, **kwargs) -> None:
         self._handle.said.append(text)
-        self._inner.say(text)
+        self._handle.current_narration = text
+        self._handle.speech_status = "speaking"
+        if language:
+            self._handle.language_code = language
+        try:
+            self._inner.say(text, language=language, **kwargs)
+        except TypeError:
+            self._inner.say(text)
 
 
 class DemoRunner:
@@ -235,6 +249,25 @@ class DemoRunner:
         remote.update(local)
         return list(remote.values())
 
+    @staticmethod
+    def _finalize_live_demo(handle: DemoHandle, *, operator_stopped: bool = False) -> None:
+        """Clear meeting flag and append a terminal transcript line once."""
+        handle.bot_in_meeting = False
+        tail = [s.lower() for s in handle.said[-3:]]
+        if any(
+            t.startswith(("demo ended", "demo completed", "demo failed")) for t in tail
+        ):
+            return
+        if operator_stopped or handle._stop.is_set():
+            handle.said.append("Demo ended — meeting and browser closed.")
+        elif handle.status == "failed":
+            handle.said.append("Demo failed — meeting and browser closed.")
+        else:
+            handle.said.append(
+                f"Demo completed — {handle.actions} actions, "
+                f"{handle.failures} failures."
+            )
+
     def stop(
         self,
         demo_id: UUID,
@@ -262,6 +295,8 @@ class DemoRunner:
 
         # UI End must free Start immediately — don't wait for worker teardown.
         if handle.status in ("starting", "running"):
+            self._finalize_live_demo(handle, operator_stopped=True)
+            handle.leave_grace_remaining = None
             handle.status = "finished"
             handle.error = None
             handle.finished_at = datetime.now(timezone.utc)
@@ -338,6 +373,20 @@ class DemoRunner:
                             product_id=handle.product_id,
                             archive_dir=self.archive_dir,
                         )
+                        from navigator.agent.demo_trace import emit_demo_trace
+
+                        emit_demo_trace(
+                            None,
+                            session_id=handle.session_id,
+                            product_id=handle.product_id,
+                            event="engine_selected",
+                            engine="langgraph",
+                            reason="headless DemoRunner._run",
+                            live_agent_present=False,
+                            playlist_demo=bool(graph.demo_playlist),
+                            timeline_ready=False,
+                            conversational=False,
+                        )
                         handle.status = "running"
                         self._persist_run(handle)
                         final = build_graph(deps).invoke(
@@ -372,6 +421,21 @@ class DemoRunner:
             handle.bot_in_meeting = True
             handle.said.append("Navigator is in the meeting — join link ready.")
 
+        def on_leave_grace(remaining: int | None) -> None:
+            handle.leave_grace_remaining = remaining
+
+        def on_speech(payload: dict) -> None:
+            handle.language = str(payload.get("language") or handle.language)
+            handle.language_code = str(payload.get("language_code") or handle.language_code)
+            try:
+                handle.language_confidence = float(payload.get("language_confidence") or 0)
+            except (TypeError, ValueError):
+                pass
+            narr = payload.get("current_narration")
+            if isinstance(narr, str) and narr.strip():
+                handle.current_narration = narr
+            handle.speech_status = str(payload.get("speech_status") or handle.speech_status)
+
         try:
             if run is None:
                 from navigator.meeting.live_demo import run_live_meet_demo
@@ -382,6 +446,9 @@ class DemoRunner:
             # Dashboard static admit-flow may pass open_meet_in_browser=True;
             # default False so API workers don't pop a browser on the server.
             open_browser = bool(kwargs.pop("open_meet_in_browser", False))
+            live_kw = self._product_live_kwargs(handle.product_id)
+            for key, val in live_kw.items():
+                kwargs.setdefault(key, val)
             run(
                 meeting_url=handle.meeting_url,
                 graph_cfg=graph,
@@ -392,10 +459,13 @@ class DemoRunner:
                 headful=self.headful,
                 interactive_listen=False,
                 open_meet_in_browser=open_browser,
+                demo_origin=handle.origin,
                 **kwargs,
                 stop_event=handle._stop,
                 on_bot_joined=on_bot_joined,
                 on_meeting_ready=on_meeting_ready,
+                on_leave_grace=on_leave_grace,
+                on_speech=on_speech,
             )
             handle.status = "finished"
         except Exception as exc:
@@ -411,10 +481,60 @@ class DemoRunner:
                 print(f"[runner] live demo failed:\n{handle.error}", flush=True)
         finally:
             handle.finished_at = datetime.now(timezone.utc)
+            handle.leave_grace_remaining = None
             with ActionLog(self.db_path) as log:
                 entries = log.entries(handle.session_id, product_id=handle.product_id)
             handle.actions = len(entries)
             handle.failures = sum(
                 1 for e in entries if not (e.verify and e.verify.passed)
             )
+            self._finalize_live_demo(
+                handle, operator_stopped=handle._stop.is_set()
+            )
             self._persist_run(handle)
+            self._store.save(handle)
+
+    @staticmethod
+    def _product_live_kwargs(product_id: str) -> dict:
+        """Brain config + autonomy flags for live demo."""
+        from navigator.agent.brain_config import BrainConfig
+        from navigator.app.registry import ProductNotFound, Registry
+        from navigator.core.settings import settings
+
+        from navigator.core.role_models import resolved_runtime_models
+
+        try:
+            with Registry(settings.db_path) as reg:
+                p = reg.get(product_id)
+                agent_settings = reg.get_agent_settings(product_id)
+                models = resolved_runtime_models(agent_settings)
+                cfg = BrainConfig.from_settings(
+                    autonomy_mode="guided",
+                    tier2_legacy=False,
+                    planning_model=models["brain_planning_model"] or None,
+                    phrasing_model=models["brain_phrasing_model"] or None,
+                    classify_model=models["brain_classify_model"] or None,
+                    stt_model=models["brain_stt_model"] or None,
+                    vision_text_model=models["brain_vision_text_model"] or None,
+                    vision_image_model=models["brain_vision_image_model"] or None,
+                    reasoning_model=models["brain_reasoning_model"] or None,
+                )
+                return {
+                    "tier2_enabled": cfg.tier2_enabled,
+                    "brain_config": cfg,
+                    "use_turn_brain": cfg.use_turn_brain,
+                    "handoff_webhook_url": getattr(p, "handoff_webhook_url", "") or "",
+                    "agent_settings": agent_settings,
+                }
+        except Exception:  # noqa: BLE001
+            cfg = BrainConfig.from_settings()
+            return {
+                "tier2_enabled": False,
+                "brain_config": cfg,
+                "use_turn_brain": cfg.use_turn_brain,
+                "handoff_webhook_url": "",
+            }
+
+    @staticmethod
+    def _product_tier2_enabled(product_id: str) -> bool:
+        return bool(DemoRunner._product_live_kwargs(product_id).get("tier2_enabled"))

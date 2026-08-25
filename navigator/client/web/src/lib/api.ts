@@ -1,7 +1,99 @@
 export type DemoStatus = "starting" | "running" | "finished" | "failed";
 
-/** Who started a demo. `dashboard_test` never counts toward usage. */
+export type UserPreferences = {
+  hide_get_started_card: boolean;
+  onboarding_wizard_dismissed: boolean;
+  onboarding_wizard_completed: boolean;
+  email: string;
+  product_name: string;
+  product_id?: string;
+};
+
+export type AccountInfo = {
+  email: string;
+  product_name: string;
+  product_id: string;
+};
+
 export type DemoOrigin = "dashboard_test" | "public_embed";
+
+export type AutonomyMode = "guided" | "adaptive" | "explorer";
+
+export type SpokenLanguage = "en" | "hi";
+export type AgentGender = "female" | "male";
+
+export type ProviderModel = {
+  id: string;
+  label: string;
+  tags: string[];
+};
+
+export type AgentSettings = {
+  default_language: SpokenLanguage;
+  extra_languages: SpokenLanguage[];
+  agent_gender: AgentGender;
+  agent_name: string;
+  tone: string;
+  gemini_voice: string;
+  live_conversational_model: string;
+  brain_reasoning_model: string;
+  brain_planning_model: string;
+  brain_phrasing_model: string;
+  brain_classify_model: string;
+  brain_stt_model: string;
+  brain_vision_text_model: string;
+  brain_vision_image_model: string;
+  role_brain_provider: string;
+  role_brain_model: string;
+  role_listening_provider: string;
+  role_listening_model: string;
+  role_speaking_provider: string;
+  role_speaking_model: string;
+  role_hands_provider: string;
+  role_hands_model: string;
+  has_gemini_api_key: boolean;
+  has_groq_api_key: boolean;
+  has_openai_api_key: boolean;
+  has_anthropic_api_key: boolean;
+  has_openrouter_api_key: boolean;
+  has_huggingface_api_key: boolean;
+  ollama_base_url: string;
+  vllm_base_url: string;
+  llamacpp_base_url: string;
+  updated_at: string | null;
+};
+
+export type ReadinessCheck = {
+  id: string;
+  ok: boolean;
+  message: string;
+  blocking: boolean;
+};
+
+export type DemoReadiness = {
+  score: number;
+  autonomy_mode: AutonomyMode;
+  checks: ReadinessCheck[];
+};
+
+export type PublishChecklist = {
+  readiness: DemoReadiness;
+  eval_score_pct: number | null;
+  autonomy_recommendation: string;
+};
+
+export type DecisionTrace = {
+  id: string;
+  session_id: string;
+  utterance: string;
+  branch: string;
+  chosen_flow_id: string | null;
+  spoken: string;
+  flow_candidates: (string | number)[][];
+  knowledge_hits: (string | number)[][];
+  detail: string;
+  created_at: string;
+};
 
 export type Demo = {
   demo_id: string;
@@ -18,10 +110,128 @@ export type Demo = {
   meeting_url: string | null;
   platform: string | null;
   bot_in_meeting: boolean;
+  leave_grace_remaining: number | null;
+  language?: string;
+  language_code?: string;
+  language_confidence?: number;
+  current_narration?: string;
+  speech_status?: string;
 };
 
 export type BioField = { key: string; label: string; value: string };
-export type Flow = { name: string; page_id: string; flow_id: string; order?: number };
+export type SystemMetrics = {
+  host_label: string;
+  uptime_s: number;
+  cpu_percent: number;
+  cpu_count: number;
+  memory_percent: number;
+  memory_used_mb: number;
+  memory_total_mb: number;
+  net_sent_bytes: number;
+  net_recv_bytes: number;
+  gpu: {
+    active: boolean;
+    name: string;
+    utilization_percent: number | null;
+    memory_used_mb: number | null;
+    memory_total_mb: number | null;
+  };
+  services: { name: string; status: string; detail: string }[];
+  processes: { name: string; status: string; cpu: string; mem: string }[];
+  health: { name: string; ok: boolean; detail?: string }[];
+  token_usage?: {
+    days: number;
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    calls: number;
+    has_usage: boolean;
+    uses_byok: boolean;
+    billing_label: string;
+    byok: {
+      has_groq_api_key: boolean;
+      has_gemini_api_key: boolean;
+      updated_at: string | null;
+    };
+    platform: { input_tokens: number; output_tokens: number; total_tokens: number; calls: number };
+    client: { input_tokens: number; output_tokens: number; total_tokens: number; calls: number };
+    providers: {
+      provider: string;
+      billed_to: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    }[];
+    client_models: {
+      model: string;
+      input_tokens: number;
+      output_tokens: number;
+      total_tokens: number;
+      calls: number;
+    }[];
+    typical_platform_per_demo: {
+      input_tokens: number;
+      output_tokens: number;
+      calls: number;
+    };
+  } | null;
+};
+export type DemoScriptBeat = {
+  id: string;
+  kind: string;
+  spoken?: string;
+  spoken_source?: string;
+  asks_visitor?: boolean;
+  on_screen?: string;
+  flow_id?: string;
+  page_id?: string;
+  step_index?: number;
+  flow_title?: string;
+  phase?: string;
+  field?: string;
+  field_alias?: string;
+  live_question?: string;
+  example_value?: string;
+  knowledge_refs?: string[];
+  uses_intake_tokens?: boolean;
+  speak_ms?: number;
+  /** Ms into the flow when this narration starts during playback. */
+  speak_at_ms?: number;
+  /** Ms into the flow when this step's action fires. */
+  act_at_ms?: number;
+  needs_approval?: boolean;
+  approval_reason?: string;
+};
+
+export type DemoScriptResponse = {
+  revision: number;
+  published_revision: number | null;
+  playlist: Flow[];
+  beats: DemoScriptBeat[];
+  context?: string;
+  sources_used?: string[];
+  /** Recorded length of each flow in ms, keyed by flow_id. */
+  flow_total_ms?: Record<string, number>;
+  stats?: {
+    beat_count: number;
+    asks_visitor_count: number;
+    spoken_count: number;
+  };
+};
+
+export type Flow = {
+  name: string;
+  page_id: string;
+  flow_id: string;
+  order?: number;
+  purpose?: string;
+  tags?: string[];
+  auto_name?: string;
+  verdict?: "ready" | "needs_review" | "broken" | string;
+  risk_score?: number;
+  pass_rate?: number;
+};
 
 export type RecorderStatus = {
   active?: boolean;
@@ -30,9 +240,14 @@ export type RecorderStatus = {
   steps?: number;
   flow_name?: string | null;
   error?: string | null;
-  phase?: "setup" | "capturing" | "done" | string;
+  phase?: "setup" | "capturing" | "stopping" | "done" | string;
   setup_discarded?: number;
   flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
+  narrate?: boolean;
+  narration_chunks?: number;
+  save_mode?: "new" | "update" | string;
+  /** Studio Stop — dashboard must POST /record/stop to merge/save. */
+  needs_merge?: boolean;
 };
 
 export type ExploreQuestion = {
@@ -48,6 +263,7 @@ export type ExploreFlagged = {
   url: string;
   reason: string;
   source: string;
+  element_key?: string;
 };
 
 export type ExploreFieldDecision = {
@@ -64,14 +280,92 @@ export type ExploreStatus = {
   job_id?: string;
   phase?: string;
   visited?: number;
+  visited_paths?: string[];
   steps?: number;
   flagged?: ExploreFlagged[];
   field_decisions?: ExploreFieldDecision[];
+  recent_events?: ExploreEvent[];
   elapsed_s?: number;
+  progress_pct?: number;
+  actions_taken?: number;
+  save_mode?: string;
+  target_flow_id?: string | null;
+  target_flow_name?: string | null;
+  new_flow_name?: string | null;
+  focus_hint?: string | null;
+  budget?: {
+    max_pages: number;
+    max_steps: number;
+    max_wall_clock_s: number;
+  };
   error?: string;
   flow_id?: string;
   revision?: number | null;
+  repairs_used?: number;
+  stop_reason?: string;
   pending_question?: ExploreQuestion | null;
+};
+
+export type GuidedTaskProgress = {
+  flows_total: number;
+  flows_bound: number;
+  steps_total: number;
+  steps_bound: number;
+};
+
+export type GuidedTaskStatus = {
+  has_plan: boolean;
+  task_id?: string;
+  prompt?: string;
+  flows?: {
+    name: string;
+    flow_id: string;
+    steps: number;
+    step_list?: { kind: string; label: string; alias: string }[];
+  }[];
+  progress?: GuidedTaskProgress;
+  percent_bound?: number;
+  hands?: GuidedHandsStatus;
+};
+
+export type GuidedTaskPlanResult = {
+  ok: boolean;
+  task_id: string;
+  flows_created: number;
+  steps_total: number;
+  playlist: Flow[];
+  revision: number;
+  guided: GuidedTaskStatus;
+};
+
+export type GuidedHandsQuestion = {
+  qid: string;
+  alias: string;
+  prompt: string;
+  kind?: string;
+  context?: Record<string, string>;
+  candidates?: { index: number; label: string; tag: string }[];
+};
+
+export type GuidedHandsStatus = {
+  active: boolean;
+  phase?: string;
+  progress?: {
+    flows_total: number;
+    flows_done: number;
+    steps_total: number;
+    steps_done: number;
+    flow_index: number;
+    step_index: number;
+  };
+  current_flow?: string | null;
+  current_flow_id?: string | null;
+  current_step?: string | null;
+  current_step_kind?: string | null;
+  question?: GuidedHandsQuestion;
+  log?: string[];
+  client_paused?: boolean;
+  barged?: boolean;
 };
 
 /** One frame off the exploration WebSocket. `type` discriminates the payload. */
@@ -95,17 +389,34 @@ export type MetricPoint = {
 };
 
 export type Metrics = {
-  /** Test demos the Client ran from this dashboard. Excluded from the counters below. */
+  /** Rolling window length (days) for every counter below. */
+  days?: number;
+  /** Test demos the Client ran from this dashboard in the window. */
   test_sessions: number;
+  /** Demo runs started in the window (test + live). Matches Logs + Sessions chart. */
   actions: number;
   sessions: number;
+  /** Failed tool / verification steps in the window. Sum matches run fail_count column. */
   failures: number;
+  /** Demo runs whose status is ``failed`` (crash / join error). */
+  failed_runs?: number;
+  /** Demo runs with at least one failed tool step. */
+  runs_with_step_failures?: number;
   verified: number;
   passed: number;
   last_seen: string | null;
   series: MetricPoint[];
+  /** Same as ``series`` — kept for older clients. */
+  run_series?: MetricPoint[];
+  demos?: { total: number; running: number; failed: number };
   live: { total: number; running: number; failed: number };
+  test?: { total: number; running: number; failed: number };
+  /** Billable End User traffic only (excludes dashboard test demos). */
+  visitor?: { sessions: number; actions: number; failures: number };
 };
+
+/** Shared metrics + runs window for Overview and Logs. */
+export const DASHBOARD_DAYS = 14;
 
 export type DemoRun = {
   session_id: string;
@@ -307,6 +618,14 @@ export const api = {
       return false;
     }
   },
+
+  getUserPreferences: () => get<UserPreferences>("/client/api/user/preferences"),
+  getAccount: () => get<AccountInfo>("/client/api/account"),
+  putUserPreferences: (patch: {
+    hide_get_started_card?: boolean;
+    onboarding_wizard_dismissed?: boolean;
+    onboarding_wizard_completed?: boolean;
+  }) => send<UserPreferences>("/client/api/user/preferences", "PUT", patch),
   bootstrap: () =>
     request<{ ok: boolean; product_id: string; api_key: string | null; message: string }>(
       "/client/api/bootstrap",
@@ -330,9 +649,10 @@ export const api = {
   },
   endDemo: (id: string) => send<Demo>(`/client/api/demos/${id}/end`, "POST"),
 
-  metrics: (days = 14) => get<Metrics>(`/client/api/metrics?days=${days}`),
+  metrics: (days = DASHBOARD_DAYS) => get<Metrics>(`/client/api/metrics?days=${days}`),
+  getSystemMetrics: () => get<SystemMetrics>("/client/api/system/health"),
 
-  listRuns: (days = 7) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
+  listRuns: (days = DASHBOARD_DAYS) => get<DemoRun[]>(`/client/api/runs?days=${days}`),
   getRun: (sessionId: string) => get<DemoRun>(`/client/api/runs/${sessionId}`),
   runEvents: (sessionId: string) =>
     get<RunEvent[]>(`/client/api/runs/${sessionId}/events`),
@@ -340,12 +660,104 @@ export const api = {
   getBio: () => get<{ fields: BioField[] }>("/client/api/bio"),
   putBio: (fields: BioField[]) => send<unknown>("/client/api/bio", "PUT", { fields }),
 
-  getKnowledge: () => get<{ markdown: string }>("/client/api/knowledge"),
+  getKnowledge: () =>
+    get<{
+      markdown: string;
+      user_markdown?: string;
+      explore_markdown?: string;
+      merged_at?: string | null;
+    }>("/client/api/knowledge"),
   putKnowledge: (markdown: string) =>
     send<unknown>("/client/api/knowledge", "PUT", { markdown }),
+  putKnowledgeUser: (markdown: string) =>
+    send<{
+      ok: boolean;
+      markdown: string;
+      user_markdown: string;
+      explore_markdown: string;
+      merged_at?: string | null;
+    }>("/client/api/knowledge/user", "PUT", { markdown }),
+
+  getProductExplore: () =>
+    get<{
+      active: boolean;
+      phase?: string;
+      pages_seen?: number;
+      max_pages?: number;
+      progress_pct?: number;
+      current_url?: string;
+      current_title?: string;
+      looking_at?: string;
+      error?: string | null;
+      done?: boolean;
+      start_url?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore"),
+  startProductExplore: (start_url?: string) =>
+    send<{
+      active: boolean;
+      phase?: string;
+      pages_seen?: number;
+      max_pages?: number;
+      progress_pct?: number;
+      current_url?: string;
+      current_title?: string;
+      looking_at?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>(
+      "/client/api/product-explore/start",
+      "POST",
+      { start_url: start_url || "" },
+    ),
+  stopProductExplore: () =>
+    send<{
+      active: boolean;
+      progress_pct?: number;
+      looking_at?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore/stop", "POST"),
+  ackProductExplore: () =>
+    send<{
+      active: boolean;
+      phase?: string;
+      done?: boolean;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore/ack", "POST"),
+  getProductTopology: () =>
+    get<{ yaml: string; updated_at: string | null; page_count: number }>(
+      "/client/api/product-explore/topology",
+    ),
 
   getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
   putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),
+
+  getDemoReadiness: (origin: DemoOrigin = "dashboard_test") =>
+    get<DemoReadiness>(`/client/api/demo-readiness?origin=${origin}`),
+
+  getPublishChecklist: () => get<PublishChecklist>("/client/api/publish-checklist"),
+
+  runDecisions: (sessionId: string) =>
+    get<DecisionTrace[]>(`/client/api/runs/${sessionId}/decisions`),
 
   getProductLogin: () =>
     get<{
@@ -372,6 +784,62 @@ export const api = {
   deleteProductLogin: () =>
     send<{ ok: boolean }>("/client/api/product-login", "DELETE"),
 
+  getAgentSettings: () => get<AgentSettings>("/client/api/agent-settings"),
+  putAgentSettings: (body: Partial<AgentSettings>) =>
+    send<AgentSettings & { ok: boolean }>("/client/api/agent-settings", "PUT", body),
+  putAgentProviderKeys: (body: {
+    gemini_api_key?: string | null;
+    groq_api_key?: string | null;
+    openai_api_key?: string | null;
+    anthropic_api_key?: string | null;
+    openrouter_api_key?: string | null;
+    huggingface_api_key?: string | null;
+  }) =>
+    send<{
+      ok: boolean;
+      has_gemini_api_key: boolean;
+      has_groq_api_key: boolean;
+      has_openai_api_key: boolean;
+      has_anthropic_api_key: boolean;
+      has_openrouter_api_key: boolean;
+      has_huggingface_api_key: boolean;
+      updated_at: string | null;
+    }>("/client/api/agent-provider-keys", "PUT", body),
+  getAgentProviderModels: (
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface"
+  ) =>
+    get<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      `/client/api/agent-provider-models?provider=${provider}`,
+    ),
+  previewAgentProviderModels: (body: {
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface";
+    api_key?: string;
+    base_url?: string;
+  }) =>
+    send<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      "/client/api/agent-provider-models",
+      "POST",
+      body,
+    ),
+
   getSiteGraph: () =>
     get<{
       yaml: string;
@@ -393,13 +861,83 @@ export const api = {
       { revision: revision ?? null },
     ),
 
+  getDemoScript: (flowId?: string) =>
+    get<DemoScriptResponse>(
+      flowId
+        ? `/client/api/site-graph/demo-script?flow_id=${encodeURIComponent(flowId)}`
+        : "/client/api/site-graph/demo-script",
+    ),
+  patchDemoScript: (beats: DemoScriptBeat[]) =>
+    send<DemoScriptResponse & { ok: boolean }>(
+      "/client/api/site-graph/demo-script",
+      "PATCH",
+      { beats },
+    ),
+  regenerateDemoScript: (flowId?: string) =>
+    send<DemoScriptResponse & { ok: boolean }>(
+      flowId
+        ? `/client/api/site-graph/demo-script/regenerate?flow_id=${encodeURIComponent(flowId)}`
+        : "/client/api/site-graph/demo-script/regenerate",
+      "POST",
+    ),
+
   getFlows: () => get<{ playlist: Flow[]; site: string }>("/client/api/flows"),
   putFlows: (playlist: Flow[]) =>
     send<{ playlist: Flow[] }>("/client/api/flows", "PUT", { playlist }),
+  deleteFlow: (flow_id: string, page_id?: string | null) =>
+    send<{ playlist: Flow[]; deleted_flow_id: string }>(
+      "/client/api/flows/delete",
+      "POST",
+      { flow_id, page_id: page_id || null },
+    ),
+  clearAllFlows: () =>
+    send<{ playlist: Flow[]; revision: number; yaml: string; cleared: boolean }>(
+      "/client/api/flows/clear",
+      "POST",
+    ),
+  clearSiteGraph: () =>
+    send<{
+      yaml: string;
+      revision: number;
+      site: string;
+      playlist: Flow[];
+      cleared: boolean;
+    }>("/client/api/site-graph/clear", "POST"),
+  patchFlowSemantics: (body: {
+    flow_id: string;
+    purpose?: string;
+    tags?: string[];
+    auto_name?: string;
+  }) =>
+    send<{ playlist: Flow[]; semantics: Record<string, unknown> }>(
+      "/client/api/flows/semantics",
+      "PATCH",
+      body,
+    ),
 
   recordStatus: () => get<RecorderStatus>("/client/api/record"),
-  recordStart: (start_url: string, flow_name: string) =>
-    send<unknown>("/client/api/record/start", "POST", { start_url, flow_name }),
+  recordStart: (
+    start_url: string,
+    flow_name: string,
+    opts?: {
+      narrate?: boolean;
+      save_mode?: "new" | "update";
+      target_flow_id?: string;
+      target_flow_name?: string;
+    },
+  ) =>
+    send<{ narrate?: boolean; save_mode?: string; flow_id?: string }>(
+      "/client/api/record/start",
+      "POST",
+      {
+        start_url,
+        flow_name,
+        narrate: opts?.narrate ?? false,
+        save_mode: opts?.save_mode ?? "new",
+        target_flow_id: opts?.target_flow_id,
+        target_flow_name: opts?.target_flow_name,
+      },
+    ),
   recordCapture: () =>
     send<{ ok: boolean; phase: string; setup_discarded: number; steps: number }>(
       "/client/api/record/capture",
@@ -411,20 +949,75 @@ export const api = {
       error: string | null;
       flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
       setup_discarded?: number;
+      narrated_steps?: number;
     }>("/client/api/record/stop", "POST"),
 
   exploreStatus: () => get<ExploreStatus>("/client/api/explore"),
+  exploreFrame: () =>
+    get<{ mime: string; data: string }>("/client/api/explore/frame"),
   exploreStart: (body: {
     base_url?: string | null;
     max_pages?: number;
     max_steps?: number;
     max_wall_clock_s?: number;
+    save_mode?: "new" | "update";
+    target_flow_id?: string | null;
+    target_flow_name?: string | null;
+    new_flow_name?: string | null;
+    focus_hint?: string | null;
+    include_paths?: string[];
+    exclude_paths?: string[];
+    exclude_labels?: string[];
   }) => send<ExploreStatus>("/client/api/explore/start", "POST", body),
   exploreStop: () => send<ExploreStatus>("/client/api/explore/stop", "POST"),
   exploreAnswer: (qid: string, value: string, skip = false) =>
     send<{ ok: boolean }>("/client/api/explore/answer", "POST", { qid, value, skip }),
+  exploreFlagged: (body: {
+    action: "allow" | "dismiss";
+    selector?: string;
+    label?: string;
+    element_key?: string;
+  }) => send<ExploreStatus>("/client/api/explore/flagged", "POST", body),
   exploreTicket: () =>
     send<{ ticket: string; expires_in_s: number }>("/client/api/explore/ticket", "POST"),
+
+  guidedTaskStatus: () => get<GuidedTaskStatus>("/client/api/guided-task/status"),
+  guidedTaskPlan: (task: string, page_id = "dashboard") =>
+    send<GuidedTaskPlanResult>("/client/api/guided-task/plan", "POST", { task, page_id }),
+  guidedHandsStart: (flow_index = 0) =>
+    send<GuidedHandsStatus>("/client/api/guided-task/hands/start", "POST", { flow_index }),
+  guidedHandsTick: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/tick", "POST"),
+  guidedHandsStop: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/stop", "POST"),
+  guidedHandsPause: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/pause", "POST"),
+  guidedHandsResume: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/resume", "POST"),
+  guidedHandsBarge: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/barge", "POST"),
+  guidedHandsAnswer: (qid: string, candidate_index?: number, value?: string, skip = false) =>
+    send<GuidedHandsStatus>("/client/api/guided-task/hands/answer", "POST", {
+      qid,
+      candidate_index,
+      value,
+      skip,
+    }),
+  guidedTaskPatch: (body: {
+    steps?: {
+      kind: string;
+      label: string;
+      alias?: string;
+      live_question?: string;
+      spoken?: string;
+      action_hint?: string;
+    }[];
+    insert_at?: number;
+    new_step?: {
+      kind: string;
+      label: string;
+      alias?: string;
+      live_question?: string;
+      spoken?: string;
+      action_hint?: string;
+    };
+    flow_name?: string;
+  }) => send<{ ok: boolean; guided: GuidedTaskStatus; revision: number }>("/client/api/guided-task/plan", "PATCH", body),
 };
 
 /** WebSocket URL for the live exploration log. Ticket is single-use. */

@@ -22,6 +22,7 @@ from navigator.logs.store import utcnow
 from navigator.core.schemas import ActionLogEntry, FillField, VerifyResult
 
 SESSION_STALL_LINE = "One moment."
+STRICT_STALL = "One moment — let me try that again."
 
 
 def verifying(state: CallState, deps: CallDeps) -> CallState:
@@ -68,9 +69,40 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
     )
     deps.log.append(entry)
 
-    line = _narrate(entry, verdict)
+    strict = getattr(deps, "strict_playlist", False)
+    if entry.failed and strict:
+        stall = STRICT_STALL if not result.ok else (
+            "One moment — that didn't land on screen."
+        )
+        deps.speaker.say(stall)
+        hold_step = int(state.get("executing_step") or state.get("walkthrough_step") or 0)
+        return CallState(
+            entries=[entry],
+            failures=[entry],
+            walkthrough_step=hold_step,
+            phase="walkthrough",
+            narration=[stall],
+            transcript=[f"agent: {stall}"],
+            pending_calls=[],
+            last_call=None,
+            last_result=None,
+        )
+
+    line = _narrate(entry, verdict)  # wait_for fails stay silent — see _narrate
     narration = [line] if line.strip() else []
     transcript = [f"agent: {line}"] if line.strip() else []
+    if (
+        strict
+        and verdict.passed
+        and state.get("planned_next_step") is not None
+    ):
+        return CallState(
+            entries=[entry],
+            failures=[],
+            narration=narration,
+            transcript=transcript,
+            walkthrough_step=int(state["planned_next_step"]),
+        )
     return CallState(
         entries=[entry],
         failures=[entry] if entry.failed else [],
@@ -118,10 +150,14 @@ def _narrate(entry: ActionLogEntry, verdict: VerifyResult) -> str:
         return _success_line(call)
     # Never speak Playwright/CSS/timeout jargon on the call.
     print(
-        f"[verify] soft-fail spoken; selector={call.expects.selector!r} "
+        f"[verify] soft-fail; selector={call.expects.selector!r} "
         f"detail={verdict.actual!r}",
         flush=True,
     )
+    # wait_for is a pacing/stub step. Speaking a glitch after every timeout
+    # makes the agent sound broken; the screenshare already moved on.
+    if getattr(call, "tool", "") == "wait_for":
+        return ""
     return (
         "Oh — something glitched on our side there, not yours. "
         "It's nothing you did. We're sorting it; I'll keep going."

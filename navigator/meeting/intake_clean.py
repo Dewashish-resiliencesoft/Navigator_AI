@@ -24,6 +24,18 @@ _FILLER_NAMES = frozenset(
         "uh",
         "so",
         "well",
+        "thank you",
+        "thanks",
+        "there",
+        "friend",
+    }
+)
+# Bot self-intro / platform chrome — STT often echoes these as the "prospect name".
+_RESERVED_NAME_DEFAULTS = frozenset(
+    {
+        "navigator",
+        "navigator ai",
+        "navigatorai",
     }
 )
 _COMPANY_PREFIX = re.compile(
@@ -45,9 +57,47 @@ _NEED_LEAD = re.compile(
     r"^(?:we(?:'re| are)|i(?:'m| am)|we need|i need|looking for|need)\s+",
     re.I,
 )
+_DECLINE = re.compile(
+    r"\b("
+    r"don'?t know|do not know|not sure|no idea|"
+    r"don'?t have(?: one)?|do not have(?: one)?|"
+    r"no company|without company|"
+    r"none|n/?a|nothing|skip|prefer not"
+    r")\b",
+    re.I,
+)
 
 
-def clean_name(raw: str) -> str:
+def is_likely_bot_echo(heard: str, bot_text: str) -> bool:
+    """True when STT likely captured the bot's own TTS, not the prospect."""
+
+    def _norm(s: str) -> str:
+        s = " ".join((s or "").lower().split())
+        return re.sub(r"[^a-z0-9\s]", "", s)
+
+    def _words(s: str) -> set[str]:
+        return {w for w in _norm(s).split() if len(w) > 1}
+
+    h = _norm(heard)
+    b = _norm(bot_text)
+    if len(h) < 3 or not b:
+        return False
+    if h in b or b in h:
+        return True
+    hw, bw = _words(heard), _words(bot_text)
+    if not hw:
+        return False
+    if len(hw) < 2:
+        return next(iter(hw)) in bw or h in b
+    return len(hw & bw) / len(hw) >= 0.65
+
+
+def is_declined(raw: str) -> bool:
+    """True when prospect opts out of answering (skip field in pitch)."""
+    return bool(_DECLINE.search((raw or "").strip()))
+
+
+def clean_name(raw: str, *, reserved: frozenset[str] | None = None) -> str:
     t = " ".join((raw or "").strip().split())
     if not t:
         return ""
@@ -60,6 +110,21 @@ def clean_name(raw: str) -> str:
     t = re.split(r"[.!,]|\band\b", t, maxsplit=1)[0].strip()
     if not t or t.lower() in _FILLER_NAMES:
         return ""
+    blocked = set(_RESERVED_NAME_DEFAULTS)
+    if reserved:
+        blocked.update(r.strip().lower() for r in reserved if r and r.strip())
+    low = re.sub(r"[^a-z0-9\s]", "", t.lower()).strip()
+    low_compact = low.replace(" ", "")
+    for ban in blocked:
+        ban_n = re.sub(r"[^a-z0-9\s]", "", ban).strip()
+        ban_c = ban_n.replace(" ", "")
+        if not ban_n:
+            continue
+        if low == ban_n or low_compact == ban_c:
+            return ""
+        # "Hi Navigator AI thanks" already reduced, or name == agent display name
+        if ban_n in low or low in ban_n:
+            return ""
     return t.title()
 
 

@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+import pytest
+
+from navigator.meeting import screenshare
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
+
+
+@pytest.fixture(autouse=True)
+def _skip_attendee_dns_probe(monkeypatch):
+    monkeypatch.setattr(screenshare, "verify_attendee_docker_dns", lambda _host: None)
 
 
 class FakeTunnelWait:

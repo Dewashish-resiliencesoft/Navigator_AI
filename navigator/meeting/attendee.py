@@ -79,6 +79,28 @@ class AttendeeClient:
                 raw = resp.read() or b"{}"
         except HTTPError as e:
             detail = e.read().decode(errors="replace")
+            if e.code == 400 and "Voice agents are not enabled" in detail:
+                raise RuntimeError(
+                    "Attendee voice agents are disabled. Run from Navigator repo:\n"
+                    "  ./scripts/sync-attendee-compose.sh\n"
+                    "  cd ~/projects/attendee && docker compose -f dev.docker-compose.yaml "
+                    "-f local.docker-compose.yaml --profile webpage-streamer up -d --force-recreate\n"
+                    f"Original: {detail}"
+                ) from e
+            if e.code == 400 and "Zoom App credentials are required" in detail:
+                from navigator.meeting.attendee_stack import attendee_ui_origin
+
+                ui = attendee_ui_origin(self.base_url)
+                raise RuntimeError(
+                    "Attendee needs Zoom Meeting SDK credentials for web SDK bots "
+                    "(a General App with Meeting SDK — not the Server-to-Server app "
+                    "used to create meetings / mint ZAK).\n"
+                    "Fix: set NAVIGATOR_ZOOM_SDK_CLIENT_ID and "
+                    "NAVIGATOR_ZOOM_SDK_CLIENT_SECRET in .env, then run:\n"
+                    "  ./scripts/sync-attendee-zoom-credentials.sh\n"
+                    f"Or open Attendee → Project → Credentials: {ui}/projects/…/credentials\n"
+                    f"Original: {detail}"
+                ) from e
             raise RuntimeError(f"Attendee {method} {path} -> {e.code}: {detail}") from e
         except URLError as e:
             raise RuntimeError(f"Attendee unreachable at {self.base_url}: {e}") from e
@@ -110,6 +132,10 @@ class AttendeeClient:
         For Zoom host join, pass ``zoom_tokens_url`` (Attendee POSTs for a ZAK).
         """
         payload: dict[str, Any] = {"meeting_url": meeting_url, "bot_name": bot_name}
+        # No on-disk recording. Attendee's default mp4 recorder is an ffmpeg
+        # x11grab that pins ~80% CPU and starves live Meet voice + screenshare
+        # frames. We never read the artifact; live transcription is unaffected.
+        payload["recording_settings"] = {"format": "none"}
         if screenshare_url:
             payload["voice_agent_settings"] = {"screenshare_url": screenshare_url}
         elif voice_agent_url:
@@ -153,6 +179,25 @@ class AttendeeClient:
 
     def leave(self, bot_id: str) -> None:
         self._request("POST", f"/bots/{bot_id}/leave", {})
+
+    _LEAVE_SKIP_RAW = frozenset(
+        {"ended", "leaving", "fatal_error", "post_processing", "post_processing_complete"}
+    )
+
+    def leave_if_active(self, bot_id: str) -> bool:
+        """POST /leave only when Attendee accepts it (skip ended/leaving/post_processing)."""
+        bot = self.get(bot_id)
+        raw = (bot.raw_state or bot.state or "").lower()
+        if raw in self._LEAVE_SKIP_RAW or bot.state in {"ended", "leaving", "fatal_error"}:
+            return False
+        try:
+            self.leave(bot_id)
+            return True
+        except RuntimeError as exc:
+            msg = str(exc)
+            if "leave_requested not allowed" in msg or "post_processing" in msg:
+                return False
+            raise
 
     def enable_screenshare(self, bot_id: str, screenshare_url: str, voice_agent_url: str | None = None) -> None:
         """Start screen share mid-call (requires reserve_resources at join).
@@ -211,7 +256,7 @@ class AttendeeClient:
         bot_id: str,
         *,
         timeout_s: float = 300.0,
-        poll_s: float = 3.0,
+        poll_s: float = 1.0,
         stop_event=None,
     ) -> str:
         """Block until a non-bot participant join event appears. Returns their name."""
@@ -262,17 +307,6 @@ class AttendeeClient:
         humans = [v for k, v in present.items() if k not in bots]
         return bool(humans) and not any(humans)
 
-    def speak(self, bot_id: str, wav: bytes) -> None:
-        """Play audio into the meeting via Attendee output_audio (MP3)."""
-        import base64
-
-        mp3 = _wav_bytes_to_mp3(wav)
-        self._request(
-            "POST",
-            f"/bots/{bot_id}/output_audio",
-            {"type": "audio/mp3", "data": base64.b64encode(mp3).decode()},
-        )
-
     def register_audio_hub(self, bot_id: str, frames_queue: Any) -> None:
         """Attach an inbound PCM queue for audio_stream (filled by AudioBridge)."""
         self._audio_hubs[bot_id] = frames_queue
@@ -313,39 +347,3 @@ class AttendeeClient:
             else:
                 mapped = "joining"
         return Bot(id=str(data["id"]), state=mapped, raw_state=raw)
-
-
-def _wav_bytes_to_mp3(wav: bytes) -> bytes:
-    """Convert WAV → MP3 for Attendee output_audio. Needs ffmpeg on PATH."""
-    import shutil
-    import subprocess
-    import tempfile
-    from pathlib import Path
-
-    if wav[:3] == b"ID3" or wav[:2] == b"\xff\xfb":
-        return wav  # already mp3-ish
-    if shutil.which("ffmpeg") is None:
-        raise RuntimeError("ffmpeg required to convert Piper WAV → MP3 for Meet speak")
-    with tempfile.TemporaryDirectory() as tmp:
-        src = Path(tmp) / "in.wav"
-        dst = Path(tmp) / "out.mp3"
-        src.write_bytes(wav)
-        proc = subprocess.run(
-            [
-                "ffmpeg",
-                "-y",
-                "-i",
-                str(src),
-                "-codec:a",
-                "libmp3lame",
-                "-q:a",
-                "4",
-                str(dst),
-            ],
-            capture_output=True,
-        )
-        if proc.returncode != 0 or not dst.exists():
-            raise RuntimeError(
-                f"ffmpeg wav→mp3 failed: {proc.stderr[-400:].decode(errors='replace')}"
-            )
-        return dst.read_bytes()

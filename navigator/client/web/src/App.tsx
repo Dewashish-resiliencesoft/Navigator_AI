@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { AlertCircle, CheckCircle2, LogOut, Moon, PhoneOff, PlayCircle, Sun, X } from "lucide-react";
 import { MobileTabs, Sidebar, TABS } from "./components/Sidebar";
@@ -7,12 +7,36 @@ import { LiveDemo } from "./panels/LiveDemo";
 import { Logs } from "./panels/Logs";
 import { Flows } from "./panels/Flows";
 import { Bio, Knowledge, SiteGraph } from "./panels/Editors";
+import { Settings } from "./panels/Settings";
+import { ResourceMonitor } from "./panels/ResourceMonitor";
+import { ExploreFloat } from "./components/ExploreFloat";
+import { ProductExploreFloat } from "./components/ProductExploreFloat";
+import { CoachSpotlight } from "./components/CoachSpotlight";
 import { soft } from "./lib/motion";
 import { errText, useUi } from "./store";
 import { api } from "./lib/api";
 import { demoIsLive, useDemoSession } from "./lib/demoSession";
+import { useExploreSession } from "./lib/exploreSession";
+import { useDemoReadinessSession } from "./lib/demoReadinessSession";
+import { useAccountSession } from "./lib/accountSession";
+import { useProductExploreSession } from "./lib/productExploreSession";
+import { useProductData } from "./lib/productData";
 import { AuthScreen } from "./panels/AuthScreen";
+import { OnboardingWizard } from "./panels/Onboarding";
 import { Button, StatusPill } from "./components/ui";
+import { DISPLAY_TICK_MS } from "./lib/elapsed";
+import {
+  markSignupPending,
+  shouldAutoOpenWizard,
+  loadUserPreferences,
+  type OnboardingItemId,
+} from "./lib/onboarding";
+
+const ConfettiCelebration = lazy(() =>
+  import("./components/ConfettiCelebration").then((m) => ({
+    default: m.ConfettiCelebration,
+  })),
+);
 
 const PANELS: Record<string, () => React.ReactElement> = {
   overview: Overview,
@@ -22,6 +46,8 @@ const PANELS: Record<string, () => React.ReactElement> = {
   graph: SiteGraph,
   knowledge: Knowledge,
   bio: Bio,
+  settings: Settings,
+  monitor: ResourceMonitor,
 };
 
 function Toast() {
@@ -85,6 +111,9 @@ function useTheme() {
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showConfetti, setShowConfetti] = useState(false);
+  const [onboardingStartAt, setOnboardingStartAt] = useState<OnboardingItemId | null>(null);
   const { dark, toggle } = useTheme();
   const tab = useUi((s) => s.tab);
   const setTab = useUi((s) => s.setTab);
@@ -99,10 +128,28 @@ export default function App() {
   const endSession = useDemoSession((s) => s.end);
   const live = demoIsLive(demo);
 
+  const hydrateExplore = useExploreSession((s) => s.hydrate);
+  const bootstrapProductExplore = useProductExploreSession((s) => s.bootstrap);
+  const bootstrapDemoReadiness = useDemoReadinessSession((s) => s.bootstrap);
+  const refreshAccount = useAccountSession((s) => s.refresh);
+
+  const celebrateOnboardingComplete = () => {
+    setShowConfetti(true);
+    ok("Onboarding completed");
+  };
+
   useEffect(() => {
     let alive = true;
-    api.checkAuth().then((pass) => {
-      if (alive) setAuthed(pass);
+    api.checkAuth().then(async (pass) => {
+      if (!alive) return;
+      if (pass) {
+        try {
+          await loadUserPreferences();
+        } catch {
+          /* prefs optional */
+        }
+      }
+      setAuthed(pass);
     });
     return () => {
       alive = false;
@@ -111,25 +158,62 @@ export default function App() {
 
   useEffect(() => {
     if (!authed) return;
+    if (shouldAutoOpenWizard()) {
+      setTab("overview");
+      setShowOnboarding(true);
+    }
+  }, [authed, setTab]);
+
+  useEffect(() => {
+    if (showOnboarding) setTab("overview");
+  }, [showOnboarding, setTab]);
+
+  useEffect(() => {
+    if (!authed) return;
     let alive = true;
     (async () => {
+      // Account chip first — prefs then /account (no race with empty Sidebar).
+      await refreshAccount();
+      if (!alive) return;
       await hydrate();
       if (!alive) return;
+      await hydrateExplore();
+      bootstrapProductExplore();
+      bootstrapDemoReadiness();
     })();
     const t = setInterval(() => {
       void refreshActive();
-    }, 1500);
+    }, DISPLAY_TICK_MS * 2);
     return () => {
       alive = false;
       clearInterval(t);
     };
-  }, [authed, hydrate, refreshActive]);
+  }, [authed, hydrate, hydrateExplore, bootstrapProductExplore, bootstrapDemoReadiness, refreshAccount, refreshActive]);
 
-  const enterAuthed = () => {
+  const enterAuthed = (fromSignup = false, company = "") => {
     // Overwrite any leftover "Signed out." from a prior logout (zustand persists across trees).
     clearToast();
+    setTab("overview");
+    if (fromSignup) {
+      markSignupPending(company);
+      setShowOnboarding(true);
+      setOnboardingStartAt(null);
+    }
     setAuthed(true);
-    ok("Signed in.");
+    void refreshAccount();
+    ok(fromSignup ? "Account created." : "Signed in.");
+  };
+
+  const openOnboarding = (startAt: OnboardingItemId | null) => {
+    setTab("overview");
+    setOnboardingStartAt(startAt);
+    setShowOnboarding(true);
+  };
+
+  const closeOnboarding = () => {
+    setShowOnboarding(false);
+    setOnboardingStartAt(null);
+    setTab("overview");
   };
 
   const signOut = async () => {
@@ -141,6 +225,11 @@ export default function App() {
       }
     }
     await api.logout();
+    useProductData.getState().reset();
+    useDemoReadinessSession.getState().reset();
+    useAccountSession.getState().reset();
+    useUi.getState().clearCoach();
+    setTab("overview");
     clearToast();
     setAuthed(false);
     ok("Signed out.");
@@ -174,7 +263,10 @@ export default function App() {
   }
 
   const Panel = PANELS[tab] ?? Overview;
-  const title = TABS.find((t) => t.id === tab)?.label ?? "Overview";
+  const title =
+    tab === "monitor"
+      ? "Resource Monitor & Health Check"
+      : (TABS.find((t) => t.id === tab)?.label ?? "Overview");
   const subtitles: Record<string, string> = {
     overview: "High-level metrics and recent demo activity.",
     demo: "Start and monitor headful browser sessions in real-time.",
@@ -183,13 +275,18 @@ export default function App() {
     graph: "Edit the site graph and page topology.",
     knowledge: "Manage knowledge snippets available to the agent.",
     bio: "Define company identity and product details.",
+    monitor: "Real-time CPU, memory, network, GPU, and service health on this host.",
   };
   const subtitle = subtitles[tab] ?? "Configure your product settings.";
 
   return (
     <>
       <div className="flex min-h-screen">
-        <Sidebar onLogout={signOut} />
+        <Sidebar
+          onLogout={signOut}
+          onContinueSetup={openOnboarding}
+          tabsLocked={showOnboarding}
+        />
         <div className="min-w-0 flex-1">
           <header
             className="sticky top-0 z-30 border-b backdrop-blur-md"
@@ -223,7 +320,7 @@ export default function App() {
                 </button>
               </div>
             </div>
-            <MobileTabs />
+      <MobileTabs tabsLocked={showOnboarding} />
             {live && demo && (
               <div
                 className="flex flex-wrap items-center gap-3 border-t px-5 py-2.5 md:px-8"
@@ -237,7 +334,7 @@ export default function App() {
                 <span className="text-[0.78rem] text-[var(--muted)]">
                   Live demo · {demo.platform || "meeting"} · {demo.page_id || "…"}
                 </span>
-                <div className="ml-auto flex gap-2">
+                <div className="ml-auto flex items-center gap-2">
                   {tab !== "demo" && (
                     <Button
                       variant="secondary"
@@ -255,6 +352,14 @@ export default function App() {
                     <PhoneOff size={14} />
                     {ending ? "Ending…" : "End demo"}
                   </Button>
+                  {typeof demo.leave_grace_remaining === "number" && (
+                    <span
+                      aria-live="polite"
+                      className="tabular-nums text-[0.74rem] text-amber-700 dark:text-amber-300"
+                    >
+                      Ends in {demo.leave_grace_remaining}s
+                    </span>
+                  )}
                 </div>
               </div>
             )}
@@ -276,6 +381,24 @@ export default function App() {
         </div>
       </div>
       <Toast />
+      <ExploreFloat />
+      <ProductExploreFloat hidden={showOnboarding} />
+      <CoachSpotlight />
+      {authed && showConfetti && (
+        <Suspense fallback={null}>
+          <ConfettiCelebration
+            show={showConfetti}
+            onDone={() => setShowConfetti(false)}
+          />
+        </Suspense>
+      )}
+      {showOnboarding && (
+        <OnboardingWizard
+          startAt={onboardingStartAt}
+          onClose={closeOnboarding}
+          onFullyComplete={celebrateOnboardingComplete}
+        />
+      )}
     </>
   );
 }

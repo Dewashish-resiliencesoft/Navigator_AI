@@ -36,6 +36,8 @@ def render_intro(
 
 
 def introducing(state: CallState, deps: CallDeps) -> CallState:
+    if getattr(deps, "live_opening_done", False):
+        return CallState(transcript=["[intro skipped — live opening already spoken]"])
     raw = deps.graph.effective_persona()
     persona = prospect_facing_persona(
         raw, fallback_product=getattr(deps.graph, "site", "") or deps.product_id

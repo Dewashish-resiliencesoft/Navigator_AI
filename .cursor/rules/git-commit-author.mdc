@@ -1,0 +1,17 @@
+---
+description: Git commits belong to Dewashish Hatekar — never add the AI as co-author
+alwaysApply: true
+---
+
+# Commit author
+
+When committing or pushing:
+
+- **Author is Dewashish Hatekar** (`dewashishhatekar@resiliencesoft.com`).
+- **Never** add `Co-authored-by` (or `Signed-off-by`, `Generated-by`, "Made with") for Cursor, Claude, Composer, Copilot, Auto, or any AI/agent.
+- If a trailer is required, use only:
+
+  `Co-authored-by: Dewashish Hatekar <dewashishhatekar@resiliencesoft.com>`
+
+- Do not run `git config` to change `user.name` / `user.email`.
+- Strip AI co-author trailers from commit messages before `git commit`.

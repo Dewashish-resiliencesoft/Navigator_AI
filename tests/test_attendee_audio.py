@@ -1,36 +1,17 @@
-"""Attendee speak + audio hub."""
+"""Attendee audio hub — Live PCM only, no WAV TTS upload."""
 
 from __future__ import annotations
 
-import base64
-import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from queue import Queue
 
-from navigator.meeting.attendee import AttendeeClient, _wav_bytes_to_mp3
+from navigator.meeting import attendee as attendee_mod
+from navigator.meeting.attendee import AttendeeClient
 
 
-def test_speak_posts_mp3_output_audio():
-    client = AttendeeClient("https://example.test/api/v1", "key")
-    captured: dict = {}
-
-    def fake_request(method, path, body=None):
-        captured["method"] = method
-        captured["path"] = path
-        captured["body"] = body
-        return {}
-
-    # Pretend ffmpeg returns mp3 by short-circuiting converter
-    with patch(
-        "navigator.meeting.attendee._wav_bytes_to_mp3", return_value=b"ID3fake"
-    ):
-        with patch.object(client, "_request", side_effect=fake_request):
-            client.speak("bot_1", b"RIFF....wav")
-
-    assert captured["method"] == "POST"
-    assert captured["path"] == "/bots/bot_1/output_audio"
-    assert captured["body"]["type"] == "audio/mp3"
-    assert base64.b64decode(captured["body"]["data"]) == b"ID3fake"
+def test_no_wav_tts_upload():
+    assert not hasattr(AttendeeClient, "speak")
+    assert not hasattr(attendee_mod, "_wav_bytes_to_mp3")
 
 
 def test_audio_stream_yields_from_registered_hub():

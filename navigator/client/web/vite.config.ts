@@ -8,6 +8,9 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   build: { outDir: "dist", emptyOutDir: true },
   server: {
-    proxy: { "/client/api": "http://127.0.0.1:8000" },
+    proxy: {
+      "/client/api": "http://127.0.0.1:8000",
+      "/v1": "http://127.0.0.1:8000",
+    },
   },
 });

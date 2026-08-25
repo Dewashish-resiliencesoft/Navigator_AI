@@ -85,4 +85,18 @@ def test_draft_site_graph_builds_flow():
     page = draft["pages"]["main"]
     assert "message_input" in page["elements"]
     assert page["flows"]["recorded_demo"][0]["tool"] == "fill_field"
-    assert page["flows"]["recorded_demo"][1]["expects"]["check"] == "visible"
+    assert page["flows"]["recorded_demo"][1]["expects"]["selector"] == "body"
+    assert page["elements"]["body"] == "body"
+
+
+def test_junk_record_skips_headings():
+    assert junk_record_reason(
+        {"tag": "h1", "text": "Welcome back"},
+        alias="welcome_back",
+        selector="text=Welcome back",
+    )
+    assert junk_record_reason(
+        {"tag": "button", "text": "Start Free Trial"},
+        alias="start_free_trial",
+        selector="text=Start Free Trial",
+    ) is None

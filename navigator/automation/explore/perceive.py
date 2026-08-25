@@ -26,7 +26,13 @@ _INVENTORY_JS = """
     if (!r.width || !r.height) continue;               // invisible
     const style = window.getComputedStyle(t);
     if (style.visibility === 'hidden' || style.display === 'none') continue;
-    if (t.disabled) continue;
+    // Disabled / inert controls are not demoable — skip so explore never
+    // records a click that the product itself refuses.
+    if (t.disabled || t.getAttribute('aria-disabled') === 'true') continue;
+    if (t.inert || t.closest('[inert]')) continue;
+    if (style.pointerEvents === 'none') continue;
+    const cls = (typeof t.className === 'string' ? t.className : '').toLowerCase();
+    if (/\bdisabled\b/.test(cls) || /\bMui-disabled\b/i.test(cls)) continue;
     if (seen.has(t)) continue;
     seen.add(t);
 
@@ -58,13 +64,27 @@ _INVENTORY_JS = """
       type: t.getAttribute('type') || t.type || '',
       autocomplete: t.getAttribute('autocomplete') || '',
       href: t.getAttribute('href') || '',
+      target: t.getAttribute('target') || '',
       value: tag === 'input' && t.type === 'submit' ? (t.value || '') : '',
       fillable: ['input', 'textarea', 'select'].includes(tag),
+      disabled: !!(t.disabled || t.getAttribute('aria-disabled') === 'true'),
+      class: cls,
+      // Viewport box for VLM locate → element mapping (visual_target.py).
+      box: { x: r.x, y: r.y, w: r.width, h: r.height },
     });
   }
   return out;
 })()
 """
+
+
+def _is_disabled_el(el: dict[str, Any]) -> bool:
+    """Defense in depth for inventory (and FakePage unit tests)."""
+    if el.get("disabled") or el.get("aria_disabled") or el.get("inert"):
+        return True
+    cls = str(el.get("class") or el.get("className") or "").lower()
+    tokens = set(cls.replace(",", " ").split())
+    return "disabled" in tokens or "mui-disabled" in tokens
 
 
 def inventory(page: Page) -> list[dict[str, Any]]:
@@ -74,15 +94,25 @@ def inventory(page: Page) -> list[dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         print(f"[explore] inventory failed: {exc}", flush=True)
         return []
-    return [e for e in raw if isinstance(e, dict)] if isinstance(raw, list) else []
+    if not isinstance(raw, list):
+        return []
+    return [
+        e for e in raw if isinstance(e, dict) and not _is_disabled_el(e)
+    ]
 
 
-def screenshot_b64(page: Page) -> str:
-    """Viewport PNG as base64, for the vision escalation path. "" on failure."""
+def screenshot_b64(
+    page: Page, *, image_type: str = "png", quality: int = 55
+) -> str:
+    """Viewport image as base64. JPEG preferred for live Watch-bot frames."""
     import base64
 
     try:
-        return base64.b64encode(page.screenshot(type="png")).decode()
+        kind = "jpeg" if image_type == "jpeg" else "png"
+        kwargs: dict[str, Any] = {"type": kind}
+        if kind == "jpeg":
+            kwargs["quality"] = max(1, min(100, quality))
+        return base64.b64encode(page.screenshot(**kwargs)).decode()
     except Exception as exc:  # noqa: BLE001
         print(f"[explore] screenshot failed: {exc}", flush=True)
         return ""

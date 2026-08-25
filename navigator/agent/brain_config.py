@@ -1,0 +1,83 @@
+"""Unified brain configuration for live demo LLM/STT/TTS paths."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Literal
+
+from navigator.core.settings import settings
+
+AutonomyMode = Literal["guided", "adaptive", "explorer"]
+
+
+@dataclass(frozen=True)
+class BrainConfig:
+    groq_api_key: str | None
+    gemini_api_key: str | None
+    planning_model: str
+    phrasing_model: str
+    classify_model: str
+    stt_model: str
+    vision_text_model: str
+    vision_image_model: str
+    reasoning_model: str
+    autonomy_mode: AutonomyMode
+    listen_timeout_s: float
+    resume_silence_s: float
+    tier2_enabled: bool
+    use_turn_brain: bool
+    allow_ephemeral_nav: bool
+    guardrail_strict: bool
+
+    @classmethod
+    def from_settings(
+        cls,
+        *,
+        autonomy_mode: AutonomyMode = "guided",
+        tier2_legacy: bool | None = None,
+        # Per-product overrides. Blank or None keeps server/provider default.
+        planning_model: str | None = None,
+        phrasing_model: str | None = None,
+        classify_model: str | None = None,
+        stt_model: str | None = None,
+        vision_text_model: str | None = None,
+        vision_image_model: str | None = None,
+        reasoning_model: str | None = None,
+    ) -> BrainConfig:
+        from navigator.core.gemini_keys import normalize_gemini_model
+
+        # Product dashboard no longer offers adaptive/explorer. Runtime is
+        # always guided: flows + knowledge (+ optional turn-brain), no Tier-2.
+        _ = autonomy_mode, tier2_legacy
+        return cls(
+            groq_api_key=settings.groq_api_key or None,
+            gemini_api_key=settings.gemini_api_key or None,
+            planning_model=planning_model or settings.brain_planning_model,
+            phrasing_model=phrasing_model or settings.brain_phrasing_model,
+            classify_model=classify_model or settings.brain_classify_model,
+            stt_model=stt_model or settings.brain_stt_model,
+            vision_text_model=normalize_gemini_model(
+                vision_text_model or settings.brain_vision_text_model
+            ),
+            vision_image_model=normalize_gemini_model(
+                vision_image_model or settings.brain_vision_image_model
+            ),
+            reasoning_model=normalize_gemini_model(
+                reasoning_model or settings.brain_reasoning_model
+            ),
+            autonomy_mode="guided",
+            listen_timeout_s=settings.brain_listen_timeout_s,
+            resume_silence_s=settings.brain_resume_silence_s,
+            tier2_enabled=False,
+            use_turn_brain=bool(settings.gemini_api_key),
+            allow_ephemeral_nav=False,
+            guardrail_strict=True,
+        )
+
+
+def pacing_resume_silence(pacing: str, cfg: BrainConfig) -> float:
+    if pacing == "rushed":
+        return max(3.0, cfg.resume_silence_s * 0.5)
+    if pacing == "confused":
+        return cfg.resume_silence_s * 1.8
+    return cfg.resume_silence_s

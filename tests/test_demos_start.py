@@ -18,7 +18,7 @@ from navigator.app.registry import Registry
 from navigator.app.runner import DemoRunner
 from navigator.logs.store import ActionLog
 from navigator.meeting.providers import MeetingInfo, MeetingProviderError
-from test_api import ACME, GLOBEX, register
+from test_api import ACME_LIVE as ACME, GLOBEX_LIVE as GLOBEX, register
 
 
 class FakeProvider:

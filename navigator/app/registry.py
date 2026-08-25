@@ -22,14 +22,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from navigator.core.agent_settings import AgentSettings, merge_agent_settings
 from navigator.knowledge.site_graph import SiteGraph, SiteGraphError, parse_site_graph
 
-SiteGraphSource = Literal["yaml", "recorded", "explored", "sdk"]
+SiteGraphSource = Literal["yaml", "recorded", "explored", "sdk", "guided"]
 """How a revision was produced. `recorded` is a human walkthrough, `explored` is
-autonomous exploration -- both land as unpublished drafts in the same review
-gate, but the provenance is worth keeping for audit."""
-"""How a revision was authored. Provenance only -- all three are treated alike,
-because a human wrote or approved the postconditions either way."""
+autonomous exploration, `guided` is Guided Agent task planning — all land as
+unpublished drafts in the same review gate; provenance is for audit only."""
 
 
 class Product(BaseModel):
@@ -40,6 +39,12 @@ class Product(BaseModel):
     created_at: datetime
     active_revision: int | None = None
     """Which site graph revision demos use. None until the first upload."""
+    tier2_enabled: bool = False
+    """Legacy toggle — superseded by autonomy_mode when set."""
+    autonomy_mode: str = "guided"
+    """guided | adaptive | explorer — how off-script questions are handled."""
+    handoff_webhook_url: str = ""
+    """Optional URL notified when agent hands off to a human."""
 
 
 class SiteGraphRevision(BaseModel):
@@ -103,6 +108,20 @@ CREATE TABLE IF NOT EXISTS site_graph_revisions (
     PRIMARY KEY (product_id, revision)
 );
 CREATE INDEX IF NOT EXISTS products_api_key ON products (api_key_hash);
+CREATE TABLE IF NOT EXISTS product_map (
+    product_id     TEXT NOT NULL,
+    area_id        TEXT NOT NULL,
+    name           TEXT NOT NULL,
+    purpose        TEXT NOT NULL,
+    flow_ids       TEXT NOT NULL,
+    chunk_ids      TEXT NOT NULL,
+    categories     TEXT NOT NULL,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL,
+    PRIMARY KEY (product_id, area_id),
+    FOREIGN KEY (product_id) REFERENCES products(product_id)
+);
+CREATE INDEX IF NOT EXISTS product_map_product ON product_map (product_id);
 """
 
 
@@ -147,6 +166,30 @@ class Registry:
                 "ALTER TABLE site_graph_revisions ADD COLUMN published "
                 "INTEGER NOT NULL DEFAULT 1"
             )
+        product_cols = {
+            r["name"]
+            for r in self._conn.execute("PRAGMA table_info(products)").fetchall()
+        }
+        if "tier2_enabled" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN tier2_enabled "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
+        if "autonomy_mode" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN autonomy_mode "
+                "TEXT NOT NULL DEFAULT 'guided'"
+            )
+        if "handoff_webhook_url" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN handoff_webhook_url "
+                "TEXT NOT NULL DEFAULT ''"
+            )
+        if "agent_settings_json" not in product_cols:
+            self._conn.execute(
+                "ALTER TABLE products ADD COLUMN agent_settings_json "
+                "TEXT NOT NULL DEFAULT '{}'"
+            )
 
     @property
     def _conn(self) -> sqlite3.Connection:
@@ -156,6 +199,7 @@ class Registry:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = conn
         return conn
 
@@ -245,43 +289,66 @@ class Registry:
         graph = parse_site_graph(yaml_text, origin=f"product {product_id}")
 
         now = datetime.now(timezone.utc)
-        revision = (
-            self._conn.execute(
-                "SELECT COALESCE(MAX(revision), 0) + 1 AS next "
-                "FROM site_graph_revisions WHERE product_id = ?",
-                (product_id,),
-            ).fetchone()["next"]
-        )
+        # isolation_level=None (autocommit): race on MAX(revision)+1 can hit the
+        # PRIMARY KEY. Retry under an immediate lock.
+        import sqlite3
 
-        self._conn.execute(
-            "INSERT INTO site_graph_revisions (product_id, revision, source, yaml, "
-            "created_at, site, graph_version, published) VALUES (?,?,?,?,?,?,?,?)",
-            (
-                product_id,
-                revision,
-                source,
-                yaml_text,
-                now.isoformat(),
-                graph.site,
-                graph.version,
-                int(publish),
-            ),
-        )
-        if publish:
-            self._conn.execute(
-                "UPDATE products SET active_revision = ? WHERE product_id = ?",
-                (revision, product_id),
-            )
-        return SiteGraphRevision(
-            product_id=product_id,
-            revision=revision,
-            source=source,
-            yaml=yaml_text,
-            created_at=now,
-            site=graph.site,
-            graph_version=graph.version,
-            published=publish,
-        )
+        last_exc: Exception | None = None
+        for _attempt in range(6):
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                revision = (
+                    self._conn.execute(
+                        "SELECT COALESCE(MAX(revision), 0) + 1 AS next "
+                        "FROM site_graph_revisions WHERE product_id = ?",
+                        (product_id,),
+                    ).fetchone()["next"]
+                )
+                self._conn.execute(
+                    "INSERT INTO site_graph_revisions (product_id, revision, source, yaml, "
+                    "created_at, site, graph_version, published) VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        product_id,
+                        revision,
+                        source,
+                        yaml_text,
+                        now.isoformat(),
+                        graph.site,
+                        graph.version,
+                        int(publish),
+                    ),
+                )
+                if publish:
+                    self._conn.execute(
+                        "UPDATE products SET active_revision = ? WHERE product_id = ?",
+                        (revision, product_id),
+                    )
+                self._conn.execute("COMMIT")
+                return SiteGraphRevision(
+                    product_id=product_id,
+                    revision=revision,
+                    source=source,
+                    yaml=yaml_text,
+                    created_at=now,
+                    site=graph.site,
+                    graph_version=graph.version,
+                    published=publish,
+                )
+            except sqlite3.IntegrityError as exc:
+                last_exc = exc
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                continue
+            except Exception:
+                try:
+                    self._conn.execute("ROLLBACK")
+                except sqlite3.Error:
+                    pass
+                raise
+        assert last_exc is not None
+        raise last_exc
 
     def latest_revision(self, product_id: str) -> SiteGraphRevision:
         """The newest revision, published or not -- what the Client is editing."""
@@ -354,9 +421,104 @@ class Registry:
             "UPDATE products SET active_revision = ? WHERE product_id = ?",
             (revision, product_id),
         )
-        return self.get(product_id)
+        product = self.get(product_id)
+        try:
+            graph = parse_site_graph(
+                self.get_revision(product_id, revision).yaml,
+                origin=f"product {product_id}",
+            )
+            from navigator.knowledge.publish_index import index_on_publish
+            from navigator.core.settings import settings
+
+            index_on_publish(
+                product_id=product_id,
+                graph=graph,
+                revision=revision,
+                chroma_path=settings.chroma_path,
+            )
+            from navigator.agent.rehearse import rehearse_published_graph
+
+            report = rehearse_published_graph(graph)
+            if report.failures:
+                print(
+                    f"[registry] rehearse warnings for {product_id}: "
+                    f"{list(report.failures)[:3]}",
+                    flush=True,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[registry] publish index skipped: {exc}", flush=True)
+        return product
 
     # -- lifecycle -----------------------------------------------------------
+
+    def set_tier2_enabled(self, product_id: str, enabled: bool) -> Product:
+        """Legacy no-op — product autonomy is always guided (Tier-2 off)."""
+        _ = enabled
+        self.get(product_id)
+        self._conn.execute(
+            "UPDATE products SET tier2_enabled = 0, autonomy_mode = 'guided' "
+            "WHERE product_id = ?",
+            (product_id,),
+        )
+        return self.get(product_id)
+
+    def set_autonomy_mode(self, product_id: str, mode: str) -> Product:
+        """Legacy no-op — always persist guided / Tier-2 off."""
+        _ = mode
+        self.get(product_id)
+        self._conn.execute(
+            "UPDATE products SET autonomy_mode = 'guided', tier2_enabled = 0 "
+            "WHERE product_id = ?",
+            (product_id,),
+        )
+        return self.get(product_id)
+
+    def set_handoff_webhook(self, product_id: str, url: str) -> Product:
+        self.get(product_id)
+        self._conn.execute(
+            "UPDATE products SET handoff_webhook_url = ? WHERE product_id = ?",
+            (url.strip(), product_id),
+        )
+        return self.get(product_id)
+
+    def _ensure_product_row(self, product_id: str) -> None:
+        """Auto-create a minimal product row for user accounts that pre-date the product row."""
+        import sqlite3 as _sqlite3
+        from datetime import datetime, timezone as _tz
+
+        try:
+            self._conn.execute(
+                "INSERT INTO products (product_id, name, api_key_hash, created_at) VALUES (?,?,?,?)",
+                (product_id, product_id, "placeholder", datetime.now(_tz.utc).isoformat()),
+            )
+        except _sqlite3.IntegrityError:
+            pass  # race — row already exists
+
+    def get_agent_settings(self, product_id: str) -> AgentSettings:
+        row = self._conn.execute(
+            "SELECT agent_settings_json FROM products WHERE product_id = ?",
+            (product_id,),
+        ).fetchone()
+        if row is None:
+            self._ensure_product_row(product_id)
+            return merge_agent_settings(None)  # new row → defaults
+        raw = row["agent_settings_json"] if "agent_settings_json" in row.keys() else "{}"
+        return merge_agent_settings(str(raw or "{}"))
+
+    def set_agent_settings(
+        self, product_id: str, patch: dict[str, object]
+    ) -> AgentSettings:
+        current = self.get_agent_settings(product_id)
+        data = current.model_dump()
+        for key in data:
+            if key in patch:
+                data[key] = patch[key]
+        merged = AgentSettings.model_validate(data).with_role_defaults()
+        self._conn.execute(
+            "UPDATE products SET agent_settings_json = ? WHERE product_id = ?",
+            (merged.model_dump_json(), product_id),
+        )
+        return merged
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
@@ -372,9 +534,15 @@ class Registry:
 
 
 def _to_product(row: sqlite3.Row) -> Product:
+    keys = row.keys()
+    # Dashboard no longer offers adaptive/explorer — force guided at read time.
+    webhook = str(row["handoff_webhook_url"]) if "handoff_webhook_url" in keys else ""
     return Product(
         product_id=row["product_id"],
         name=row["name"],
         created_at=row["created_at"],
         active_revision=row["active_revision"],
+        tier2_enabled=False,
+        autonomy_mode="guided",
+        handoff_webhook_url=webhook,
     )

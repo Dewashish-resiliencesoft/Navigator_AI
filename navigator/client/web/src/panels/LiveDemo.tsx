@@ -1,8 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Check, Copy, PhoneOff, Play, Mic } from "lucide-react";
+import { Check, Copy, ExternalLink, PhoneOff, Play, Mic, TriangleAlert } from "lucide-react";
 import { api, ApiError, type RunEvent } from "../lib/api";
+import { useDemoReadinessSession } from "../lib/demoReadinessSession";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
+import { useExploreSession } from "../lib/exploreSession";
+import { useProductData } from "../lib/productData";
+import {
+  clientReadinessScore,
+  clientVisibleReadinessChecks,
+} from "../lib/readiness";
 import { rise, soft, stagger } from "../lib/motion";
 import {
   BarLoader,
@@ -16,17 +23,39 @@ import {
   StatusPill,
   Textarea,
 } from "../components/ui";
+import {
+  readinessToChecklist,
+  StatusChecklist,
+} from "../components/StatusChecklist";
+import { LiveNarrationBanner } from "../components/LiveNarrationBanner";
 import { errText, useUi } from "../store";
 
 const LINK_PENDING = "Creating meeting link…";
 
+function legacyCopy(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    return document.execCommand("copy");
+  } finally {
+    ta.remove();
+  }
+}
+
 export function LiveDemo() {
   const { ok, err, setTab, setLogsSessionId } = useUi();
+  const invalidate = useProductData((s) => s.invalidate);
   const demo = useDemoSession((s) => s.demo);
   const starting = useDemoSession((s) => s.starting);
   const ending = useDemoSession((s) => s.ending);
   const startSession = useDemoSession((s) => s.start);
   const endSession = useDemoSession((s) => s.end);
+  const refreshActive = useDemoSession((s) => s.refreshActive);
 
   const [platform, setPlatform] = useState("google_meet");
   const [topic, setTopic] = useState("");
@@ -38,13 +67,9 @@ export function LiveDemo() {
   const [domain, setDomain] = useState("");
   const [domainPlaceholder, setDomainPlaceholder] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
-  const [loginUrl, setLoginUrl] = useState("");
-  const [loginUser, setLoginUser] = useState("");
-  const [loginPass, setLoginPass] = useState("");
-  const [hasPassword, setHasPassword] = useState(false);
-  const [changingPass, setChangingPass] = useState(false);
-  const [includeLogin, setIncludeLogin] = useState(false);
-  const [savingLogin, setSavingLogin] = useState(false);
+  const readiness = useDemoReadinessSession((s) => s.readiness);
+  const loadingReadiness = useDemoReadinessSession((s) => s.loading);
+  const startCoach = useUi((s) => s.startCoach);
   const [copied, setCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const listRef = useRef<HTMLUListElement>(null);
@@ -57,7 +82,17 @@ export function LiveDemo() {
   // deadlocks test demos: static Meet (and some Zoom joins) leave the bot in
   // the waiting room until a human opens the link and admits it.
   const joinUrl = demo?.meeting_url ?? null;
-  const botReady = !!demo?.bot_in_meeting;
+  const botReady = live && !!demo?.bot_in_meeting;
+  const leaveGrace = demo?.leave_grace_remaining ?? null;
+  const joinDisplay =
+    live || starting ? (joinUrl ?? LINK_PENDING) : done ? "—" : (joinUrl ?? "—");
+  const transcriptLines = (demo?.said ?? []).filter(
+    (line) => !done || !/join link ready/i.test(line),
+  );
+
+  useEffect(() => {
+    void refreshActive();
+  }, [refreshActive]);
 
   useEffect(() => {
     let alive = true;
@@ -70,18 +105,8 @@ export function LiveDemo() {
       } catch (e) {
         if (alive) err(errText(e));
       }
-      try {
-        const login = await api.getProductLogin();
-        if (!alive) return;
-        setLoginUrl(login.login_url || "");
-        setLoginUser(login.username || "");
-        setHasPassword(!!login.has_password);
-        setIncludeLogin(!!login.include_login_in_default_flow);
-        setChangingPass(!login.has_password);
-        setLoginPass("");
-      } catch (e) {
-        if (alive) err(errText(e));
-      }
+      // Readiness lives in useDemoReadinessSession (shared with Overview).
+      void useDemoReadinessSession.getState().refresh();
     })();
     return () => {
       alive = false;
@@ -90,7 +115,7 @@ export function LiveDemo() {
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [demo?.said.length]);
+  }, [transcriptLines.length]);
 
   useEffect(() => {
     if (!sessionId) {
@@ -129,6 +154,8 @@ export function LiveDemo() {
       const d = await api.putProductDomain(domain.trim());
       setDomain(d.base_url);
       setDomainPlaceholder(false);
+      invalidate();
+      void useExploreSession.getState().syncProductUrl();
       ok("Product domain saved.");
     } catch (e) {
       err(errText(e));
@@ -137,42 +164,19 @@ export function LiveDemo() {
     }
   };
 
-  const saveLogin = async () => {
-    setSavingLogin(true);
-    try {
-      const body: {
-        login_url: string;
-        username: string;
-        password?: string | null;
-        include_login_in_default_flow: boolean;
-      } = {
-        login_url: loginUrl.trim(),
-        username: loginUser.trim(),
-        include_login_in_default_flow: includeLogin,
-      };
-      if (changingPass) {
-        body.password = loginPass;
-      } else {
-        body.password = null;
-      }
-      const saved = await api.putProductLogin(body);
-      setLoginUrl(saved.login_url || "");
-      setLoginUser(saved.username || "");
-      setHasPassword(!!saved.has_password);
-      setIncludeLogin(!!saved.include_login_in_default_flow);
-      setChangingPass(!saved.has_password);
-      setLoginPass("");
-      ok("Product login saved.");
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setSavingLogin(false);
-    }
-  };
+  const visibleReadinessChecks = clientVisibleReadinessChecks(
+    readiness?.checks ?? [],
+  );
+  const blockingChecks = visibleReadinessChecks.filter((c) => c.blocking && !c.ok);
+  const startBlocked = blockingChecks.length > 0;
 
   const start = async () => {
     if (domainPlaceholder || !domain.trim() || /example\.com/i.test(domain)) {
       err("Set your product domain first (https://your-product.com), then Start.");
+      return;
+    }
+    if (startBlocked) {
+      err(blockingChecks[0]?.message ?? "Demo not ready — fix blocking checks first.");
       return;
     }
     if (live) {
@@ -210,12 +214,24 @@ export function LiveDemo() {
   const copy = async () => {
     if (!joinUrl) return;
     try {
-      await navigator.clipboard.writeText(joinUrl);
+      // navigator.clipboard is undefined on insecure origins (dashboard is served
+      // over plain http on the LAN), so fall back to a hidden-textarea copy.
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(joinUrl);
+      } else if (!legacyCopy(joinUrl)) {
+        throw new Error("copy rejected");
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 1300);
     } catch {
       err("Copy failed — select the link manually.");
     }
+  };
+
+  const openLogs = () => {
+    if (!sessionId) return;
+    setLogsSessionId(sessionId);
+    setTab("logs");
   };
 
   return (
@@ -225,7 +241,7 @@ export function LiveDemo() {
       animate="show"
       className="grid grid-cols-1 gap-4 lg:grid-cols-2"
     >
-      <Card span="lg:col-span-2">
+      <Card span="lg:col-span-2" dataCoach="demo-domain">
         <CardTitle hint="Origin the agent opens and screenshares during the live demo.">
           Product domain
         </CardTitle>
@@ -244,75 +260,17 @@ export function LiveDemo() {
         <Button onClick={saveDomain} disabled={savingDomain || !domain.trim()}>
           {savingDomain ? "Saving…" : "Save domain"}
         </Button>
-      </Card>
-
-      <Card span="lg:col-span-2">
-        <CardTitle hint="Credentials Playwright uses to sign into your product before a demo. Never stored in the site graph.">
-          Product Login
-        </CardTitle>
-        <div className="grid gap-x-3 sm:grid-cols-2">
-          <Field label="Login URL (optional — defaults to product URL)">
-            <Input
-              value={loginUrl}
-              onChange={setLoginUrl}
-              placeholder="https://your-product.com/login"
-            />
-          </Field>
-          <Field label="Username / email">
-            <Input
-              value={loginUser}
-              onChange={setLoginUser}
-              placeholder="demo@your-product.com"
-              autoComplete="username"
-            />
-          </Field>
-        </div>
-        <Field label="Password">
-          {hasPassword && !changingPass ? (
-            <div className="flex items-center gap-2">
-              <Input value="••••••••••••" onChange={() => {}} disabled />
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setChangingPass(true);
-                  setLoginPass("");
-                }}
-              >
-                Change
-              </Button>
-            </div>
-          ) : (
-            <Input
-              value={loginPass}
-              onChange={setLoginPass}
-              placeholder={hasPassword ? "enter a new password" : "password"}
-              type="password"
-              autoComplete="new-password"
-            />
-          )}
-        </Field>
-        <label className="mb-3 flex cursor-pointer items-start gap-2 text-[0.78rem] leading-snug text-[var(--muted)]">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={includeLogin}
-            onChange={(e) => setIncludeLogin(e.target.checked)}
-          />
-          <span>
-            Include login as part of the Default flow&apos;s demo (off by
-            default). Topic flows never include login steps.
-          </span>
-        </label>
-        <Button
-          onClick={saveLogin}
-          disabled={
-            savingLogin ||
-            !loginUser.trim() ||
-            (changingPass && !loginPass && !hasPassword)
-          }
-        >
-          {savingLogin ? "Saving…" : "Save product login"}
-        </Button>
+        <p className="mt-3 text-[0.74rem] text-[var(--muted)]">
+          Demo sign-in lives under{" "}
+          <button
+            type="button"
+            className="cursor-pointer font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+            onClick={() => setTab("settings")}
+          >
+            Settings → Product Login
+          </button>
+          .
+        </p>
       </Card>
 
       <Card>
@@ -381,7 +339,36 @@ export function LiveDemo() {
           />
           <span>Auto-play: continue sequentially through all flows in the playlist</span>
         </label>
-        <Button onClick={start} disabled={starting || live || ending}>
+
+        <div
+          className="mb-3 rounded-lg border px-3 py-2.5"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <p className="text-[0.78rem] font-medium">Demo readiness</p>
+            {readiness && (
+              <span className="text-[0.76rem] text-[var(--muted)]">
+                Score {clientReadinessScore(readiness.checks)}/100
+              </span>
+            )}
+          </div>
+          {loadingReadiness && !readiness ? (
+            <p className="text-[0.74rem] text-[var(--muted)]">Checking…</p>
+          ) : readiness ? (
+            <StatusChecklist
+              items={readinessToChecklist(visibleReadinessChecks)}
+              onFix={startCoach}
+            />
+          ) : null}
+          {startBlocked && (
+            <p className="mt-2 flex items-center gap-1.5 text-[0.74rem] text-red-600 dark:text-red-400">
+              <TriangleAlert size={14} />
+              Fix blocking items before starting a test demo.
+            </p>
+          )}
+        </div>
+
+        <Button onClick={start} disabled={starting || live || ending || startBlocked}>
           <Play size={14} strokeWidth={2.2} />
           {starting
             ? "Starting…"
@@ -396,6 +383,18 @@ export function LiveDemo() {
           Active demo
         </CardTitle>
 
+        {live && (
+          <p className="mb-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-[0.76rem] text-emerald-800 dark:text-emerald-300">
+            Test demo running — open the join link and admit Navigator. End closes
+            meeting and browser.
+          </p>
+        )}
+        {done && (
+          <p className="mb-3 text-[0.76rem] text-[var(--muted)]">
+            Demo finished. Start a new test demo when ready.
+          </p>
+        )}
+
         <p className="mb-2 text-[0.74rem] font-medium tracking-wide text-[var(--muted)]">
           Join link
         </p>
@@ -405,14 +404,14 @@ export function LiveDemo() {
         >
           <AnimatePresence mode="popLayout" initial={false}>
             <motion.span
-              key={joinUrl ?? (live ? "pending" : "idle")}
+              key={joinDisplay}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={soft}
-              className={joinUrl ? "" : "text-[var(--muted)]"}
+              className={joinDisplay !== "—" && joinDisplay !== LINK_PENDING ? "" : "text-[var(--muted)]"}
             >
-              {joinUrl ?? (live || starting ? LINK_PENDING : "—")}
+              {joinDisplay}
             </motion.span>
           </AnimatePresence>
         </div>
@@ -428,8 +427,8 @@ export function LiveDemo() {
           </p>
         )}
 
-        <div className="mt-4 flex flex-wrap gap-2">
-          <Button variant="secondary" onClick={copy} disabled={!joinUrl}>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button variant="secondary" onClick={copy} disabled={!joinUrl || !live}>
             {copied ? <Check size={14} /> : <Copy size={14} />}
             {copied ? "Copied" : "Copy link"}
           </Button>
@@ -437,16 +436,13 @@ export function LiveDemo() {
             <PhoneOff size={14} />
             {ending ? "Ending…" : "End"}
           </Button>
-          {sessionId && (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setLogsSessionId(sessionId);
-                setTab("logs");
-              }}
+          {live && leaveGrace !== null && (
+            <span
+              aria-live="polite"
+              className="tabular-nums text-[0.74rem] text-amber-700 dark:text-amber-300"
             >
-              Open in Logs
-            </Button>
+              Ends in {leaveGrace}s
+            </span>
           )}
         </div>
 
@@ -471,78 +467,107 @@ export function LiveDemo() {
             ))}
           </div>
         )}
+
+        <div
+          className="mt-4 border-t pt-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <div className="mb-2 flex items-start justify-between gap-2">
+            <div>
+              <p className="text-[0.78rem] font-medium tracking-tight">Live log</p>
+              <p className="mt-0.5 text-[0.68rem] text-[var(--muted)]">
+                Last ~20 ActionLog events (client only)
+              </p>
+            </div>
+            {sessionId && (
+              <button
+                type="button"
+                onClick={openLogs}
+                title="Open full log in Logs"
+                aria-label="Open full log in Logs"
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border text-[var(--muted)] transition hover:bg-black/[0.04] hover:text-[var(--text)] dark:hover:bg-white/[0.06]"
+                style={{ borderColor: "var(--line)" }}
+              >
+                <ExternalLink size={15} strokeWidth={2} />
+              </button>
+            )}
+          </div>
+          {!events.length && (
+            <Empty>{live ? "Waiting for actions…" : "Nothing yet."}</Empty>
+          )}
+          {events.length > 0 && (
+            <div className="terminal-log flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg bg-[#0d1117] p-4 font-mono text-[0.72rem] leading-relaxed shadow-inner">
+              {live && (
+                <div className="mb-2 flex items-center gap-2 text-emerald-400">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  </span>
+                  Streaming — {events.length} events
+                </div>
+              )}
+              {events.map((ev) => {
+                const fail = !ev.actual_result?.ok || (ev.verify && !ev.verify.passed);
+                const sel = typeof ev.tool_call?.selector === "string" ? ev.tool_call.selector : "";
+                const time = ev.timestamp
+                  ? new Date(ev.timestamp).toLocaleTimeString([], { hour12: false })
+                  : "";
+                return (
+                  <div
+                    key={ev.call_id}
+                    className="py-0.5 opacity-90 transition-opacity hover:opacity-100"
+                  >
+                    <span className="text-slate-500 mr-2">{time}</span>
+                    <span className="text-cyan-400 font-medium">{ev.tool_call?.tool ?? "?"}</span>
+                    <span className="text-slate-400 mx-2">·</span>
+                    <span className="text-slate-200">{ev.page}</span>
+                    <span className="text-slate-400 mx-2">·</span>
+                    <span
+                      className={
+                        fail ? "text-red-400 font-semibold" : "text-emerald-400 font-semibold"
+                      }
+                    >
+                      {fail ? "FAIL" : "OK"}
+                    </span>
+                    {sel && (
+                      <>
+                        <span className="text-slate-500 mx-2">→</span>
+                        <span className="text-slate-300">{sel}</span>
+                      </>
+                    )}
+                    {ev.actual_result?.detail && (
+                      <div className="mt-0.5 pl-[4.5rem] text-[0.68rem] text-slate-400">
+                        {ev.actual_result.detail}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+              {!live && events.length > 0 && (
+                <div className="mt-2 border-t border-white/10 pt-2 text-emerald-500">
+                  Demo completed — {events.length} actions, {demo?.failures ?? 0} failures.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </Card>
 
-      <Card span="lg:col-span-2">
-        <CardTitle hint="Last ~20 ActionLog events for this run (technical — client only).">
-          Live log
-        </CardTitle>
-        {!events.length && <Empty>{live ? "Waiting for actions…" : "Nothing yet."}</Empty>}
-        {events.length > 0 && (
-          <div className="terminal-log flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg bg-[#0d1117] p-4 font-mono text-[0.72rem] leading-relaxed shadow-inner">
-            {live && (
-              <div className="mb-2 flex items-center gap-2 text-emerald-400">
-                <span className="relative flex h-2 w-2">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                </span>
-                Streaming — {events.length} events
-              </div>
-            )}
-            {events.map((ev) => {
-              const fail = !ev.actual_result?.ok || (ev.verify && !ev.verify.passed);
-              const sel = typeof ev.tool_call?.selector === "string" ? ev.tool_call.selector : "";
-              const time = ev.timestamp ? new Date(ev.timestamp).toLocaleTimeString([], { hour12: false }) : "";
-              return (
-                <div key={ev.call_id} className="py-0.5 opacity-90 transition-opacity hover:opacity-100">
-                  <span className="text-slate-500 mr-2">{time}</span>
-                  <span className="text-cyan-400 font-medium">{ev.tool_call?.tool ?? "?"}</span>
-                  <span className="text-slate-400 mx-2">·</span>
-                  <span className="text-slate-200">{ev.page}</span>
-                  <span className="text-slate-400 mx-2">·</span>
-                  <span className={fail ? "text-red-400 font-semibold" : "text-emerald-400 font-semibold"}>
-                    {fail ? "FAIL" : "OK"}
-                  </span>
-                  {sel && (
-                    <>
-                      <span className="text-slate-500 mx-2">→</span>
-                      <span className="text-slate-300">{sel}</span>
-                    </>
-                  )}
-                  {ev.actual_result?.detail && (
-                    <div className="mt-0.5 pl-[4.5rem] text-[0.68rem] text-slate-400">
-                      {ev.actual_result.detail}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            {!live && events.length > 0 && (
-              <div className="mt-2 border-t border-white/10 pt-2 text-emerald-500">
-                Demo completed — {events.length} actions, {demo?.failures ?? 0} failures.
-                <button
-                  type="button"
-                  onClick={() => {
-                    setLogsSessionId(sessionId);
-                    setTab("logs");
-                  }}
-                  className="ml-3 underline decoration-emerald-500/30 underline-offset-4 hover:decoration-emerald-500"
-                >
-                  View full session log
-                </button>
-              </div>
-            )}
-            <div ref={(el) => { if (el) el.scrollIntoView({ behavior: "smooth" }) }} />
-          </div>
-        )}
-      </Card>
+      {live && (
+        <Card span="lg:col-span-2">
+          <CardTitle hint="What Navigator will say next, in the prospect's language.">
+            Demo Script
+          </CardTitle>
+          <LiveNarrationBanner />
+        </Card>
+      )}
 
       <Card span="lg:col-span-2">
         <CardTitle hint="What the agent has said so far, live.">Transcript</CardTitle>
-        {!demo?.said?.length && <Empty>Nothing yet.</Empty>}
+        {!transcriptLines.length && <Empty>Nothing yet.</Empty>}
         <ul ref={listRef} className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
           <AnimatePresence initial={false}>
-            {(demo?.said ?? []).map((line, i) => (
+            {transcriptLines.map((line, i) => (
               <motion.li
                 key={`${i}-${line.slice(0, 24)}`}
                 variants={rise}

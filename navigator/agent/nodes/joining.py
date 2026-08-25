@@ -33,6 +33,7 @@ def joining(state: CallState, deps: CallDeps) -> CallState:
         reserve_voice_agent=deps.voice_agent_url is None,
         google_meet_use_login=settings.google_meet_use_login,
         zoom_tokens_url=zoom_tokens_url,
+        zoom_sdk="web" if zoom_tokens_url else None,
     )
     deps.bot_id = bot.id
     deadline = time.time() + 180

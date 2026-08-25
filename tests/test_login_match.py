@@ -8,7 +8,10 @@ from navigator.automation.login_match import (
     LoginConfig,
     VAULT_PASSWORD_SENTINEL,
     assert_no_login_in_graph,
+    demo_playlist_for_toggle,
     is_password_field,
+    live_start_flow,
+    login_flow_hidden_from_demo,
     looks_like_login,
     looks_like_permission_denied,
     same_page_path,
@@ -24,7 +27,7 @@ def test_password_field_by_type_and_autocomplete():
 
 def test_looks_like_login_url_and_selector():
     cfg = LoginConfig(login_url="https://acme.example/login")
-    assert looks_like_login(config=cfg, url="https://acme.example/login/") 
+    assert looks_like_login(config=cfg, url="https://acme.example/login/")
     assert looks_like_login(config=cfg, selector="#password")
     assert looks_like_login(config=cfg, element={"type": "password"})
     assert looks_like_login(config=cfg, url="https://acme.example/inbox") is None
@@ -71,18 +74,14 @@ demo_playlist:
 """.replace("{sentinel}", VAULT_PASSWORD_SENTINEL)
 
 
-def test_assert_rejects_topic_login_even_with_toggle():
+def test_assert_rejects_topic_login():
     graph = parse_site_graph(_GRAPH)
     cfg = LoginConfig(login_url="https://acme.example/login")
     with pytest.raises(SiteGraphError, match="Topic flow"):
-        assert_no_login_in_graph(
-            graph, cfg, include_login_in_default_flow=True
-        )
+        assert_no_login_in_graph(graph, cfg)
 
 
-def test_assert_allows_default_with_toggle():
-    yaml = _GRAPH.replace("topic_search", "default_walkthrough", 1)
-    # Make the password step the default flow instead.
+def test_assert_allows_playlist_login_rejects_same_flow_off_playlist():
     yaml = """
 version: 1
 site: acme
@@ -101,12 +100,191 @@ pages:
           expects: {check: visible, selector: password, timeout_ms: 1000}
 demo_playlist:
   - order: 1
-    name: Default
+    name: Walkthrough
     page_id: main
     flow_id: default_walkthrough
 """
     graph = parse_site_graph(yaml)
     cfg = LoginConfig(login_url="https://acme.example/login")
-    assert_no_login_in_graph(graph, cfg, include_login_in_default_flow=True)
-    with pytest.raises(SiteGraphError, match="Default flow"):
-        assert_no_login_in_graph(graph, cfg, include_login_in_default_flow=False)
+    assert_no_login_in_graph(graph, cfg)
+    yaml_no_playlist = yaml.replace(
+        "demo_playlist:\n  - order: 1\n    name: Walkthrough\n    page_id: main\n    flow_id: default_walkthrough\n",
+        "",
+    )
+    graph_no_playlist = parse_site_graph(yaml_no_playlist)
+    with pytest.raises(SiteGraphError, match="Topic flow"):
+        assert_no_login_in_graph(graph_no_playlist, cfg)
+
+
+def test_assert_allows_recorded_authentication_flow_without_toggle():
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      already_have_an_account_sign_in: "text=Sign in"
+    flows:
+      authentication_flow:
+        - tool: click_element
+          selector: already_have_an_account_sign_in
+          expects: {check: visible, selector: already_have_an_account_sign_in, timeout_ms: 5000}
+demo_playlist:
+  - order: 1
+    name: Authentication Flow
+    page_id: dashboard
+    flow_id: authentication_flow
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(graph, cfg)
+
+
+def test_assert_allows_onboarding_flow_sign_in_without_toggle():
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      sign_in: "text=Sign in"
+    flows:
+      onboarding_flow:
+        - tool: click_element
+          selector: sign_in
+          expects: {check: visible, selector: sign_in, timeout_ms: 5000}
+demo_playlist:
+  - order: 1
+    name: Onboarding
+    page_id: dashboard
+    flow_id: onboarding_flow
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(graph, cfg)
+
+
+def test_assert_allows_sign_in_when_flow_explicitly_allowed():
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      sign_in: "text=Sign in"
+    flows:
+      onboarding_flow:
+        - tool: click_element
+          selector: sign_in
+          expects: {check: visible, selector: sign_in, timeout_ms: 5000}
+demo_playlist: []
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(
+        graph,
+        cfg,
+        allow_flows=frozenset({("dashboard", "onboarding_flow")}),
+    )
+    yaml = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      sign_in: "text=Sign in"
+    flows:
+      getting_started:
+        - tool: click_element
+          selector: sign_in
+          expects: {check: visible, selector: sign_in, timeout_ms: 5000}
+demo_playlist:
+  - order: 1
+    name: Getting started
+    page_id: dashboard
+    flow_id: getting_started
+"""
+    graph = parse_site_graph(yaml)
+    cfg = LoginConfig(login_url="https://acme.example/login")
+    assert_no_login_in_graph(graph, cfg)
+
+
+_TOGGLE_PLAYLIST = """
+version: 1
+site: acme
+base_url: https://acme.example/
+pages:
+  dashboard:
+    name: Dashboard
+    url: /
+    selectors:
+      send: "#send"
+    flows:
+      onboarding_flow:
+        - tool: click_element
+          selector: send
+          expects: {check: visible, selector: send, timeout_ms: 1000}
+      send_campaign:
+        - tool: click_element
+          selector: send
+          expects: {check: visible, selector: send, timeout_ms: 1000}
+demo_playlist:
+  - order: 1
+    name: onboarding flow
+    page_id: dashboard
+    flow_id: onboarding_flow
+  - order: 2
+    name: send campaign
+    page_id: dashboard
+    flow_id: send_campaign
+"""
+
+
+def test_demo_playlist_for_toggle_off_drops_login_keeps_topic():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    off = demo_playlist_for_toggle(graph, include_login=False)
+    assert [i.flow_id for i in off] == ["send_campaign"]
+    assert off[0].order == 1
+
+
+def test_demo_playlist_for_toggle_on_keeps_login_first():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    on = demo_playlist_for_toggle(graph, include_login=True)
+    assert [i.flow_id for i in on] == ["onboarding_flow", "send_campaign"]
+
+
+def test_live_start_flow_skips_onboarding_when_toggle_off():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    graph = graph.model_copy(
+        update={"demo_playlist": demo_playlist_for_toggle(graph, include_login=False)}
+    )
+    page_id, flow_id = live_start_flow(
+        graph, "dashboard", "onboarding_flow", include_login=False
+    )
+    assert flow_id == "send_campaign"
+    assert page_id == "dashboard"
+    assert login_flow_hidden_from_demo(graph, "dashboard", "onboarding_flow")
+
+
+def test_live_start_flow_empty_playlist_does_not_keep_onboarding():
+    graph = parse_site_graph(_TOGGLE_PLAYLIST)
+    graph = graph.model_copy(update={"demo_playlist": ()})
+    page_id, flow_id = live_start_flow(
+        graph, "dashboard", "onboarding_flow", include_login=False
+    )
+    assert page_id == "dashboard"
+    assert flow_id == ""
+    assert login_flow_hidden_from_demo(graph, "dashboard", "onboarding_flow")
+

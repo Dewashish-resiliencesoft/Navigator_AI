@@ -59,6 +59,21 @@ CREATE TABLE IF NOT EXISTS demo_runs (
 );
 CREATE INDEX IF NOT EXISTS demo_runs_product_started
     ON demo_runs (product_id, started_at);
+
+CREATE TABLE IF NOT EXISTS llm_token_usage (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    product_id      TEXT NOT NULL,
+    session_id      TEXT,
+    provider        TEXT NOT NULL,
+    purpose         TEXT NOT NULL DEFAULT '',
+    model           TEXT NOT NULL DEFAULT '',
+    input_tokens    INTEGER NOT NULL DEFAULT 0,
+    output_tokens   INTEGER NOT NULL DEFAULT 0,
+    billed_to       TEXT NOT NULL,
+    timestamp       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS llm_token_usage_product
+    ON llm_token_usage (product_id, timestamp);
 """
 
 
@@ -80,6 +95,9 @@ class ActionLog:
         if self.db_path.parent != Path():
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        # ponytail: throttle prune across list_runs polls (ceiling: stale rows ≤60s).
+        self._prune_lock = threading.Lock()
+        self._last_prune_monotonic = 0.0
         self._conn.executescript(_SCHEMA)
         self._migrate()
 
@@ -107,6 +125,7 @@ class ActionLog:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             self._local.conn = conn
         return conn
 
@@ -179,7 +198,9 @@ class ActionLog:
             (product_id, limit),
         )
 
-    def product_metrics(self, product_id: str, days: int = 14) -> dict:
+    def product_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
         """Rolled-up counters + a daily series for one product's dashboard.
 
         Counts LIVE demos only. A Client running test demos from their dashboard
@@ -190,6 +211,8 @@ class ActionLog:
         Aggregated in SQL rather than by hydrating entries: the action log is the
         highest-volume table here and a dashboard poll must not scan it row by row.
         """
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
         # action_log has no origin of its own; a session's origin lives on its
         # demo_runs row. Subtracting test sessions (rather than selecting live
         # ones) means a run row that failed to persist still bills, instead of
@@ -197,6 +220,7 @@ class ActionLog:
         live_only = (
             "AND session_id NOT IN (SELECT session_id FROM demo_runs "
             "WHERE product_id = ? AND origin = 'dashboard_test') "
+            "AND timestamp >= ? "
         )
         totals = self._conn.execute(
             "SELECT COUNT(*) AS actions, "
@@ -206,7 +230,7 @@ class ActionLog:
             "COALESCE(SUM(passed = 1), 0) AS passed, "
             "MAX(timestamp) AS last_seen "
             "FROM action_log WHERE product_id = ? " + live_only,
-            (product_id, product_id),
+            (product_id, product_id, cutoff),
         ).fetchone()
 
         rows = self._conn.execute(
@@ -216,13 +240,13 @@ class ActionLog:
             "COALESCE(SUM(failed), 0) AS failures "
             "FROM action_log WHERE product_id = ? " + live_only +
             "GROUP BY day ORDER BY day DESC LIMIT ?",
-            (product_id, product_id, max(1, days)),
+            (product_id, product_id, cutoff, max(1, days)),
         ).fetchall()
 
         test_sessions = self._conn.execute(
             "SELECT COUNT(*) AS n FROM demo_runs "
-            "WHERE product_id = ? AND origin = 'dashboard_test'",
-            (product_id,),
+            "WHERE product_id = ? AND origin = 'dashboard_test' AND started_at >= ?",
+            (product_id, cutoff),
         ).fetchone()
 
         return {
@@ -242,6 +266,279 @@ class ActionLog:
                 }
                 for r in reversed(rows)
             ],
+        }
+
+    def record_llm_usage(
+        self,
+        *,
+        product_id: str,
+        provider: str,
+        purpose: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        billed_to: str,
+        session_id: str | None = None,
+        when: datetime | None = None,
+    ) -> None:
+        ts = (when or utcnow()).isoformat()
+        self._conn.execute(
+            "INSERT INTO llm_token_usage "
+            "(product_id, session_id, provider, purpose, model, "
+            "input_tokens, output_tokens, billed_to, timestamp) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (
+                product_id,
+                session_id,
+                provider,
+                purpose,
+                model,
+                max(0, int(input_tokens)),
+                max(0, int(output_tokens)),
+                billed_to,
+                ts,
+            ),
+        )
+        self._conn.commit()
+
+    def llm_token_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
+        """Roll up LLM tokens by provider and billing source for the dashboard."""
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        rows = self._conn.execute(
+            "SELECT provider, billed_to, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COUNT(*) AS calls "
+            "FROM llm_token_usage "
+            "WHERE product_id = ? AND timestamp >= ? "
+            "GROUP BY provider, billed_to "
+            "ORDER BY provider, billed_to",
+            (product_id, cutoff),
+        ).fetchall()
+        providers: list[dict] = []
+        total_in = 0
+        total_out = 0
+        total_calls = 0
+        for r in rows:
+            inp = int(r["input_tokens"] or 0)
+            out = int(r["output_tokens"] or 0)
+            calls = int(r["calls"] or 0)
+            total_in += inp
+            total_out += out
+            total_calls += calls
+            providers.append(
+                {
+                    "provider": r["provider"],
+                    "billed_to": r["billed_to"],
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "total_tokens": inp + out,
+                    "calls": calls,
+                }
+            )
+        return {
+            "days": days,
+            "providers": providers,
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "total_tokens": total_in + total_out,
+            "calls": total_calls,
+        }
+
+    def llm_token_metrics_by_model(
+        self,
+        product_id: str,
+        days: int = 14,
+        *,
+        billed_to: str = "client",
+        now: datetime | None = None,
+    ) -> list[dict]:
+        """Per-model rollups for Client BYOK usage on the dashboard."""
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        rows = self._conn.execute(
+            "SELECT model, "
+            "COALESCE(SUM(input_tokens), 0) AS input_tokens, "
+            "COALESCE(SUM(output_tokens), 0) AS output_tokens, "
+            "COUNT(*) AS calls "
+            "FROM llm_token_usage "
+            "WHERE product_id = ? AND timestamp >= ? AND billed_to = ? "
+            "AND TRIM(model) != '' "
+            "GROUP BY model "
+            "ORDER BY (input_tokens + output_tokens) DESC, model",
+            (product_id, cutoff, billed_to),
+        ).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            inp = int(r["input_tokens"] or 0)
+            out.append(
+                {
+                    "model": r["model"],
+                    "input_tokens": inp,
+                    "output_tokens": int(r["output_tokens"] or 0),
+                    "total_tokens": inp + int(r["output_tokens"] or 0),
+                    "calls": int(r["calls"] or 0),
+                }
+            )
+        return out
+
+    def demo_run_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
+        """Durable demo_runs rollups for the Overview Sessions card.
+
+        Unlike ``product_metrics`` (billable action_log only), this counts every
+        persisted demo run — test and live — so the dashboard reflects what the
+        Client actually ran.
+        """
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+
+        def _totals(origin: str | None) -> dict[str, int]:
+            where = "product_id = ? AND started_at >= ?"
+            params: list[str] = [product_id, cutoff]
+            if origin is not None:
+                where += " AND origin = ?"
+                params.append(origin)
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS total, "
+                "COALESCE(SUM(status = 'failed'), 0) AS failed, "
+                "COALESCE(SUM(status IN ('starting', 'running')), 0) AS running "
+                f"FROM demo_runs WHERE {where}",
+                params,
+            ).fetchone()
+            return {
+                "total": int(row["total"] or 0),
+                "failed": int(row["failed"] or 0),
+                "running": int(row["running"] or 0),
+            }
+
+        rows = self._conn.execute(
+            "SELECT substr(started_at, 1, 10) AS day, COUNT(*) AS sessions "
+            "FROM demo_runs WHERE product_id = ? AND started_at >= ? "
+            "GROUP BY day ORDER BY day DESC LIMIT ?",
+            (product_id, cutoff, max(1, days)),
+        ).fetchall()
+        all_totals = _totals(None)
+        return {
+            "series": [
+                {
+                    "day": r["day"],
+                    "sessions": int(r["sessions"]),
+                    "actions": 0,
+                    "failures": 0,
+                }
+                for r in reversed(rows)
+            ],
+            "total": all_totals["total"],
+            "running": all_totals["running"],
+            "failed": all_totals["failed"],
+            "live": _totals("public_embed"),
+            "test": _totals("dashboard_test"),
+        }
+
+    def dashboard_metrics(
+        self, product_id: str, days: int = 14, *, now: datetime | None = None
+    ) -> dict:
+        """Unified Client dashboard KPIs — one ``days`` window, test + live included.
+
+        ``sessions`` / daily ``series[].sessions`` = demo run count (``demo_runs``).
+        ``failures`` / ``series[].failures`` = failed tool steps (``action_log``).
+        ``failed_runs`` = demos whose run ``status`` is ``failed``.
+        """
+        when = now or utcnow()
+        cutoff = (when - timedelta(days=max(1, days))).isoformat()
+        runs = self.demo_run_metrics(product_id, days=days, now=when)
+
+        totals = self._conn.execute(
+            """
+            SELECT COUNT(*) AS actions,
+                   COALESCE(SUM(al.failed), 0) AS failures,
+                   COALESCE(SUM(al.passed IS NOT NULL), 0) AS verified,
+                   COALESCE(SUM(al.passed = 1), 0) AS passed,
+                   MAX(al.timestamp) AS last_seen
+            FROM action_log al
+            INNER JOIN demo_runs dr
+              ON dr.session_id = al.session_id AND dr.product_id = al.product_id
+            WHERE dr.product_id = ? AND dr.started_at >= ?
+            """,
+            (product_id, cutoff),
+        ).fetchone()
+
+        action_rows = self._conn.execute(
+            """
+            SELECT substr(al.timestamp, 1, 10) AS day,
+                   COUNT(*) AS actions,
+                   COALESCE(SUM(al.failed), 0) AS failures
+            FROM action_log al
+            INNER JOIN demo_runs dr
+              ON dr.session_id = al.session_id AND dr.product_id = al.product_id
+            WHERE dr.product_id = ? AND dr.started_at >= ?
+            GROUP BY day
+            """,
+            (product_id, cutoff),
+        ).fetchall()
+
+        run_days = {r["day"]: int(r["sessions"]) for r in runs["series"]}
+        action_days = {
+            r["day"]: {"actions": int(r["actions"]), "failures": int(r["failures"])}
+            for r in action_rows
+        }
+        all_days = sorted(set(run_days) | set(action_days))
+
+        series = [
+            {
+                "day": day,
+                "sessions": run_days.get(day, 0),
+                "actions": action_days.get(day, {}).get("actions", 0),
+                "failures": action_days.get(day, {}).get("failures", 0),
+            }
+            for day in all_days
+        ]
+
+        visitor = self.product_metrics(product_id, days=days, now=when)
+
+        runs_with_step_failures = self._conn.execute(
+            """
+            SELECT COUNT(*) AS n FROM demo_runs dr
+            WHERE dr.product_id = ? AND dr.started_at >= ?
+              AND EXISTS (
+                SELECT 1 FROM action_log al
+                WHERE al.session_id = dr.session_id
+                  AND al.product_id = dr.product_id
+                  AND al.failed = 1
+              )
+            """,
+            (product_id, cutoff),
+        ).fetchone()
+
+        return {
+            "days": days,
+            "test_sessions": runs["test"]["total"],
+            "sessions": runs["total"],
+            "actions": int(totals["actions"] or 0),
+            "failures": int(totals["failures"] or 0),
+            "failed_runs": runs["failed"],
+            "runs_with_step_failures": int(runs_with_step_failures["n"] or 0),
+            "verified": int(totals["verified"] or 0),
+            "passed": int(totals["passed"] or 0),
+            "last_seen": totals["last_seen"],
+            "series": series,
+            "demos": {
+                "total": runs["total"],
+                "running": runs["running"],
+                "failed": runs["failed"],
+            },
+            "live": runs["live"],
+            "test": runs["test"],
+            "visitor": {
+                "sessions": visitor["sessions"],
+                "actions": visitor["actions"],
+                "failures": visitor["failures"],
+            },
         }
 
     def sessions(self) -> list[UUID]:
@@ -347,7 +644,7 @@ class ActionLog:
         days: int = 7,
         now: datetime | None = None,
     ) -> list[dict]:
-        self.prune_runs(days=days, now=now)
+        self._maybe_prune_runs(days=days, now=now)
         when = now or utcnow()
         cutoff = (when - timedelta(days=max(1, days))).isoformat()
         rows = self._conn.execute(
@@ -356,6 +653,17 @@ class ActionLog:
             (product_id, cutoff),
         ).fetchall()
         return [_row_to_run(r, self._fail_count(r)) for r in rows]
+
+    def _maybe_prune_runs(self, days: int = 7, now: datetime | None = None) -> None:
+        """Prune at most once per 60s — dashboard polls list_runs often."""
+        import time
+
+        now_m = time.monotonic()
+        with self._prune_lock:
+            if now_m - self._last_prune_monotonic < 60.0:
+                return
+            self._last_prune_monotonic = now_m
+        self.prune_runs(days=days, now=now)
 
     def prune_runs(self, days: int = 7, now: datetime | None = None) -> None:
         when = now or utcnow()

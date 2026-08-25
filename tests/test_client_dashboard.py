@@ -50,6 +50,17 @@ def _cleanup(client_bundle, prev_key):
     log.close()
 
 
+def test_root_redirects_to_client(tmp_path):
+    bundle = _client(tmp_path, client_api_key="nav_test")
+    client, prev, *_ = bundle
+    try:
+        r = client.get("/", headers={"Host": "localhost"}, follow_redirects=False)
+        assert r.status_code == 307
+        assert r.headers["location"] == "/client"
+    finally:
+        _cleanup(bundle, prev)
+
+
 def test_client_page_ok_on_localhost(tmp_path):
     bundle = _client(tmp_path, client_api_key="nav_test")
     client, prev, registry, log, auth_store = bundle
@@ -78,7 +89,9 @@ def test_client_api_start_uses_server_key(tmp_path):
     bundle = _client(tmp_path, client_api_key="")
     client, prev, registry, log, auth_store = bundle
     try:
-        p = register(client, "Acme Inbox", ACME)
+        from test_api import ACME_LIVE
+
+        p = register(client, "Acme Inbox", ACME_LIVE)
         # register() returns headers with Token; extract key
         key = p["headers"]["Authorization"].split(None, 1)[1]
         
@@ -313,7 +326,7 @@ def test_client_runs_list_empty_and_scoped(tmp_path):
             host_name="box",
             browser="",
             meeting_label="meet:abc",
-            started_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
+            started_at=datetime.now(timezone.utc),
         )
         other = uuid4()
         log.upsert_run(
@@ -329,7 +342,7 @@ def test_client_runs_list_empty_and_scoped(tmp_path):
             host_name="box",
             browser="",
             meeting_label="zoom",
-            started_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
+            started_at=datetime.now(timezone.utc),
         )
 
         listed = client.get("/client/api/runs?days=7", headers=headers)
@@ -348,5 +361,34 @@ def test_client_runs_list_empty_and_scoped(tmp_path):
         events = client.get(f"/client/api/runs/{sid}/events", headers=headers)
         assert events.status_code == 200
         assert events.json() == []
+    finally:
+        _cleanup(bundle, prev)
+
+
+def test_client_tier2_always_off(tmp_path):
+    """Tier-2 product toggle is a no-op — always guided / disabled."""
+    bundle = _client(tmp_path, client_api_key="")
+    client, prev, registry, log, auth_store = bundle
+    try:
+        p = register(client, "Acme Inbox", ACME)
+        auth_store.create_user(product_id=p["id"], email="test@acme.com", password="password")
+        login_resp = client.post(
+            "/v1/auth/login",
+            json={"email": "test@acme.com", "password": "password"},
+            headers={"Host": "localhost"},
+        )
+        assert login_resp.status_code == 200, login_resp.text
+        jwt = login_resp.json()["access_token"]
+        headers = {"Host": "localhost", "Authorization": f"Bearer {jwt}"}
+
+        got = client.get("/client/api/tier2", headers=headers)
+        assert got.status_code == 200, got.text
+        assert got.json()["enabled"] is False
+
+        on = client.put("/client/api/tier2", json={"enabled": True}, headers=headers)
+        assert on.status_code == 200, on.text
+        assert on.json()["enabled"] is False
+        assert registry.get(p["id"]).tier2_enabled is False
+        assert registry.get(p["id"]).autonomy_mode == "guided"
     finally:
         _cleanup(bundle, prev)

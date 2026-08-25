@@ -72,6 +72,8 @@ class CallDeps:
     voice_agent_url: str | None = None
     #: Optional: push a Meet screen-share frame (Playwright thread only).
     push_frame: Callable[[], None] | None = None
+    #: Relay `/view` poll counter — speaking uses this to avoid frozen frames.
+    get_frame_hits: Callable[[], int] | None = None
     #: When True, LISTENING prompts on stdin for what the prospect said.
     interactive_listen: bool = False
     #: Live Meet bot id (handoff chat + speak into call).
@@ -98,6 +100,8 @@ class CallDeps:
     product_brief: str = ""
     #: During TTS wait: return True to cut remaining playback wait (barge-in).
     check_barge_in: Callable[[], bool] | None = None
+    #: Optional hook when prospect speech is captured (prefetch, analytics).
+    on_user_utterance: Callable[[str], None] | None = None
     #: Filled when barge-in heard speech; LISTENING consumes it.
     pending_barge_in: list[str] | None = None
     #: Injected Gemini turn brain for tests. When None, use decide_turn if Gemini key set.
@@ -112,6 +116,60 @@ class CallDeps:
     relogin: Callable[[], bool] | None = None
     #: Operator End / human left Meet — nodes should finish without more TTS/clicks.
     stop_event: object | None = None
+    #: Call-scoped memory (flows/topics/facts already covered). None → PLANNING
+    #: makes one per call, so an existing caller keeps working unchanged.
+    memory: object | None = None
+    #: SQLite path for DecisionTrace. None → settings.db_path.
+    decision_db_path: Path | None = None
+    #: Injected retrieval for tests. Signature matches knowledge.retrieve_context.
+    retrieve: Callable[..., object] | None = None
+    #: Injected phrasing for tests. Signature matches agent.phrasing.phrase_turn.
+    phrase: Callable[..., str] | None = None
+    #: Spoken language for TTS + phrasing: "en" (default) or "hi".
+    spoken_language: Literal["en", "hi"] = "en"
+    #: Hysteresis tracker (navigator.voice.conversation_language.ConversationLanguage).
+    conversation_language: object | None = None
+    #: Dashboard live script: language / narration / speechStatus.
+    on_speech: Callable[[dict[str, object]], None] | None = None
+    #: Languages the agent may switch to when the prospect asks.
+    extra_languages: tuple[Literal["en", "hi"], ...] = ("hi",)
+    #: First-person voice gender — must match TTS voice and Hindi verb forms.
+    agent_gender: Literal["female", "male"] = "female"
+    #: Mid-step STT for requires_live_input fills. Signature (prompt: str) -> heard.
+    listen_once: Callable[[str], str] | None = None
+    #: Entity extraction for live fills. Signature (key, question, heard) -> str.
+    extract_entity: Callable[..., str] | None = None
+    #: Alias → visitor answer collected earlier in this call (for value_ref).
+    live_answers: dict[str, str] | None = None
+    #: Unified brain settings (models, autonomy, listen/resume timeouts).
+    brain_config: object | None = None
+    #: Client webhook when agent hands off to a human.
+    handoff_webhook_url: str = ""
+    #: Per-product Tier 2 live fallback. Default OFF — must be explicitly enabled.
+    tier2_enabled: bool = False
+    #: Live demo already spoke quick greet + kickoff — skip INTRODUCING narration.
+    live_opening_done: bool = False
+    #: Injected Tier 2 proposer for tests / live reasoner. Returns dict|None.
+    tier2_propose: Callable[..., object] | None = None
+    #: Injected guardrail classify. Defaults to explore.guardrail.classify_action.
+    tier2_classify: Callable[..., object] | None = None
+    #: When True, only demo_playlist flows may run — no detours or handoffs.
+    playlist_only: bool = False
+    #: Walkthrough: skip STT wait and advance steps immediately (playlist demos).
+    auto_advance_walkthrough: bool = False
+    #: Guided playlist: no tier2/turn-brain detours; pause on step failure.
+    strict_playlist: bool = False
+    #: Set at auth boundary — controls hard-stop vs continue on click failures.
+    demo_origin: Literal["dashboard_test", "public_embed"] = "dashboard_test"
+    #: Bidirectional Gemini Live session (navigator.voice.live_agent.LiveAgent).
+    #: When set, SPEAKING talks through it and the prospect can interrupt.
+    live_agent: object | None = None
+    #: Agent runtime orchestrator (navigator.agent_runtime.orchestrator.AgentOrchestrator).
+    orchestrator: object | None = None
+    #: Async pre-action narration; SPEAKING queues it, EXECUTING starts it.
+    pre_action_speech: object | None = None
+    #: Structured demo diagnostics sink. None means JSON logs to stdout.
+    trace: Callable[[dict[str, object]], None] | None = None
 
 
 def append_only(existing: list, new: list) -> list:
@@ -119,8 +177,12 @@ def append_only(existing: list, new: list) -> list:
     return [*existing, *new]
 
 
+class _Clear(list):
+    """Identity-stable empty. A fresh ``[]`` means 'append nothing', not clear."""
+
+
 #: Sentinel a node returns to empty a queue that otherwise only accumulates.
-CLEAR: list = []
+CLEAR: list = _Clear()
 
 
 def queue(existing: list, new: list) -> list:
@@ -128,8 +190,14 @@ def queue(existing: list, new: list) -> list:
 
     Needed because more than one node upstream of SPEAKING queues narration --
     without this, whichever ran last would silently drop the others' lines.
+    Duplicate utterance ids are dropped so a regenerated translation cannot
+    enqueue beside the original logical line.
     """
-    return [] if new is CLEAR else [*existing, *new]
+    if new is CLEAR or isinstance(new, _Clear):
+        return []
+    from navigator.agent.utterance import merge_narration
+
+    return merge_narration(existing or [], new or [])
 
 
 class CallState(TypedDict, total=False):
@@ -146,8 +214,13 @@ class CallState(TypedDict, total=False):
     """page_id the call ran *on*, which differs from page_id after a navigate."""
     transcript: Annotated[list[str], append_only]
     """Everything said, by anyone, in order. Archived by ENDING."""
-    narration: Annotated[list[str], queue]
-    """What SPEAKING should say next. Accumulates across nodes, cleared once spoken."""
+    narration: Annotated[list, queue]
+    """What SPEAKING should say next. Accumulates across nodes, cleared once spoken.
+
+    Items are strings or ``{"id", "text"}``. Same id = same logical utterance.
+    """
+    spoken_utterance_ids: Annotated[list[str], append_only]
+    """Utterance ids SPEAKING already consumed this call. Re-entry must not replay."""
     entries: Annotated[list[ActionLogEntry], append_only]
     """This call's action log, in memory as well as in SQLite."""
     failures: Annotated[list[ActionLogEntry], append_only]
@@ -168,6 +241,30 @@ class CallState(TypedDict, total=False):
     nav_click_label: str | None
     #: Continue to the next demo_playlist flow when the current one ends.
     auto_play: bool
+    #: Set when a detour is running; the default flow resumes at this step after.
+    resume_step: int | None
+    #: Page the default flow was on when it was paused.
+    resume_page_id: str
+    #: Flow the pending clarifying question would run on a yes.
+    awaiting_confirm_flow_id: str | None
+    #: Step-by-step detour flow answering a prospect question mid-demo.
+    detour_flow_id: str
+    detour_page_id: str
+    detour_step: int
+    #: Single-action detour (tier-2 / turn-brain); awaiting_resume after it runs.
+    detour_one_shot: bool
+    #: Step currently executing (strict playlist — advance only after verify).
+    executing_step: int
+    #: Next walkthrough index after the current step succeeds.
+    planned_next_step: int
+    #: Knowledge answer spoken; next turn asks if the question is answered.
+    resume_checkin_pending: bool
+    pre_action_speech: object | None
+    user_language: str
+    narration_language: str
+    language_confidence: float
+    language_source: str
+    language_locked: bool
 
 
 def initial_state(
@@ -188,6 +285,7 @@ def initial_state(
         last_page_id=page_id,
         transcript=[],
         narration=[],
+        spoken_utterance_ids=[],
         entries=[],
         failures=[],
         turns=0,
@@ -200,4 +298,17 @@ def initial_state(
         walkthrough_step=0,
         silence_rounds=0,
         auto_play=auto_play,
+        resume_step=None,
+        resume_page_id="",
+        awaiting_confirm_flow_id=None,
+        detour_flow_id="",
+        detour_page_id="",
+        detour_step=0,
+        detour_one_shot=False,
+        resume_checkin_pending=False,
+        user_language="en",
+        narration_language="en",
+        language_confidence=1.0,
+        language_source="session",
+        language_locked=False,
     )

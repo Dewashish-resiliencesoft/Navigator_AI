@@ -89,9 +89,26 @@ class FillField(_ToolCallBase):
     selector: str
     value: str
     source: Source = "agent"
-    """"user" marks live prospect-supplied data typed into the product mid-call."""
+    """"user" marks live prospect-supplied data typed into the product mid-call.
+
+    That is the requires_live_input flag from the live-input design: EXECUTING
+    pauses, asks `live_question`, listens, and falls back to `value` (the Client's
+    example from setup) if the answer stays unclear.
+    """
+    live_question: str | None = None
+    """Spoken when source=user. None → a generic question from the selector alias."""
+    value_ref: str | None = None
+    """Alias of an earlier source=user variable — reuse the visitor's answer."""
 
 
+    input_name: str | None = None
+    """Demo-session key used by the interaction engine (for example ``phone``)."""
+    prompt: str | None = None
+    """Author-authored question asked before an interactive fill."""
+    input_type: str = "text"
+    """Expected visitor input shape: phone, email, text, number, and so on."""
+    fallback_value: str | None = None
+    """Recorded sample used only when the visitor cannot provide a value."""
 class Navigate(_ToolCallBase):
     tool: Literal["navigate"] = "navigate"
     page_id: str
@@ -104,8 +121,18 @@ class WaitFor(_ToolCallBase):
     timeout_ms: int = Field(default=15000, gt=0)
 
 
+class ScrollPage(_ToolCallBase):
+    """Scroll the document (or a scrollable container) to an absolute position."""
+
+    tool: Literal["scroll_page"] = "scroll_page"
+    x: int = 0
+    y: int = 0
+    #: Optional CSS alias of a scrollable container; None → window/document.
+    selector: str | None = None
+
+
 ToolCall = Annotated[
-    ClickElement | FillField | Navigate | WaitFor,
+    ClickElement | FillField | Navigate | WaitFor | ScrollPage,
     Field(discriminator="tool"),
 ]
 

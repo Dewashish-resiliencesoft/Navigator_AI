@@ -74,7 +74,11 @@ export function Flows() {
 
   const load = useCallback(async () => {
     try {
-      const [d, g] = await Promise.all([api.getFlows(), api.getSiteGraph()]);
+      const [d, g, domain] = await Promise.all([
+        api.getFlows(),
+        api.getSiteGraph(),
+        api.getProductDomain().catch(() => ({ base_url: "", placeholder: true })),
+      ]);
       const playlist = d.playlist ?? [];
       setRows(playlist);
       // ponytail: setPlaylist only — applyPlaylist would re-bump epoch and loop load
@@ -94,6 +98,21 @@ export function Flows() {
         }
       }
       setStepCount(counts);
+
+      // Prefill Start URL from product domain (or site-graph base_url) once.
+      let start = "";
+      if (domain.base_url?.trim() && !domain.placeholder) {
+        start = domain.base_url.trim();
+      } else {
+        const bm = g.yaml.match(/^base_url:\s*["']?(\S+?)["']?\s*$/m);
+        const raw = (bm?.[1] || "").replace(/['"]/g, "").trim();
+        if (raw && !/example\.com/i.test(raw) && /^https?:\/\//i.test(raw)) {
+          start = raw;
+        }
+      }
+      if (start) {
+        setRecUrl((prev) => (prev.trim() ? prev : start));
+      }
     } catch (e) {
       err(errText(e));
     }

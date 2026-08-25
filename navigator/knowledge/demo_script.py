@@ -97,6 +97,52 @@ def _humanize_alias(alias: str, *, max_len: int = 52) -> str:
     return f"{cut}…" if cut else text[: max_len - 1] + "…"
 
 
+def _fill_field_alias(call: FillField) -> str:
+    return (call.input_name or call.selector or "").strip()
+
+
+def _fill_mode_for(call: FillField) -> Literal["sample", "ask", "ref"]:
+    if (call.value_ref or "").strip():
+        return "ref"
+    if needs_live_input(call):
+        return "ask"
+    return "sample"
+
+
+def _example_for_fill(call: FillField) -> str:
+    if call.fallback_value is not None and str(call.fallback_value).strip():
+        return str(call.fallback_value).strip()
+    val = str(call.value or "").strip()
+    if val.startswith("{{") and val.endswith("}}"):
+        return ""
+    return val
+
+
+def demo_variables_from_beats(beats: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Playlist-global aliases from Ask-visitor fills (for Use variable dropdown)."""
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for beat in beats:
+        if not isinstance(beat, dict):
+            continue
+        mode = beat.get("fill_mode")
+        if mode != "ask" and beat.get("kind") != "live_input":
+            continue
+        alias = str(beat.get("field_alias") or "").strip()
+        if not alias or alias in seen:
+            continue
+        seen.add(alias)
+        out.append(
+            {
+                "alias": alias,
+                "label": alias.replace("_", " "),
+                "live_question": str(beat.get("live_question") or "").strip(),
+                "example_value": str(beat.get("example_value") or "").strip(),
+            }
+        )
+    return out
+
+
 def _describe_action(graph: SiteGraph, page_id: str, call: ToolCall) -> tuple[str, dict[str, Any]]:
     """Human on-screen label + machine action payload."""
     try:
@@ -491,33 +537,56 @@ def compose_full_demo_script(
             if spoken_source in {"yaml", "explore", "manual", "recorded"}:
                 sources_used.add(spoken_source)
 
-            if isinstance(call, FillField) and needs_live_input(call):
-                example = str(call.value or "").strip()
-                if beat_id in manual and manual[beat_id].get("example_value"):
+            if isinstance(call, FillField):
+                fill_mode = _fill_mode_for(call)
+                if beat_id in manual and manual[beat_id].get("fill_mode") in {
+                    "sample",
+                    "ask",
+                    "ref",
+                }:
+                    fill_mode = str(manual[beat_id]["fill_mode"])
+                alias = _fill_field_alias(call)
+                if beat_id in manual and manual[beat_id].get("field_alias"):
+                    alias = str(manual[beat_id]["field_alias"]).strip() or alias
+                example = _example_for_fill(call)
+                if beat_id in manual and manual[beat_id].get("example_value") is not None:
                     example = str(manual[beat_id]["example_value"]).strip()
                 q = (call.live_question or "").strip()
                 if beat_id in manual and manual[beat_id].get("live_question"):
                     q = str(manual[beat_id]["live_question"]).strip()
-                if not q:
+                if not q and fill_mode == "ask":
                     q = live_prompt(call)
-                beats.append(
-                    {
-                        "id": beat_id,
-                        "kind": "live_input",
-                        "flow_id": item.flow_id,
-                        "page_id": item.page_id,
-                        "step_index": step_index,
-                        "field_alias": call.selector,
-                        "action": action,
-                        "on_screen": on_screen,
-                        "spoken": spoken or q,
-                        "live_question": q,
-                        "example_value": example,
-                        "asks_visitor": True,
-                        "spoken_source": spoken_source,
-                        "knowledge_refs": knowledge_refs,
-                    }
-                )
+                value_ref = (call.value_ref or "").strip()
+                if beat_id in manual and manual[beat_id].get("value_ref") is not None:
+                    value_ref = str(manual[beat_id]["value_ref"]).strip()
+                fill_beat: dict[str, Any] = {
+                    "id": beat_id,
+                    "kind": "live_input" if fill_mode == "ask" else "flow_step",
+                    "flow_id": item.flow_id,
+                    "page_id": item.page_id,
+                    "step_index": step_index,
+                    "tool": "fill_field",
+                    "field_alias": alias,
+                    "fill_mode": fill_mode,
+                    "action": action,
+                    "on_screen": on_screen,
+                    "spoken": spoken or (q if fill_mode == "ask" else spoken),
+                    "live_question": q,
+                    "example_value": example,
+                    "value_ref": value_ref or None,
+                    "asks_visitor": fill_mode == "ask",
+                    "spoken_source": spoken_source,
+                    "knowledge_refs": knowledge_refs,
+                }
+                if step_index in spoken_len:
+                    fill_beat["speak_ms"] = spoken_len[step_index]
+                elif step_index in timing:
+                    fill_beat["speak_ms"] = timing[step_index]
+                if step_index in speak_at:
+                    fill_beat["speak_at_ms"] = speak_at[step_index]
+                if step_index in act_at:
+                    fill_beat["act_at_ms"] = act_at[step_index]
+                beats.append(fill_beat)
                 continue
 
             beat: dict[str, Any] = {
@@ -618,6 +687,7 @@ def compose_full_demo_script(
     return {
         "version": 1,
         "beats": beats,
+        "demo_variables": demo_variables_from_beats(beats),
         "context": "\n".join(context_bits[:4]),
         "sources_used": sorted(sources_used),
         "flow_total_ms": flow_total_ms,
@@ -685,10 +755,75 @@ def merge_manual_overrides(
         if m.get("spoken_source") == "manual" and m.get("spoken"):
             beat["spoken"] = m["spoken"]
             beat["spoken_source"] = "manual"
-        for key in ("example_value", "live_question"):
+        for key in (
+            "example_value",
+            "live_question",
+            "fill_mode",
+            "value_ref",
+            "field_alias",
+        ):
             if key in m and m[key] is not None:
                 beat[key] = m[key]
+        if m.get("fill_mode") == "ask":
+            beat["kind"] = "live_input"
+            beat["asks_visitor"] = True
+        elif m.get("fill_mode") in {"sample", "ref"}:
+            if beat.get("tool") == "fill_field" or beat.get("fill_mode"):
+                beat["kind"] = "flow_step"
+                beat["asks_visitor"] = False
+    composed["demo_variables"] = demo_variables_from_beats(
+        [b for b in beats if isinstance(b, dict)]
+    )
     return composed
+
+
+def _sync_fill_mode_to_step(step: dict[str, Any], beat: dict[str, Any]) -> None:
+    """Write sample | ask | ref onto a FillField YAML step."""
+    mode = str(beat.get("fill_mode") or "").strip()
+    if mode not in {"sample", "ask", "ref"}:
+        if beat.get("kind") == "live_input":
+            mode = "ask"
+        else:
+            return
+    alias = str(beat.get("field_alias") or step.get("selector") or "field").strip()
+    example = beat.get("example_value")
+    sample = "" if example is None else str(example).strip()
+
+    if mode == "sample":
+        step["source"] = "agent"
+        step.pop("live_question", None)
+        step.pop("value_ref", None)
+        step.pop("fallback_value", None)
+        step.pop("input_name", None)
+        step.pop("prompt", None)
+        if sample:
+            step["value"] = sample
+        return
+
+    if mode == "ask":
+        step["source"] = "user"
+        step.pop("value_ref", None)
+        lq = str(beat.get("live_question") or "").strip()
+        if lq:
+            step["live_question"] = lq
+            step["prompt"] = lq
+        if alias:
+            step["input_name"] = alias
+        if sample:
+            step["fallback_value"] = sample
+        step["value"] = f"{{{{{alias}}}}}" if alias else step.get("value") or ""
+        return
+
+    # ref
+    ref = str(beat.get("value_ref") or "").strip()
+    step.pop("live_question", None)
+    step.pop("prompt", None)
+    step["source"] = "agent"
+    if ref:
+        step["value_ref"] = ref
+        step["value"] = f"{{{{{ref}}}}}"
+    if sample:
+        step["fallback_value"] = sample
 
 
 def apply_script_patch(
@@ -724,10 +859,16 @@ def apply_script_patch(
         for beat in beats:
             if not isinstance(beat, dict):
                 continue
-            if beat.get("spoken_source") != "manual":
-                continue
             kind = beat.get("kind")
-            if kind not in {"flow_step", "live_input"}:
+            is_fill = (
+                beat.get("tool") == "fill_field"
+                or beat.get("fill_mode") in {"sample", "ask", "ref"}
+                or kind == "live_input"
+            )
+            sync_spoken = beat.get("spoken_source") == "manual"
+            if not sync_spoken and not is_fill:
+                continue
+            if kind not in {"flow_step", "live_input"} and not is_fill:
                 continue
             flow_id = str(beat.get("flow_id") or "")
             page_id = str(beat.get("page_id") or "")
@@ -746,17 +887,12 @@ def apply_script_patch(
             step = steps[step_index]
             if not isinstance(step, dict):
                 continue
-            spoken = str(beat.get("spoken") or "").strip()
-            if spoken:
-                step["spoken"] = spoken
-            if kind == "live_input":
-                lq = str(beat.get("live_question") or "").strip()
-                if lq:
-                    step["live_question"] = lq
-                ex = beat.get("example_value")
-                if ex is not None:
-                    step["value"] = str(ex)
-                step["source"] = "user"
+            if sync_spoken:
+                spoken = str(beat.get("spoken") or "").strip()
+                if spoken:
+                    step["spoken"] = spoken
+            if is_fill and str(step.get("tool") or "") == "fill_field":
+                _sync_fill_mode_to_step(step, beat)
 
     new_yaml = yaml.safe_dump(raw, sort_keys=False)
     parse_site_graph(new_yaml, origin="<demo-script-patch>")

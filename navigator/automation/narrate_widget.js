@@ -58,26 +58,11 @@
         font-size: 11px; opacity: .85; margin: 6px 0 0; line-height: 1.35;
         max-height: 4.2em; overflow: hidden;
       }
-      #nav-narrate .nav-ask {
-        margin-top: 8px; padding: 8px; border-radius: 8px;
-        background: rgba(251, 191, 36, .12); border: 1px solid rgba(251,191,36,.35);
-        display: none;
-      }
-      #nav-narrate .nav-ask.show { display: block; }
-      #nav-narrate textarea {
-        width: 100%; box-sizing: border-box; margin-top: 2px; border-radius: 8px;
-        border: 1px solid rgba(255,255,255,.14); background: rgba(0,0,0,.25);
-        color: #e8eef7; padding: 6px 8px; font: inherit; resize: vertical;
-      }
-      #nav-narrate.ask-open { opacity: 1 !important; transform: scale(1) !important; min-width: 260px; }
-      #nav-narrate.ask-open .nav-narrate-body { display: block !important; }
-      #nav-narrate.ask-open .nav-narrate-chip { display: none !important; }
       #nav-narrate button {
         flex: 1; border: 0; border-radius: 8px; padding: 7px 8px; font: 600 11px inherit;
         cursor: pointer; color: #0b1220; background: #6ee7b7; min-width: 72px;
       }
       #nav-narrate button.secondary { background: rgba(255,255,255,.12); color: #e8eef7; }
-      #nav-narrate button.warn { background: #fbbf24; color: #0b1220; }
       #nav-narrate button:disabled { opacity: .45; cursor: not-allowed; }
       #nav-narrate button.recording { background: #f87171; color: #fff; }
       #nav-narrate button.paused { background: #fbbf24; color: #0b1220; }
@@ -87,26 +72,9 @@
       #nav-narrate-dot.live { background: #f87171; box-shadow: 0 0 0 3px rgba(248,113,113,.35); }
       #nav-narrate-dot.paused { background: #fbbf24; }
       #nav-narrate.mic-off #nav-mic-sec { display: none; }
-      #nav-narrate .nav-field {
-        margin-top: 8px; padding: 8px; border-radius: 8px;
-        background: rgba(110, 231, 183, .1); border: 1px solid rgba(110,231,183,.35);
-        display: none;
-      }
-      #nav-narrate .nav-field.show { display: block; }
-      #nav-narrate .nav-var-row { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
-      #nav-narrate .nav-var-chip {
-        font-size: 10px; padding: 3px 7px; border-radius: 999px;
-        background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.18);
-        cursor: grab; user-select: none;
-      }
-      #nav-narrate input[type="text"] {
-        width: 100%; box-sizing: border-box; margin-top: 2px; border-radius: 8px;
-        border: 1px solid rgba(255,255,255,.14); background: rgba(0,0,0,.25);
-        color: #e8eef7; padding: 6px 8px; font: inherit;
-      }
-      #nav-narrate.field-open { opacity: 1 !important; transform: scale(1) !important; min-width: 280px; }
-      #nav-narrate.field-open .nav-narrate-body { display: block !important; }
-      #nav-narrate.field-open .nav-narrate-chip { display: none !important; }
+      #nav-narrate-dot-chip { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
+      #nav-narrate-dot-chip.live { background: #f87171; }
+      #nav-narrate-dot-chip.paused { background: #fbbf24; }
     </style>
     <div class="nav-narrate-chip" id="nav-narrate-chip">
       <span id="nav-narrate-dot-chip"></span>
@@ -122,63 +90,8 @@
           <button type="button" id="nav-studio-capture">Start capturing this flow</button>
           <button type="button" id="nav-studio-stop" class="secondary">Stop</button>
         </div>
-        <div class="nav-row" style="margin-top:6px">
-          <button type="button" id="nav-studio-prompt-btn" class="warn">⚡ Agent Command</button>
-        </div>
-        <div class="nav-status" id="nav-studio-status">Setup — log in, then Start capturing this flow.</div>
-        <div class="nav-ask" id="nav-studio-prompt-panel">
-          <div id="nav-studio-prompt-title" style="font-weight:600;margin-bottom:6px">⚡ Prompt Listening</div>
-          <div id="nav-studio-prompt-hint" style="opacity:.85;margin-bottom:6px;font-size:11px">
-            Say what the agent should do at demo time, then click Stop prompt or say “prompt stop”.
-          </div>
-          <label for="nav-studio-prompt-text">Agent instruction</label>
-          <textarea id="nav-studio-prompt-text" rows="3" placeholder="Ask the visitor for their phone number, save as phone_number, fill this field…"></textarea>
-          <div class="nav-row" style="margin-top:6px">
-            <button type="button" id="nav-studio-prompt-stop" class="secondary">Stop prompt</button>
-          </div>
-          <div id="nav-studio-prompt-preview" style="display:none;margin-top:8px;padding-top:8px;border-top:1px solid rgba(255,255,255,.12)">
-            <div style="font-weight:600;margin-bottom:4px">I understood</div>
-            <div id="nav-studio-prompt-summary" style="font-size:11px;line-height:1.4;margin-bottom:8px"></div>
-            <div class="nav-row">
-              <button type="button" id="nav-studio-prompt-continue">Continue</button>
-              <button type="button" id="nav-studio-prompt-edit" class="secondary">Edit</button>
-            </div>
-          </div>
-        </div>
-        <div class="nav-field" id="nav-studio-field">
-          <div id="nav-studio-field-label" style="margin-bottom:6px;font-weight:600"></div>
-          <label for="nav-studio-field-mode">Value at demo time</label>
-          <select id="nav-studio-field-mode">
-            <option value="replay">Replay recorded value</option>
-            <option value="ask">Ask visitor for this</option>
-          </select>
-          <div id="nav-studio-interaction-fields">
-            <label for="nav-studio-var">Input name</label>
-            <input type="text" id="nav-studio-var" placeholder="phone" autocomplete="off" />
-            <label for="nav-studio-field-type" style="margin-top:6px">Input type</label>
-            <select id="nav-studio-field-type"><option value="text">Text</option><option value="phone">Phone</option><option value="email">Email</option><option value="number">Number</option></select>
-            <label for="nav-studio-field-q" style="margin-top:6px">Prompt</label>
-            <textarea id="nav-studio-field-q" rows="2" placeholder="Ask the visitor for their phone number"></textarea>
-            <label for="nav-studio-field-fallback" style="margin-top:6px">Fallback value</label>
-            <input type="text" id="nav-studio-field-fallback" placeholder="Recorded sample value" autocomplete="off" />
-          </div>
-          <div class="nav-row" style="margin-top:6px">
-            <button type="button" id="nav-studio-field-ask">Save field setting</button>
-          </div>
-          <div class="nav-row">
-            <button type="button" id="nav-studio-field-dismiss" class="secondary">Dismiss</button>
-          </div>
-          <div id="nav-studio-vars-wrap" style="margin-top:8px;display:none">
-            <label>Available variables — drag onto a field</label>
-            <div class="nav-var-row" id="nav-studio-vars"></div>
-          </div>
-        </div>
-        <div class="nav-sec" id="nav-next-sec" style="margin-top:10px;padding-top:10px;border-top:1px solid rgba(255,255,255,.1)">
-          <label for="nav-studio-next">What to do next</label>
-          <textarea id="nav-studio-next" rows="2" placeholder="e.g. open campaign send using this number"></textarea>
-          <div class="nav-row" style="margin-top:6px">
-            <button type="button" id="nav-studio-next-go" class="secondary">Plan next steps</button>
-          </div>
+        <div class="nav-status" id="nav-studio-status">
+          Setup — log in, then Start capturing. Sample vs ask vs variables: Demo Script in dashboard.
         </div>
       </div>
       <div class="nav-sec" id="nav-mic-sec">
@@ -218,31 +131,6 @@
   const statusEl = box.querySelector("#nav-studio-status");
   const btnCapture = box.querySelector("#nav-studio-capture");
   const btnStop = box.querySelector("#nav-studio-stop");
-  const fieldBox = box.querySelector("#nav-studio-field");
-  const fieldLabel = box.querySelector("#nav-studio-field-label");
-  const fieldMode = box.querySelector("#nav-studio-field-mode");
-  const interactionFields = box.querySelector("#nav-studio-interaction-fields");
-  const fieldVar = box.querySelector("#nav-studio-var");
-  const fieldType = box.querySelector("#nav-studio-field-type");
-  const fieldFallback = box.querySelector("#nav-studio-field-fallback");
-  const fieldQ = box.querySelector("#nav-studio-field-q");
-  const btnFieldAsk = box.querySelector("#nav-studio-field-ask");
-  const btnFieldKeep = box.querySelector("#nav-studio-field-keep");
-  const btnFieldDismiss = box.querySelector("#nav-studio-field-dismiss");
-  const varsWrap = box.querySelector("#nav-studio-vars-wrap");
-  const varsRow = box.querySelector("#nav-studio-vars");
-  const nextPrompt = box.querySelector("#nav-studio-next");
-  const btnNextGo = box.querySelector("#nav-studio-next-go");
-  const btnPromptMode = box.querySelector("#nav-studio-prompt-btn");
-  const promptPanel = box.querySelector("#nav-studio-prompt-panel");
-  const promptText = box.querySelector("#nav-studio-prompt-text");
-  const promptTitle = box.querySelector("#nav-studio-prompt-title");
-  const promptHint = box.querySelector("#nav-studio-prompt-hint");
-  const promptPreview = box.querySelector("#nav-studio-prompt-preview");
-  const promptSummary = box.querySelector("#nav-studio-prompt-summary");
-  const btnPromptStop = box.querySelector("#nav-studio-prompt-stop");
-  const btnPromptContinue = box.querySelector("#nav-studio-prompt-continue");
-  const btnPromptEdit = box.querySelector("#nav-studio-prompt-edit");
 
   for (const [val, label] of LANGS) {
     langSel.appendChild(new Option(label, val));
@@ -263,190 +151,15 @@
   let recording = false;
   let paused = false;
   let capturing = false;
-  let lastField = null;
-  let demoVariables = [];
-  let lastFieldKey = "";
-  let promptMode = "narration"; // narration | prompt_listening | preview
-  let pendingAgentTask = null;
-  let speechRec = null;
-  let promptBuffer = "";
+  let t0 = 0;
 
   const fmt = (ms) => {
     const s = Math.floor(ms / 1000);
     return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
   };
 
-  const beep = () => {
-    try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const o = ctx.createOscillator();
-      const g = ctx.createGain();
-      o.type = "sine";
-      o.frequency.value = promptMode === "prompt_listening" ? 880 : 660;
-      g.gain.value = 0.08;
-      o.connect(g);
-      g.connect(ctx.destination);
-      o.start();
-      setTimeout(() => {
-        o.stop();
-        ctx.close().catch(() => {});
-      }, 120);
-    } catch (e) {
-      /* ignore */
-    }
-  };
-
-  const stopSpeechRec = () => {
-    if (speechRec) {
-      try {
-        speechRec.onresult = null;
-        speechRec.onerror = null;
-        speechRec.stop();
-      } catch (e) {
-        /* ignore */
-      }
-      speechRec = null;
-    }
-  };
-
-  const startSpeechRec = () => {
-    stopSpeechRec();
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) {
-      if (promptHint) {
-        promptHint.textContent =
-          "Speech recognition unavailable — type the instruction, then Stop prompt.";
-      }
-      return;
-    }
-    speechRec = new SR();
-    speechRec.continuous = true;
-    speechRec.interimResults = true;
-    speechRec.lang = (langSel && langSel.value !== "auto" ? langSel.value : "en") || "en";
-    speechRec.onresult = (ev) => {
-      let finalBit = "";
-      let interim = "";
-      for (let i = ev.resultIndex; i < ev.results.length; i++) {
-        const t = ev.results[i][0].transcript || "";
-        if (ev.results[i].isFinal) finalBit += t;
-        else interim += t;
-      }
-      const chunk = (finalBit || interim || "").trim();
-      if (!chunk) return;
-      const low = chunk.toLowerCase().replace(/\s+/g, " ");
-      if (low === "prompt start" || low.endsWith("prompt start")) {
-        enterPromptListening();
-        return;
-      }
-      if (promptMode === "prompt_listening") {
-        if (low === "prompt stop" || low.endsWith("prompt stop")) {
-          void endPromptListening();
-          return;
-        }
-        if (finalBit) {
-          promptBuffer = (promptBuffer + " " + finalBit).trim();
-          if (promptText) promptText.value = promptBuffer;
-        } else if (promptText && interim) {
-          promptText.value = (promptBuffer + " " + interim).trim();
-        }
-      }
-    };
-    speechRec.onerror = () => {};
-    try {
-      speechRec.start();
-    } catch (e) {
-      /* already started */
-    }
-  };
-
-  const showPromptPanel = (on) => {
-    if (!promptPanel) return;
-    promptPanel.classList.toggle("show", !!on);
-    box.classList.toggle("ask-open", !!on);
-    if (on) box.classList.remove("compact");
-  };
-
-  const enterPromptListening = () => {
-    if (promptMode === "prompt_listening") return;
-    promptMode = "prompt_listening";
-    promptBuffer = "";
-    pendingAgentTask = null;
-    if (promptText) promptText.value = "";
-    if (promptPreview) promptPreview.style.display = "none";
-    if (promptTitle) promptTitle.textContent = "⚡ Prompt Listening";
-    if (promptHint) {
-      promptHint.textContent =
-        "Listening for agent instruction… Say “prompt stop” or click Stop prompt.";
-    }
-    if (btnPromptMode) btnPromptMode.textContent = "⚡ Listening…";
-    showPromptPanel(true);
-    statusEl.textContent = "⚡ Prompt Listening — not narration.";
-    chipLabel.textContent = "Prompt";
-    syncDots("paused");
-    beep();
-    startSpeechRec();
-  };
-
-  const endPromptListening = async () => {
-    stopSpeechRec();
-    const instruction = ((promptText && promptText.value) || promptBuffer || "").trim();
-    beep();
-    if (!instruction) {
-      promptMode = "narration";
-      showPromptPanel(false);
-      if (btnPromptMode) btnPromptMode.textContent = "⚡ Agent Command";
-      statusEl.textContent = "Prompt cancelled — empty instruction.";
-      return;
-    }
-    promptMode = "preview";
-    if (promptTitle) promptTitle.textContent = "⚡ Agent Task";
-    if (promptHint) promptHint.textContent = "Parsing instruction…";
-    statusEl.textContent = "Parsing agent command…";
-    const res = await studioCmd("prompt_parse", {
-      instruction,
-      use_llm: true,
-    });
-    if (!res || res.error) {
-      // Fallback parse without LLM
-      const res2 = await studioCmd("prompt_parse", {
-        instruction,
-        use_llm: false,
-      });
-      if (!res2 || res2.error) {
-        statusEl.textContent = String((res && res.error) || (res2 && res2.error) || "Parse failed");
-        promptMode = "prompt_listening";
-        startSpeechRec();
-        return;
-      }
-      pendingAgentTask = res2.agent_task;
-    } else {
-      pendingAgentTask = res.agent_task;
-    }
-    if (promptSummary) {
-      promptSummary.textContent =
-        (pendingAgentTask && pendingAgentTask.summary) ||
-        "Ask / save / fill (review before Continue)";
-    }
-    if (promptPreview) promptPreview.style.display = "block";
-    if (promptHint) promptHint.textContent = "Confirm or edit before saving into the demo script.";
-    statusEl.textContent = "Prompt captured — Continue or Edit.";
-    if (btnPromptMode) btnPromptMode.textContent = "⚡ Agent Command";
-  };
-
-  const leavePromptToNarration = () => {
-    stopSpeechRec();
-    promptMode = "narration";
-    pendingAgentTask = null;
-    promptBuffer = "";
-    showPromptPanel(false);
-    if (btnPromptMode) btnPromptMode.textContent = "⚡ Agent Command";
-  };
-
   const studioCmd = async (action, extra) => {
     const payload = Object.assign({ action }, extra || {});
-    // DOM bridge — works even when Playwright expose_function is dead after nav.
     try {
       document.documentElement.setAttribute(
         "data-nav-studio-cmd",
@@ -462,7 +175,6 @@
     } catch (e) {
       console.warn("[navigator-studio] cmd failed", e);
     }
-    // Wait briefly for Python drain loop to flip phase, then read status.
     await new Promise((r) => setTimeout(r, 400));
     try {
       if (typeof window.navigatorStudioStatus === "function") {
@@ -498,527 +210,237 @@
     else chipLabel.textContent = "Studio";
   };
 
-  const syncDots = (state) => {
-    dot.className = "";
-    dotChip.className = "";
-    if (state === "live") {
-      dot.classList.add("live");
-      dotChip.classList.add("live");
-    } else if (state === "paused") {
-      dot.classList.add("paused");
-      dotChip.classList.add("paused");
+  const syncDots = (mode) => {
+    for (const el of [dot, dotChip]) {
+      if (!el) continue;
+      el.classList.remove("live", "paused");
+      if (mode === "live") el.classList.add("live");
+      else if (mode === "paused") el.classList.add("paused");
     }
   };
-
-  const renderVars = () => {
-    if (!varsRow || !varsWrap) return;
-    varsRow.innerHTML = "";
-    if (!demoVariables.length) {
-      varsWrap.style.display = "none";
-      return;
-    }
-    varsWrap.style.display = "block";
-    for (const v of demoVariables) {
-      const chip = document.createElement("span");
-      chip.className = "nav-var-chip";
-      chip.textContent = "$" + (v.alias || "var");
-      chip.draggable = true;
-      chip.title = v.live_question || v.label || v.alias;
-      chip.addEventListener("dragstart", (ev) => {
-        ev.dataTransfer.setData("text/plain", v.alias || "");
-      });
-      chip.addEventListener(
-        "click",
-        (ev) => {
-          ev.stopPropagation();
-          if (!lastField) {
-            statusEl.textContent = "Focus a field first, then bind $" + v.alias;
-            return;
-          }
-          void studioCmd("bind_value_ref", {
-            value_ref: v.alias,
-            step_index: lastField.step_index,
-          }).then(() => pollStudio());
-        },
-        true,
-      );
-      varsRow.appendChild(chip);
-    }
-  };
-
-  const showFieldPanel = (lf, { forceReset } = {}) => {
-    lastField = lf && typeof lf === "object" ? lf : null;
-    if (!lastField || !capturing) {
-      fieldBox.classList.remove("show");
-      box.classList.remove("field-open");
-      return;
-    }
-    const alias = String(lastField.alias || "field");
-    const key =
-      String(lastField.step_index ?? "") +
-      "|" +
-      alias +
-      "|" +
-      String(lastField.selector || "");
-    const isNew = forceReset || key !== lastFieldKey;
-    lastFieldKey = key;
-    fieldLabel.textContent =
-      (lastField.source === "user" ? "Ask End User · " : "Field · ") +
-      (lastField.label || alias);
-    if (fieldMode) fieldMode.value = lastField.source === "user" ? "ask" : "replay";
-    if (interactionFields) interactionFields.style.display = fieldMode && fieldMode.value === "ask" ? "block" : "none";
-    if (fieldVar && (isNew || !fieldVar.value)) fieldVar.value = lastField.input_name || alias;
-    if (fieldType && (isNew || !fieldType.value)) fieldType.value = lastField.input_type || "text";
-    if (fieldFallback && (isNew || !fieldFallback.value)) fieldFallback.value = lastField.fallback_value || "";
-    if (fieldQ && (isNew || !fieldQ.value)) {
-      fieldQ.value =
-        lastField.live_question ||
-        "Ask the visitor for their " + alias.replace(/_/g, " ");
-    }
-    fieldBox.classList.add("show");
-    box.classList.add("field-open");
-    box.classList.remove("compact");
-    renderVars();
-  };
-
-  const applyStudioStatus = (st) => {
-    if (!st || typeof st !== "object") return;
-    const phase = String(st.phase || "setup");
-    capturing = phase === "capturing";
-    const stopping = phase === "stopping" || !!st.needs_merge;
-    const stopped = phase === "done";
-    btnCapture.disabled = capturing || stopping || stopped;
-    btnCapture.textContent = capturing
-      ? "Capturing…"
-      : "Start capturing this flow";
-    btnStop.disabled = stopping || stopped;
-    btnStop.textContent = stopping ? "Stopping…" : stopped ? "Stopped" : "Stop";
-    demoVariables = Array.isArray(st.demo_variables) ? st.demo_variables : [];
-    let line = "Setup — log in, then Start capturing this flow.";
-    if (stopped) line = "Stopped — flow saved. Close this window or return to Flows.";
-    else if (stopping) line = "Stopping — saving flow…";
-    else if (capturing) line = "Capturing live — clicks become flow steps.";
-    statusEl.textContent = line;
-    showFieldPanel(st.last_field);
-    if (capturing) syncDots("live");
-    else if (stopping) syncDots("paused");
-    else if (stopped) syncDots("");
-    else syncDots("");
-    chipLabel.textContent = stopped
-      ? "Stopped"
-      : stopping
-        ? "Stopping"
-        : capturing
-          ? "Capturing"
-          : recording
-            ? "Recording"
-            : "Studio";
-    syncCompact();
-  };
-
-  const pollStudio = async () => {
-    try {
-      if (typeof window.navigatorStudioStatus !== "function") return;
-      const st = await window.navigatorStudioStatus();
-      applyStudioStatus(st);
-    } catch (e) {
-      /* ignore */
-    }
-  };
-
-  window.__navStudioApply = applyStudioStatus;
 
   const drawWave = () => {
-    if (!analyser) return;
+    if (!analyser || !ctx) return;
     const buf = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteTimeDomainData(buf);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = paused ? "#fbbf24" : "#6ee7b7";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#6ee7b7";
     ctx.beginPath();
-    for (let i = 0; i < canvas.width; i++) {
-      const v = buf[Math.floor((i * buf.length) / canvas.width)] / 128.0;
-      const y = (v * canvas.height) / 2;
-      i ? ctx.lineTo(i, y) : ctx.moveTo(i, y);
+    const step = canvas.width / buf.length;
+    for (let i = 0; i < buf.length; i++) {
+      const y = (buf[i] / 255) * canvas.height;
+      if (i === 0) ctx.moveTo(0, y);
+      else ctx.lineTo(i * step, y);
     }
     ctx.stroke();
-    requestAnimationFrame(drawWave);
+    if (recording && !paused) requestAnimationFrame(drawWave);
   };
 
-  const revokePlayback = () => {
-    if (playback) {
-      playback.pause();
-      playback = null;
+  const stopMic = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
     }
-    if (playbackUrl) {
-      URL.revokeObjectURL(playbackUrl);
-      playbackUrl = null;
+    if (rec && rec.state !== "inactive") {
+      try {
+        rec.stop();
+      } catch (e) {
+        /* ignore */
+      }
     }
-  };
-
-  const rebuildPlayback = () => {
-    revokePlayback();
-    if (!recordParts.length) {
-      playBtn.disabled = true;
-      return;
+    rec = null;
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
     }
-    const mime = (rec && rec.mimeType) || "audio/webm";
-    playbackUrl = URL.createObjectURL(new Blob(recordParts, { type: mime }));
-    playback = new Audio(playbackUrl);
-    playback.onended = () => {
-      playBtn.textContent = "Play";
-    };
-    playBtn.disabled = false;
-  };
-
-  const sendChunk = async (blob) => {
-    if (!blob || !blob.size) return;
-    recordParts.push(blob);
-    const buf = await blob.arrayBuffer();
-    let bin = "";
-    const bytes = new Uint8Array(buf);
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    try {
-      window.navigatorNarrate({
-        mime: (rec && rec.mimeType) || "audio/webm",
-        b64: btoa(bin),
-        language: langSel.value || "auto",
-        translate_to: transSel.value || "same",
-      });
-    } catch (e) {
-      console.warn("[navigator-narrate] send failed", e);
-    }
-  };
-
-  const stopTracks = () => {
-    if (stream) stream.getTracks().forEach((t) => t.stop());
-    stream = null;
     if (audioCtx) {
       audioCtx.close().catch(() => {});
       audioCtx = null;
     }
     analyser = null;
-    if (timer) clearInterval(timer);
-    timer = null;
-  };
-
-  const fullStop = () => {
-    if (rec && rec.state !== "inactive") {
-      try {
-        rec.stop();
-      } catch (e) {
-        /* already stopped */
-      }
-    }
-    rec = null;
     recording = false;
     paused = false;
-    stopTracks();
     recBtn.textContent = "Record";
     recBtn.classList.remove("recording", "paused");
     pauseBtn.disabled = true;
     pauseBtn.textContent = "Pause";
+    syncDots("");
     syncCompact();
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    rebuildPlayback();
   };
 
-  const start = async () => {
-    revokePlayback();
-    recordParts = [];
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const startMic = async () => {
+    if (!hasMic) return;
+    pushConfig();
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      statusEl.textContent = "Mic permission denied.";
+      return;
+    }
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new Ctx();
+    const src = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
-    audioCtx.createMediaStreamSource(stream).connect(analyser);
-    window.__navNarrateT0 = performance.now();
-    rec = new MediaRecorder(stream);
+    src.connect(analyser);
+    recordParts = [];
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+    rec = new MediaRecorder(stream, { mimeType: mime });
     rec.ondataavailable = (ev) => {
-      void sendChunk(ev.data);
+      if (!ev.data || !ev.data.size) return;
+      recordParts.push(ev.data);
+      const reader = new FileReader();
+      reader.onload = () => {
+        const b64 = String(reader.result || "").split(",")[1] || "";
+        try {
+          if (typeof window.navigatorNarrate === "function") {
+            window.navigatorNarrate({
+              b64,
+              mime,
+              language: langSel.value || "auto",
+              translate_to: transSel.value || "same",
+            });
+          }
+        } catch (e) {
+          /* ignore */
+        }
+      };
+      reader.readAsDataURL(ev.data);
     };
-    rec.onstop = () => {
-      rebuildPlayback();
-    };
+    t0 = performance.now();
+    if (!window.__navNarrateT0) window.__navNarrateT0 = t0;
     rec.start(3000);
     recording = true;
     paused = false;
-    recBtn.textContent = "Stop";
+    recBtn.textContent = "Stop mic";
     recBtn.classList.add("recording");
     pauseBtn.disabled = false;
-    playBtn.disabled = true;
     syncDots("live");
     syncCompact();
-    pushConfig();
     timer = setInterval(() => {
-      timeEl.textContent = fmt(performance.now() - window.__navNarrateT0);
-    }, 500);
+      timeEl.textContent = fmt(performance.now() - t0);
+    }, 250);
     drawWave();
-    // Marker watch: "prompt start" while narrating (Web Speech; optional).
-    if (promptMode === "narration") startSpeechRec();
-    // Mic on ⇒ capture on. Clients narrate + click together; setup-only
-    // discard was wiping flows when they Stopped without the capture button.
-    if (!capturing) {
-      statusEl.textContent = "Mic on — also starting capture…";
-      void studioCmd("begin_capture").then((st) => {
-        if (st && st.error) {
-          statusEl.textContent = String(st.error);
-          return;
-        }
-        capturing = true;
-        if (btnCapture) {
-          btnCapture.disabled = true;
-          btnCapture.textContent = "Capturing…";
-        }
-        syncCompact();
-        statusEl.textContent = "Capturing live — click and narrate, then Stop.";
-        return pollStudio();
-      });
-    }
   };
 
-  btnCapture.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      statusEl.textContent = "Starting capture…";
-      void studioCmd("begin_capture").then((st) => {
-        if (st && st.error) {
-          statusEl.textContent = String(st.error);
-          return;
-        }
-        if (st) applyStudioStatus(st);
-        else return pollStudio();
-      });
-    },
-    true,
-  );
-  btnStop.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      ev.preventDefault();
-      statusEl.textContent = "Stopping — saving flow…";
-      syncDots("paused");
-      chipLabel.textContent = "Stopping";
-      btnStop.disabled = true;
-      btnCapture.disabled = true;
-      void studioCmd("stop_record").then((st) => {
-        if (st && st.error) {
-          statusEl.textContent = String(st.error);
-          btnStop.disabled = false;
-          return;
-        }
-        if (st) applyStudioStatus(Object.assign({}, st, { phase: "stopping", needs_merge: true }));
-        else return pollStudio();
-      });
-    },
-    true,
-  );
-
-  btnFieldAsk.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      if (!lastField) {
-        statusEl.textContent = "Click a field first.";
-        return;
-      }
-      if (fieldMode && fieldMode.value === "replay") {
-        void studioCmd("keep_agent_fill", { step_index: lastField.step_index }).then(() => pollStudio());
-        return;
-      }
-      const varAlias = (fieldVar && fieldVar.value) || lastField.alias || "";
-      const q = (fieldQ && fieldQ.value) || "";
-      if (!String(q).trim()) {
-        statusEl.textContent = "Type the agent prompt first.";
-        return;
-      }
-      statusEl.textContent = "Saving ask-visitor variable…";
-      void studioCmd("mark_field_ask", {
-        var_alias: varAlias,
-        live_question: q,
-        input_type: (fieldType && fieldType.value) || "text",
-        fallback_value: (fieldFallback && fieldFallback.value) || "",
-        step_index: lastField.step_index,
-      }).then((res) => {
-        if (res && res.error) statusEl.textContent = String(res.error);
-        else statusEl.textContent = "Saved — End User will be asked live.";
-        return pollStudio();
-      });
-    },
-    true,
-  );
-  if (fieldMode) {
-    fieldMode.addEventListener("change", () => {
-      if (interactionFields) interactionFields.style.display = fieldMode.value === "ask" ? "block" : "none";
-    });
-  }
-  btnFieldDismiss.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      void studioCmd("dismiss_field").then(() => pollStudio());
-    },
-    true,
-  );
-  fieldBox.addEventListener("dragover", (ev) => {
-    ev.preventDefault();
+  recBtn.addEventListener("click", () => {
+    if (recording) stopMic();
+    else void startMic();
   });
-  fieldBox.addEventListener("drop", (ev) => {
-    ev.preventDefault();
-    const ref = ev.dataTransfer.getData("text/plain");
-    if (!ref) return;
-    void studioCmd("bind_value_ref", {
-      value_ref: ref,
-      step_index: lastField && lastField.step_index,
-    }).then(() => pollStudio());
-  });
-  btnNextGo.addEventListener(
-    "click",
-    (ev) => {
-      ev.stopPropagation();
-      const prompt = (nextPrompt && nextPrompt.value) || "";
-      if (!String(prompt).trim()) {
-        statusEl.textContent = "Describe what to do next.";
-        return;
-      }
-      statusEl.textContent = "Planning next steps (one screenshot)…";
-      void studioCmd("next_prompt", { prompt }).then((res) => {
-        if (res && res.error) statusEl.textContent = String(res.error);
-        else statusEl.textContent = "Added " + (res && res.added ? res.added : 0) + " steps.";
-        return pollStudio();
-      });
-    },
-    true,
-  );
 
-  if (btnPromptMode) {
-    btnPromptMode.addEventListener(
-      "click",
-      (ev) => {
-        ev.stopPropagation();
-        if (promptMode === "prompt_listening") {
-          void endPromptListening();
-          return;
-        }
-        if (promptMode === "preview") {
-          leavePromptToNarration();
-          return;
-        }
-        enterPromptListening();
-      },
-      true,
-    );
-  }
-  if (btnPromptStop) {
-    btnPromptStop.addEventListener(
-      "click",
-      (ev) => {
-        ev.stopPropagation();
-        void endPromptListening();
-      },
-      true,
-    );
-  }
-  if (btnPromptContinue) {
-    btnPromptContinue.addEventListener(
-      "click",
-      (ev) => {
-        ev.stopPropagation();
-        if (!pendingAgentTask) {
-          statusEl.textContent = "No parsed task — Edit and Stop prompt again.";
-          return;
-        }
-        statusEl.textContent = "Saving agent task into demo…";
-        void studioCmd("prompt_confirm", { agent_task: pendingAgentTask }).then((res) => {
-          if (res && res.error) {
-            statusEl.textContent = String(res.error);
-            return;
-          }
-          statusEl.textContent = "Agent task saved — will run at live demo.";
-          leavePromptToNarration();
-          return pollStudio();
-        });
-      },
-      true,
-    );
-  }
-  if (btnPromptEdit) {
-    btnPromptEdit.addEventListener(
-      "click",
-      (ev) => {
-        ev.stopPropagation();
-        promptMode = "prompt_listening";
-        pendingAgentTask = null;
-        if (promptPreview) promptPreview.style.display = "none";
-        if (promptTitle) promptTitle.textContent = "⚡ Prompt Listening";
-        if (promptHint) promptHint.textContent = "Edit the instruction, then Stop prompt.";
-        startSpeechRec();
-      },
-      true,
-    );
-  }
-
-  recBtn.addEventListener(
-    "click",
-    async (ev) => {
-      ev.stopPropagation();
-      if (recording) {
-        fullStop();
-        return;
-      }
+  pauseBtn.addEventListener("click", () => {
+    if (!rec) return;
+    if (!paused) {
       try {
-        await start();
+        rec.pause();
       } catch (e) {
-        chipLabel.textContent = "Mic blocked";
-        console.warn(e);
+        return;
       }
-    },
-    true,
-  );
-
-  pauseBtn.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    if (!rec || rec.state === "inactive") return;
-    if (!paused && rec.state === "recording") {
-      rec.pause();
       paused = true;
-      recBtn.classList.add("paused");
-      syncDots("paused");
-      chipLabel.textContent = "Paused";
       pauseBtn.textContent = "Resume";
-    } else if (paused && rec.state === "paused") {
-      rec.resume();
+      pauseBtn.classList.add("paused");
+      syncDots("paused");
+    } else {
+      try {
+        rec.resume();
+      } catch (e) {
+        return;
+      }
       paused = false;
-      recBtn.classList.remove("paused");
-      syncDots("live");
-      chipLabel.textContent = "Recording";
       pauseBtn.textContent = "Pause";
+      pauseBtn.classList.remove("paused");
+      syncDots("live");
       drawWave();
     }
   });
 
-  playBtn.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    if (!playback) {
-      rebuildPlayback();
-    }
-    if (!playback) return;
-    if (!playback.paused) {
+  playBtn.addEventListener("click", () => {
+    if (!recordParts.length) return;
+    if (playback) {
       playback.pause();
+      playback = null;
+      if (playbackUrl) URL.revokeObjectURL(playbackUrl);
+      playbackUrl = null;
       playBtn.textContent = "Play";
       return;
     }
-    playback.play().catch(() => {});
-    playBtn.textContent = "Pause";
+    const blob = new Blob(recordParts, { type: recordParts[0].type || "audio/webm" });
+    playbackUrl = URL.createObjectURL(blob);
+    playback = new Audio(playbackUrl);
+    playback.onended = () => {
+      playBtn.textContent = "Play";
+      playback = null;
+    };
+    playback.play();
+    playBtn.textContent = "Stop play";
   });
 
   langSel.addEventListener("change", pushConfig);
   transSel.addEventListener("change", pushConfig);
+
+  btnCapture.addEventListener("click", async () => {
+    const res = await studioCmd("begin_capture");
+    capturing = !!(res && (res.phase === "capturing" || res.ok !== false));
+    if (capturing) {
+      statusEl.textContent =
+        "Capturing — click/fill the product. Sample vs ask: Demo Script after Stop.";
+      btnCapture.textContent = "Capturing…";
+      btnCapture.disabled = true;
+      syncCompact();
+      syncDots("live");
+    } else {
+      statusEl.textContent = String((res && res.error) || "Could not start capture.");
+    }
+  });
+
+  btnStop.addEventListener("click", async () => {
+    stopMic();
+    statusEl.textContent = "Stopping…";
+    await studioCmd("stop_merge");
+    capturing = false;
+    btnCapture.disabled = false;
+    btnCapture.textContent = "Start capturing this flow";
+    statusEl.textContent =
+      "Stopped. Open Demo Script to set Sample / Ask visitor / Use variable on fills.";
+    syncCompact();
+    syncDots("");
+  });
+
+  const pollStatus = async () => {
+    try {
+      let st = null;
+      if (typeof window.navigatorStudioStatus === "function") {
+        st = await window.navigatorStudioStatus();
+      } else if (window.__navStudioStatus) {
+        st = window.__navStudioStatus;
+      }
+      if (!st || typeof st !== "object") return;
+      const phase = String(st.phase || "");
+      if (phase === "capturing") {
+        capturing = true;
+        btnCapture.disabled = true;
+        btnCapture.textContent = "Capturing…";
+      } else if (phase === "setup") {
+        capturing = false;
+        btnCapture.disabled = false;
+        btnCapture.textContent = "Start capturing this flow";
+      }
+      const n = Number(st.steps || 0);
+      if (capturing && n >= 0) {
+        statusEl.textContent =
+          "Capturing — " +
+          n +
+          " step" +
+          (n === 1 ? "" : "s") +
+          ". Demo Script sets sample vs ask vs variables.";
+      }
+      syncCompact();
+    } catch (e) {
+      /* ignore */
+    }
+  };
+  setInterval(pollStatus, 1200);
   pushConfig();
-  void pollStudio();
-  setInterval(() => {
-    void pollStudio();
-  }, 1000);
 })();

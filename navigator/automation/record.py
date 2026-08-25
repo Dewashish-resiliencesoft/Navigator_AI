@@ -489,6 +489,25 @@ def inject_narration_widget(page: Page) -> None:
     _evaluate_fast(page, _narrate_widget_js())
 
 
+def _context_init_scripts(context: Any) -> None:
+    """Register inject + narrate + cursor on the browser context before new_page.
+
+    Context-level init_script runs on every navigation (including remote CDP)
+    without a post-goto evaluate — required when evaluate hangs the sync driver.
+    """
+    context.add_init_script(
+        "window.__navRecordGen = (window.__navRecordGen || 0) + 1;"
+    )
+    context.add_init_script(_INJECT_JS)
+    context.add_init_script(_narrate_widget_js())
+    try:
+        from navigator.automation.browser.cursor import _CURSOR_JS
+
+        context.add_init_script(_CURSOR_JS)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def inject_dom_listeners(page: Page, *, force: bool = False) -> None:
     """Install click/fill listeners (rebinds after SPA wipe via gen bump)."""
     if not force:
@@ -1199,6 +1218,13 @@ def record_session(
             context = browser.new_context(no_viewport=True)
         else:
             context = browser.new_context(viewport={"width": 1280, "height": 720})
+        # Before new_page: context init_script survives SPA nav / remote CDP
+        # without blocking evaluate in the wait loop.
+        try:
+            _context_init_scripts(context)
+            print("[record] context init_scripts registered (inject+narrate+cursor)", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[record] context init_scripts failed: {exc}", flush=True)
         page = context.new_page()
         if stop_event is not None:
             gate.stop_event = stop_event
@@ -1260,66 +1286,98 @@ def record_session(
                 "(Start capturing this flow / Stop), or /client dashboard.",
                 flush=True,
             )
-            print("[record] capture loop running (injecting listeners…)", flush=True)
-            page._nav_need_reinject = True  # type: ignore[attr-defined]
+            # Remote laptop CDP (NAVIGATOR_RECORD_BROWSER_WS): any page.evaluate in
+            # this loop can hang the sync Playwright driver on flaky LAN/hotspot.
+            # That blocks expose_function callbacks → 0 steps → stop saves nothing.
+            # Bindings + add_init_script already ran before goto — trust those.
+            remote_cdp = bool(ws)
+            if remote_cdp:
+                print(
+                    "[record] remote CDP — evaluate-free wait "
+                    "(context init_script + navigatorRecord bindings only)",
+                    flush=True,
+                )
+                # One optional short inject — never block the wait loop if it fails.
+                try:
+                    inject_narration_widget(page)
+                    print(
+                        "[record] remote: #nav-narrate inject attempted "
+                        "(init_script is primary)",
+                        flush=True,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"[record] remote: narrate inject skipped ({exc}); "
+                        "relying on context add_init_script",
+                        flush=True,
+                    )
+                page._nav_inject_ok = True  # type: ignore[attr-defined]
+                print("[record] studio listeners ready (remote)", flush=True)
+            else:
+                print("[record] capture loop running (injecting listeners…)", flush=True)
+                page._nav_need_reinject = True  # type: ignore[attr-defined]
             last_phase = gate.phase if gate is not None else "setup"
             last_step_n = -1
             inject_ticks = 0
             mic_tried = False
             while not stop_event.wait(0.25):
-                drain = getattr(gate, "drain_dom_studio_cmd", None) if gate else None
-                if callable(drain):
-                    try:
-                        drain()
-                    except Exception:  # noqa: BLE001
-                        pass
-                drain_q = getattr(gate, "drain_dom_record_q", None) if gate else None
-                if callable(drain_q):
-                    try:
-                        drain_q()
-                    except Exception:  # noqa: BLE001
-                        pass
-                inject_ticks += 1
-                want = bool(getattr(page, "_nav_need_reinject", False)) or inject_ticks == 1
-                if want or inject_ticks % 8 == 0:
-                    try:
-                        need = {"rec": False, "studio": False, "cursor": False}
+                if not remote_cdp:
+                    drain = getattr(gate, "drain_dom_studio_cmd", None) if gate else None
+                    if callable(drain):
                         try:
-                            page.set_default_timeout(3_000)
-                            need = page.evaluate(
-                                """() => ({
-                                  rec: document.documentElement.dataset.navigatorRecord === '1',
-                                  studio: !!document.getElementById('nav-narrate'),
-                                  cursor: !!document.getElementById('nav-cursor')
-                                })"""
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            print(f"[record] health eval: {exc}", flush=True)
-                        finally:
+                            drain()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    drain_q = getattr(gate, "drain_dom_record_q", None) if gate else None
+                    if callable(drain_q):
+                        try:
+                            drain_q()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    inject_ticks += 1
+                    want = (
+                        bool(getattr(page, "_nav_need_reinject", False))
+                        or inject_ticks == 1
+                    )
+                    if want or inject_ticks % 8 == 0:
+                        try:
+                            need = {"rec": False, "studio": False, "cursor": False}
                             try:
-                                page.set_default_timeout(30_000)
-                            except Exception:  # noqa: BLE001
-                                pass
-                        missing = not (
-                            isinstance(need, dict)
-                            and need.get("rec")
-                            and need.get("studio")
-                        )
-                        if want or missing:
-                            inject_dom_listeners(page, force=True)
-                            inject_narration_widget(page)
-                            inject_record_cursor(page)
-                            page._nav_need_reinject = False  # type: ignore[attr-defined]
-                            if not getattr(page, "_nav_inject_ok", False):
-                                page._nav_inject_ok = True  # type: ignore[attr-defined]
-                                print("[record] studio listeners ready", flush=True)
-                            elif missing or want:
-                                print("[record] reinjected after nav", flush=True)
-                        elif isinstance(need, dict) and not need.get("cursor"):
-                            inject_record_cursor(page)
-                            page._nav_need_reinject = False  # type: ignore[attr-defined]
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[record] inject tick: {exc}", flush=True)
+                                page.set_default_timeout(3_000)
+                                need = page.evaluate(
+                                    """() => ({
+                                      rec: document.documentElement.dataset.navigatorRecord === '1',
+                                      studio: !!document.getElementById('nav-narrate'),
+                                      cursor: !!document.getElementById('nav-cursor')
+                                    })"""
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                print(f"[record] health eval: {exc}", flush=True)
+                            finally:
+                                try:
+                                    page.set_default_timeout(30_000)
+                                except Exception:  # noqa: BLE001
+                                    pass
+                            missing = not (
+                                isinstance(need, dict)
+                                and need.get("rec")
+                                and need.get("studio")
+                            )
+                            if want or missing:
+                                inject_dom_listeners(page, force=True)
+                                inject_narration_widget(page)
+                                inject_record_cursor(page)
+                                page._nav_need_reinject = False  # type: ignore[attr-defined]
+                                if not getattr(page, "_nav_inject_ok", False):
+                                    page._nav_inject_ok = True  # type: ignore[attr-defined]
+                                    print("[record] studio listeners ready", flush=True)
+                                elif missing or want:
+                                    print("[record] reinjected after nav", flush=True)
+                            elif isinstance(need, dict) and not need.get("cursor"):
+                                inject_record_cursor(page)
+                                page._nav_need_reinject = False  # type: ignore[attr-defined]
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[record] inject tick: {exc}", flush=True)
                 if (
                     not mic_tried
                     and narration is not None

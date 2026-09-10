@@ -28,9 +28,9 @@ def view_frame_ms(target_fps: int | None = None) -> int:
     if target_fps is None:
         from navigator.core.settings import settings
 
-        target_fps = int(settings.target_fps or 15)
-    fps = max(5, min(30, int(target_fps)))
-    return max(33, int(round(1000.0 / fps)))
+        target_fps = int(settings.target_fps or 20)
+    fps = max(8, min(24, int(target_fps)))
+    return max(42, int(round(1000.0 / fps)))
 
 
 def screencast_every_nth(target_fps: int | None = None) -> int:
@@ -38,10 +38,20 @@ def screencast_every_nth(target_fps: int | None = None) -> int:
     if target_fps is None:
         from navigator.core.settings import settings
 
-        target_fps = int(settings.target_fps or 15)
-    fps = max(5, min(30, int(target_fps)))
+        target_fps = int(settings.target_fps or 20)
+    fps = max(8, min(24, int(target_fps)))
     # Chromium ~60fps source; everyNth≈60/fps.
     return max(1, int(round(60.0 / fps)))
+
+
+def screencast_max_size() -> tuple[int, int]:
+    from navigator.core.settings import settings
+
+    w = max(640, min(1280, int(settings.screenshot_max_width or 960)))
+    # 16:9
+    h = int(round(w * 9 / 16))
+    h -= h % 2
+    return w, h
 
 
 #: Defaults used by tests / callers that import constants (resolved at import
@@ -68,7 +78,12 @@ img{width:1280px;height:720px;object-fit:fill;display:block;image-rendering:auto
 <body>
 <img id=f alt=frame width=1280 height=720>
 <script>
-async function tickFrame(){
+/* Interval poll with in-flight skip: never backlog stale JPEGs when the
+   Cloudflare hop is slow (serial await stretched the old cadence). */
+let inFlight = false;
+async function pullFrame(){
+  if (inFlight) return;
+  inFlight = true;
   try {
     const r = await fetch('frame.jpg?ts='+Date.now(), {cache:'no-store'});
     if (r.ok) {
@@ -80,9 +95,10 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, __VIEW_FRAME_MS__);
+  inFlight = false;
 }
-tickFrame();
+setInterval(pullFrame, __VIEW_FRAME_MS__);
+pullFrame();
 </script></body></html>
 """
 
@@ -215,6 +231,7 @@ def start_screencast(handle: RelayHandle, page: Page):
 
     quality = max(1, min(100, int(settings.screenshot_quality or 70)))
     nth = screencast_every_nth()
+    max_w, max_h = screencast_max_size()
     try:
         cdp = page.context.new_cdp_session(page)
     except Exception as exc:  # noqa: BLE001
@@ -240,8 +257,8 @@ def start_screencast(handle: RelayHandle, page: Page):
             {
                 "format": "jpeg",
                 "quality": quality,
-                "maxWidth": 1280,
-                "maxHeight": 720,
+                "maxWidth": max_w,
+                "maxHeight": max_h,
                 "everyNthFrame": nth,
             },
         )
@@ -250,7 +267,7 @@ def start_screencast(handle: RelayHandle, page: Page):
         return None
     print(
         f"[live] screencast=on quality={quality} everyNth={nth} "
-        f"view_ms={view_frame_ms()}",
+        f"size={max_w}x{max_h} view_ms={view_frame_ms()}",
         flush=True,
     )
     handle.screencast = True

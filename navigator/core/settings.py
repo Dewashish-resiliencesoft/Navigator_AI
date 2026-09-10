@@ -158,12 +158,13 @@ class Settings(BaseSettings):
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
     #: Screenshare /view JPEG poll rate through the public tunnel.
-    #: 60fps floods Cloudflare + starves Gemini Live voice; 15fps is fluid
-    #: enough for demos and leaves CPU/bandwidth for clear audio.
-    target_fps: int = 15
-    #: JPEG quality for Meet/Zoom screenshare frames (1–100). Meet re-encodes
-    #: the share anyway. Prefer ~65 with target_fps=15 over quality=50@60fps.
+    #: 20fps balances motion smoothness vs Cloudflare bandwidth; keep ≤24.
+    target_fps: int = 20
+    #: JPEG quality for Meet/Zoom screenshare frames (1–100).
     screenshot_quality: int = 70
+    #: Cap CDP screencast width (height scales). 960 cuts tunnel bytes ~40%
+    #: vs 1280 while staying sharp enough for product demos.
+    screenshot_max_width: int = 960
 
 
 settings = Settings()

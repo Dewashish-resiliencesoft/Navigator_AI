@@ -567,8 +567,9 @@ See **`.env.example`** for the full commented list. Highlights:
 | `NAVIGATOR_ZOOM_*` | Zoom Server-to-Server OAuth |
 | `NAVIGATOR_GROQ_*` / `NAVIGATOR_GEMINI_*` | LLM / STT / Live audio |
 | `NAVIGATOR_CREDENTIAL_KEY` | Product-login vault Fernet key |
-| `NAVIGATOR_TARGET_FPS` | Screenshare /view poll rate (default 15; keep ≤20 through tunnel) |
-| `NAVIGATOR_SCREENSHOT_QUALITY` | JPEG quality for screenshare (default 65–70; lower = less CPU) |
+| `NAVIGATOR_TARGET_FPS` | Screenshare /view poll rate (default 20; keep ≤24 through tunnel) |
+| `NAVIGATOR_SCREENSHOT_QUALITY` | JPEG quality for screenshare (default 70) |
+| `NAVIGATOR_SCREENSHOT_MAX_WIDTH` | CDP frame width cap (default 960; lower = less lag) |
 | `NAVIGATOR_JWT_SECRET` | Dashboard JWT signing |
 
 Never commit real `.env` values.
@@ -596,7 +597,7 @@ Lean server pattern (LAN “cloud” box):
 
 1. Sync project (code + `.env` + DBs + `chroma/` + `voices/` + `web/dist`).
    Keep remote `.venv` machine-local.
-2. `NAVIGATOR_HEADFUL=0`, `NAVIGATOR_TARGET_FPS=15`, `NAVIGATOR_SCREENSHOT_QUALITY=65`.
+2. `NAVIGATOR_HEADFUL=0`, `NAVIGATOR_TARGET_FPS=20`, `NAVIGATOR_SCREENSHOT_QUALITY=70`, `NAVIGATOR_SCREENSHOT_MAX_WIDTH=960`.
 3. Clone/sync Attendee under the same projects root, e.g.
    `~/dewashish_projects/attendee`, set
    `NAVIGATOR_ATTENDEE_COMPOSE_DIR` accordingly, `AUTOSTART=1`.

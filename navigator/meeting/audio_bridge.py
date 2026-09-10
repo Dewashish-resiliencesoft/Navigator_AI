@@ -3,13 +3,16 @@
 ponytail: one threaded sync websockets server. Ceiling: single connection handler
 loop. Upgrade: per-bot hubs.
 
-Outbound PCM is coalesced (~40ms) before send — Gemini Live emits tiny chunks;
-shipping each one through the Cloudflare live-ws proxy causes Zoom/Meet
-underruns and glitchy voice.
+Outbound path (glitch fixes):
+1. Coalesce ~100ms of PCM — Gemini Live emits tiny chunks; shipping each through
+   Cloudflare live-ws causes Zoom/Meet underruns.
+2. Upsample 24 kHz → 48 kHz — Zoom web AudioContext is 48 kHz; mismatched
+   AudioBuffers click when the browser resamples many tiny buffers.
 """
 
 from __future__ import annotations
 
+import array
 import base64
 import json
 import threading
@@ -18,8 +21,10 @@ from collections.abc import Iterator
 from queue import Empty, Queue
 from typing import Any
 
-#: Coalesce bot PCM to ~40ms before Attendee (24kHz 16-bit mono = 1920 bytes).
-_OUTBOUND_COALESCE_S = 0.04
+#: Coalesce bot PCM before Attendee (~100ms at source rate).
+_OUTBOUND_COALESCE_S = 0.10
+#: Zoom web virtual mic AudioContext is 48 kHz.
+_ATTENDEE_PLAYBACK_RATE = 48_000
 
 
 def _pcm_seconds(pcm: bytes, sample_rate: int) -> float:
@@ -29,6 +34,50 @@ def _pcm_seconds(pcm: bytes, sample_rate: int) -> float:
 
 def _coalesce_bytes(sample_rate: int, seconds: float = _OUTBOUND_COALESCE_S) -> int:
     return max(640, int(sample_rate * 2 * seconds))
+
+
+def upsample_pcm16_mono(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear upsample int16 mono. Exact 2× (24→48k) uses sample doubling."""
+    if not pcm or src_rate <= 0 or src_rate == dst_rate:
+        return pcm
+    if len(pcm) % 2:
+        pcm = pcm[:-1]
+    if not pcm:
+        return pcm
+    src = array.array("h")
+    src.frombytes(pcm)
+    if dst_rate == src_rate * 2:
+        # Exact 2× — zero-order hold is enough and click-free for speech.
+        out = array.array("h", [0]) * (len(src) * 2)
+        j = 0
+        for s in src:
+            out[j] = s
+            out[j + 1] = s
+            j += 2
+        return out.tobytes()
+    # Generic linear (rare path).
+    n_out = max(1, int(round(len(src) * dst_rate / src_rate)))
+    out = array.array("h", [0]) * n_out
+    last = len(src) - 1
+    for i in range(n_out):
+        pos = i * (len(src) - 1) / max(1, n_out - 1)
+        i0 = int(pos)
+        i1 = min(i0 + 1, last)
+        frac = pos - i0
+        out[i] = int(src[i0] * (1 - frac) + src[i1] * frac)
+    return out.tobytes()
+
+
+def upsample_for_attendee(
+    pcm: bytes,
+    src_rate: int,
+    *,
+    dst_rate: int = _ATTENDEE_PLAYBACK_RATE,
+) -> tuple[bytes, int]:
+    """Return (pcm, out_rate)."""
+    if not pcm or src_rate == dst_rate:
+        return pcm, src_rate
+    return upsample_pcm16_mono(pcm, src_rate, dst_rate), dst_rate
 
 
 class AudioBridge:
@@ -129,25 +178,29 @@ class AudioBridge:
     def _send_pcm(self, pcm: bytes, rate: int) -> None:
         if not pcm:
             return
-        if self._send_json(
-            {
-                "trigger": "realtime_audio.bot_output",
-                "data": {
-                    "chunk": base64.b64encode(pcm).decode(),
-                    "sample_rate": rate,
-                },
-            }
-        ):
-            self.chunks_sent += 1
-            # Counted on the send, not on the queue put: chunks a barge-in
-            # drops or a dead socket refuses are never heard, so callers
-            # must not wait them out.
-            self.audio_s_sent += _pcm_seconds(pcm, rate)
-        else:
-            print(
-                "[audio] dropped outbound chunk: Attendee WS not connected",
-                flush=True,
-            )
+        duration_s = _pcm_seconds(pcm, rate)
+        out, out_rate = upsample_for_attendee(pcm, rate)
+        payload = {
+            "trigger": "realtime_audio.bot_output",
+            "data": {
+                "chunk": base64.b64encode(out).decode(),
+                "sample_rate": out_rate,
+            },
+        }
+        # Handshake can finish a tick before the handler assigns self._ws.
+        deadline = time.monotonic() + 45.0
+        while not self._stop.is_set():
+            if self._send_json(payload):
+                self.chunks_sent += 1
+                self.audio_s_sent += duration_s
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        print(
+            "[audio] dropped outbound chunk: Attendee WS not connected",
+            flush=True,
+        )
 
     def _wait_ws(self) -> None:
         deadline = time.monotonic() + 45.0
@@ -157,12 +210,7 @@ class AudioBridge:
             time.sleep(0.01)
 
     def _run_sender(self) -> None:
-        """Push bot audio coalesced (~40ms) as soon as it is queued.
-
-        Previously outbound was only flushed inside the inbound read loop, so
-        bot audio could not go out unless the meeting happened to be sending us
-        something — silence in, silence out.
-        """
+        """Push bot audio coalesced (~100ms) + upsampled as soon as queued."""
         buf = bytearray()
         buf_rate = 0
         epoch = self._out_epoch
@@ -172,10 +220,9 @@ class AudioBridge:
                 buf_rate = 0
                 epoch = self._out_epoch
             try:
-                pcm, rate = self._outbound.get(timeout=0.02)
+                pcm, rate = self._outbound.get(timeout=0.03)
             except Empty:
                 if buf and buf_rate and self._out_epoch == epoch:
-                    # Flush partial coalesce so end of utterance is not stuck.
                     self._wait_ws()
                     if self._out_epoch == epoch:
                         self._send_pcm(bytes(buf), buf_rate)
@@ -244,7 +291,6 @@ class AudioBridge:
                 self._server = server
                 self.port = int(server.socket.getsockname()[1])
                 self._ready.set()
-                # Critical: without serve_forever(), TCP listens but never accepts.
                 server.serve_forever()
         except Exception as exc:  # noqa: BLE001
             print(f"[audio] bridge failed: {exc}", flush=True)

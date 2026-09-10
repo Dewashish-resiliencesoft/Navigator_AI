@@ -95,6 +95,14 @@ export type DecisionTrace = {
   created_at: string;
 };
 
+export type MeetingTranscriptLine = {
+  id: string;
+  kind: "screen" | "agent" | "visitor" | "agent_reply" | string;
+  page_id: string;
+  text: string;
+  created_at: string;
+};
+
 export type Demo = {
   demo_id: string;
   product_id: string;
@@ -691,6 +699,8 @@ export const api = {
   getRun: (sessionId: string) => get<DemoRun>(`/client/api/runs/${sessionId}`),
   runEvents: (sessionId: string) =>
     get<RunEvent[]>(`/client/api/runs/${sessionId}/events`),
+  runTranscript: (sessionId: string) =>
+    get<MeetingTranscriptLine[]>(`/client/api/runs/${sessionId}/transcript`),
 
   getBio: () => get<{ fields: BioField[] }>("/client/api/bio"),
   putBio: (fields: BioField[]) => send<unknown>("/client/api/bio", "PUT", { fields }),

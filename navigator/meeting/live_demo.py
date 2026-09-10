@@ -68,6 +68,29 @@ def _is_likely_echo(heard: str, bot_text: str) -> bool:
     return is_likely_bot_echo(heard, bot_text)
 
 
+def _emit_visitor(
+    *,
+    product_id: str | None,
+    session_id,
+    page_id: str = "",
+    text: str,
+) -> None:
+    if not product_id or session_id is None:
+        return
+    body = (text or "").strip()
+    if not body:
+        return
+    from navigator.logs.transcript_emit import emit_transcript
+
+    emit_transcript(
+        product_id=product_id,
+        session_id=session_id,
+        kind="visitor",
+        page_id=page_id or "",
+        text=body,
+    )
+
+
 def _drain_inbound(queue) -> int:
     n = 0
     while True:
@@ -1223,6 +1246,12 @@ def run_live_meet_demo(
                         ):
                             print(f"[intake] ignoring echo: {text!r}", flush=True)
                             continue
+                        _emit_visitor(
+                            product_id=product_id,
+                            session_id=session_id,
+                            page_id=page_id,
+                            text=text,
+                        )
                         return text
                     return ""
                 finally:
@@ -1231,7 +1260,7 @@ def run_live_meet_demo(
             if live_box:
                 return ""
             if audio_bridge is not None and settings.groq_api_key:
-                return _wait_meet_utterance(
+                heard = _wait_meet_utterance(
                     audio_bridge.inbound,
                     prompt=prompt,
                     api_key=settings.groq_api_key,
@@ -1239,11 +1268,27 @@ def run_live_meet_demo(
                     audio_bridge=audio_bridge,
                     bot_spoken=bot_spoken,
                 )
+                if heard:
+                    _emit_visitor(
+                        product_id=product_id,
+                        session_id=session_id,
+                        page_id=page_id,
+                        text=heard,
+                    )
+                return heard
             if interactive_listen:
                 try:
-                    return input(f"[intake] {prompt}\n> ").strip()
+                    heard = input(f"[intake] {prompt}\n> ").strip()
                 except EOFError:
                     return ""
+                if heard:
+                    _emit_visitor(
+                        product_id=product_id,
+                        session_id=session_id,
+                        page_id=page_id,
+                        text=heard,
+                    )
+                return heard
             return ""
 
         can_listen = bool(
@@ -1623,11 +1668,12 @@ def run_live_meet_demo(
 
                 print(f"[live_input] {prompt}", flush=True)
                 live = live_box[0] if live_box else None
+                heard = ""
                 if live is not None or audio_frames is not None:
                     from navigator.agent.nodes.listening import _from_audio
 
                     try:
-                        return (
+                        heard = (
                             _from_audio(
                                 SimpleNamespace(
                                     audio_frames=audio_frames,
@@ -1646,12 +1692,19 @@ def run_live_meet_demo(
                         ).strip()
                     except Exception as exc:  # noqa: BLE001
                         print(f"[live_input] audio listen failed: {exc}", flush=True)
-                if interactive_listen:
+                if not heard and interactive_listen:
                     try:
-                        return input("[live_input] > ").strip()
+                        heard = input("[live_input] > ").strip()
                     except EOFError:
-                        return ""
-                return ""
+                        heard = ""
+                if heard:
+                    _emit_visitor(
+                        product_id=product_id,
+                        session_id=session_id,
+                        page_id=page_id,
+                        text=heard,
+                    )
+                return heard
 
             meet_speaker.stop_event = stop_event  # type: ignore[attr-defined]
 

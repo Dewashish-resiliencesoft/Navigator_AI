@@ -2033,6 +2033,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/product-explore/promote:
+    post:
+      summary: Client Product Explore Promote
+      description: Promote explore topology into draft site graph + default walkthrough.
+      operationId: client_product_explore_promote_client_api_product_explore_promote_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Product Explore Promote Client Api Product Explore Promote Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/product-explore:
     get:
       summary: Client Product Explore Status
@@ -3144,6 +3173,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/runs/{session_id}/transcript:
+    get:
+      summary: Client Run Transcript
+      description: "Meeting transcript for one run \u2014 Client dashboard only."
+      operationId: client_run_transcript_client_api_runs__session_id__transcript_get
+      parameters:
+      - name: session_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Session Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/MeetingTranscriptView'
+                title: Response Client Run Transcript Client Api Runs  Session Id  Transcript Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /:
     get:
       summary: Root
@@ -4083,6 +4149,31 @@ components:
       - platform
       - provider_id
       title: MeetingOut
+    MeetingTranscriptView:
+      properties:
+        id:
+          type: string
+          title: Id
+        kind:
+          type: string
+          title: Kind
+        page_id:
+          type: string
+          title: Page Id
+          default: ''
+        text:
+          type: string
+          title: Text
+        created_at:
+          type: string
+          title: Created At
+      type: object
+      required:
+      - id
+      - kind
+      - text
+      - created_at
+      title: MeetingTranscriptView
     Navigate:
       properties:
         expects:

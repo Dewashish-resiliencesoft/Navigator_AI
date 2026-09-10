@@ -148,6 +148,22 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
         lang = getattr(snap, "narration_language", None) or getattr(
             deps, "spoken_language", None
         )
+        try:
+            from navigator.logs.transcript_emit import classify_agent_kind, emit_transcript
+
+            # Live.say bypasses deps.speaker — emit here. Non-live goes through
+            # _RecordingSpeaker which already persists agent/agent_reply lines.
+            if live is not None:
+                kind = classify_agent_kind(state["session_id"], deps.product_id)
+                emit_transcript(
+                    product_id=deps.product_id,
+                    session_id=state["session_id"],
+                    kind=kind,
+                    page_id=str(state.get("page_id") or ""),
+                    text=safe,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[transcript] speak emit failed: {exc}", flush=True)
         if live is not None:
             if lang in ("en", "hi") and hasattr(live, "set_language"):
                 live.set_language(lang)

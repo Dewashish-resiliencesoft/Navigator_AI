@@ -240,3 +240,11 @@ class DecisionTraceView(BaseModel):
     knowledge_hits: list[list[float | str]] = Field(default_factory=list)
     detail: str = ""
     created_at: str
+
+
+class MeetingTranscriptView(BaseModel):
+    id: str
+    kind: str
+    page_id: str = ""
+    text: str
+    created_at: str

@@ -19,7 +19,7 @@ from navigator.automation.login_match import (
     looks_like_permission_denied,
 )
 from navigator.logs.store import utcnow
-from navigator.core.schemas import ActionLogEntry, FillField, VerifyResult
+from navigator.core.schemas import ActionLogEntry, FillField, Navigate, VerifyResult
 
 SESSION_STALL_LINE = "One moment."
 STRICT_STALL = "One moment — let me try that again."
@@ -68,6 +68,25 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
         timestamp=utcnow(),
     )
     deps.log.append(entry)
+
+    if not entry.failed and isinstance(call, Navigate):
+        try:
+            from navigator.logs.transcript_emit import emit_transcript
+
+            url = ""
+            try:
+                url = deps.page.url or ""
+            except Exception:  # noqa: BLE001
+                url = ""
+            emit_transcript(
+                product_id=deps.product_id,
+                session_id=state["session_id"],
+                kind="screen",
+                page_id=str(state.get("page_id") or ""),
+                text=url or str(state.get("page_id") or "navigated"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[transcript] screen emit failed: {exc}", flush=True)
 
     strict = getattr(deps, "strict_playlist", False)
     if entry.failed and strict:

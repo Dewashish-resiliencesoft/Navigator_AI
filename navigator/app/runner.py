@@ -120,6 +120,21 @@ class _RecordingSpeaker:
         if language:
             self._handle.language_code = language
         try:
+            from navigator.logs.transcript_emit import classify_agent_kind, emit_transcript
+
+            kind = classify_agent_kind(
+                self._handle.session_id, self._handle.product_id
+            )
+            emit_transcript(
+                product_id=self._handle.product_id,
+                session_id=self._handle.session_id,
+                kind=kind,
+                page_id=getattr(self._handle, "page_id", "") or "",
+                text=text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[transcript] speaker emit failed: {exc}", flush=True)
+        try:
             self._inner.say(text, language=language, **kwargs)
         except TypeError:
             self._inner.say(text)

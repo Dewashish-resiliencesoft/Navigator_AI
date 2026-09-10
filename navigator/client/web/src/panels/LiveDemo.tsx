@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Copy, ExternalLink, PhoneOff, Play, Mic, TriangleAlert } from "lucide-react";
-import { api, ApiError, type RunEvent } from "../lib/api";
+import { api, ApiError, type MeetingTranscriptLine, type RunEvent } from "../lib/api";
 import { useDemoReadinessSession } from "../lib/demoReadinessSession";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { useExploreSession } from "../lib/exploreSession";
@@ -31,6 +31,13 @@ import { LiveNarrationBanner } from "../components/LiveNarrationBanner";
 import { errText, useUi } from "../store";
 
 const LINK_PENDING = "Creating meeting link…";
+
+function transcriptRole(kind: string): string {
+  if (kind === "screen") return "Screen";
+  if (kind === "visitor") return "Visitor";
+  if (kind === "agent_reply") return "Agent reply";
+  return "Agent";
+}
 
 function legacyCopy(text: string): boolean {
   const ta = document.createElement("textarea");
@@ -73,6 +80,7 @@ export function LiveDemo() {
   const [copied, setCopied] = useState(false);
   const [logCopied, setLogCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [transcript, setTranscript] = useState<MeetingTranscriptLine[]>([]);
   const listRef = useRef<HTMLUListElement>(null);
   const liveLogRef = useRef<HTMLDivElement>(null);
 
@@ -89,9 +97,6 @@ export function LiveDemo() {
   const leaveGrace = demo?.leave_grace_remaining ?? null;
   const joinDisplay =
     live || starting ? (joinUrl ?? LINK_PENDING) : done ? "—" : (joinUrl ?? "—");
-  const transcriptLines = (demo?.said ?? []).filter(
-    (line) => !done || !/join link ready/i.test(line),
-  );
 
   useEffect(() => {
     void refreshActive();
@@ -118,7 +123,7 @@ export function LiveDemo() {
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [transcriptLines.length]);
+  }, [transcript.length]);
 
   useEffect(() => {
     liveLogRef.current?.scrollTo({ top: liveLogRef.current.scrollHeight });
@@ -147,14 +152,19 @@ export function LiveDemo() {
   useEffect(() => {
     if (!sessionId) {
       setEvents([]);
+      setTranscript([]);
       return;
     }
     let alive = true;
     const tick = async () => {
       try {
-        const rows = await api.runEvents(sessionId);
+        const [rows, lines] = await Promise.all([
+          api.runEvents(sessionId),
+          api.runTranscript(sessionId),
+        ]);
         if (!alive) return;
         setEvents(rows);
+        setTranscript(lines);
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 404) return;
@@ -643,26 +653,46 @@ export function LiveDemo() {
       )}
 
       <Card span="lg:col-span-2">
-        <CardTitle hint="What the agent has said so far, live.">Transcript</CardTitle>
-        {!transcriptLines.length && <Empty>Nothing yet.</Empty>}
+        <CardTitle hint="Screen changes, what the agent said, visitor questions, and replies — saved with this run.">
+          Meeting transcript
+        </CardTitle>
+        {!transcript.length && (
+          <Empty>{live ? "Waiting for meeting lines…" : "Nothing recorded."}</Empty>
+        )}
         <ul ref={listRef} className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
           <AnimatePresence initial={false}>
-            {transcriptLines.map((line, i) => (
-              <motion.li
-                key={`${i}-${line.slice(0, 24)}`}
-                variants={rise}
-                initial="hidden"
-                animate="show"
-                className="rounded-lg border bg-black/[0.015] px-4 py-2.5 text-[0.81rem] leading-relaxed dark:bg-white/[0.02]"
-                style={{ borderColor: "var(--line)" }}
-              >
-                <div className="mb-1 flex items-center gap-2 text-[0.68rem] font-medium text-[var(--muted)]">
-                  <Mic size={11} className="text-[var(--accent)]" />
-                  <span>Agent</span>
-                </div>
-                <div className="pl-4">{line}</div>
-              </motion.li>
-            ))}
+            {transcript.map((line) => {
+              const time = line.created_at
+                ? new Date(line.created_at).toLocaleTimeString([], { hour12: false })
+                : "";
+              const role = transcriptRole(line.kind);
+              return (
+                <motion.li
+                  key={line.id}
+                  variants={rise}
+                  initial="hidden"
+                  animate="show"
+                  className="rounded-lg border bg-black/[0.015] px-4 py-2.5 text-[0.81rem] leading-relaxed dark:bg-white/[0.02]"
+                  style={{ borderColor: "var(--line)" }}
+                >
+                  <div className="mb-1 flex flex-wrap items-center gap-2 text-[0.68rem] font-medium text-[var(--muted)]">
+                    {line.kind === "visitor" ? (
+                      <Mic size={11} className="text-amber-500" />
+                    ) : line.kind === "screen" ? (
+                      <ExternalLink size={11} className="text-sky-500" />
+                    ) : (
+                      <Mic size={11} className="text-[var(--accent)]" />
+                    )}
+                    <span>{role}</span>
+                    {time && <span className="font-mono text-[var(--muted)]">{time}</span>}
+                    {line.page_id && (
+                      <span className="font-mono text-[var(--muted)]">{line.page_id}</span>
+                    )}
+                  </div>
+                  <div className="pl-4 break-words">{line.text}</div>
+                </motion.li>
+              );
+            })}
           </AnimatePresence>
         </ul>
       </Card>

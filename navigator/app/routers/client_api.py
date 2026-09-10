@@ -45,6 +45,7 @@ from navigator.app.api_models import (
     AutonomyModeBody,
     BioBody,
     DecisionTraceView,
+    MeetingTranscriptView,
     DemoRunView,
     DemoScriptPatchBody,
     DemoView,
@@ -1864,6 +1865,35 @@ def client_run_decisions(
             flow_candidates=[[f, c] for f, c in r.flow_candidates],
             knowledge_hits=[[k, s] for k, s in r.knowledge_hits],
             detail=r.detail,
+            created_at=r.created_at,
+        )
+        for r in rows
+    ]
+
+
+@router.get(
+    "/client/api/runs/{session_id}/transcript",
+    response_model=list[MeetingTranscriptView],
+)
+def client_run_transcript(
+    session_id: UUID, product: DashboardAuthedProduct, log: Log
+) -> list[MeetingTranscriptView]:
+    """Meeting transcript for one run — Client dashboard only."""
+    from navigator.logs.transcript import MeetingTranscriptStore
+
+    with MeetingTranscriptStore(settings.db_path) as store:
+        rows = store.for_session(session_id, product_id=product.product_id)
+    if not rows:
+        run = log.get_run(session_id, product.product_id)
+        if run is None:
+            raise HTTPException(404, "no such run")
+        return []
+    return [
+        MeetingTranscriptView(
+            id=r.id,
+            kind=r.kind,
+            page_id=r.page_id,
+            text=r.text,
             created_at=r.created_at,
         )
         for r in rows

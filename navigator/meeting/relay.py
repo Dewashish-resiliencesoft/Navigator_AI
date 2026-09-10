@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -79,6 +80,7 @@ class RelayHandle:
     status_mode: str = "demo"
     status_label: str = "Demo"
     avatar_state: str = "idle"
+    last_frame_at: float = 0.0
 
     @property
     def view_url(self) -> str:
@@ -198,6 +200,7 @@ def start_screencast(handle: RelayHandle, page: Page):
         if data:
             with handle._lock:
                 handle._frame = base64.b64decode(data)
+                handle.last_frame_at = time.time()
         # Chromium stops sending until the frame is acked.
         try:
             cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
@@ -257,3 +260,4 @@ def push_frame(handle: RelayHandle, page: Page) -> None:
         data = page.screenshot(type="jpeg", quality=quality)
     with handle._lock:
         handle._frame = data
+        handle.last_frame_at = time.time()

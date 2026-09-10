@@ -53,6 +53,8 @@ class DemoView(BaseModel):
     language_confidence: float = 1.0
     current_narration: str = ""
     speech_status: str = "idle"
+    live_log: list[str] = Field(default_factory=list)
+    """Runner/meeting diagnostics ([live]/[audio]/[speak]/…) for Copy in UI."""
 
 class DemoRunView(BaseModel):
     """Persisted demo run meta for the client Logs panel (7-day window)."""

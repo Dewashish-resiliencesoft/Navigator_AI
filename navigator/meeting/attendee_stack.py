@@ -335,6 +335,16 @@ def ensure_attendee_stack(
     compose_dir = compose_dir or _compose_dir()
 
     if not autostart or _in_pytest() or not is_local_attendee_url(base_url):
+        # Even with AUTOSTART=0 (host-managed Attendee), keep the eager audio-WS
+        # patch applied — Zoom format=none never emits mixed chunks, so lazy
+        # connect leaves Navigator mute forever.
+        if compose_dir.is_dir() and not _in_pytest():
+            try:
+                from navigator.meeting.attendee_ws_patch import patch as patch_audio_ws
+
+                print(f"[attendee] audio-ws: {patch_audio_ws(compose_dir)}", flush=True)
+            except OSError as exc:
+                print(f"[attendee] WARN: audio-ws patch skipped: {exc}", flush=True)
         return attendee_reachable(base_url)
 
     if not compose_dir.is_dir():

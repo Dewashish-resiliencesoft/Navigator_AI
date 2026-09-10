@@ -860,6 +860,7 @@ def run_live_meet_demo(
     audio_bridge = None
     audio_tunnel = None
     screencast = None
+    frame_watch_stop = threading.Event()
     bot_id: str | None = None
     live_box: list = []
     orch_box: list = []
@@ -1034,10 +1035,18 @@ def run_live_meet_demo(
             if audio_bridge.clients_connected < 1:
                 print(
                     "[live] WARNING: Attendee never connected to audio WS — "
-                    "continuing without live meeting audio. Grant Attendee "
-                    "recording permission in Zoom if this persists.",
+                    "Zoom/Meet will be silent until it connects. "
+                    "Check NAVIGATOR_PUBLIC_BASE_URL tunnel + /v1/live-ws.",
                     flush=True,
                 )
+                if zoom_native:
+                    # Without WS, TTS is dropped — demos look "joined but mute".
+                    raise RuntimeError(
+                        "Attendee never connected to audio websocket "
+                        f"({audio_ws_url}). Host cloudflared to :8080 and set "
+                        "NAVIGATOR_PUBLIC_BASE_URL, then retry. "
+                        "See Live log for [audio]/[tunnel] lines."
+                    )
             else:
                 print(
                     f"[live] audio WS up (clients={audio_bridge.clients_connected})",
@@ -1469,6 +1478,25 @@ def run_live_meet_demo(
             screencast = start_screencast(relay, page)
             set_screencast_mode(screencast is not None)
 
+            # Headless Chromium sometimes stops CDP screencast after idle paint.
+            # Watchdog forces a screenshot so Meet does not stay on one freeze-frame.
+            frame_watch_stop.clear()
+
+            def _frame_watchdog() -> None:
+                while not frame_watch_stop.wait(0.75):
+                    if stop_event is not None and stop_event.is_set():
+                        return
+                    if time.time() - (relay.last_frame_at or 0) < 1.25:
+                        continue
+                    try:
+                        _push()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            threading.Thread(
+                target=_frame_watchdog, name="frame-watchdog", daemon=True
+            ).start()
+
             baseline_hits = relay.frame_hits
             print("[live] enabling screen share…", flush=True)
             relay.set_status("thinking", "Sharing screen…")
@@ -1877,6 +1905,7 @@ def run_live_meet_demo(
             browser.close()
     finally:
         clear_demo_usage()
+        frame_watch_stop.set()
         if bot_id is not None:
             try:
                 if client.leave_if_active(bot_id):

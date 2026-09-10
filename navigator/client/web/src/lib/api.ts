@@ -116,6 +116,7 @@ export type Demo = {
   language_confidence?: number;
   current_narration?: string;
   speech_status?: string;
+  live_log?: string[];
 };
 
 export type BioField = { key: string; label: string; value: string };

@@ -785,10 +785,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/live-http/{token}:
-    get:
+    head:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token__get
+      operationId: live_http_proxy_v1_live_http__token__head
       parameters:
       - name: token
         in: path
@@ -815,10 +815,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-    head:
+    get:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token__get
+      operationId: live_http_proxy_v1_live_http__token__head
       parameters:
       - name: token
         in: path
@@ -846,10 +846,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/live-http/{token}/{path}:
-    get:
+    head:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token___path__get
+      operationId: live_http_proxy_v1_live_http__token___path__head
       parameters:
       - name: token
         in: path
@@ -875,10 +875,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-    head:
+    get:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token___path__get
+      operationId: live_http_proxy_v1_live_http__token___path__head
       parameters:
       - name: token
         in: path
@@ -3733,6 +3733,11 @@ components:
           type: string
           title: Speech Status
           default: idle
+        live_log:
+          items:
+            type: string
+          type: array
+          title: Live Log
       type: object
       required:
       - demo_id
@@ -4016,6 +4021,11 @@ components:
           type: string
           title: Speech Status
           default: idle
+        live_log:
+          items:
+            type: string
+          type: array
+          title: Live Log
         meeting:
           $ref: '#/components/schemas/MeetingOut'
       type: object

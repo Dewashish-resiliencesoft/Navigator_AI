@@ -71,13 +71,16 @@ export function LiveDemo() {
   const loadingReadiness = useDemoReadinessSession((s) => s.loading);
   const startCoach = useUi((s) => s.startCoach);
   const [copied, setCopied] = useState(false);
+  const [logCopied, setLogCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const listRef = useRef<HTMLUListElement>(null);
+  const liveLogRef = useRef<HTMLDivElement>(null);
 
   const live = demoIsLive(demo);
   const done = !!demo && (demo.status === "finished" || demo.status === "failed");
   const demoId = demo?.demo_id ?? null;
   const sessionId = demo?.session_id ?? null;
+  const meetingLog = demo?.live_log ?? [];
   // Show the link as soon as the meeting exists. Gating on bot_in_meeting
   // deadlocks test demos: static Meet (and some Zoom joins) leave the bot in
   // the waiting room until a human opens the link and admits it.
@@ -116,6 +119,30 @@ export function LiveDemo() {
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
   }, [transcriptLines.length]);
+
+  useEffect(() => {
+    liveLogRef.current?.scrollTo({ top: liveLogRef.current.scrollHeight });
+  }, [meetingLog.length]);
+
+  const copyMeetingLog = async () => {
+    const text = meetingLog.join("\n").trim();
+    if (!text) {
+      err("No meeting log yet — start a demo first.");
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else if (!legacyCopy(text)) {
+        throw new Error("copy rejected");
+      }
+      setLogCopied(true);
+      setTimeout(() => setLogCopied(false), 1300);
+      ok("Meeting log copied.");
+    } catch {
+      err("Copy failed — select the log manually.");
+    }
+  };
 
   useEffect(() => {
     if (!sessionId) {
@@ -474,7 +501,60 @@ export function LiveDemo() {
         >
           <div className="mb-2 flex items-start justify-between gap-2">
             <div>
-              <p className="text-[0.78rem] font-medium tracking-tight">Live log</p>
+              <p className="text-[0.78rem] font-medium tracking-tight">
+                Meeting log
+              </p>
+              <p className="mt-0.5 text-[0.68rem] text-[var(--muted)]">
+                Zoom/Meet runner lines ([live], [audio], [tunnel], [speak]) — copy
+                and paste to share
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void copyMeetingLog()}
+              disabled={!meetingLog.length}
+              title="Copy meeting log"
+              aria-label="Copy meeting log"
+              className="flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[0.72rem] text-[var(--muted)] transition hover:bg-black/[0.04] hover:text-[var(--text)] disabled:opacity-40 dark:hover:bg-white/[0.06]"
+              style={{ borderColor: "var(--line)" }}
+            >
+              {logCopied ? <Check size={14} /> : <Copy size={14} />}
+              {logCopied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          {!meetingLog.length && (
+            <Empty>{live ? "Waiting for runner lines…" : "Nothing yet."}</Empty>
+          )}
+          {meetingLog.length > 0 && (
+            <div
+              ref={liveLogRef}
+              className="terminal-log max-h-64 overflow-y-auto rounded-lg bg-[#0d1117] p-4 font-mono text-[0.7rem] leading-relaxed text-slate-200 shadow-inner"
+            >
+              {live && (
+                <div className="mb-2 flex items-center gap-2 text-emerald-400">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  </span>
+                  Streaming — {meetingLog.length} lines
+                </div>
+              )}
+              {meetingLog.map((line, i) => (
+                <div key={`${i}-${line.slice(0, 40)}`} className="whitespace-pre-wrap break-all py-0.5">
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div
+          className="mt-4 border-t pt-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <div className="mb-2 flex items-start justify-between gap-2">
+            <div>
+              <p className="text-[0.78rem] font-medium tracking-tight">Action log</p>
               <p className="mt-0.5 text-[0.68rem] text-[var(--muted)]">
                 Last ~20 ActionLog events (client only)
               </p>

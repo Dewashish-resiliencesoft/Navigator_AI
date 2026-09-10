@@ -83,9 +83,19 @@ class DemoHandle:
     language_confidence: float = 1.0
     current_narration: str = ""
     speech_status: str = "idle"
+    live_log: list[str] = field(default_factory=list)
+    """Runner/meeting diagnostics for the dashboard (copyable)."""
 
     _thread: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    def append_live_log(self, line: str) -> None:
+        msg = (line or "").strip()
+        if not msg:
+            return
+        self.live_log.append(msg[:800])
+        if len(self.live_log) > 300:
+            del self.live_log[:-300]
 
     def public(self) -> dict:
         """Serialisable view. Excludes the thread and the stop event."""
@@ -444,6 +454,28 @@ class DemoRunner:
                 handle.current_narration = narr
             handle.speech_status = str(payload.get("speech_status") or handle.speech_status)
 
+        import builtins
+
+        _orig_print = builtins.print
+        _log_prefixes = (
+            "[live]",
+            "[speak]",
+            "[audio]",
+            "[tunnel]",
+            "[attendee]",
+            "[runner]",
+            "[utterance]",
+            "[playwright]",
+            "[zoom]",
+            "[warm]",
+        )
+
+        def _tee_print(*args: object, **kwargs: object) -> None:
+            msg = " ".join(str(a) for a in args)
+            if any(msg.startswith(p) for p in _log_prefixes):
+                handle.append_live_log(msg)
+            _orig_print(*args, **kwargs)
+
         try:
             if run is None:
                 from navigator.meeting.live_demo import run_live_meet_demo
@@ -457,6 +489,7 @@ class DemoRunner:
             live_kw = self._product_live_kwargs(handle.product_id)
             for key, val in live_kw.items():
                 kwargs.setdefault(key, val)
+            builtins.print = _tee_print  # type: ignore[assignment]
             run(
                 meeting_url=handle.meeting_url,
                 graph_cfg=graph,
@@ -487,7 +520,9 @@ class DemoRunner:
                 handle.status = "failed"
                 handle.error = traceback.format_exc(limit=3)
                 print(f"[runner] live demo failed:\n{handle.error}", flush=True)
+                handle.append_live_log(f"[runner] live demo failed:\n{handle.error}")
         finally:
+            builtins.print = _orig_print
             handle.finished_at = datetime.now(timezone.utc)
             handle.leave_grace_remaining = None
             with ActionLog(self.db_path) as log:

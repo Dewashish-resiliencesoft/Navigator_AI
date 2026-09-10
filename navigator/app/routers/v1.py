@@ -356,10 +356,13 @@ async def live_ws_proxy(websocket: WebSocket, token: str) -> None:
 
     target = lookup_ws(token)
     if target is None:
+        # Accept then close — rejecting pre-accept shows up as opaque 403 to clients.
+        await websocket.accept()
         await websocket.close(code=4404)
         return
     host, port = target
     await websocket.accept()
+    print(f"[audio] live-ws proxy accept token={token[:8]}… → {host}:{port}", flush=True)
     try:
         import websockets
     except ImportError:
@@ -368,6 +371,7 @@ async def live_ws_proxy(websocket: WebSocket, token: str) -> None:
     uri = f"ws://{host}:{port}"
     try:
         async with websockets.connect(uri, max_size=8 * 1024 * 1024) as upstream:
+            print(f"[audio] live-ws upstream connected {uri}", flush=True)
             async def client_to_upstream() -> None:
                 try:
                     while True:

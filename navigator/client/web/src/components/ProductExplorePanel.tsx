@@ -20,11 +20,11 @@ const WHY = [
   },
   {
     title: "Output",
-    body: "Explore MD, bio gaps, read-only map, merged canonical knowledge.",
+    body: "Explore MD, bio, map, and a draft multi-page live walkthrough.",
   },
   {
-    title: "Not for",
-    body: "Not the live walkthrough. Manual record still owns End User demos.",
+    title: "Live demos",
+    body: "Seeds Manual demo graph draft. Publish before public visitors see it.",
   },
 ];
 

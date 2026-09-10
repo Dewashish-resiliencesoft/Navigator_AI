@@ -217,7 +217,7 @@ def artifact_checklist(
         {
             "id": "topology",
             "label": "Automated product map",
-            "detail": "Read-only site topology (not the live demo graph)",
+            "detail": "Map + seeds draft live walkthrough on finish",
             "status": topo_status,
         },
         {
@@ -632,9 +632,10 @@ def _crawl_and_write(
         "demo_playlist": [],
         "_meta": {"source": "product_explore", "non_demo": True},
     }
+    topo_yaml = yaml.safe_dump(topo, sort_keys=False)
     save_topology(
         job.product_id,
-        yaml.safe_dump(topo, sort_keys=False),
+        topo_yaml,
         page_count=len(pages),
     )
     auto_merge_knowledge(job.product_id)
@@ -651,10 +652,30 @@ def _crawl_and_write(
     except Exception as exc:  # noqa: BLE001
         print(f"[product-explore] index skipped: {exc}", flush=True)
 
+    # Seed draft site graph so live demos walk explored pages (not home-only stub).
+    try:
+        import os
+
+        from navigator.app.registry import Registry
+        from navigator.client.content import promote_explore_into_draft
+
+        db = os.environ.get("NAVIGATOR_REGISTRY_DB", "registry.db")
+        with Registry(db) as reg:
+            promoted = promote_explore_into_draft(
+                job.product_id, reg, topology_yaml=topo_yaml, force=True
+            )
+        print(
+            f"[product-explore] draft walkthrough seeded "
+            f"rev={promoted.get('revision')} pages={promoted.get('page_count')}",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[product-explore] site-graph promote skipped: {exc}", flush=True)
+
     _touch(
         job,
         phase="done",
-        looking_at="Company bio and knowledge updated",
+        looking_at="Company bio, knowledge, and demo walkthrough updated",
         current_title="Done",
         current_url=job.start_url or "",
     )

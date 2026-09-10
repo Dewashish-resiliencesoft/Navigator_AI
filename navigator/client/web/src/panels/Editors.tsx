@@ -58,18 +58,33 @@ export function SiteGraph() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
   const [dirty, setDirty] = useState(false);
-  const [view, setView] = useState<"manual" | "automated">("manual");
+  const [view, setView] = useState<"manual" | "automated">(() => {
+    try {
+      const v = localStorage.getItem("nav.siteGraph.view");
+      return v === "automated" ? "automated" : "manual";
+    } catch {
+      return "manual";
+    }
+  });
+  const [promoting, setPromoting] = useState(false);
   const [topoYaml, setTopoYaml] = useState("");
   const [topoMeta, setTopoMeta] = useState<{ updated_at: string | null; page_count: number }>({
     updated_at: null,
     page_count: 0,
   });
 
+  // Only jump to Manual when coach explicitly targets the YAML editor / publish.
   useEffect(() => {
-    if (coachTarget === "graph-publish" || coachTarget === "graph-editor") {
-      setView("manual");
-    }
+    if (coachTarget === "graph-publish") setView("manual");
   }, [coachTarget]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("nav.siteGraph.view", view);
+    } catch {
+      /* ignore */
+    }
+  }, [view]);
 
   const playlistKey = playlist
     .map((p) => `${p.order ?? 0}:${p.page_id ?? ""}:${p.flow_id ?? ""}`)
@@ -147,14 +162,50 @@ export function SiteGraph() {
     }
   };
 
+  const promoteTopo = async () => {
+    setPromoting(true);
+    try {
+      const d = await api.promoteProductExplore();
+      setYaml(d.yaml ?? "");
+      setRevision(d.revision);
+      setDirty(false);
+      // Keep Automated selected so tab switch doesn't feel like a snap-back;
+      // user can open Manual to edit YAML. Live demos now use the promoted draft.
+      invalidate();
+      await loadTopo();
+      ok(
+        d.message ||
+          `Explore map saved as active walkthrough — ${d.page_count} pages (rev ${d.revision}). Open Manual to edit, or start a test demo.`,
+      );
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setPromoting(false);
+    }
+  };
+
+  const topoPagePreview = (() => {
+    if (!topoYaml.trim()) return [] as string[];
+    const lines = topoYaml.split("\n");
+    const urls: string[] = [];
+    for (const line of lines) {
+      const m = line.match(/^\s+url:\s*(.+)\s*$/);
+      if (m) {
+        const u = m[1].replace(/^['"]|['"]$/g, "").trim();
+        if (u && !/login|signin|sign-in/i.test(u)) urls.push(u);
+      }
+    }
+    return urls.slice(0, 16);
+  })();
+
   return (
     <motion.div variants={stagger()} initial="hidden" animate="show" className={fullScreen ? "fixed inset-4 z-50 flex flex-col" : ""}>
       <Card className={fullScreen ? "flex-1 flex flex-col min-h-0" : ""} dataCoach="graph-editor">
         <CardTitle
           hint={
             view === "manual"
-              ? "Manual demo graph: pages, selectors, and recorded flows. Saving creates a draft — visitors keep the published revision until you publish."
-              : "Automated product map from Product Explore — orientation for the agent. Not editable and not used as the live walkthrough."
+              ? "Hand-edited demo graph (recorded flows). This is what live demos run after you Save / Apply Explore."
+              : "Explore crawl map. Select this source, then Save as walkthrough so demos use every captured screen — not only Home."
           }
           right={
             <div className="flex items-center gap-3">
@@ -163,11 +214,12 @@ export function SiteGraph() {
                 style={{ borderColor: "var(--line)" }}
                 value={view}
                 onChange={(e) => setView(e.target.value as "manual" | "automated")}
+                aria-label="Site graph source"
               >
-                <option value="manual">Manual demo graph</option>
-                <option value="automated">Automated product map</option>
+                <option value="manual">Manual (recorded)</option>
+                <option value="automated">Explore map (automated)</option>
               </select>
-              {view === "manual" && revision !== null && (
+              {revision !== null && (
                 <span className="font-mono text-[0.72rem] rounded-full border px-2 py-0.5" style={{ borderColor: "var(--line)", backgroundColor: "var(--panel)" }}>
                   rev {revision}
                   <span className={liveRevision === revision ? "text-emerald-500 ml-1" : "text-amber-500 ml-1"}>
@@ -193,6 +245,11 @@ export function SiteGraph() {
                   </span>
                 </>
               )}
+              {view === "automated" && (
+                <Button onClick={() => void promoteTopo()} disabled={!topoMeta.page_count || promoting}>
+                  <Save size={14} /> {promoting ? "Saving…" : "Save as walkthrough"}
+                </Button>
+              )}
             </div>
           }
         >
@@ -202,17 +259,31 @@ export function SiteGraph() {
           <>
             <p className="mb-2 text-[0.74rem] text-[var(--muted)]">
               {topoMeta.page_count
-                ? `${topoMeta.page_count} pages`
-                : "No map yet"}
+                ? `${topoMeta.page_count} pages from Product Explore`
+                : "No map yet — run Product Explore on Knowledge first"}
               {topoMeta.updated_at ? ` · updated ${topoMeta.updated_at}` : ""}
-              {" · "}
-              Re-run from Knowledge → Product Explore.
+            </p>
+            {topoPagePreview.length > 0 && (
+              <ul className="mb-3 max-h-28 overflow-auto rounded-lg border px-3 py-2 text-[0.72rem]" style={{ borderColor: "var(--line)" }}>
+                {topoPagePreview.map((u) => (
+                  <li key={u} className="truncate font-mono text-[var(--text)]">
+                    {u}
+                  </li>
+                ))}
+                {topoMeta.page_count > topoPagePreview.length ? (
+                  <li className="text-[var(--muted)]">… +{topoMeta.page_count - topoPagePreview.length} more</li>
+                ) : null}
+              </ul>
+            )}
+            <p className="mb-2 text-[0.72rem] text-[var(--muted)]">
+              Click <strong>Save as walkthrough</strong> to replace the Manual draft with a multi-page demo
+              (login stays automatic; walkthrough visits each explored screen). Selection stays on Explore map when you leave this tab.
             </p>
             <Textarea
               value={topoYaml || "# Run Product Explore from the Knowledge tab to generate this map."}
               onChange={() => {}}
               readOnly
-              rows={fullScreen ? 30 : 22}
+              rows={fullScreen ? 30 : 18}
               mono
             />
           </>
@@ -310,9 +381,14 @@ export function Knowledge() {
   const saveCanonical = async () => {
     if (canonical === null) return;
     try {
-      await api.putKnowledge(canonical);
+      const d = await api.putKnowledge(canonical);
       invalidate();
-      ok("Knowledge saved and indexed.");
+      const pages = (d as { promoted_pages?: number }).promoted_pages;
+      ok(
+        pages
+          ? `Knowledge saved — draft walkthrough refreshed (${pages} pages).`
+          : "Knowledge saved and indexed.",
+      );
     } catch (e) {
       err(errText(e));
     }

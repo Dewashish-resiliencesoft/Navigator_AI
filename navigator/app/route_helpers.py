@@ -72,6 +72,28 @@ def _run_live_demo(
         if origin == "public_embed":
             revision = registry.published_revision(product.product_id)
         else:
+            # Dashboard test: if draft is still home-only stub but explore map
+            # exists, promote before starting so demos walk all screens.
+            try:
+                from navigator.client.content import (
+                    draft_needs_explore_promote,
+                    promote_explore_into_draft,
+                    resolve_topology_yaml,
+                )
+
+                latest = registry.latest_revision(product.product_id)
+                if draft_needs_explore_promote(latest.yaml) and resolve_topology_yaml(
+                    product.product_id, latest.yaml
+                ):
+                    promote_explore_into_draft(
+                        product.product_id, registry, force=True
+                    )
+                    print(
+                        f"[api] auto-promoted explore walkthrough for {product.product_id}",
+                        flush=True,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[api] explore auto-promote skipped: {exc}", flush=True)
             revision = registry.latest_revision(product.product_id).revision
         graph = registry.load_graph(product.product_id, revision)
     except ProductNotFound as exc:

@@ -173,7 +173,11 @@ def _start_live_agent(
 
         instruction = build_live_instruction(
             graph=graph_cfg,
-            product_brief=load_agent_context(product_id or graph_cfg.site),
+            product_brief=load_agent_context(
+                product_id or graph_cfg.site,
+                site=getattr(graph_cfg, "site", "") or "",
+                base_url=getattr(graph_cfg, "base_url", "") or "",
+            ),
             intake_summary=_intake_summary(intake),
             language=spoken_language,  # type: ignore[arg-type]
             gender=agent_gender,
@@ -1712,7 +1716,11 @@ def run_live_meet_demo(
                 set_avatar_state=relay.set_avatar_state,
                 on_speech=on_speech,
                 screen_context=lambda: screen_snapshot(page),
-                product_brief=load_agent_context(product_id or graph_cfg.site),
+                product_brief=load_agent_context(
+                    product_id or graph_cfg.site,
+                    site=getattr(graph_cfg, "site", "") or "",
+                    base_url=getattr(graph_cfg, "base_url", "") or "",
+                ),
                 pending_barge_in=pending_barge_in,
                 resolve_password=_resolve_password,
                 login_config=_login_cfg,

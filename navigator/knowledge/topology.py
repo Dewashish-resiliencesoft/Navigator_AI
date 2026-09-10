@@ -1,6 +1,8 @@
-"""Read-only automated product map (non-demo site topology).
+"""Automated product map from Product Explore.
 
-Separate from site_graph_revisions — never published as a live walkthrough.
+Stored separately from published demos. Promote into the draft site graph
+(via explore finish / Save / Site graph → Use as live walkthrough) to drive
+live multi-page walkthroughs.
 """
 
 from __future__ import annotations

@@ -194,6 +194,481 @@ def reset_site_graph_for_explore(yaml_text: str) -> str:
     return yaml.safe_dump(reset, sort_keys=False)
 
 
+def _is_login_url(url: str) -> bool:
+    path = (urlparse(url).path or "").lower()
+    return any(tok in path for tok in ("/login", "/signin", "/sign-in", "/auth"))
+
+
+def _rel_url(url: str, base_url: str) -> str:
+    """Prefer path relative to base_url; keep absolute when hosts differ."""
+    raw = (url or "").strip() or "/"
+    if not raw.startswith(("http://", "https://")):
+        return raw if raw.startswith("/") else f"/{raw}"
+    base = (base_url or "").strip()
+    if base and raw.lower().startswith(base.rstrip("/").lower()):
+        path = raw[len(base.rstrip("/")) :] or "/"
+        return path if path.startswith("/") else f"/{path}"
+    parsed = urlparse(raw)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    return path
+
+
+def _page_label(title: str, page_id: str, url: str) -> str:
+    """Prefer URL path segment — explore page titles are often identical brand strings."""
+    path = (urlparse(url).path if "://" in (url or "") else (url or "")) or ""
+    seg = [s for s in path.split("/") if s]
+    if seg:
+        return seg[-1].replace("-", " ").replace("_", " ").title()
+    t = " ".join((title or "").split()).strip()
+    if t and " | " in t:
+        # Prefer the descriptive side after brand: "ResilioHub | WhatsApp …"
+        left, right = t.split(" | ", 1)
+        if right.strip() and len(right.strip()) <= 72:
+            return right.strip()
+        t = left.strip()
+    if t and len(t) <= 64 and t.lower() not in {"home", "untitled"}:
+        return t
+    return page_id.replace("_", " ").title() or "Page"
+
+
+def _stable_page_id(url: str, used: set[str]) -> str:
+    path = (urlparse(url).path if "://" in (url or "") else (url or "")) or ""
+    seg = [s for s in path.split("/") if s]
+    base = re.sub(r"[^a-z0-9]+", "_", (seg[-1] if seg else "home").lower()).strip("_") or "page"
+    candidate = base
+    n = 2
+    while candidate in used:
+        candidate = f"{base}_{n}"
+        n += 1
+    used.add(candidate)
+    return candidate
+
+
+_SCREEN_HINTS: dict[str, str] = {
+    "dashboard": "home base for activity and shortcuts into the rest of the product",
+    "inbox": "shared WhatsApp inbox so sales and support share one conversation list",
+    "phonebook": "contacts and leads your team talks to on WhatsApp",
+    "kanban": "pipeline board to move deals across stages",
+    "wa_meta_connect": "Meta WhatsApp Business API connection",
+    "wa-meta-connect": "Meta WhatsApp Business API connection",
+    "instagram_connect": "Instagram account connection",
+    "instagram-connect": "Instagram account connection",
+    "instagram_automation": "Instagram automation rules and replies",
+    "instagram-automation": "Instagram automation rules and replies",
+    "rest_api": "REST API for custom integrations",
+    "rest-api": "REST API for custom integrations",
+    "templates": "WhatsApp message template library",
+    "library": "template library for approved WhatsApp messages",
+    "broadcast": "broadcast campaigns to many contacts at once",
+    "chat_flow": "chatbot and automation flow builder",
+    "analytics": "analytics on conversations, response time, and conversions",
+    "settings": "account and workspace settings",
+}
+
+
+def _screen_hint(page_id: str, url: str) -> str:
+    key = (page_id or "").lower()
+    if key in _SCREEN_HINTS:
+        return _SCREEN_HINTS[key]
+    path = (urlparse(url).path if "://" in (url or "") else (url or "")).strip("/").lower()
+    for tok, hint in _SCREEN_HINTS.items():
+        if tok.replace("_", "-") in path or tok.replace("-", "_") in path:
+            return hint
+    return "a key screen in the product"
+
+
+def _bio_field_map(bio: dict[str, Any] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not bio:
+        return out
+    for f in bio.get("fields") or []:
+        if not isinstance(f, dict):
+            continue
+        key = str(f.get("key") or "").strip()
+        val = str(f.get("value") or "").strip()
+        if key and val:
+            out[key] = val
+    return out
+
+
+def _spoken_for_page(
+    *,
+    name: str,
+    page_id: str,
+    url: str,
+    bio: dict[str, str],
+    opening: bool = False,
+) -> str:
+    hint = _screen_hint(page_id, url)
+    product = (
+        bio.get("company_name")
+        or bio.get("products", "").split(",")[0].strip()
+        or "this product"
+    )
+    if opening:
+        about = bio.get("usp") or bio.get("about") or bio.get("key_features") or ""
+        about = " ".join(about.split())[:180]
+        if about:
+            return (
+                f"We're on {name} — {hint}. {product}: {about} "
+                f"I'll walk the main screens end to end; jump in anytime."
+            )
+        return (
+            f"We're on {name} — {hint}. I'll walk you through {product} "
+            f"end to end from the knowledge we captured."
+        )
+    features = bio.get("key_features") or ""
+    # Pull a feature clause that mentions this screen if possible.
+    bit = ""
+    for part in re.split(r"[,;]", features):
+        p = part.strip()
+        if not p:
+            continue
+        low = p.lower()
+        if any(tok in low for tok in name.lower().split() if len(tok) > 3):
+            bit = p
+            break
+        if page_id.replace("_", " ") in low or page_id.replace("-", " ") in low:
+            bit = p
+            break
+    if bit:
+        return f"Next: {name}. {bit}."
+    return f"Next: {name} — {hint}."
+
+
+def promote_topology_to_demo_yaml(
+    site_yaml: str,
+    topology_yaml: str,
+    *,
+    max_pages: int = 12,
+    flow_id: str = "default_walkthrough",
+    bio_fields: dict[str, str] | None = None,
+    knowledge_md: str = "",
+) -> str:
+    """Merge explore topology pages into draft site graph + navigate walkthrough.
+
+    Explore map alone is non-demo. This builds a live-capable draft: pages with
+    body selectors, one default_walkthrough (navigate+wait per screen), playlist.
+    Spoken lines prefer captured bio / knowledge over generic filler.
+    """
+    site_raw = yaml.safe_load(site_yaml)
+    topo_raw = yaml.safe_load(topology_yaml)
+    if not isinstance(site_raw, dict):
+        raise SiteGraphError("site graph must be a mapping")
+    if not isinstance(topo_raw, dict):
+        raise SiteGraphError("topology must be a mapping")
+
+    topo_pages = topo_raw.get("pages")
+    if not isinstance(topo_pages, dict) or not topo_pages:
+        raise SiteGraphError("topology has no pages to promote")
+
+    base_url = str(
+        topo_raw.get("base_url") or site_raw.get("base_url") or "https://example.com/"
+    ).strip()
+    if base_url and not base_url.endswith("/"):
+        base_url += "/"
+
+    bio = dict(bio_fields or {})
+    persona_in = site_raw.get("persona") if isinstance(site_raw.get("persona"), dict) else {}
+    product_name = str(
+        bio.get("company_name")
+        or persona_in.get("product_name")
+        or "your product"
+    ).strip()
+    if " | " in product_name:
+        product_name = product_name.split(" | ", 1)[0].strip() or product_name
+    if product_name.lower() in {"your product", ""}:
+        # Fall back to host brand from base_url
+        host = (urlparse(base_url).hostname or "").split(".")[0]
+        if host and host not in {"www", "app"}:
+            product_name = host.replace("-", " ").title()
+    one_liner = str(
+        bio.get("usp") or bio.get("about") or persona_in.get("one_liner") or ""
+    ).strip()
+    if " | " in one_liner and len(one_liner) < 80:
+        # Avoid raw HTML titles as one-liners
+        one_liner = one_liner.split(" | ", 1)[-1].strip()
+    if len(one_liner) > 220:
+        one_liner = one_liner[:217].rsplit(" ", 1)[0] + "…"
+    agent_name = str(persona_in.get("agent_name") or "Navigator AI").strip()
+    tone = str(persona_in.get("tone") or "friendly, clear, concise").strip()
+
+    pages_out: dict[str, Any] = {}
+    walk_ids: list[str] = []
+    used_ids: set[str] = set()
+    for _pid, meta in topo_pages.items():
+        if not isinstance(meta, dict):
+            continue
+        abs_url = str(meta.get("url") or "").strip()
+        if _is_login_url(abs_url):
+            continue
+        rel = _rel_url(abs_url, base_url)
+        page_id = _stable_page_id(abs_url or rel, used_ids)
+        name = _page_label(str(meta.get("title") or ""), page_id, abs_url or rel)
+        pages_out[page_id] = {
+            "name": name,
+            "url": rel,
+            "selectors": {"body": "body"},
+            "flows": {},
+        }
+        walk_ids.append(page_id)
+        if len(walk_ids) >= max_pages:
+            break
+
+    if not walk_ids:
+        raise SiteGraphError("topology pages were all login/empty — nothing to promote")
+
+    def _anchor_score(pid: str) -> tuple[int, str]:
+        u = str(pages_out[pid].get("url") or "").lower()
+        n = str(pages_out[pid].get("name") or "").lower()
+        score = 0
+        if "dashboard" in u or "dashboard" in n:
+            score -= 20
+        if u in {"/", "/home", "/home/"} or n == "home":
+            score -= 10
+        return (score, pid)
+
+    anchor_id = sorted(walk_ids, key=_anchor_score)[0]
+    ordered = [anchor_id] + [p for p in walk_ids if p != anchor_id]
+
+    steps: list[dict[str, Any]] = []
+    first = pages_out[ordered[0]]
+    steps.append(
+        {
+            "tool": "wait_for",
+            "selector": "body",
+            "timeout_ms": 8000,
+            "spoken": _spoken_for_page(
+                name=str(first["name"]),
+                page_id=ordered[0],
+                url=str(first.get("url") or ""),
+                bio=bio,
+                opening=True,
+            ),
+            "expects": {"check": "visible", "selector": "body", "timeout_ms": 8000},
+        }
+    )
+    for pid in ordered[1:]:
+        page = pages_out[pid]
+        token = _url_match_token(str(page.get("url") or pid))
+        spoken = _spoken_for_page(
+            name=str(page["name"]),
+            page_id=pid,
+            url=str(page.get("url") or ""),
+            bio=bio,
+            opening=False,
+        )
+        steps.append(
+            {
+                "tool": "navigate",
+                "page_id": pid,
+                "spoken": spoken,
+                "expects": {"check": "url_matches", "expected": token},
+            }
+        )
+        steps.append(
+            {
+                "tool": "wait_for",
+                "selector": "body",
+                "timeout_ms": 5000,
+                "spoken": (
+                    f"Here's {page['name']} — {_screen_hint(pid, str(page.get('url') or ''))}."
+                ),
+                "expects": {"check": "visible", "selector": "body", "timeout_ms": 5000},
+            }
+        )
+
+    pages_out[anchor_id]["flows"] = {flow_id: steps}
+
+    # Prefer topology site slug over generic "client" so knowledge aliases resolve.
+    site_name = str(topo_raw.get("site") or "").strip()
+    if not site_name or site_name == "client":
+        site_name = str(site_raw.get("site") or "client").strip() or "client"
+    if site_name == "client":
+        host = (urlparse(base_url).hostname or "").split(".")[0]
+        if host and host not in {"www", "app"}:
+            site_name = host
+
+    meta: dict[str, Any] = {
+        "source": "product_explore_promote",
+        "promoted_pages": len(ordered),
+    }
+    if (knowledge_md or "").strip():
+        meta["knowledge_excerpt"] = " ".join(knowledge_md.split())[:500]
+
+    out: dict[str, Any] = {
+        "version": site_raw.get("version") or 1,
+        "site": site_name,
+        "base_url": base_url,
+        "persona": {
+            "product_name": product_name,
+            "one_liner": one_liner,
+            "agent_name": agent_name,
+            "tone": tone,
+        },
+        "demo_playlist": [
+            {
+                "order": 1,
+                "name": "Default walkthrough",
+                "page_id": anchor_id,
+                "flow_id": flow_id,
+            }
+        ],
+        "pages": pages_out,
+        "_meta": meta,
+    }
+    text = yaml.safe_dump(out, sort_keys=False)
+    parse_site_graph(text, origin="<promote-topology>")
+    return text
+
+
+def _url_match_token(url: str) -> str:
+    path = (urlparse(url).path if "://" in (url or "") else (url or "")).strip("/")
+    parts = [p for p in path.split("/") if p]
+    return parts[-1] if parts else (path or "/")
+
+
+def draft_needs_explore_promote(yaml_text: str) -> bool:
+    """True when draft is stub / prior explore seed — not a recorded multi-page graph."""
+    try:
+        raw = yaml.safe_load(yaml_text) or {}
+    except Exception:  # noqa: BLE001
+        return True
+    if not isinstance(raw, dict):
+        return True
+    meta = raw.get("_meta")
+    if isinstance(meta, dict) and meta.get("source") == "product_explore_promote":
+        return True
+    pages = raw.get("pages")
+    if not isinstance(pages, dict) or len(pages) <= 1:
+        return True
+    playlist = raw.get("demo_playlist") or []
+    return not playlist
+
+
+def resolve_topology_yaml(product_id: str, site_yaml: str = "") -> str:
+    """Load topology for product_id, falling back to site / host slug files."""
+    from navigator.knowledge.product_ids import product_id_aliases
+    from navigator.knowledge.topology import load_topology
+
+    site = ""
+    base_url = ""
+    if site_yaml.strip():
+        try:
+            raw = yaml.safe_load(site_yaml) or {}
+        except Exception:  # noqa: BLE001
+            raw = {}
+        if isinstance(raw, dict):
+            site = str(raw.get("site") or "").strip()
+            base_url = str(raw.get("base_url") or "").strip()
+    for cid in product_id_aliases(product_id, site=site, base_url=base_url):
+        loaded = load_topology(cid)
+        if (loaded.get("page_count") or 0) > 0 and (loaded.get("yaml") or "").strip():
+            return str(loaded["yaml"])
+    return ""
+
+
+def promote_explore_into_draft(
+    product_id: str,
+    registry: Any,
+    *,
+    topology_yaml: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Write promoted draft revision; returns {revision, page_count, yaml}.
+
+    force=False skips when draft already has a multi-page recorded walkthrough.
+    """
+    from navigator.knowledge.company_bio import load_bio
+    from navigator.knowledge.product_brief import load_product_brief
+
+    rev = registry.latest_revision(product_id)
+    if not force and not draft_needs_explore_promote(rev.yaml):
+        raise SiteGraphError(
+            "draft already has a multi-page walkthrough — use Promote from Site graph to overwrite"
+        )
+    topo = (topology_yaml or "").strip() or resolve_topology_yaml(product_id, rev.yaml)
+    if not topo:
+        raise SiteGraphError("no explore topology to promote — run Product Explore first")
+
+    site = ""
+    base_url = ""
+    try:
+        raw_site = yaml.safe_load(rev.yaml) or {}
+        if isinstance(raw_site, dict):
+            site = str(raw_site.get("site") or "").strip()
+            base_url = str(raw_site.get("base_url") or "").strip()
+    except Exception:  # noqa: BLE001
+        pass
+    # Host from topology when draft still says example.com / client.
+    try:
+        topo_raw = yaml.safe_load(topo) or {}
+        if isinstance(topo_raw, dict):
+            if not base_url or "example.com" in base_url.lower():
+                base_url = str(topo_raw.get("base_url") or base_url).strip()
+            if not site or site == "client":
+                site = str(topo_raw.get("site") or site).strip()
+    except Exception:  # noqa: BLE001
+        pass
+
+    bio_map = _bio_field_map(load_bio(product_id, site=site, base_url=base_url))
+    knowledge_md = load_product_brief(product_id, site=site, base_url=base_url)
+
+    new_yaml = promote_topology_to_demo_yaml(
+        rev.yaml,
+        topo,
+        bio_fields=bio_map,
+        knowledge_md=knowledge_md,
+    )
+    try:
+        from navigator.agent_runtime.demo_graph import build_demo_graph, serialise
+        from navigator.knowledge.demo_script import (
+            apply_script_patch,
+            compose_full_demo_script,
+        )
+
+        graph = parse_site_graph(new_yaml)
+        composed = compose_full_demo_script(
+            graph,
+            product_id=product_id,
+            knowledge_md=knowledge_md,
+            bio_fields=bio_map,
+            include_login=False,
+            intake_enabled=True,
+        )
+        beats = composed.get("beats") if isinstance(composed, dict) else None
+        if isinstance(beats, list) and beats:
+            new_yaml = apply_script_patch(new_yaml, beats=beats, sync_flow_steps=False)
+            graph = parse_site_graph(new_yaml)
+        dg = build_demo_graph(graph, product_id=product_id)
+        raw = yaml.safe_load(new_yaml)
+        if isinstance(raw, dict):
+            meta = raw.setdefault("_meta", {})
+            if isinstance(meta, dict):
+                meta["demo_graph"] = serialise(dg)
+            new_yaml = yaml.safe_dump(raw, sort_keys=False)
+            parse_site_graph(new_yaml, origin="<promote-demo-graph>")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[promote] demo_graph/script attach skipped: {exc}", flush=True)
+
+    saved = registry.put_site_graph(
+        product_id, new_yaml, "explored", publish=False
+    )
+    page_count = 0
+    try:
+        page_count = len(parse_site_graph(new_yaml).pages)
+    except SiteGraphError:
+        pass
+    return {
+        "revision": saved.revision,
+        "page_count": page_count,
+        "yaml": new_yaml,
+        "published": False,
+    }
+
+
 def remove_flow_from_yaml(
     yaml_text: str, *, flow_id: str, page_id: str | None = None
 ) -> str:

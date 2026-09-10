@@ -1,0 +1,4 @@
+services:
+  navigator:
+    environment:
+      NAVIGATOR_ATTENDEE_AUTOSTART: "0"

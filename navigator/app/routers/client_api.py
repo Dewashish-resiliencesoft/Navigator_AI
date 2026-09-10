@@ -19,6 +19,7 @@ from navigator.client.content import (
     begin_capture,
     merge_recorded_flow,
     playlist_from_graph,
+    promote_explore_into_draft,
     recorder_status,
     recording_base_url,
     remove_flow_from_yaml,
@@ -562,6 +563,28 @@ def client_get_site_graph(product: DashboardAuthedProduct, registry: Reg) -> dic
         rev = registry.latest_revision(product.product_id)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None
+    # Heal home-only stub when explore topology already exists.
+    try:
+        from navigator.client.content import (
+            draft_needs_explore_promote,
+            promote_explore_into_draft,
+            resolve_topology_yaml,
+        )
+
+        if draft_needs_explore_promote(rev.yaml) and resolve_topology_yaml(
+            product.product_id, rev.yaml
+        ):
+            promoted = promote_explore_into_draft(
+                product.product_id, registry, force=True
+            )
+            rev = registry.latest_revision(product.product_id)
+            print(
+                f"[client] auto-promoted explore walkthrough "
+                f"rev={promoted.get('revision')} pages={promoted.get('page_count')}",
+                flush=True,
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[client] site-graph auto-promote skipped: {exc}", flush=True)
     return {
         "yaml": rev.yaml,
         "revision": rev.revision,
@@ -786,16 +809,21 @@ def client_publish_site_graph(
 
 @router.get("/client/api/bio")
 def client_get_bio(product: DashboardAuthedProduct, registry: Reg) -> dict:
-    data = load_bio(product.product_id)
-    if not any(str(f.get("value") or "").strip() for f in data.get("fields", [])):
+    site = ""
+    base_url = ""
+    try:
+        graph = registry.load_graph(product.product_id)
+        site = graph.site or ""
+        base_url = graph.base_url or ""
+    except Exception:  # noqa: BLE001
         try:
-            site = registry.load_graph(product.product_id).site
-            alt = load_bio(site)
-            if any(str(f.get("value") or "").strip() for f in alt.get("fields", [])):
-                data = alt
-        except Exception:
+            rev = registry.latest_revision(product.product_id)
+            graph = parse_site_graph(rev.yaml)
+            site = graph.site or ""
+            base_url = graph.base_url or ""
+        except Exception:  # noqa: BLE001
             pass
-    return data
+    return load_bio(product.product_id, site=site, base_url=base_url)
 
 @router.put("/client/api/bio")
 def client_put_bio(product: DashboardAuthedProduct, body: BioBody, registry: Reg) -> dict:
@@ -808,15 +836,35 @@ def client_put_bio(product: DashboardAuthedProduct, body: BioBody, registry: Reg
 def client_get_knowledge(product: DashboardAuthedProduct, registry: Reg) -> dict:
     from navigator.knowledge.knowledge_merge import load_knowledge_bundle
 
-    bundle = load_knowledge_bundle(product.product_id)
+    site = ""
+    base_url = ""
+    try:
+        rev = registry.latest_revision(product.product_id)
+        graph = parse_site_graph(rev.yaml)
+        site = graph.site or ""
+        base_url = graph.base_url or ""
+    except Exception:  # noqa: BLE001
+        pass
+    bundle = load_knowledge_bundle(
+        product.product_id, site=site, base_url=base_url
+    )
+    # Surface bio as markdown when explore MD missing so Knowledge tab isn't empty.
     if not str(bundle.get("markdown") or "").strip():
+        bio_md = ""
         try:
-            site = registry.load_graph(product.product_id).site
-            alt = load_knowledge_bundle(site)
-            if str(alt.get("markdown") or "").strip():
-                bundle = alt
+            from navigator.knowledge.company_bio import format_bio_markdown, load_bio
+
+            bio_md = format_bio_markdown(
+                load_bio(product.product_id, site=site, base_url=base_url)
+            )
         except Exception:  # noqa: BLE001
-            pass
+            bio_md = ""
+        if bio_md:
+            bundle = {
+                **bundle,
+                "markdown": bio_md,
+                "explore_markdown": bundle.get("explore_markdown") or bio_md,
+            }
     return {
         "markdown": bundle.get("markdown") or "",
         "user_markdown": bundle.get("user_markdown") or "",
@@ -842,7 +890,17 @@ def client_put_knowledge(product: DashboardAuthedProduct, body: KnowledgeBody, r
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[client] chroma ingest skipped: {exc}", flush=True)
-    return {"markdown": saved, "chroma_id": chroma_id}
+    # Save also refreshes draft walkthrough from explore map when draft is stub.
+    promoted: dict[str, Any] | None = None
+    try:
+        promoted = promote_explore_into_draft(product.product_id, registry, force=False)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[client] explore→graph promote on save skipped: {exc}", flush=True)
+    out: dict[str, Any] = {"markdown": saved, "chroma_id": chroma_id}
+    if promoted:
+        out["site_graph_revision"] = promoted.get("revision")
+        out["promoted_pages"] = promoted.get("page_count")
+    return out
 
 @router.put("/client/api/knowledge/user")
 def client_put_knowledge_user(
@@ -881,10 +939,53 @@ def client_put_knowledge_user(
     }
 
 @router.get("/client/api/product-explore/topology")
-def client_product_explore_topology(product: DashboardAuthedProduct) -> dict:
+def client_product_explore_topology(product: DashboardAuthedProduct, registry: Reg) -> dict:
+    from navigator.client.content import resolve_topology_yaml
     from navigator.knowledge.topology import load_topology
 
-    return load_topology(product.product_id)
+    direct = load_topology(product.product_id)
+    if (direct.get("page_count") or 0) > 0:
+        return direct
+    try:
+        site_yaml = registry.latest_revision(product.product_id).yaml
+    except Exception:  # noqa: BLE001
+        site_yaml = ""
+    yaml_text = resolve_topology_yaml(product.product_id, site_yaml)
+    if not yaml_text.strip():
+        return direct
+    import yaml as _yaml
+
+    try:
+        pages = (_yaml.safe_load(yaml_text) or {}).get("pages") or {}
+        count = len(pages) if isinstance(pages, dict) else 0
+    except Exception:  # noqa: BLE001
+        count = 0
+    return {"yaml": yaml_text, "updated_at": None, "page_count": count}
+
+
+@router.post("/client/api/product-explore/promote")
+def client_product_explore_promote(
+    product: DashboardAuthedProduct, registry: Reg
+) -> dict:
+    """Promote explore topology into draft site graph + default walkthrough."""
+    from navigator.knowledge.site_graph import SiteGraphError
+
+    try:
+        result = promote_explore_into_draft(product.product_id, registry, force=True)
+    except SiteGraphError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    graph = parse_site_graph(result["yaml"])
+    return {
+        "ok": True,
+        "revision": result["revision"],
+        "page_count": result["page_count"],
+        "yaml": result["yaml"],
+        "playlist": playlist_from_graph(graph),
+        "published": False,
+        "message": "Draft walkthrough updated from explore map — Publish when ready for visitors.",
+    }
 
 @router.get("/client/api/product-explore")
 def client_product_explore_status(product: DashboardAuthedProduct) -> dict:

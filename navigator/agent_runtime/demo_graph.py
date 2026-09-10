@@ -49,20 +49,31 @@ def _steps_from_graph(graph: SiteGraph, page_id: str, flow_id: str) -> list[Reco
     calls = page.flows.get(flow_id, ())
     steps: list[RecordedStep] = []
     for call in calls:
-        alias = getattr(call, "selector", "")
         tool_name = call.tool
+        dest_page = (
+            str(getattr(call, "page_id", "") or "").strip()
+            if tool_name == "navigate"
+            else page_id
+        ) or page_id
+        alias = getattr(call, "selector", "") or (
+            dest_page if tool_name == "navigate" else ""
+        )
         value = getattr(call, "value", "")
         pc = call.expects.model_dump() if call.expects else {}
-        # Narration from demo_script_meta
-        idx = len(steps)
-        spoken = graph.demo_script_spoken(flow_id, idx) or ""
+        spoken = (getattr(call, "spoken", None) or "").strip()
+        if not spoken:
+            try:
+                spoken = (graph.script_spoken_override(flow_id=flow_id, step_index=len(steps)) or "").strip()
+            except Exception:  # noqa: BLE001
+                spoken = ""
         needs_approval = pc.get("check") in ("", None) or False
+        sel_page = dest_page if dest_page in graph.pages else page_id
         step = RecordedStep(
             tool=tool_name,
             alias=alias,
-            selector=graph.page(page_id).selectors.get(alias, ""),
+            selector=graph.page(sel_page).selectors.get(alias, "") if alias else "",
             value=value or "",
-            page_id=page_id,
+            page_id=dest_page,
             postcondition=pc,
             source="agent",
             input_name=getattr(call, "input_name", None),

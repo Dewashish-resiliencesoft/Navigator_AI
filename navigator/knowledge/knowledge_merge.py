@@ -50,7 +50,27 @@ def ensure_user_from_canonical(product_id: str) -> None:
     _write(u, c.read_text(encoding="utf-8"))
 
 
-def load_knowledge_bundle(product_id: str) -> dict[str, str | None]:
+def load_knowledge_bundle(
+    product_id: str,
+    *,
+    site: str = "",
+    base_url: str = "",
+) -> dict[str, str | None]:
+    from navigator.knowledge.product_ids import product_id_aliases
+
+    for cid in product_id_aliases(product_id, site=site, base_url=base_url):
+        ensure_user_from_canonical(cid)
+        bundle = {
+            "user_markdown": _read(user_path(cid)),
+            "explore_markdown": _read(explore_path(cid)),
+            "markdown": _read(canonical_path(cid)),
+            "merged_at": _read(merged_at_path(cid)) or None,
+        }
+        if any(
+            str(bundle.get(k) or "").strip()
+            for k in ("markdown", "user_markdown", "explore_markdown")
+        ):
+            return bundle
     ensure_user_from_canonical(product_id)
     merged = _read(merged_at_path(product_id)) or None
     return {

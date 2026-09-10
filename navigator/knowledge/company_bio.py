@@ -44,13 +44,25 @@ def default_bio() -> dict[str, Any]:
     return {"fields": [dict(f) for f in DEFAULT_BIO_FIELDS]}
 
 
-def load_bio(product_id: str) -> dict[str, Any]:
-    path = _bio_path(product_id)
-    if not path.is_file():
-        # try hyphen/underscore alias
-        alt = _ROOT / f"{product_id.replace('-', '_')}.bio.json"
-        path = alt if alt.is_file() else path
-    if not path.is_file():
+def load_bio(
+    product_id: str,
+    *,
+    site: str = "",
+    base_url: str = "",
+) -> dict[str, Any]:
+    from navigator.knowledge.product_ids import product_id_aliases
+
+    path = None
+    for cid in product_id_aliases(product_id, site=site, base_url=base_url):
+        candidate = _bio_path(cid)
+        if candidate.is_file():
+            path = candidate
+            break
+        alt = _ROOT / f"{cid.replace('-', '_')}.bio.json"
+        if alt.is_file():
+            path = alt
+            break
+    if path is None or not path.is_file():
         return default_bio()
     data = json.loads(path.read_text(encoding="utf-8"))
     fields = data.get("fields")

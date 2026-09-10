@@ -703,7 +703,12 @@ export const api = {
       merged_at?: string | null;
     }>("/client/api/knowledge"),
   putKnowledge: (markdown: string) =>
-    send<unknown>("/client/api/knowledge", "PUT", { markdown }),
+    send<{
+      markdown: string;
+      chroma_id?: string | null;
+      site_graph_revision?: number;
+      promoted_pages?: number;
+    }>("/client/api/knowledge", "PUT", { markdown }),
   putKnowledgeUser: (markdown: string) =>
     send<{
       ok: boolean;
@@ -782,6 +787,14 @@ export const api = {
     get<{ yaml: string; updated_at: string | null; page_count: number }>(
       "/client/api/product-explore/topology",
     ),
+  promoteProductExplore: () =>
+    send<{
+      ok: boolean;
+      revision: number;
+      page_count: number;
+      yaml: string;
+      message?: string;
+    }>("/client/api/product-explore/promote", "POST"),
 
   getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
   putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),

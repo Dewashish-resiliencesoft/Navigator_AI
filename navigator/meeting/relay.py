@@ -47,7 +47,8 @@ def screencast_every_nth(target_fps: int | None = None) -> int:
 def screencast_max_size() -> tuple[int, int]:
     from navigator.core.settings import settings
 
-    w = max(640, min(1280, int(settings.screenshot_max_width or 960)))
+    # getattr: older container images may lack screenshot_max_width after partial docker cp.
+    w = max(640, min(1280, int(getattr(settings, "screenshot_max_width", None) or 960)))
     # 16:9
     h = int(round(w * 9 / 16))
     h -= h % 2

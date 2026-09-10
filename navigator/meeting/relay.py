@@ -6,9 +6,9 @@
 `/frame.jpg` — latest Playwright JPEG.
 
 ponytail: frames come from CDP Page.screencast (see start_screencast) — Chromium
-pushes a JPEG whenever the page repaints, so in-page CSS animation reaches Meet
-at ~60fps and an idle page costs nothing. push_frame stays for seeding the first
-paint and for demos with no screencast attached.
+pushes a JPEG on repaint. /view polls frame.jpg at NAVIGATOR_TARGET_FPS (default
+15): 60fps through the Cloudflare live-http tunnel saturates bandwidth and
+starves Gemini Live audio. push_frame seeds first paint / non-screencast demos.
 """
 
 from __future__ import annotations
@@ -22,11 +22,32 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from playwright.sync_api import Page
 
-#: Meet `/view` JPEG poll cadence. 16ms ≈ 60fps. CPU hog (Attendee ffmpeg
-#: recorder) is off, so this is viable again.
-VIEW_FRAME_MS = 16
-#: CDP screencast every repaint (60fps source) — cursor motion stays fluid.
-SCREENCAST_EVERY_NTH_FRAME = 1
+
+def view_frame_ms(target_fps: int | None = None) -> int:
+    """Poll interval for /view → frame.jpg (ms)."""
+    if target_fps is None:
+        from navigator.core.settings import settings
+
+        target_fps = int(settings.target_fps or 15)
+    fps = max(5, min(30, int(target_fps)))
+    return max(33, int(round(1000.0 / fps)))
+
+
+def screencast_every_nth(target_fps: int | None = None) -> int:
+    """Drop CDP frames when target fps is low (less JPEG encode CPU)."""
+    if target_fps is None:
+        from navigator.core.settings import settings
+
+        target_fps = int(settings.target_fps or 15)
+    fps = max(5, min(30, int(target_fps)))
+    # Chromium ~60fps source; everyNth≈60/fps.
+    return max(1, int(round(60.0 / fps)))
+
+
+#: Defaults used by tests / callers that import constants (resolved at import
+#: from settings — prefer view_frame_ms() / screencast_every_nth() at runtime).
+VIEW_FRAME_MS = view_frame_ms()
+SCREENCAST_EVERY_NTH_FRAME = screencast_every_nth()
 
 
 _AGENT_HTML = """<!doctype html>
@@ -59,7 +80,7 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 16);
+  setTimeout(tickFrame, __VIEW_FRAME_MS__);
 }
 tickFrame();
 </script></body></html>
@@ -124,7 +145,10 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
                 return
             if path.startswith("/view"):
                 handle.view_hits += 1
-                body = _VIEW_HTML.encode()
+                ms = view_frame_ms()
+                body = (
+                    _VIEW_HTML.replace("__VIEW_FRAME_MS__", str(ms)).encode("utf-8")
+                )
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -181,7 +205,8 @@ def start_screencast(handle: RelayHandle, page: Page):
     A `page.screenshot()` costs ~30ms of the Playwright thread — the same thread
     that has to keep 24kHz PCM flowing — so the old per-hop push capped motion at
     ~12fps and overran its own timing by ~1.5x. Chromium pushes screencast frames
-    on repaint for free, so an in-page CSS animation arrives at ~60fps.
+    on repaint; we subsample via everyNthFrame to match NAVIGATOR_TARGET_FPS so
+    the Cloudflare /view poll stays ahead of the encoder.
 
     Returns the CDP session, or None if screencast is unavailable (the caller
     then keeps using push_frame).
@@ -189,6 +214,7 @@ def start_screencast(handle: RelayHandle, page: Page):
     from navigator.core.settings import settings
 
     quality = max(1, min(100, int(settings.screenshot_quality or 70)))
+    nth = screencast_every_nth()
     try:
         cdp = page.context.new_cdp_session(page)
     except Exception as exc:  # noqa: BLE001
@@ -216,13 +242,17 @@ def start_screencast(handle: RelayHandle, page: Page):
                 "quality": quality,
                 "maxWidth": 1280,
                 "maxHeight": 720,
-                "everyNthFrame": SCREENCAST_EVERY_NTH_FRAME,
+                "everyNthFrame": nth,
             },
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[live] startScreencast failed, using screenshots: {exc}", flush=True)
         return None
-    print(f"[live] screencast=on quality={quality}", flush=True)
+    print(
+        f"[live] screencast=on quality={quality} everyNth={nth} "
+        f"view_ms={view_frame_ms()}",
+        flush=True,
+    )
     handle.screencast = True
     return cdp
 

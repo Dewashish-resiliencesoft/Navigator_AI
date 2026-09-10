@@ -7,14 +7,20 @@ from urllib.request import urlopen
 from navigator.meeting.relay import (
     SCREENCAST_EVERY_NTH_FRAME,
     VIEW_FRAME_MS,
+    screencast_every_nth,
     start_relay,
+    view_frame_ms,
 )
 
 
 def test_view_and_screencast_tuned_for_smoothness():
-    # 60fps view swap + every-frame screencast (ffmpeg recorder is off).
-    assert VIEW_FRAME_MS == 16
-    assert SCREENCAST_EVERY_NTH_FRAME == 1
+    # Tunnel-friendly defaults: ~15fps view poll, CDP subsampled to match.
+    assert 33 <= VIEW_FRAME_MS <= 100
+    assert SCREENCAST_EVERY_NTH_FRAME >= 1
+    assert view_frame_ms(15) == 67
+    assert view_frame_ms(60) == 33  # capped to 30fps max
+    assert screencast_every_nth(15) == 4
+    assert screencast_every_nth(60) == 2
 
 
 def test_view_returns_html():
@@ -24,8 +30,8 @@ def test_view_returns_html():
             body = resp.read().decode()
             assert resp.status == 200
         assert "getUserMedia" not in body  # screenshare page — no mic requirement
-        assert "/frame.jpg" in body
-        assert "setTimeout(tickFrame, 16)" in body
+        assert "frame.jpg" in body
+        assert f"setTimeout(tickFrame, {VIEW_FRAME_MS})" in body
         assert "id=badge" not in body and 'id="badge"' not in body
         assert "tickStatus" not in body
         with urlopen(relay.agent_url, timeout=5) as resp:

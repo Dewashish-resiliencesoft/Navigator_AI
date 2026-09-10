@@ -157,11 +157,12 @@ class Settings(BaseSettings):
     redis_url: str = ""
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
-    #: Screenshare relay target frame rate (16 ms ≈ 60 fps).
-    target_fps: int = 60
-    #: JPEG quality for Meet screenshare frames (1–100). Meet re-encodes the
-    #: share anyway, and the encode runs in the same process as the audio
-    #: bridge — a lower number buys real headroom for smooth voice.
+    #: Screenshare /view JPEG poll rate through the public tunnel.
+    #: 60fps floods Cloudflare + starves Gemini Live voice; 15fps is fluid
+    #: enough for demos and leaves CPU/bandwidth for clear audio.
+    target_fps: int = 15
+    #: JPEG quality for Meet/Zoom screenshare frames (1–100). Meet re-encodes
+    #: the share anyway. Prefer ~65 with target_fps=15 over quality=50@60fps.
     screenshot_quality: int = 70
 
 

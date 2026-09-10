@@ -2,6 +2,10 @@
 
 ponytail: one threaded sync websockets server. Ceiling: single connection handler
 loop. Upgrade: per-bot hubs.
+
+Outbound PCM is coalesced (~40ms) before send — Gemini Live emits tiny chunks;
+shipping each one through the Cloudflare live-ws proxy causes Zoom/Meet
+underruns and glitchy voice.
 """
 
 from __future__ import annotations
@@ -14,10 +18,17 @@ from collections.abc import Iterator
 from queue import Empty, Queue
 from typing import Any
 
+#: Coalesce bot PCM to ~40ms before Attendee (24kHz 16-bit mono = 1920 bytes).
+_OUTBOUND_COALESCE_S = 0.04
+
 
 def _pcm_seconds(pcm: bytes, sample_rate: int) -> float:
     """Playback duration of a 16-bit mono PCM chunk."""
     return len(pcm) / float(max(1, sample_rate) * 2)
+
+
+def _coalesce_bytes(sample_rate: int, seconds: float = _OUTBOUND_COALESCE_S) -> int:
+    return max(640, int(sample_rate * 2 * seconds))
 
 
 class AudioBridge:
@@ -38,6 +49,8 @@ class AudioBridge:
         self.clients_connected = 0
         self.chunks_received = 0
         self.chunks_sent = 0
+        #: Bumped on flush_bot_output so the sender drops its coalesce buffer.
+        self._out_epoch = 0
         #: Seconds of bot audio actually handed to Attendee. Callers compare
         #: this against wall-clock to tell whether a line has finished playing —
         #: Gemini's turn_complete only says generation stopped, and the meeting
@@ -98,6 +111,7 @@ class AudioBridge:
         browser has scheduled them into the future.
         """
         dropped = self.clear_outbound()
+        self._out_epoch += 1
         self._send_json({"trigger": "realtime_audio.bot_output_clear", "data": {}})
         print(f"[audio] bot output flushed (dropped {dropped} chunk(s))", flush=True)
 
@@ -112,41 +126,84 @@ class AudioBridge:
         except Exception:  # noqa: BLE001
             return False
 
+    def _send_pcm(self, pcm: bytes, rate: int) -> None:
+        if not pcm:
+            return
+        if self._send_json(
+            {
+                "trigger": "realtime_audio.bot_output",
+                "data": {
+                    "chunk": base64.b64encode(pcm).decode(),
+                    "sample_rate": rate,
+                },
+            }
+        ):
+            self.chunks_sent += 1
+            # Counted on the send, not on the queue put: chunks a barge-in
+            # drops or a dead socket refuses are never heard, so callers
+            # must not wait them out.
+            self.audio_s_sent += _pcm_seconds(pcm, rate)
+        else:
+            print(
+                "[audio] dropped outbound chunk: Attendee WS not connected",
+                flush=True,
+            )
+
+    def _wait_ws(self) -> None:
+        deadline = time.monotonic() + 45.0
+        while self._ws is None and not self._stop.is_set():
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+
     def _run_sender(self) -> None:
-        """Push bot audio as soon as it is queued.
+        """Push bot audio coalesced (~40ms) as soon as it is queued.
 
         Previously outbound was only flushed inside the inbound read loop, so
         bot audio could not go out unless the meeting happened to be sending us
         something — silence in, silence out.
         """
+        buf = bytearray()
+        buf_rate = 0
+        epoch = self._out_epoch
         while not self._stop.is_set():
+            if self._out_epoch != epoch:
+                buf.clear()
+                buf_rate = 0
+                epoch = self._out_epoch
             try:
-                pcm, rate = self._outbound.get(timeout=0.2)
+                pcm, rate = self._outbound.get(timeout=0.02)
             except Empty:
+                if buf and buf_rate and self._out_epoch == epoch:
+                    # Flush partial coalesce so end of utterance is not stuck.
+                    self._wait_ws()
+                    if self._out_epoch == epoch:
+                        self._send_pcm(bytes(buf), buf_rate)
+                    buf.clear()
+                    buf_rate = 0
                 continue
-            # Zoom ZAK join often connects the audio WS tens of seconds later.
-            # Hold until Attendee is on the socket (or the demo stops).
-            deadline = time.monotonic() + 45.0
-            while self._ws is None and not self._stop.is_set():
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.01)
-            if self._send_json(
-                {
-                    "trigger": "realtime_audio.bot_output",
-                    "data": {
-                        "chunk": base64.b64encode(pcm).decode(),
-                        "sample_rate": rate,
-                    },
-                }
-            ):
-                self.chunks_sent += 1
-                # Counted on the send, not on the queue put: chunks a barge-in
-                # drops or a dead socket refuses are never heard, so callers
-                # must not wait them out.
-                self.audio_s_sent += _pcm_seconds(pcm, rate)
-            else:
-                print("[audio] dropped outbound chunk: Attendee WS not connected", flush=True)
+            if self._out_epoch != epoch:
+                buf.clear()
+                buf_rate = 0
+                epoch = self._out_epoch
+                continue
+            self._wait_ws()
+            if buf_rate and rate != buf_rate:
+                self._send_pcm(bytes(buf), buf_rate)
+                buf.clear()
+            buf_rate = rate
+            buf.extend(pcm)
+            need = _coalesce_bytes(rate)
+            while len(buf) >= need and self._out_epoch == epoch:
+                piece = bytes(buf[:need])
+                del buf[:need]
+                self._send_pcm(piece, rate)
+            if not buf:
+                buf_rate = 0
+            if self._out_epoch != epoch:
+                buf.clear()
+                buf_rate = 0
+                epoch = self._out_epoch
 
     def frames(self, *, timeout_s: float | None = None) -> Iterator[bytes]:
         while not self._stop.is_set():

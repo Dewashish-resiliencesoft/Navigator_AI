@@ -176,6 +176,14 @@ def _start_tunnel_once(
             if match:
                 public = match.group(0)
                 print(f"[tunnel] URL {public} — waiting for edge registration…", flush=True)
+        if "429" in text or "error code: 1015" in text.lower() or "quick tunnel provisioning failed" in text.lower():
+            proc.kill()
+            raise RuntimeError(
+                "cloudflared quick tunnel rate-limited (Cloudflare 429/1015). "
+                "Set NAVIGATOR_PUBLIC_BASE_URL to a stable host tunnel "
+                "(e.g. ./.tools/cloudflared tunnel --url http://127.0.0.1:8080) "
+                "so demos reuse one origin via /v1/live-http and /v1/live-ws."
+            )
         if public is not None and _REGISTERED_RE.search(text):
             registered = True
             break

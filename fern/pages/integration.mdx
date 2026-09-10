@@ -139,7 +139,7 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `UnionType[str, null]` | — |  |
+| `spoken` | `Union[str, null]` | — |  |
 | `tool` | `Literal[click_element]` | 'click_element' |  |
 | `selector` | `str` | required |  |
 | `confirm_before` | `bool` | False |  |
@@ -151,17 +151,18 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `UnionType[str, null]` | — |  |
+| `spoken` | `Union[str, null]` | — |  |
 | `tool` | `Literal[fill_field]` | 'fill_field' |  |
 | `selector` | `str` | required |  |
 | `value` | `str` | required |  |
 | `source` | `Literal[agent, user]` | 'agent' |  |
-| `live_question` | `UnionType[str, null]` | — |  |
-| `value_ref` | `UnionType[str, null]` | — |  |
-| `input_name` | `UnionType[str, null]` | — |  |
-| `prompt` | `UnionType[str, null]` | — |  |
+| `live_question` | `Union[str, null]` | — |  |
+| `value_ref` | `Union[str, null]` | — |  |
+| `input_name` | `Union[str, null]` | — |  |
+| `prompt` | `Union[str, null]` | — |  |
 | `input_type` | `str` | 'text' |  |
-| `fallback_value` | `UnionType[str, null]` | — |  |
+| `input_options` | `list[str]` | [] |  |
+| `fallback_value` | `Union[str, null]` | — |  |
 | `confirm_before` | `bool` | False |  |
 
 #### Navigate
@@ -171,7 +172,7 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `UnionType[str, null]` | — |  |
+| `spoken` | `Union[str, null]` | — |  |
 | `tool` | `Literal[navigate]` | 'navigate' |  |
 | `page_id` | `str` | required |  |
 
@@ -182,7 +183,7 @@ Four tools. No free-form DOM access, by design.
 | Field | Type | Default | |
 | --- | --- | --- | --- |
 | `expects` | `Postcondition` | required |  |
-| `spoken` | `UnionType[str, null]` | — |  |
+| `spoken` | `Union[str, null]` | — |  |
 | `tool` | `Literal[wait_for]` | 'wait_for' |  |
 | `selector` | `str` | required |  |
 | `timeout_ms` | `int` | 15000 |  |

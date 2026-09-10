@@ -44,6 +44,7 @@ from navigator.meeting.intake import (
     run_intake,
 )
 from navigator.meeting.meet_speaker import MeetSpeaker
+from navigator.meeting.public_mount import publish_http_or_tunnel, publish_ws_or_tunnel
 from navigator.meeting.relay import (
     push_frame,
     start_relay,
@@ -51,7 +52,7 @@ from navigator.meeting.relay import (
     stop_screencast,
 )
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
-from navigator.meeting.tunnel import start_tunnel, verify_attendee_docker_dns
+from navigator.meeting.tunnel import verify_attendee_docker_dns
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
 from navigator.core.settings import settings
 from navigator.core.usage_context import bind_demo_usage, clear_demo_usage
@@ -608,15 +609,25 @@ def wait_until_joined(
         if bot.state == "joined":
             return
         if bot.state == "fatal_error":
+            detail = ""
+            try:
+                raw = client._request("GET", f"/bots/{bot_id}")
+                events = raw.get("events") or []
+                # Prefer last failure-ish event metadata if present
+                for ev in reversed(events):
+                    typ = str(ev.get("type") or "")
+                    if "fail" in typ.lower() or "error" in typ.lower() or typ:
+                        detail = f" events_tail={events[-3:]!r}"
+                        break
+            except Exception as exc:  # noqa: BLE001
+                detail = f" (could not fetch bot detail: {exc})"
             raise RuntimeError(
-                f"Attendee bot fatal_error (last state={last}). "
-                "Zoom web SDK error 3712 'Invalid signature' means Attendee's "
-                "Meeting SDK JWT is wrong — NAVIGATOR_ZOOM_SDK_CLIENT_ID/SECRET "
-                "must be a General App with Meeting SDK, not the Server-to-Server "
-                "NAVIGATOR_ZOOM_CLIENT_ID used for create/ZAK. A ZAK callback 200 "
-                "does not prove the SDK signature. Other causes: worker DNS for "
-                "the ZAK tunnel hostname, or ZAK callback 401/502. "
-                "See: docker compose logs attendee-worker-local"
+                f"Attendee bot fatal_error (last state={last}).{detail} "
+                "Common Zoom causes: 3712 Invalid signature (Meeting SDK "
+                "NAVIGATOR_ZOOM_SDK_* wrong/S2S mix-up); 3000 Already has other "
+                "meetings in progress (close other Zoom meetings for this host "
+                "user / disable warm pool); ZAK/tunnel DNS. "
+                "See: docker logs attendee-attendee-worker-local-1"
             )
         if "waiting" in last.lower() and not warned_waiting:
             warned_waiting = True
@@ -869,7 +880,11 @@ def run_live_meet_demo(
             audio_bridge = AudioBridge().start()
             audio_tunnel = _timed_live_stage(
                 "audio_tunnel_start",
-                lambda: start_tunnel(audio_bridge.port, binary=settings.tunnel_bin, ready_path=None),
+                lambda: publish_ws_or_tunnel(
+                    audio_bridge.host,
+                    audio_bridge.port,
+                    binary=settings.tunnel_bin,
+                ),
             )
             audio_ws_url = audio_tunnel.public_url.replace("https://", "wss://").replace(
                 "http://", "ws://"
@@ -996,7 +1011,12 @@ def run_live_meet_demo(
         print("[live] starting screenshare tunnel…", flush=True)
         tunnel = _timed_live_stage(
             "screenshare_tunnel_start",
-            lambda: start_tunnel(relay.port, binary=settings.tunnel_bin),
+            lambda: publish_http_or_tunnel(
+                relay.host,
+                relay.port,
+                binary=settings.tunnel_bin,
+                ready_path="/view",
+            ),
         )
         public_view = f"{tunnel.public_url}/view"
         public_agent = f"{tunnel.public_url}/agent"

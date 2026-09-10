@@ -784,6 +784,126 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /v1/live-http/{token}:
+    get:
+      summary: Live Http Proxy
+      description: Reverse-proxy screenshare relay through the stable public API origin.
+      operationId: live_http_proxy_v1_live_http__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    head:
+      summary: Live Http Proxy
+      description: Reverse-proxy screenshare relay through the stable public API origin.
+      operationId: live_http_proxy_v1_live_http__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /v1/live-http/{token}/{path}:
+    get:
+      summary: Live Http Proxy
+      description: Reverse-proxy screenshare relay through the stable public API origin.
+      operationId: live_http_proxy_v1_live_http__token___path__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    head:
+      summary: Live Http Proxy
+      description: Reverse-proxy screenshare relay through the stable public API origin.
+      operationId: live_http_proxy_v1_live_http__token___path__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/system/health:
     get:
       summary: Client System Health
@@ -2318,6 +2438,83 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/bind-value-ref:
+    post:
+      summary: Client Record Bind Value Ref
+      description: Point a fill step at a prior visitor variable (no live ask on this step).
+      operationId: client_record_bind_value_ref_client_api_record_bind_value_ref_post
+      parameters:
+      - name: step_index
+        in: query
+        required: true
+        schema:
+          type: integer
+          title: Step Index
+      - name: value_ref
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Value Ref
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Record Bind Value Ref Client Api Record Bind Value Ref Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/replay-recorded-value:
+    post:
+      summary: Client Record Replay Recorded Value
+      description: Restore a field to the default, non-interactive recorded-value mode.
+      operationId: client_record_replay_recorded_value_client_api_record_replay_recorded_value_post
+      parameters:
+      - name: step_index
+        in: query
+        required: true
+        schema:
+          type: integer
+          title: Step Index
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Record Replay Recorded Value Client Api Record Replay Recorded
+                  Value Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/guided-task/plan:
     post:
       summary: Client Guided Task Plan
@@ -3599,6 +3796,11 @@ components:
           type: string
           title: Input Type
           default: text
+        input_options:
+          items:
+            type: string
+          type: array
+          title: Input Options
         fallback_value:
           anyOf:
           - type: string

@@ -48,7 +48,7 @@ img{width:1280px;height:720px;object-fit:fill;display:block;image-rendering:auto
 <script>
 async function tickFrame(){
   try {
-    const r = await fetch('/frame.jpg?ts='+Date.now(), {cache:'no-store'});
+    const r = await fetch('frame.jpg?ts='+Date.now(), {cache:'no-store'});
     if (r.ok) {
       const b = await r.blob();
       const url = URL.createObjectURL(b);

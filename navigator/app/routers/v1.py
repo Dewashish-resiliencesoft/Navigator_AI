@@ -5,7 +5,8 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response
 
 from navigator.app.api_models import (
     DemoView,
@@ -306,3 +307,104 @@ def zoom_zak_callback(
     except MeetingProviderError as exc:
         raise HTTPException(502, str(exc)) from None
     return {"zak_token": zak}
+
+
+@router.api_route("/v1/live-http/{token}/{path:path}", methods=["GET", "HEAD"])
+@router.api_route("/v1/live-http/{token}", methods=["GET", "HEAD"])
+def live_http_proxy(
+    token: str,
+    request: Request,
+    path: str = "",
+) -> Response:
+    """Reverse-proxy screenshare relay through the stable public API origin."""
+    from urllib.error import HTTPError, URLError
+    from urllib.request import Request as UrlRequest
+    from urllib.request import urlopen
+
+    from navigator.meeting.public_mount import lookup_http
+
+    target = lookup_http(token)
+    if target is None:
+        raise HTTPException(404, "unknown live relay")
+    host, port = target
+    rel = (path or "").lstrip("/")
+    qs = request.url.query
+    url = f"http://{host}:{port}/{rel}"
+    if qs:
+        url = f"{url}?{qs}"
+    try:
+        req = UrlRequest(url, method=request.method)
+        with urlopen(req, timeout=30) as resp:
+            body = resp.read()
+            status = getattr(resp, "status", 200)
+            ctype = resp.headers.get("Content-Type", "application/octet-stream")
+            headers = {"Cache-Control": resp.headers.get("Cache-Control", "no-store")}
+            return Response(content=body, status_code=int(status), media_type=ctype, headers=headers)
+    except HTTPError as exc:
+        body = exc.read() if hasattr(exc, "read") else b""
+        return Response(content=body, status_code=int(exc.code))
+    except (URLError, TimeoutError, OSError) as exc:
+        raise HTTPException(502, f"live relay upstream failed: {exc}") from None
+
+
+@router.websocket("/v1/live-ws/{token}")
+async def live_ws_proxy(websocket: WebSocket, token: str) -> None:
+    """Bridge Attendee audio websocket through the stable public API origin."""
+    import asyncio
+
+    from navigator.meeting.public_mount import lookup_ws
+
+    target = lookup_ws(token)
+    if target is None:
+        await websocket.close(code=4404)
+        return
+    host, port = target
+    await websocket.accept()
+    try:
+        import websockets
+    except ImportError:
+        await websocket.close(code=1011)
+        return
+    uri = f"ws://{host}:{port}"
+    try:
+        async with websockets.connect(uri, max_size=8 * 1024 * 1024) as upstream:
+            async def client_to_upstream() -> None:
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        if msg.get("type") == "websocket.disconnect":
+                            break
+                        if "bytes" in msg and msg["bytes"] is not None:
+                            await upstream.send(msg["bytes"])
+                        elif "text" in msg and msg["text"] is not None:
+                            await upstream.send(msg["text"])
+                except WebSocketDisconnect:
+                    return
+
+            async def upstream_to_client() -> None:
+                try:
+                    async for message in upstream:
+                        if isinstance(message, bytes):
+                            await websocket.send_bytes(message)
+                        else:
+                            await websocket.send_text(str(message))
+                except Exception:  # noqa: BLE001
+                    return
+
+            done, pending = await asyncio.wait(
+                [
+                    asyncio.create_task(client_to_upstream()),
+                    asyncio.create_task(upstream_to_client()),
+                ],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            for task in pending:
+                task.cancel()
+            for task in done:
+                _ = task.exception() if not task.cancelled() else None
+    except Exception:  # noqa: BLE001
+        try:
+            await websocket.close(code=1011)
+        except Exception:  # noqa: BLE001
+            pass
+

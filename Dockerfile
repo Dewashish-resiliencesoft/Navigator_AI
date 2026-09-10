@@ -10,7 +10,7 @@ RUN npm ci
 COPY navigator/client/web/ ./
 RUN npm run build
 
-FROM mcr.microsoft.com/playwright/python:v1.49.1-noble AS runtime
+FROM mcr.microsoft.com/playwright/python:v1.62.0-noble AS runtime
 ARG NAVIGATOR_EXTRAS=slim
 
 WORKDIR /app
@@ -34,6 +34,7 @@ RUN apt-get update \
 COPY pyproject.toml ./
 COPY navigator ./navigator
 COPY scripts/disable-attendee-debug-recording.py ./scripts/disable-attendee-debug-recording.py
+COPY scripts/bootstrap_attendee_zoom.py ./scripts/bootstrap_attendee_zoom.py
 COPY --from=web /build/dist ./navigator/client/web/dist
 
 RUN if [ "$NAVIGATOR_EXTRAS" = "full" ]; then \

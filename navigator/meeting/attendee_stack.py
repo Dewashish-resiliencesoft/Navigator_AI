@@ -233,8 +233,18 @@ def ensure_attendee_zoom_credentials(
     env["NAVIGATOR_ATTENDEE_PROJECT_NAME"] = (
         project_name or os.environ.get("NAVIGATOR_ATTENDEE_PROJECT_NAME") or "Navigator"
     ).strip()
+    api_key = (settings.attendee_api_key or "").strip()
+    if api_key:
+        env["NAVIGATOR_ATTENDEE_API_KEY"] = api_key
 
     try:
+        exec_env = [
+            f"NAVIGATOR_ZOOM_CLIENT_ID={client_id}",
+            f"NAVIGATOR_ZOOM_CLIENT_SECRET={client_secret}",
+            f"NAVIGATOR_ATTENDEE_PROJECT_NAME={env['NAVIGATOR_ATTENDEE_PROJECT_NAME']}",
+        ]
+        if api_key:
+            exec_env.append(f"NAVIGATOR_ATTENDEE_API_KEY={api_key}")
         proc = subprocess.run(
             [
                 "docker",
@@ -247,9 +257,7 @@ def ensure_attendee_zoom_credentials(
                 "-T",
                 "attendee-app-local",
                 "env",
-                f"NAVIGATOR_ZOOM_CLIENT_ID={client_id}",
-                f"NAVIGATOR_ZOOM_CLIENT_SECRET={client_secret}",
-                f"NAVIGATOR_ATTENDEE_PROJECT_NAME={env['NAVIGATOR_ATTENDEE_PROJECT_NAME']}",
+                *exec_env,
                 "python",
                 "manage.py",
                 "shell",

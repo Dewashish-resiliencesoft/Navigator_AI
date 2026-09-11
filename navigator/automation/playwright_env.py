@@ -59,22 +59,25 @@ def ensure_playwright_browsers() -> str | None:
 def ensure_headed_display() -> str | None:
     """For headful Chromium: set DISPLAY when a usable X server exists.
 
-    Prefer an already-working ``DISPLAY``. If unset or unauthorized (common on
-    VPS when uvicorn has ``DISPLAY=:0`` but LightDM xauth blocks the app user),
-    fall back to Xvfb locks ``:99``, ``:0``, ``:1``.
+    Prefer interactive seats ``:0`` / ``:1`` over lab Xvfb ``:99`` so a
+    recorder window opens where a human is sitting (uvicorn often inherits
+    ``DISPLAY=:99`` from a headless service env). Fall back to current
+    ``DISPLAY``, then Xvfb.
     """
     candidates: list[str] = []
     current = (os.environ.get("DISPLAY") or "").strip()
-    if current:
-        candidates.append(current)
-    for n in (99, 0, 1):
+
+    def _add(disp: str) -> None:
+        if disp and disp not in candidates:
+            candidates.append(disp)
+
+    # Interactive seats first (real desktop), then current, then Xvfb.
+    for n in (0, 1, 99):
         disp = f":{n}"
-        if disp not in candidates and Path(f"/tmp/.X{n}-lock").is_file():
-            candidates.append(disp)
-        # Also accept /tmp/.X11-unix/Xn sockets (Xvfb -displayfd may omit lock).
-        sock = Path(f"/tmp/.X11-unix/X{n}")
-        if disp not in candidates and sock.exists():
-            candidates.append(disp)
+        if Path(f"/tmp/.X{n}-lock").is_file() or Path(f"/tmp/.X11-unix/X{n}").exists():
+            _add(disp)
+    if current:
+        _add(current)
 
     for disp in candidates:
         if _display_usable(disp):

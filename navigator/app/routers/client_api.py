@@ -120,6 +120,60 @@ def client_system_health(
     )
     return SystemMetrics(**payload)
 
+
+@router.get("/client/api/images")
+def client_list_images(product: DashboardAuthedProduct) -> dict:
+    """List Cloudinary-backed images for this Client (Mongo metadata)."""
+    from navigator.storage.images import ImageStore
+    from navigator.storage.mongo import mongo_enabled
+    from navigator.storage.media import cloudinary_enabled
+
+    if not mongo_enabled() or not cloudinary_enabled():
+        raise HTTPException(503, "image storage not configured (Mongo + Cloudinary)")
+    return {"images": ImageStore().list_for_product(product.product_id)}
+
+
+@router.post("/client/api/images", status_code=201)
+async def client_upload_image(
+    product: DashboardAuthedProduct,
+    request: Request,
+) -> dict:
+    """Upload an image to Cloudinary; metadata stored in Atlas."""
+    from navigator.storage.images import ImageStore
+    from navigator.storage.mongo import mongo_enabled
+    from navigator.storage.media import cloudinary_enabled
+
+    if not mongo_enabled() or not cloudinary_enabled():
+        raise HTTPException(503, "image storage not configured (Mongo + Cloudinary)")
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        raise HTTPException(422, "expected multipart field 'file'")
+    kind = str(form.get("kind") or "upload")
+    data = await upload.read()  # type: ignore[union-attr]
+    filename = getattr(upload, "filename", "") or ""
+    try:
+        doc = ImageStore().save(
+            product_id=product.product_id,
+            file=data,
+            kind=kind,
+            filename=str(filename),
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, f"upload failed: {exc}") from None
+    return doc
+
+
+@router.delete("/client/api/images/{image_id}")
+def client_delete_image(product: DashboardAuthedProduct, image_id: str) -> dict:
+    from navigator.storage.images import ImageStore
+
+    ok = ImageStore().delete(product.product_id, image_id)
+    if not ok:
+        raise HTTPException(404, "image not found")
+    return {"ok": True}
+
+
 @router.post("/client/api/demos/start", response_model=LiveDemoView, status_code=202)
 def client_start_live_demo(
     product: DashboardAuthedProduct,

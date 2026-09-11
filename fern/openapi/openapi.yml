@@ -931,6 +931,97 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/images:
+    get:
+      summary: Client List Images
+      description: List Cloudinary-backed images for this Client (Mongo metadata).
+      operationId: client_list_images_client_api_images_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client List Images Client Api Images Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      summary: Client Upload Image
+      description: Upload an image to Cloudinary; metadata stored in Atlas.
+      operationId: client_upload_image_client_api_images_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Upload Image Client Api Images Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/images/{image_id}:
+    delete:
+      summary: Client Delete Image
+      operationId: client_delete_image_client_api_images__image_id__delete
+      parameters:
+      - name: image_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Image Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Delete Image Client Api Images  Image Id  Delete
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/demos/start:
     post:
       summary: Client Start Live Demo

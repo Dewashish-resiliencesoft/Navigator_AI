@@ -49,10 +49,37 @@ def test_ensure_keeps_configured_when_populated(tmp_path, monkeypatch):
 
 
 def test_ensure_headed_display_uses_env(monkeypatch):
-    from navigator.automation.playwright_env import ensure_headed_display
+    from navigator.automation import playwright_env as pe
 
     monkeypatch.setenv("DISPLAY", ":99")
-    assert ensure_headed_display() == ":99"
+    # Only :99 is usable — seats must not steal when they are not reachable.
+    monkeypatch.setattr(pe, "_display_usable", lambda d: d == ":99")
+    assert pe.ensure_headed_display() == ":99"
+
+
+def test_ensure_headed_display_prefers_seat_over_xvfb(monkeypatch, tmp_path):
+    from navigator.automation import playwright_env as pe
+
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setattr(
+        pe,
+        "_display_usable",
+        lambda d: d in {":0", ":99"},
+    )
+
+    class FakePath:
+        def __init__(self, p):
+            self.p = str(p)
+
+        def is_file(self):
+            return self.p.endswith(".X0-lock") or self.p.endswith(".X99-lock")
+
+        def exists(self):
+            return self.is_file() or "X11-unix" in self.p
+
+    monkeypatch.setattr(pe, "Path", FakePath)
+    assert pe.ensure_headed_display() == ":0"
+    assert os.environ["DISPLAY"] == ":0"
 
 
 def test_ensure_headed_display_raises_without_lock(monkeypatch):
@@ -65,6 +92,9 @@ def test_ensure_headed_display_raises_without_lock(monkeypatch):
             self.p = str(p)
 
         def is_file(self):
+            return False
+
+        def exists(self):
             return False
 
     monkeypatch.setattr(pe, "Path", FakePath)

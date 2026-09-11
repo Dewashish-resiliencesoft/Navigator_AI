@@ -13,8 +13,11 @@ from navigator.app.api_models import IntakePrefill
 from navigator.app.credential_vault import CredentialVault
 from navigator.app.registry import Product, ProductNotFound, Registry
 from navigator.app.runner import DemoRunner
-from navigator.auth import AuthStore, SessionTokenStore, SessionTokenError
+from navigator.auth import SessionTokenStore, SessionTokenError
 from navigator.core.settings import settings
+from navigator.storage.env_load import load_cloud_env
+
+load_cloud_env()
 from navigator.logs.store import ActionLog
 from navigator.meeting.providers import (
     MeetingProvider,
@@ -26,6 +29,23 @@ from navigator.meeting.providers import (
 async def _lifespan(_app: FastAPI):
     from navigator.automation.playwright_env import ensure_playwright_browsers
     from navigator.meeting.attendee_stack import ensure_attendee_stack
+    from navigator.storage.env_load import load_cloud_env
+    from navigator.storage.mongo import mongo_enabled, ping
+    from navigator.storage.media import cloudinary_enabled
+
+    load_cloud_env()
+    if mongo_enabled():
+        try:
+            ping()
+            print("[storage] MongoDB Atlas connected", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[storage] MongoDB ping failed: {exc}", flush=True)
+    else:
+        print("[storage] MongoDB URI not set — auth uses SQLite", flush=True)
+    if cloudinary_enabled():
+        print("[storage] Cloudinary configured", flush=True)
+    else:
+        print("[storage] Cloudinary not configured", flush=True)
 
     ensure_playwright_browsers()
     ensure_attendee_stack()
@@ -70,9 +90,12 @@ _token_store = SessionTokenStore(settings.db_path)
 def get_token_store() -> SessionTokenStore:
     return _token_store
 
-_auth_store = AuthStore(settings.db_path)
+# Atlas when MONGODB_URI / atlas-credentials.env present; else SQLite.
+from navigator.storage.auth_mongo import make_auth_store
 
-def get_auth_store() -> AuthStore:
+_auth_store = make_auth_store(settings.db_path)
+
+def get_auth_store():
     return _auth_store
 
 _runner = DemoRunner(str(settings.db_path), headful=settings.headful)

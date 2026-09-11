@@ -19,6 +19,9 @@ dependencies = [
     "bcrypt>=4.0",
     "cryptography>=42.0",
     "psutil>=7.2.2",
+    "pymongo>=4.6",
+    "dnspython>=2.4",
+    "cloudinary>=1.36",
 ]
 
 [project.optional-dependencies]

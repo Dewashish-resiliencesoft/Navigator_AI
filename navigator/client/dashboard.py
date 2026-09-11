@@ -58,12 +58,20 @@ def _is_private_lan_host(host: str) -> bool:
 
 
 def is_local_ops_host(request: Request) -> bool:
-    """Allow localhost + private LAN; block public / tunnel Hostnames."""
+    """Allow localhost + private LAN; also any Host when TCP peer is loopback.
+
+    Peer-loopback covers same-machine opens via hostname (e.g.
+    ``http://resiliencesoft:8000/client``) that would 403 on Host-only checks.
+    Public tunnels still fail — non-loopback peer, non-private Host.
+    """
     raw = (request.headers.get("host") or "").strip().lower()
     host = raw.split("%", 1)[0].split(":", 1)[0]
     if host in _LOCAL_HOSTS:
         return True
-    return _is_private_lan_host(host)
+    if _is_private_lan_host(host):
+        return True
+    peer = (request.client.host if request.client else "") or ""
+    return peer in {"127.0.0.1", "::1"}
 
 
 def require_local_ops(request: Request) -> None:

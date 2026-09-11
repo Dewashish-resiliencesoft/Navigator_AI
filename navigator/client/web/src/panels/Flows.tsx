@@ -67,6 +67,7 @@ export function Flows() {
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [confirmSaveStop, setConfirmSaveStop] = useState(false);
   const timer = useRef<number | null>(null);
   const mergingRef = useRef(false);
 
@@ -138,20 +139,32 @@ export function Flows() {
       setRecording(false);
       setRecPhase("");
       stopPolling();
+      const playlist = r.playlist ?? [];
+      if (playlist.length) {
+        setRows(playlist);
+        // setPlaylist only — avoid epoch bump loop from applyPlaylist
+        setPlaylist(playlist);
+      }
       await load();
       const flagged = r.flagged?.length ?? 0;
       const narrated = r.narrated_steps ?? 0;
-      const base = r.error
-        ? `Stopped with error: ${r.error}`
-        : `Recorded ${r.steps ?? 0} steps.`;
+      const steps = r.steps ?? 0;
+      if (r.ok === false || steps === 0) {
+        err(
+          (r.error || "").trim() ||
+            "No steps saved — click Start capturing, use the product in the Chrome window, then Stop again.",
+        );
+        return;
+      }
+      const name = r.flow_name || r.flow_id || recName || "flow";
       const extra =
         (flagged > 0
-          ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"} (re-record after login if unexpected).`
+          ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"}.`
           : "") +
         (narrated > 0
-          ? ` Narration aligned to ${narrated} step${narrated === 1 ? "" : "s"}.`
+          ? ` Narration on ${narrated} step${narrated === 1 ? "" : "s"}.`
           : "");
-      ok(base + extra);
+      ok(`Saved “${name}” (${steps} steps) — listed under Demo flows above.${extra}`);
     } catch (e) {
       const msg = errText(e);
       setRecording(false);
@@ -164,11 +177,12 @@ export function Flows() {
       }
       if (/no active recording/i.test(msg)) {
         ok("Recording already stopped — flow saved.");
+        await load();
       } else {
         err(msg);
       }
     }
-  }, [err, load, ok]);
+  }, [err, load, ok, recName, setPlaylist]);
 
   const poll = useCallback(async () => {
     try {
@@ -255,14 +269,18 @@ export function Flows() {
       timer.current = window.setInterval(() => {
         void poll();
       }, 1000);
-      ok(
+      const base =
         recSaveMode === "update"
           ? recNarrate
             ? `Setup — replacing ${flowName}. Use Record studio in Chrome (Start capturing / Stop). Mic Narrate is optional.`
             : `Setup — replacing ${flowName}. In Chrome studio: Start capturing when ready, Stop when done.`
           : recNarrate
             ? "Setup — log in in Chrome, then Start capturing in Record studio. Optional: Narrate mic."
-            : "Setup — log in in Chrome, then Start capturing in Record studio. Dashboard buttons are backup.",
+            : "Setup — log in in Chrome, then Start capturing in Record studio. Dashboard buttons are backup.";
+      ok(
+        r.browser === "local"
+          ? `${base} Chrome opens on this computer.`
+          : base,
       );
     } catch (e) {
       err(errText(e));
@@ -515,6 +533,20 @@ export function Flows() {
           onCancel={() => setConfirmClearAll(false)}
         />
       )}
+      {confirmSaveStop && (
+        <ConfirmDialog
+          title="Save recorded flow?"
+          message={`Stop recording and save to Demo flows${
+            capturedSteps > 0 ? ` (${capturedSteps} step${capturedSteps === 1 ? "" : "s"} so far)` : ""
+          }? The flow name will appear in the list above.`}
+          confirmLabel="Save flow"
+          onConfirm={() => {
+            setConfirmSaveStop(false);
+            void stopRecord();
+          }}
+          onCancel={() => setConfirmSaveStop(false)}
+        />
+      )}
 
       <Card dataCoach="flows-record">
         <CardTitle
@@ -617,7 +649,7 @@ export function Flows() {
           </Button>
           <Button
             variant="danger"
-            onClick={() => void stopRecord()}
+            onClick={() => setConfirmSaveStop(true)}
             disabled={!recording}
           >
             <Square size={13} /> Stop

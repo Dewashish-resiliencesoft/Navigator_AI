@@ -26,6 +26,33 @@ from navigator.automation.record import (
 )
 
 
+def recording_page_id(yaml_text: str, requested: str | None = None) -> str:
+    """Pick a real site-graph page for a newly recorded flow.
+
+    Callers historically passed ``dashboard``; most products use ``home`` /
+    ``main``. Prefer an existing page so the flow lands where the Client
+    already works.
+    """
+    req = (requested or "").strip()
+    # Legacy default — treat as unset unless the graph actually has it.
+    if req == "dashboard":
+        req = ""
+    try:
+        graph = parse_site_graph(yaml_text)
+    except SiteGraphError:
+        return req or "home"
+    if req and req in graph.pages:
+        return req
+    if graph.demo_playlist:
+        return graph.demo_playlist[0].page_id
+    primary = graph.primary_flow()
+    if primary:
+        return primary[0]
+    if graph.pages:
+        return next(iter(graph.pages))
+    return req or "home"
+
+
 def playlist_from_graph(graph: SiteGraph) -> list[dict[str, Any]]:
     items = sorted(graph.demo_playlist, key=lambda x: x.order)
     if items:
@@ -1587,7 +1614,7 @@ def persist_recorder_job(
         vault = get_vault()
         rev = registry.latest_revision(product_id)
         persona = parse_site_graph(rev.yaml).effective_persona()
-        pid = page_id or "dashboard"
+        pid = recording_page_id(rev.yaml, page_id)
         update = getattr(job, "save_mode", "new") == "update"
         if update:
             resolved = resolve_flow_page_id(rev.yaml, job.flow_id)

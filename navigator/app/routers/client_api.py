@@ -1252,11 +1252,13 @@ def client_record_start(
         plan_meta = None
 
     try:
+        # Manual record always needs a visible window. NAVIGATOR_HEADFUL=0 is for
+        # live demo bots on Xvfb — do not inherit it here or Chrome never appears.
         job = start_recorder(
             start_url=body.start_url.strip(),
             flow_name=fname,
             flow_id=fid,
-            headful=settings.headful,
+            headful=True,
             login_config_fn=_live_login_config,
             narrate=body.narrate,
             save_mode=mode,

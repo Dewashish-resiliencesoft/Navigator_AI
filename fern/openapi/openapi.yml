@@ -785,10 +785,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/live-http/{token}:
-    head:
+    get:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token__head
+      operationId: live_http_proxy_v1_live_http__token__get
       parameters:
       - name: token
         in: path
@@ -815,10 +815,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-    get:
+    head:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token__head
+      operationId: live_http_proxy_v1_live_http__token__get
       parameters:
       - name: token
         in: path
@@ -846,10 +846,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /v1/live-http/{token}/{path}:
-    head:
+    get:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token___path__head
+      operationId: live_http_proxy_v1_live_http__token___path__get
       parameters:
       - name: token
         in: path
@@ -875,10 +875,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-    get:
+    head:
       summary: Live Http Proxy
       description: Reverse-proxy screenshare relay through the stable public API origin.
-      operationId: live_http_proxy_v1_live_http__token___path__head
+      operationId: live_http_proxy_v1_live_http__token___path__get
       parameters:
       - name: token
         in: path

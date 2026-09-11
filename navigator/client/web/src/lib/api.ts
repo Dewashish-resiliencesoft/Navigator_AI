@@ -984,7 +984,13 @@ export const api = {
       target_flow_name?: string;
     },
   ) =>
-    send<{ narrate?: boolean; save_mode?: string; flow_id?: string }>(
+    send<{
+      narrate?: boolean;
+      save_mode?: string;
+      flow_id?: string;
+      browser?: "local" | "server";
+      phase?: string;
+    }>(
       "/client/api/record/start",
       "POST",
       {
@@ -1003,11 +1009,15 @@ export const api = {
     ),
   recordStop: () =>
     send<{
+      ok?: boolean;
       steps: number;
       error: string | null;
       flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
       setup_discarded?: number;
       narrated_steps?: number;
+      playlist?: Flow[];
+      flow_id?: string;
+      flow_name?: string;
     }>("/client/api/record/stop", "POST"),
   recordBindValueRef: (step_index: number, value_ref: string) =>
     send<{ ok: boolean; revision: number; playlist: Flow[] }>(

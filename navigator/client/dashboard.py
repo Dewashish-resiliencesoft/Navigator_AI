@@ -1,11 +1,15 @@
-"""Local operator console — loopback-only SPA + API proxy.
+"""Local / LAN operator console — SPA + API proxy.
 
 The UI is a Vite/React app in `web/`; this module only guards access and serves
 the build. Run `npm run build` in web/ to refresh what's served here.
+
+Access: loopback + RFC1918 private LAN Hosts. Public / tunnel Hosts stay blocked
+so a trycloudflare URL cannot become the Client dashboard.
 """
 
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 
 from fastapi import HTTPException, Request
@@ -40,13 +44,32 @@ def client_index_html() -> str:
         return _MISSING_BUILD_HTML
 
 
+def _is_private_lan_host(host: str) -> bool:
+    """True for RFC1918 / link-local / ULA — LAN VPS Host headers."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+    )
+
+
 def is_local_ops_host(request: Request) -> bool:
-    """Allow only localhost Host — blocks public tunnel Hostnames."""
+    """Allow localhost + private LAN; block public / tunnel Hostnames."""
     raw = (request.headers.get("host") or "").strip().lower()
     host = raw.split("%", 1)[0].split(":", 1)[0]
-    return host in _LOCAL_HOSTS
+    if host in _LOCAL_HOSTS:
+        return True
+    return _is_private_lan_host(host)
 
 
 def require_local_ops(request: Request) -> None:
     if not is_local_ops_host(request):
-        raise HTTPException(403, "client dashboard is local-only (open via localhost)")
+        raise HTTPException(
+            403,
+            "client dashboard is local/LAN-only "
+            "(open via localhost or a private LAN IP, not a public tunnel)",
+        )

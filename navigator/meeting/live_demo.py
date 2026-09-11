@@ -669,8 +669,11 @@ def wait_until_joined(
         time.sleep(0.75)
     raise TimeoutError(
         f"Attendee bot did not join within {timeout_s}s (last={last}). "
-        "For bot-first demos, enable Meet Quick access so Navigator enters "
-        "without a host admitting them."
+        "Zoom: stuck joining usually means Meeting SDK JWT role=0 "
+        "(waiting for host) — need working ZAK callback + role=1; check "
+        "NAVIGATOR_PUBLIC_BASE_URL / cloudflared and "
+        "docker logs attendee-attendee-worker-local-1. "
+        "Meet: enable Quick access so Navigator enters without admission."
     )
 
 

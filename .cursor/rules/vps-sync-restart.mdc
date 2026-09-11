@@ -1,63 +1,68 @@
 ---
-description: After Navigator code changes, always rsync to LAN VPS and restart uvicorn; read logs before claiming ready.
+description: After Navigator changes, always rsync this device → LAN VPS (incl .env), restart uvicorn, keep Attendee/warm-pool up; read logs before claiming ready.
 alwaysApply: true
 ---
 
-# VPS sync + restart (mandatory)
+# VPS sync + warm host (mandatory)
 
-Local Cursor workspace is **not** what End Users / dashboard hit on LAN.
-Live box: `server@192.168.1.196` → `~/dewashish_projects/Navigator_AI` (nginx → uvicorn `:8000`).
+This Cursor machine is the **source of truth**. The LAN box is the **runtime**.
+
+Live VPS: `aneesh@192.168.1.88` → `/home/aneesh/Navigator_AI`  
+Navigator uvicorn `:8000` · Attendee `:8002` / streamer `:8001`  
+(WordPress already owns `:8080` on that host — do not bind Navigator there.)
+
+Credentials: `~/.cursor/navigator-vps.env` (never commit). Prefer SSH key auth.
+Vars: `NAVIGATOR_VPS_HOST`, `NAVIGATOR_VPS_USER`, `NAVIGATOR_VPS_PATH` (absolute), optional `SSHPASS`.
 
 ## When
 
-After **any** edit under `navigator/` (or tests that must match runtime) that should run on the mock VPS:
+After **any** edit that should run on the VPS (code under `navigator/`, `scripts/`,
+`docker/`, root configs, **and dotfiles like `.env`**):
 
-1. **Sync** local → VPS
-2. **Restart** uvicorn on VPS
-3. **Read logs** (`/tmp/navigator-uvicorn.log`) — scan `ERROR` / `Traceback` / `WARN` / `[runner]` / `[live]` / `[attendee]`
-4. Only then say ready / ask user to retry demo
+1. **Sync** local → VPS (`scripts/sync-to-vps.sh` or equivalent rsync below)
+2. **Keep Attendee up** (docker compose on `~/projects/attendee`)
+3. **Restart** uvicorn on VPS (pick up code + `.env`)
+4. **Warm pool on** — `NAVIGATOR_WARM_POOL=1` so Attendee / Playwright park / public base stay hot
+5. **Read logs** (`/tmp/navigator-uvicorn.log`) — `ERROR` / `Traceback` / `WARN` / `[runner]` / `[live]` / `[attendee]` / `[warm]`
+6. Only then say ready / ask user to retry demo
 
-Skip sync only when user explicitly says local-only, or change is docs/rules with no runtime effect.
+Skip sync only when user says local-only, or change is docs/rules with no runtime effect.
 
-## Credentials
-
-Read `~/.cursor/navigator-vps.env` (never commit). Expected vars:
-
-- `NAVIGATOR_VPS_HOST` (default `192.168.1.196`)
-- `NAVIGATOR_VPS_USER` (default `server`)
-- `NAVIGATOR_VPS_PATH` — **absolute** remote path
-  (`/home/server/dewashish_projects/Navigator_AI`). Never `~` — tilde expands
-  on the **local** shell and breaks rsync.
-- `SSHPASS` — SSH password for `sshpass -e`
-
-If file missing, create it from prior ops knowledge or ask user — do **not** put the password in this rule or in the repo.
-
-## Sync command pattern
+## Sync (include .env)
 
 ```bash
 set -a && source ~/.cursor/navigator-vps.env && set +a
-RSYNC_SSH='ssh -o StrictHostKeyChecking=no -o PreferredAuthentications=password -o PubkeyAuthentication=no'
-# Prefer targeted rsync of touched paths; full tree OK when many files changed.
-# Never rsync .venv, graphify-out/, __pycache__, .git, or overwrite remote .env unless asked.
-sshpass -e rsync -az -e "$RSYNC_SSH" \
-  <local-paths...> \
-  "${NAVIGATOR_VPS_USER}@${NAVIGATOR_VPS_HOST}:${NAVIGATOR_VPS_PATH}/<rel-path>"
+LOCAL="<path-to-Navigator_AI>"   # this device's clone
+RSYNC_SSH='ssh -o BatchMode=yes -o ConnectTimeout=20 -o StrictHostKeyChecking=accept-new'
+rsync -az -e "$RSYNC_SSH" \
+  --exclude '.venv/' --exclude 'graphify-out/' --exclude 'graphify/' \
+  --exclude '__pycache__/' --exclude '.git/' --exclude 'node_modules/' \
+  --exclude '*.pyc' --exclude '*.db' --exclude '*.db-wal' --exclude '*.db-shm' \
+  --exclude '.tools/' --exclude '.pytest_cache/' --exclude '.mypy_cache/' \
+  --exclude '*.egg-info/' \
+  "$LOCAL/" "${NAVIGATOR_VPS_USER}@${NAVIGATOR_VPS_HOST}:${NAVIGATOR_VPS_PATH}/"
+# Dotfiles: always include .env (user policy — this device wins)
+rsync -az -e "$RSYNC_SSH" "$LOCAL/.env" \
+  "${NAVIGATOR_VPS_USER}@${NAVIGATOR_VPS_HOST}:${NAVIGATOR_VPS_PATH}/.env"
 ```
 
-Exclude: `.venv/`, `graphify-out/`, `graphify/`, `__pycache__/`, `.git/`, `*.pyc`,
-`*.db`, `*.db-wal`, `*.db-shm`. Do not clobber remote `.env` unless user asked.
+Then on VPS, re-assert host-local Attendee + warm flags (local `.env` may be Docker-oriented):
 
-**Never rsync SQLite while uvicorn is running.** Copying `navigator.db` without
-stopping the server (or without `-wal`/`-shm`) corrupts the file → dashboard
-`/client/api/metrics` 500 (`database disk image is malformed`). If DBs must
-move: stop uvicorn → copy db+wal+shm together → start. Password/user fixes:
-SQL on both sides, not a live db overwrite.
+- `NAVIGATOR_ATTENDEE_BASE_URL=http://127.0.0.1:8002/api/v1`
+- `NAVIGATOR_ATTENDEE_COMPOSE_DIR=/home/aneesh/projects/attendee`
+- `NAVIGATOR_ATTENDEE_AUTOSTART=0` (Attendee is host-managed docker; warm pool still keeps it healthy)
+- `NAVIGATOR_WARM_POOL=1`
+- `NAVIGATOR_HEADFUL=0`
 
-## Restart pattern
+**Never rsync SQLite while uvicorn is running** (corrupt `navigator.db`). Prefer leave DBs on VPS.
+
+## Restart + Attendee keep-alive
 
 ```bash
-sshpass -e ssh … "${NAVIGATOR_VPS_USER}@${NAVIGATOR_VPS_HOST}" 'bash -s' <<'REMOTE'
-cd /home/server/dewashish_projects/Navigator_AI
+ssh … 'bash -s' <<'REMOTE'
+cd /home/aneesh/Navigator_AI
+ATT=/home/aneesh/projects/attendee
+sg docker -c "docker compose -f $ATT/dev.docker-compose.yaml -f $ATT/local.docker-compose.yaml --profile webpage-streamer up -d"
 pkill -f 'uvicorn navigator.app.main:app' || true
 sleep 2
 pkill -9 -f 'uvicorn navigator.app.main:app' || true
@@ -66,14 +71,26 @@ nohup .venv/bin/uvicorn navigator.app.main:app --host 0.0.0.0 --port 8000 --work
   >> /tmp/navigator-uvicorn.log 2>&1 &
 sleep 4
 pgrep -af 'uvicorn navigator.app.main'
+curl -fsS -o /dev/null -w 'docs %{http_code}\n' http://127.0.0.1:8000/docs
 REMOTE
 ```
 
+## Live link (keep connected)
 
-Then `tail` / `grep` `/tmp/navigator-uvicorn.log` for clean `Application startup complete`.
+- **Auto watch** (this device): `scripts/watch-sync-to-vps.sh` — polls and
+  `sync-to-vps-fast.sh` on any file change (incl `.env`).
+- **Cursor hooks**: `.cursor/hooks.json` → afterFileEdit / stop → fast sync.
+- **VPS uvicorn** runs with `--reload` so synced Python is picked up without a
+  manual restart.
+- Full recreate (Attendee + restart): `scripts/sync-to-vps.sh`.
+
+Prefer `scripts/sync-to-vps-fast.sh` for day-to-day; use `sync-to-vps.sh` when
+Docker/deps/env need a hard bounce.
 
 ## Do not
 
-- Edit only local and tell user “try on `192.168.1.196`” without sync + restart + log check
+- Edit only local and tell user to try `192.168.1.88` without sync + restart + log check
+- Point ops at old hosts (`192.168.1.196` / `192.168.1.119`) unless user says so
 - Commit `navigator-vps.env`, SSH passwords, or Attendee API keys
-- Sync `graphify-out/` or `.venv`
+- Sync `.venv/` or `graphify-out/`
+- Leave `NAVIGATOR_WARM_POOL=0` on the VPS after a sync (re-enable warm)

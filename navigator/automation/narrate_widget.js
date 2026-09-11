@@ -21,6 +21,8 @@
       #nav-narrate {
         position: fixed; top: 16px; right: 16px; z-index: 2147483647;
         background: rgba(11, 18, 32, 0.94); color: #e8eef7;
+        /* Keep native <select> menus dark even when the host page is light. */
+        color-scheme: dark;
         border-radius: 14px; border: 1px solid rgba(255,255,255,.14);
         padding: 10px 12px; font: 500 12px/1.35 system-ui, sans-serif;
         min-width: 240px; max-width: 280px;
@@ -45,8 +47,14 @@
       #nav-narrate.compact:focus-within .nav-narrate-chip { display: none; }
       #nav-narrate label { display: block; font-size: 10px; opacity: .72; margin: 0 0 3px; }
       #nav-narrate select {
-        width: 100%; margin-bottom: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,.12);
-        background: rgba(255,255,255,.06); color: #e8eef7; padding: 5px 8px; font: inherit;
+        width: 100%; margin-bottom: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,.18);
+        background: #1a2332; color: #e8eef7; padding: 5px 8px; font: inherit;
+        color-scheme: dark;
+      }
+      #nav-narrate select option,
+      #nav-narrate select optgroup {
+        background: #1a2332;
+        color: #e8eef7;
       }
       #nav-narrate .nav-row { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
       #nav-narrate .nav-sec {

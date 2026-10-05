@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from urllib.parse import urlsplit
 
 import httpx
@@ -46,15 +47,46 @@ _INJECT = """<script data-nav-record="1">
   var PREFIX = "/client/record-surf/" + TOKEN;
   function rewrite(url) {
     try {
-      var u = new URL(url, location.origin);
-      if (u.host === HOST) {
-        return location.origin + PREFIX + u.pathname + u.search + u.hash;
-      }
-      if (u.origin !== location.origin) return url;
-      if (u.pathname.indexOf("/client/") === 0 || u.pathname.indexOf("/v1/") === 0) return url;
+      if (url == null) return url;
+      var s = String(url).trim();
+      if (!s) return url;
+      var low = s.slice(0, 12).toLowerCase();
+      if (s.charAt(0) === "#" || low.indexOf("data:") === 0 || low.indexOf("blob:") === 0 ||
+          low.indexOf("javascript:") === 0 || low.indexOf("mailto:") === 0 || low.indexOf("tel:") === 0)
+        return url;
+      var absolute = s.indexOf("://") > 0 || s.indexOf("//") === 0;
+      var rooted = s.charAt(0) === "/";
+      if (!absolute && !rooted) return url;
+      var u = new URL(s, location.href);
+      if (u.protocol !== "http:" && u.protocol !== "https:") return url;
+      var sameProduct = u.host === HOST;
+      var samePage = u.origin === location.origin;
+      if (!sameProduct && !samePage) return url;
+      if (samePage && (u.pathname.indexOf("/client/") === 0 || u.pathname.indexOf("/v1/") === 0))
+        return url;
       return location.origin + PREFIX + u.pathname + u.search + u.hash;
     } catch (e) { return url; }
   }
+  function patchURLProp(proto, prop) {
+    var d = Object.getOwnPropertyDescriptor(proto, prop);
+    if (!d || !d.set || !d.get) return;
+    Object.defineProperty(proto, prop, {
+      configurable: true,
+      enumerable: d.enumerable,
+      get: function() { return d.get.call(this); },
+      set: function(v) { d.set.call(this, rewrite(v)); }
+    });
+  }
+  if (window.HTMLScriptElement) patchURLProp(HTMLScriptElement.prototype, "src");
+  if (window.HTMLLinkElement) patchURLProp(HTMLLinkElement.prototype, "href");
+  if (window.HTMLImageElement) patchURLProp(HTMLImageElement.prototype, "src");
+  if (window.HTMLSourceElement) patchURLProp(HTMLSourceElement.prototype, "src");
+  var origSetAttr = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function(name, value) {
+    if (typeof value === "string" && /^(href|src|action|poster|formaction)$/i.test(name))
+      value = rewrite(value);
+    return origSetAttr.call(this, name, value);
+  };
   var origFetch = window.fetch;
   if (origFetch) {
     window.fetch = function(input, init) {
@@ -199,8 +231,78 @@ def rewrite_location(location: str, start_url: str, token: str) -> str:
     return f"/client/record-surf/{token}{parts.path or '/'}{query}"
 
 
+_SKIP_URL_PREFIXES = ("#", "data:", "blob:", "javascript:", "mailto:", "tel:")
+_ATTR_URL = re.compile(
+    r"""(?P<prefix>\s(?:href|src|action|poster|formaction|data-src)\s*=\s*)"""
+    r"""(?P<q>["'])(?P<url>.*?)(?P=q)""",
+    re.IGNORECASE | re.DOTALL,
+)
+_SRCSET = re.compile(
+    r"""(?P<prefix>\s(?:srcset|imagesrcset)\s*=\s*)(?P<q>["'])(?P<url>.*?)(?P=q)""",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def rewrite_surf_url(url: str, token: str, host: str) -> str:
+    """Point product-host and root-absolute asset URLs at the record proxy.
+
+    The document is served on the Navigator host, so ``/app.css`` would
+    otherwise request Navigator itself and the product renders unstyled.
+    Relative URLs (no leading slash) stay put — the browser resolves them
+    against the proxied document URL.
+    """
+    raw = url.strip()
+    if not raw:
+        return url
+    low = raw.lower()
+    if low.startswith(_SKIP_URL_PREFIXES):
+        return url
+    protocol_relative = raw.startswith("//")
+    rooted = raw.startswith("/") and not protocol_relative
+    if not rooted and "://" not in raw and not protocol_relative:
+        return url
+    parts = urlsplit("https:" + raw if protocol_relative else raw)
+    if rooted:
+        path = parts.path or "/"
+        if path.startswith("/client/") or path.startswith("/v1/"):
+            return url
+        query = f"?{parts.query}" if parts.query else ""
+        frag = f"#{parts.fragment}" if parts.fragment else ""
+        return f"/client/record-surf/{token}{path}{query}{frag}"
+    if (parts.hostname or "").lower() != host.lower():
+        return url
+    query = f"?{parts.query}" if parts.query else ""
+    frag = f"#{parts.fragment}" if parts.fragment else ""
+    return f"/client/record-surf/{token}{parts.path or '/'}{query}{frag}"
+
+
+def _rewrite_srcset(value: str, token: str, host: str) -> str:
+    out: list[str] = []
+    for part in value.split(","):
+        piece = part.strip()
+        if not piece:
+            continue
+        bits = piece.split(None, 1)
+        bits[0] = rewrite_surf_url(bits[0], token, host)
+        out.append(" ".join(bits))
+    return ", ".join(out)
+
+
+def _rewrite_html_assets(text: str, token: str, host: str) -> str:
+    def srcset(match: re.Match[str]) -> str:
+        rewritten = _rewrite_srcset(match.group("url"), token, host)
+        return f"{match.group('prefix')}{match.group('q')}{rewritten}{match.group('q')}"
+
+    def attr(match: re.Match[str]) -> str:
+        rewritten = rewrite_surf_url(match.group("url"), token, host)
+        return f"{match.group('prefix')}{match.group('q')}{rewritten}{match.group('q')}"
+
+    text = _SRCSET.sub(srcset, text)
+    return _ATTR_URL.sub(attr, text)
+
+
 def _inject_html(raw: bytes, token: str, upstream_host: str) -> bytes:
-    text = raw.decode("utf-8", "replace")
+    text = _rewrite_html_assets(raw.decode("utf-8", "replace"), token, upstream_host)
     snippet = _INJECT.replace("__TOKEN__", json.dumps(token)).replace(
         "__HOST__", json.dumps(upstream_host)
     )

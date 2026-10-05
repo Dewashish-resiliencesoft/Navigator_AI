@@ -159,6 +159,8 @@
   let recording = false;
   let paused = false;
   let capturing = false;
+  let micStarting = false;
+  let autoMicForCapture = false;
   let t0 = 0;
 
   const fmt = (ms) => {
@@ -277,14 +279,17 @@
   };
 
   const startMic = async () => {
-    if (!hasMic) return;
+    if (!hasMic || recording || micStarting) return;
+    micStarting = true;
     pushConfig();
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (e) {
+      micStarting = false;
       statusEl.textContent = "Mic permission denied.";
       return;
     }
+    try {
     const Ctx = window.AudioContext || window.webkitAudioContext;
     audioCtx = new Ctx();
     const src = audioCtx.createMediaStreamSource(stream);
@@ -321,6 +326,7 @@
     if (!window.__navNarrateT0) window.__navNarrateT0 = t0;
     rec.start(3000);
     recording = true;
+    micStarting = false;
     paused = false;
     recBtn.textContent = "Stop mic";
     recBtn.classList.add("recording");
@@ -331,6 +337,11 @@
       timeEl.textContent = fmt(performance.now() - t0);
     }, 250);
     drawWave();
+    } catch (e) {
+      micStarting = false;
+      statusEl.textContent = "Mic failed to start.";
+      stopMic();
+    }
   };
 
   recBtn.addEventListener("click", () => {
@@ -398,6 +409,10 @@
       btnCapture.disabled = true;
       syncCompact();
       syncDots("live");
+      if (res && res.phase === "capturing" && hasMic && !recording && !micStarting) {
+        autoMicForCapture = true;
+        void startMic();
+      }
     } else {
       statusEl.textContent = String((res && res.error) || "Could not start capture.");
     }
@@ -405,13 +420,14 @@
 
   btnStop.addEventListener("click", async () => {
     stopMic();
+    autoMicForCapture = false;
     statusEl.textContent = "Stopping…";
     await studioCmd("stop_merge");
     capturing = false;
     btnCapture.disabled = false;
     btnCapture.textContent = "Start capturing this flow";
     statusEl.textContent =
-      "Stopped. Open Demo Script to set Sample / Ask visitor / Use variable on fills.";
+      "Stopped. Open Script on the flow row to edit the spoken lines.";
     syncCompact();
     syncDots("");
   });
@@ -430,10 +446,19 @@
         capturing = true;
         btnCapture.disabled = true;
         btnCapture.textContent = "Capturing…";
+        if (hasMic && !autoMicForCapture && !recording && !micStarting) {
+          autoMicForCapture = true;
+          void startMic();
+        }
       } else if (phase === "setup") {
         capturing = false;
         btnCapture.disabled = false;
         btnCapture.textContent = "Start capturing this flow";
+        if (recording) stopMic();
+        autoMicForCapture = false;
+      } else if (phase === "stopping" || phase === "done") {
+        if (recording) stopMic();
+        autoMicForCapture = false;
       }
       const n = Number(st.steps || 0);
       if (capturing && n >= 0) {

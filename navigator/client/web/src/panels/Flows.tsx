@@ -9,7 +9,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { api, type Flow, type RecorderStatus } from "../lib/api";
+import { api, type DemoScriptBeat, type Flow, type RecorderStatus } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import {
@@ -23,6 +23,7 @@ import {
   Select,
   StatusPill,
   Switch,
+  Textarea,
   ConfirmDialog,
 } from "../components/ui";
 import { errText, useUi } from "../store";
@@ -47,6 +48,61 @@ function FlowFieldCell({
   );
 }
 
+function flowScriptLines(beats: DemoScriptBeat[], flowId: string) {
+  return beats.filter(
+    (b) => b.flow_id === flowId && (b.kind === "flow_step" || b.kind === "live_input"),
+  );
+}
+
+function FlowScriptEditor({
+  flowId,
+  beats,
+  onChange,
+  onSave,
+  dirty,
+  busy,
+}: {
+  flowId: string;
+  beats: DemoScriptBeat[];
+  onChange: (id: string, spoken: string) => void;
+  onSave: () => void;
+  dirty: boolean;
+  busy: boolean;
+}) {
+  const lines = flowScriptLines(beats, flowId);
+  return (
+    <div className="space-y-2 border-t px-3 py-3" style={{ borderColor: "var(--line)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[0.72rem] text-[var(--muted)]">
+          Spoken script from the recording. Edit a line, then save. Draft only — publish the site graph to make it live.
+        </p>
+        <Button onClick={onSave} disabled={!dirty || busy || !lines.length}>
+          <Save size={13} /> {busy ? "Saving…" : "Save script"}
+        </Button>
+      </div>
+      {!lines.length && (
+        <p className="text-[0.72rem] text-[var(--muted)]">
+          No steps yet. Record this flow with narration, then the script shows here.
+        </p>
+      )}
+      {lines.map((b) => (
+        <label key={b.id} className="block">
+          <span className="mb-0.5 block text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+            Step {(b.step_index ?? 0) + 1}
+            {b.on_screen ? ` · ${b.on_screen}` : b.tool ? ` · ${b.tool}` : ""}
+          </span>
+          <Textarea
+            rows={2}
+            value={b.spoken ?? ""}
+            placeholder="What the demo says on this step"
+            onChange={(v) => onChange(b.id, v)}
+          />
+        </label>
+      ))}
+    </div>
+  );
+}
+
 export function Flows() {
   const { ok, err } = useUi();
   const epoch = useProductData((s) => s.epoch);
@@ -68,6 +124,11 @@ export function Flows() {
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
   const [confirmSaveStop, setConfirmSaveStop] = useState(false);
+  const [scriptBeats, setScriptBeats] = useState<DemoScriptBeat[] | null>(null);
+  const [scriptOpen, setScriptOpen] = useState<string | null>(null);
+  const [scriptDirty, setScriptDirty] = useState(false);
+  const [scriptBusy, setScriptBusy] = useState(false);
+  const [scriptReload, setScriptReload] = useState(0);
   const timer = useRef<number | null>(null);
   const mergingRef = useRef(false);
 
@@ -123,6 +184,22 @@ export function Flows() {
     void load();
   }, [load, epoch]);
 
+  useEffect(() => {
+    if (scriptDirty) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const d = await api.getDemoScript();
+        if (!cancelled) setScriptBeats(d.beats ?? []);
+      } catch {
+        if (!cancelled) setScriptBeats([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [epoch, scriptReload, scriptDirty]);
+
   const stopPolling = () => {
     if (timer.current !== null) {
       clearInterval(timer.current);
@@ -157,6 +234,8 @@ export function Flows() {
         return;
       }
       const name = r.flow_name || r.flow_id || recName || "flow";
+      if (r.flow_id) setScriptOpen(r.flow_id);
+      setScriptReload((n) => n + 1);
       const extra =
         (flagged > 0
           ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"}.`
@@ -164,7 +243,7 @@ export function Flows() {
         (narrated > 0
           ? ` Narration on ${narrated} step${narrated === 1 ? "" : "s"}.`
           : "");
-      ok(`Saved “${name}” (${steps} steps) — listed under Demo flows above.${extra}`);
+      ok(`Saved “${name}” (${steps} steps). Script is on that flow — edit it there.${extra}`);
     } catch (e) {
       const msg = errText(e);
       setRecording(false);
@@ -323,6 +402,31 @@ export function Flows() {
   const patch = (i: number, key: keyof Flow, value: string) =>
     setRows((prev) => prev?.map((f, n) => (n === i ? { ...f, [key]: value } : f)) ?? prev);
 
+  const editScriptLine = (id: string, spoken: string) => {
+    setScriptBeats(
+      (prev) =>
+        prev?.map((b) =>
+          b.id === id ? { ...b, spoken, spoken_source: "manual" } : b,
+        ) ?? prev,
+    );
+    setScriptDirty(true);
+  };
+
+  const saveScript = async () => {
+    if (!scriptBeats) return;
+    setScriptBusy(true);
+    try {
+      const d = await api.patchDemoScript(scriptBeats);
+      setScriptBeats(d.beats ?? scriptBeats);
+      setScriptDirty(false);
+      ok("Flow script saved to draft.");
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setScriptBusy(false);
+    }
+  };
+
   const save = async () => {
     if (!rows) return;
     try {
@@ -417,9 +521,10 @@ export function Flows() {
                 layoutId={`flow-${f.flow_id || i}`}
                 transition={soft}
                 exit={{ opacity: 0, x: -10 }}
-                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border px-2 py-1.5"
+                className="rounded-lg border"
                 style={{ borderColor: "var(--line)" }}
               >
+              <div className="grid grid-cols-[28px_auto_1fr_1fr_1fr_1fr_auto] items-start gap-2 px-2 py-1.5">
                 <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] flex flex-col justify-center">
                   <span>#{i + 1}</span>
                   {f.flow_id && stepCount[f.flow_id] !== undefined && (
@@ -472,7 +577,20 @@ export function Flows() {
                     )}
                   </div>
                 </FlowFieldCell>
-                <div className="flex items-center self-center pt-4">
+                <div className="flex flex-col items-center self-center gap-1 pt-4">
+                {!!f.flow_id?.trim() && (
+                  <Button
+                    variant="ghost"
+                    onClick={() =>
+                      setScriptOpen((cur) => (cur === f.flow_id ? null : f.flow_id))
+                    }
+                    className={`px-1.5 text-[0.68rem] ${
+                      scriptOpen === f.flow_id ? "text-[var(--text)]" : ""
+                    }`}
+                  >
+                    Script
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   onClick={() => setConfirmDelete(i)}
@@ -512,6 +630,17 @@ export function Flows() {
                     ))}
                   </div>
                 )}
+              </div>
+              {scriptOpen === f.flow_id && !!f.flow_id?.trim() && (
+                <FlowScriptEditor
+                  flowId={f.flow_id}
+                  beats={scriptBeats ?? []}
+                  onChange={editScriptLine}
+                  onSave={() => void saveScript()}
+                  dirty={scriptDirty}
+                  busy={scriptBusy}
+                />
+              )}
               </motion.div>
             ))}
           </AnimatePresence>
@@ -643,7 +772,7 @@ export function Flows() {
           onChange={setRecNarrate}
           disabled={recording}
           label="Narrate while recording"
-          description="Mic widget in browser (top-right): language, translate, record/pause/play. Script is cleaned and grammar-fixed when you stop."
+          description="Mic starts with capture. After Stop, open Script on the flow row to edit the spoken lines."
         />
         <div className="flex flex-wrap gap-2">
           <Button onClick={startRecord} disabled={recording}>

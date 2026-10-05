@@ -1,7 +1,8 @@
 """Local / LAN operator console — SPA + API proxy.
 
 The UI is a Vite/React app in `web/`; this module only guards access and serves
-the build. Run `npm run build` in web/ to refresh what's served here.
+the build. `scripts/dev-watch.sh` rebuilds that app on save and reloads open
+tabs. A one-off refresh is `npm run build` in web/.
 
 Access: loopback, RFC1918 private LAN Hosts, and the hostname of
 ``settings.public_base_url`` (the quick tunnel this process opened). Any other
@@ -11,6 +12,8 @@ public Host stays blocked.
 from __future__ import annotations
 
 import ipaddress
+import os
+from email.utils import formatdate
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,12 +41,42 @@ p{color:#a1a1aa}
 """
 
 
+_DEV_RELOAD_SNIPPET = """<script>
+(function(){
+  var seen = "";
+  setInterval(function(){
+    fetch("/client", {method:"HEAD", cache:"no-store"}).then(function(r){
+      var m = r.headers.get("last-modified") || "";
+      if (seen && m && m !== seen) location.reload();
+      if (m) seen = m;
+    }).catch(function(){});
+  }, 1500);
+})();
+</script>
+"""
+
+
 def client_index_html() -> str:
     index = WEB_DIST / "index.html"
     try:
-        return index.read_text(encoding="utf-8")
+        html = index.read_text(encoding="utf-8")
     except OSError:
         return _MISSING_BUILD_HTML
+    if os.environ.get("NAVIGATOR_DEV_WATCH") == "1" and "</body>" in html:
+        html = html.replace("</body>", _DEV_RELOAD_SNIPPET + "</body>", 1)
+    return html
+
+
+def client_index_headers() -> dict[str, str]:
+    """Let an open dashboard tab notice a fresh Vite build."""
+    headers = {"Cache-Control": "no-cache"}
+    index = WEB_DIST / "index.html"
+    try:
+        mtime = index.stat().st_mtime
+    except OSError:
+        return headers
+    headers["Last-Modified"] = formatdate(mtime, usegmt=True)
+    return headers
 
 
 def _is_private_lan_host(host: str) -> bool:

@@ -6,7 +6,12 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from navigator.client.dashboard import WEB_ASSETS, client_index_html, require_local_ops
+from navigator.client.dashboard import (
+    WEB_ASSETS,
+    client_index_headers,
+    client_index_html,
+    require_local_ops,
+)
 from navigator.client.record_proxy import proxy_record_document
 
 router = APIRouter()
@@ -23,7 +28,7 @@ def healthz() -> dict[str, str]:
 @router.get("/client", response_class=HTMLResponse)
 def client_console(request: Request) -> HTMLResponse:
     require_local_ops(request)
-    return HTMLResponse(client_index_html())
+    return HTMLResponse(client_index_html(), headers=client_index_headers())
 
 @router.get("/ops")
 def legacy_ops_redirect() -> RedirectResponse:

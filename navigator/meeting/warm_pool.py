@@ -540,11 +540,16 @@ class WarmPool:
         while not self._stop.is_set():
             self._warm_attendee()
             self._warm_base_url()
-            with self._lock:
-                try:
-                    self._ensure_browser(self._product_url())
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[warm] browser pass failed: {exc}", flush=True)
+            # Live demo owns sync Playwright. A second launch on this thread
+            # closes that page (greenlet thread switch).
+            with self._warm_lock:
+                demo_owns_browser = bool(self._warm_sessions or self._warm_inflight)
+            if not demo_owns_browser:
+                with self._lock:
+                    try:
+                        self._ensure_browser(self._product_url())
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[warm] browser pass failed: {exc}", flush=True)
             # Stage 2: keep one pre-joined Meet ready for the primary product.
             try:
                 pid = self._primary_product_id()

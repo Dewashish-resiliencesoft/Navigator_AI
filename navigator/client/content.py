@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import re
+import secrets
 import threading
 import traceback
 from dataclasses import dataclass, field
@@ -1077,6 +1078,8 @@ class RecorderJob:
     persist_result: dict[str, Any] | None = None
     #: Confirmed AgentTasks (prompt channel) if gate not available.
     agent_tasks: list[Any] = field(default_factory=list)
+    #: Manual record in the dashboard user's browser. Empty when Chrome is server-side.
+    client_token: str = ""
 
 
 _recorder_lock = threading.Lock()
@@ -1258,6 +1261,7 @@ def start_recorder(
     browser_ws: str = "",
     guided_plan_meta: dict[str, Any] | None = None,
     product_id: str = "",
+    client_browser: bool = False,
 ) -> RecorderJob:
     global _active
     mode = (save_mode or "new").strip().lower()
@@ -1290,8 +1294,15 @@ def start_recorder(
             narration=narration,
             save_mode=mode,
             product_id=(product_id or "").strip(),
+            client_token=(secrets.token_urlsafe(24) if client_browser else ""),
         )
         _active = job
+
+    # Dashboard manual record: the window belongs to the browser that clicked
+    # Start setup. Live demos still launch Chrome on the API host.
+    if client_browser and not (browser_ws or "").strip():
+        print("[record] client browser — server Chrome stays closed", flush=True)
+        return job
 
     if (browser_ws or "").strip():
         login_url = ""
@@ -1449,6 +1460,60 @@ def start_recorder(
     job.thread = t
     t.start()
     return job
+
+
+def record_job_for_token(token: str) -> RecorderJob | None:
+    tok = (token or "").strip()
+    if not tok:
+        return None
+    with _recorder_lock:
+        job = _active
+        if job is None or job.done or tok != (job.client_token or ""):
+            return None
+        return job
+
+
+def ingest_client_record_event(token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Append one click/fill from the dashboard user's browser.
+
+    Setup clicks are counted and dropped, same as the Playwright recorder.
+    """
+    from navigator.automation.record import _step_from_payload, junk_record_reason
+
+    tok = (token or "").strip()
+    if not tok:
+        raise RuntimeError("missing record token")
+    with _recorder_lock:
+        job = _active
+        if job is None or job.done or tok != (job.client_token or ""):
+            raise RuntimeError("no active recording")
+        gate = job.gate
+    body = dict(payload or {})
+    body.pop("token", None)
+    step = _step_from_payload(body)
+    reason = junk_record_reason(
+        body,
+        alias=step.alias,
+        selector=step.selector,
+    )
+    if reason:
+        return {"ok": True, "skipped": reason, "steps": len(job.steps)}
+    if gate is not None and gate.phase != "capturing":
+        gate.setup_discarded += 1
+        job.setup_discarded = gate.setup_discarded
+        return {
+            "ok": True,
+            "discarded": True,
+            "phase": gate.phase,
+            "setup_discarded": gate.setup_discarded,
+        }
+    if job.steps and step.tool == "scroll_page":
+        prev = job.steps[-1]
+        if getattr(prev, "tool", "") == "scroll_page":
+            job.steps[-1] = step
+            return {"ok": True, "steps": len(job.steps), "phase": job.phase}
+    job.steps.append(step)
+    return {"ok": True, "steps": len(job.steps), "phase": job.phase}
 
 
 def begin_capture() -> RecorderJob:

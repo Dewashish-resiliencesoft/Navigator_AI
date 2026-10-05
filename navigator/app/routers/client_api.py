@@ -17,6 +17,7 @@ from navigator.client.content import (
     apply_playlist_to_yaml,
     reset_site_graph_for_explore,
     begin_capture,
+    ingest_client_record_event,
     merge_recorded_flow,
     playlist_from_graph,
     promote_explore_into_draft,
@@ -1305,11 +1306,24 @@ def client_record_start(
     except ProductNotFound:
         plan_meta = None
 
+    # No remote Playwright server: open the product in the dashboard user's
+    # browser. A configured record_browser_ws still attaches to that machine's
+    # Chrome. Live demos never take this branch.
+    client_browser = not bool(browser_ws)
+    start_url = body.start_url.strip()
+    if client_browser:
+        from navigator.client.record_proxy import assert_public_product_url
+
+        try:
+            start_url = assert_public_product_url(start_url)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
     try:
         # Manual record always needs a visible window. NAVIGATOR_HEADFUL=0 is for
         # live demo bots on Xvfb — do not inherit it here or Chrome never appears.
         job = start_recorder(
-            start_url=body.start_url.strip(),
+            start_url=start_url,
             flow_name=fname,
             flow_id=fid,
             headful=True,
@@ -1319,10 +1333,16 @@ def client_record_start(
             browser_ws=browser_ws,
             guided_plan_meta=plan_meta,
             product_id=product.product_id,
+            client_browser=client_browser,
         )
     except RuntimeError as exc:
         raise HTTPException(409, str(exc)) from None
 
+    open_url = ""
+    if job.client_token:
+        from navigator.client.record_proxy import surf_open_path
+
+        open_url = surf_open_path(job.client_token, start_url)
     return {
         "job_id": job.job_id,
         "flow_id": job.flow_id,
@@ -1331,8 +1351,20 @@ def client_record_start(
         "phase": job.phase,
         "narrate": bool(job.narration is not None),
         "save_mode": job.save_mode,
-        "browser": "local" if browser_ws else "server",
+        "browser": "local" if browser_ws else "client",
+        "open_url": open_url,
     }
+
+
+@router.post("/client/api/record/event")
+def client_record_event(body: dict = Body(...)) -> dict:
+    """Clicks and fills from the dashboard user's record window. Token, not JWT."""
+    token = str(body.get("token") or "")
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    try:
+        return ingest_client_record_event(token, payload)
+    except RuntimeError as exc:
+        raise HTTPException(404, str(exc)) from None
 
 @router.post("/client/api/record/capture")
 def client_record_capture(product: DashboardAuthedProduct) -> dict:

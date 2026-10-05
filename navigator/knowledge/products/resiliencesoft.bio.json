@@ -13,17 +13,17 @@
     {
       "key": "products",
       "label": "Products",
-      "value": ""
+      "value": "resiliohub_whatsapp_business_api_ai_crm, resiliohub_whatsapp_business_api_ai_crm_2, resiliohub_whatsapp_business_api_ai_crm_3, resiliohub_whatsapp_business_api_ai_crm_4, resiliohub_whatsapp_business_api_ai_crm_5, resiliohub_whatsapp_business_api_ai_crm_6, resiliohub_whatsapp_business_api_ai_crm_7, resiliohub_whatsapp_business_api_ai_crm_8"
     },
     {
       "key": "about",
       "label": "About",
-      "value": "whatsapp automations"
+      "value": "## ResilioHub | WhatsApp Business API & AI CRM\nURL: https://resiliohub.com/dashboard/\n\nResilioHub\n\nCRM CONSOLE\n\nPreparing your workspace\n\n## ResilioHub | WhatsApp Business API & AI CRM\nURL: https://resiliohub.com/\n\nChange Theme\nHome\nAbout\nContact\nFeatures\nTutorials\nFAQ\nLogin\nStart Free Trial\nChange Theme\nMeta\nVerified Tech Provider\nAI-Powered Customer Engagement Platform Built on the Official WhatsApp Business API\n\nManage customer conversations, automate workflows, send marketing, utility and au"
     },
     {
       "key": "website",
       "label": "Website",
-      "value": ""
+      "value": "https://resiliohub.com"
     },
     {
       "key": "industry",
@@ -34,6 +34,61 @@
       "key": "referral_source",
       "label": "How you heard about us",
       "value": "Google"
+    },
+    {
+      "key": "founded",
+      "label": "Founded year",
+      "value": ""
+    },
+    {
+      "key": "headquarters",
+      "label": "Headquarters",
+      "value": ""
+    },
+    {
+      "key": "team_size",
+      "label": "Team size",
+      "value": ""
+    },
+    {
+      "key": "target_market",
+      "label": "Target market",
+      "value": ""
+    },
+    {
+      "key": "key_features",
+      "label": "Key features",
+      "value": ""
+    },
+    {
+      "key": "pricing_model",
+      "label": "Pricing model",
+      "value": ""
+    },
+    {
+      "key": "usp",
+      "label": "Unique selling proposition",
+      "value": ""
+    },
+    {
+      "key": "support_email",
+      "label": "Support contact",
+      "value": ""
+    },
+    {
+      "key": "social_links",
+      "label": "Social media links",
+      "value": ""
+    },
+    {
+      "key": "linkedin",
+      "label": "LinkedIn",
+      "value": ""
+    },
+    {
+      "key": "twitter",
+      "label": "Twitter / X",
+      "value": ""
     }
   ]
 }

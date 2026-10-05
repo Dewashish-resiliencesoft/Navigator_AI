@@ -3,14 +3,16 @@
 The UI is a Vite/React app in `web/`; this module only guards access and serves
 the build. Run `npm run build` in web/ to refresh what's served here.
 
-Access: loopback + RFC1918 private LAN Hosts. Public / tunnel Hosts stay blocked
-so a trycloudflare URL cannot become the Client dashboard.
+Access: loopback, RFC1918 private LAN Hosts, and the hostname of
+``settings.public_base_url`` (the quick tunnel this process opened). Any other
+public Host stays blocked.
 """
 
 from __future__ import annotations
 
 import ipaddress
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 
@@ -57,18 +59,31 @@ def _is_private_lan_host(host: str) -> bool:
     )
 
 
+def _active_tunnel_host() -> str:
+    """Hostname of the public origin this process is serving, if any."""
+    from navigator.core.settings import settings
+
+    base = (settings.public_base_url or "").strip()
+    if not base:
+        return ""
+    return (urlparse(base).hostname or "").strip().lower()
+
+
 def is_local_ops_host(request: Request) -> bool:
-    """Allow localhost + private LAN; also any Host when TCP peer is loopback.
+    """Allow localhost, private LAN, the active tunnel host, or a loopback peer.
 
     Peer-loopback covers same-machine opens via hostname (e.g.
     ``http://resiliencesoft:8000/client``) that would 403 on Host-only checks.
-    Public tunnels still fail — non-loopback peer, non-private Host.
+    A quick-tunnel Host is allowed only when it is this process's
+    ``public_base_url``. Other public Hosts stay blocked.
     """
     raw = (request.headers.get("host") or "").strip().lower()
     host = raw.split("%", 1)[0].split(":", 1)[0]
     if host in _LOCAL_HOSTS:
         return True
     if _is_private_lan_host(host):
+        return True
+    if host and host == _active_tunnel_host():
         return True
     peer = (request.client.host if request.client else "") or ""
     return peer in {"127.0.0.1", "::1"}

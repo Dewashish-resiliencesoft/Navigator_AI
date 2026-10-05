@@ -988,8 +988,9 @@ export const api = {
       narrate?: boolean;
       save_mode?: string;
       flow_id?: string;
-      browser?: "local" | "server";
+      browser?: "local" | "server" | "client";
       phase?: string;
+      open_url?: string;
     }>(
       "/client/api/record/start",
       "POST",

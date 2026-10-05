@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from navigator.client.dashboard import WEB_ASSETS, client_index_html, require_local_ops
+from navigator.client.record_proxy import proxy_record_document
 
 router = APIRouter()
 
@@ -27,6 +28,23 @@ def client_console(request: Request) -> HTMLResponse:
 @router.get("/ops")
 def legacy_ops_redirect() -> RedirectResponse:
     return RedirectResponse(url="/client", status_code=307)
+
+
+@router.api_route(
+    "/client/record-surf/{token}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+@router.api_route(
+    "/client/record-surf/{token}/{path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+)
+async def client_record_surf(
+    token: str, request: Request, path: str = ""
+) -> Response:
+    """Product page for manual record, shown in the dashboard user's browser."""
+    require_local_ops(request)
+    body = await request.body()
+    return proxy_record_document(token, path, request, body)
 
 
 def mount_client_assets(app: FastAPI) -> None:

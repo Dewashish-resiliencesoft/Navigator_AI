@@ -252,6 +252,8 @@ export function Flows() {
     const target = recordFlows.find((f) => f.flow_id === recTargetFlowId);
     const flowName =
       recSaveMode === "update" ? target?.name || recTargetFlowId : recName.trim();
+    // Open before the await so the browser treats this as a user click.
+    const popup = window.open("about:blank", "navigator-record");
     try {
       const r = await api.recordStart(recUrl.trim(), flowName, {
         narrate: recNarrate,
@@ -259,6 +261,13 @@ export function Flows() {
         target_flow_id: recSaveMode === "update" ? recTargetFlowId : undefined,
         target_flow_name: recSaveMode === "update" ? flowName : undefined,
       });
+      if (r.open_url && popup) {
+        popup.location.href = new URL(r.open_url, window.location.origin).href;
+      } else if (r.open_url && !popup) {
+        err("Browser blocked the product window. Allow popups, click Stop, then Start setup again.");
+      } else {
+        popup?.close();
+      }
       setRecording(true);
       setRecPhase("setup");
       setSetupDiscarded(0);
@@ -271,18 +280,17 @@ export function Flows() {
       }, 1000);
       const base =
         recSaveMode === "update"
-          ? recNarrate
-            ? `Setup — replacing ${flowName}. Use Record studio in Chrome (Start capturing / Stop). Mic Narrate is optional.`
-            : `Setup — replacing ${flowName}. In Chrome studio: Start capturing when ready, Stop when done.`
-          : recNarrate
-            ? "Setup — log in in Chrome, then Start capturing in Record studio. Optional: Narrate mic."
-            : "Setup — log in in Chrome, then Start capturing in Record studio. Dashboard buttons are backup.";
+          ? `Setup — replacing ${flowName}. Log in in the product window, then Start capturing.`
+          : "Setup — log in in the product window, then Start capturing. Stop saves the flow.";
       ok(
         r.browser === "local"
           ? `${base} Chrome opens on this computer.`
-          : base,
+          : r.browser === "client"
+            ? `${base} The product window is in this browser.`
+            : base,
       );
     } catch (e) {
+      popup?.close();
       err(errText(e));
     }
   };
@@ -680,10 +688,10 @@ export function Flows() {
               />
               <p className="text-[0.72rem] text-[var(--muted)] leading-relaxed">
                 {recPhase === "stopping"
-                  ? "Saving into your draft site graph. Chrome window will close."
+                  ? "Saving into your draft site graph. You can close the product window."
                   : recPhase === "capturing"
-                    ? "Capturing is live in Chrome. Use Record studio Start capturing / Stop — same as these buttons. Both stay in sync."
-                    : "In Chrome Record studio (top-right): Start capturing when ready, Stop when done. Dashboard buttons match."}
+                    ? "Capturing is live in the product window in this browser. Stop when the flow is done."
+                    : "Product window is in this browser. Log in, then Start capturing. Live demos still use the server Chrome."}
               </p>
               {recNarrating && narrationChunks > 0 && (
                 <p className="text-[0.72rem] text-emerald-600 dark:text-emerald-400">

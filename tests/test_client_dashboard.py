@@ -85,6 +85,26 @@ def test_client_page_forbidden_on_public_host(tmp_path):
         _cleanup(bundle, prev)
 
 
+def test_client_page_ok_on_active_tunnel_host(tmp_path):
+    from navigator.core.settings import settings
+
+    bundle = _client(tmp_path, client_api_key="nav_test")
+    client, prev, registry, log, auth_store = bundle
+    old = settings.public_base_url
+    settings.public_base_url = "https://montana-outer-minimum-outlined.trycloudflare.com"
+    try:
+        ok = client.get(
+            "/client",
+            headers={"Host": "montana-outer-minimum-outlined.trycloudflare.com"},
+        )
+        assert ok.status_code == 200
+        blocked = client.get("/client", headers={"Host": "evil.trycloudflare.com"})
+        assert blocked.status_code == 403
+    finally:
+        settings.public_base_url = old
+        _cleanup(bundle, prev)
+
+
 def test_client_page_ok_on_private_lan_host(tmp_path):
     bundle = _client(tmp_path, client_api_key="nav_test")
     client, prev, *_ = bundle

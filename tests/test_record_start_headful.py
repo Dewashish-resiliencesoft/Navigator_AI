@@ -48,6 +48,7 @@ def test_record_start_forces_headful_when_global_headless(tmp_path, monkeypatch)
         job.phase = "setup"
         job.narration = None
         job.save_mode = kwargs.get("save_mode", "new")
+        job.client_token = "tok_test" if kwargs.get("client_browser") else ""
         return job
 
     monkeypatch.setattr(
@@ -79,6 +80,10 @@ def test_record_start_forces_headful_when_global_headless(tmp_path, monkeypatch)
         )
         assert r.status_code == 200, r.text
         assert captured.get("headful") is True
+        assert captured.get("client_browser") is True
+        body = r.json()
+        assert body["browser"] == "client"
+        assert body["open_url"].startswith("/client/record-surf/tok_test/")
     finally:
         settings.client_api_key = prev_key
         settings.headful = prev_headful

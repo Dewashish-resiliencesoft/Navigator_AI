@@ -67,4 +67,25 @@ app.include_router(
 app.include_router(v1.router)
 app.include_router(client_api.router)
 app.include_router(public.router)
+
+
+@app.middleware("http")
+async def _record_surf_stray_paths(request, call_next):
+    """Keep manual-record navigation inside /client/record-surf/<token>/."""
+    response = await call_next(request)
+    if response.status_code != 404:
+        return response
+    from starlette.responses import RedirectResponse
+
+    from navigator.client.record_proxy import SURF_COOKIE, stray_surf_redirect
+
+    target = stray_surf_redirect(
+        request.url.path,
+        request.url.query,
+        request.cookies.get(SURF_COOKIE, ""),
+        request.headers.get("referer", ""),
+    )
+    if target is None:
+        return response
+    return RedirectResponse(url=target, status_code=307)
 public.mount_client_assets(app)

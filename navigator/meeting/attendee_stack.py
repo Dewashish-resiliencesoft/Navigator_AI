@@ -82,9 +82,13 @@ def _sync_attendee_override(compose_dir: Path) -> None:
     try:
         from navigator.meeting.attendee_ws_patch import patch as patch_audio_ws
 
+        from navigator.meeting.attendee_ws_patch import patch_upsample
+
         result = patch_audio_ws(compose_dir)
         print(f"[attendee] audio-ws: {result}", flush=True)
-        if result.startswith("patched "):
+        ups = patch_upsample(compose_dir)
+        print(f"[attendee] audio-upsample: {ups}", flush=True)
+        if result.startswith("patched ") or ups.startswith("patched "):
             _restart_attendee_worker(compose_dir)
     except OSError as exc:
         print(f"[attendee] WARN: audio-ws patch skipped: {exc}", flush=True)

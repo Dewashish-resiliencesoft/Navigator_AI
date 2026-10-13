@@ -62,10 +62,10 @@ def test_outbound_pcm_sends_without_any_inbound_traffic():
         asyncio.run(client())
         assert got, "no bot_output frame received"
         assert got[0]["trigger"] == "realtime_audio.bot_output"
-        # 24 kHz Gemini Live is upsampled to 48 kHz for Zoom web AudioContext.
-        assert got[0]["data"]["sample_rate"] == 48000
+        # Native 24 kHz: Attendee upsamples itself (pre-upsampled 48k crashed it).
+        assert got[0]["data"]["sample_rate"] == 24000
         decoded = base64.b64decode(got[0]["data"]["chunk"])
-        assert len(decoded) == 160  # 80 bytes * 2
+        assert len(decoded) == 80  # native rate, not upsampled
         assert decoded[:4] == b"\x02\x03\x02\x03"
     finally:
         bridge.stop()
@@ -160,7 +160,18 @@ def test_outbound_holds_until_attendee_ws_connects():
         asyncio.run(run())
         assert got, "late Attendee WS never received queued bot audio"
         assert got[0]["trigger"] == "realtime_audio.bot_output"
-        assert got[0]["data"]["sample_rate"] == 48000
+        assert got[0]["data"]["sample_rate"] == 16000
         assert base64.b64decode(got[0]["data"]["chunk"])[:2] == b"\x04\x05"
     finally:
         bridge.stop()
+
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _native_rate(monkeypatch):
+    # Unpatched-Attendee path: bridge sends native rate.
+    import navigator.meeting.audio_bridge as ab
+
+    monkeypatch.setattr(ab, "_PATCH_OK", False)

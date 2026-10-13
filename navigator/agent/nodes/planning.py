@@ -1646,9 +1646,16 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
         deps, page_id=page_id, flow_id=flow_id, step=step, call=nxt
     )
     yaml_hint = format_with_intake(yaml_hint, deps.intake)
-    if step == 0 and deps.intake and deps.intake.name:
-        need = deps.intake.looking_for or "what you asked about"
-        yaml_hint = f"Alright {deps.intake.name}, focusing on {need}. {yaml_hint}"
+    _iname = (getattr(deps.intake, "name", "") or "").strip() if deps.intake else ""
+    _ineed = (getattr(deps.intake, "looking_for", "") or "").strip() if deps.intake else ""
+    if (
+        step == 0
+        and _iname
+        and _iname.lower() not in {"there", "friend", "everyone", "you"}
+        and _ineed
+    ):
+        # Only when intake really captured a name AND a need; never a filler.
+        yaml_hint = f"Alright {_iname}, focusing on {_ineed}. {yaml_hint}"
 
     if resume_step is not None:
         yaml_hint = _say(

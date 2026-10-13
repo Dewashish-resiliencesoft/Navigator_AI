@@ -74,10 +74,54 @@ def upsample_for_attendee(
     *,
     dst_rate: int = _ATTENDEE_PLAYBACK_RATE,
 ) -> tuple[bytes, int]:
-    """Return (pcm, out_rate)."""
+    """Return (pcm, out_rate).
+
+    NOT used on the send path any more: Attendee's RealtimeAudioOutputManager
+    returns a ``(chunk, rate)`` tuple when the incoming rate already equals its
+    output rate (48 kHz on Zoom web / Meet), and ``send_raw_audio`` then dies
+    with ``TypeError: a bytes-like object is required, not 'tuple'`` on every
+    chunk — the bot is silent. Sending Gemini's native 24 kHz lets Attendee do
+    an integer 2x upsample that returns bytes.
+    """
     if not pcm or src_rate == dst_rate:
         return pcm, src_rate
     return upsample_pcm16_mono(pcm, src_rate, dst_rate), dst_rate
+
+
+_PATCH_OK: bool | None = None
+
+
+def _attendee_48k_ok() -> bool:
+    """True when Attendee's same-rate tuple bug is patched (see attendee_ws_patch)."""
+    global _PATCH_OK
+    if _PATCH_OK is None:
+        try:
+            from pathlib import Path
+
+            from navigator.meeting.attendee_stack import _compose_dir
+            from navigator.meeting.attendee_ws_patch import _UPS_MARKER
+
+            f = Path(_compose_dir()) / "bots" / "bot_controller" / "realtime_audio_output_manager.py"
+            _PATCH_OK = f.is_file() and _UPS_MARKER in f.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            _PATCH_OK = False
+        print(f"[voice-out] attendee 48k passthrough={'on' if _PATCH_OK else 'off (24k native)'}", flush=True)
+    return _PATCH_OK
+
+
+def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Band-limited-ish resample (linear interp, vectorised). No sample doubling."""
+    import numpy as np
+
+    if not pcm or src_rate == dst_rate:
+        return pcm
+    x = np.frombuffer(pcm[: len(pcm) - (len(pcm) % 2)], dtype=np.int16).astype(np.float32)
+    if x.size == 0:
+        return b""
+    n_out = int(round(x.size * dst_rate / src_rate))
+    t = np.arange(n_out, dtype=np.float64) * (src_rate / dst_rate)
+    y = np.interp(t, np.arange(x.size), x)
+    return np.clip(y, -32768, 32767).astype(np.int16).tobytes()
 
 
 class AudioBridge:
@@ -105,6 +149,10 @@ class AudioBridge:
         #: Gemini's turn_complete only says generation stopped, and the meeting
         #: is still several buffers behind at that point.
         self.audio_s_sent = 0.0
+        self.pcm_in_bytes = 0
+        self.bytes_sent = 0
+        self.send_errors = 0
+        self._last_out_log = 0.0
 
     @property
     def local_url(self) -> str:
@@ -141,7 +189,20 @@ class AudioBridge:
         self._ws = None
 
     def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
+        self.pcm_in_bytes += len(pcm or b"")
         self._outbound.put((pcm, sample_rate))
+
+    def _log_out(self, rate: int) -> None:
+        now = time.monotonic()
+        if now - self._last_out_log < 3.0:
+            return
+        self._last_out_log = now
+        print(
+            f"[voice-out] gemini pcm bytes={self.pcm_in_bytes} | sent to attendee "
+            f"chunks={self.chunks_sent} bytes={self.bytes_sent} sample_rate={rate} "
+            f"audio_s={self.audio_s_sent:.1f} errors={self.send_errors}",
+            flush=True,
+        )
 
     def clear_outbound(self) -> int:
         """Drop queued bot audio we have not sent yet. Returns how many chunks."""
@@ -172,14 +233,23 @@ class AudioBridge:
             with self._send_lock:
                 ws.send(json.dumps(payload))
             return True
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self.send_errors = getattr(self, "send_errors", 0) + 1
+            if self.send_errors <= 3 or self.send_errors % 50 == 0:
+                print(f"[voice-out] ws send error #{self.send_errors}: {exc}", flush=True)
             return False
 
     def _send_pcm(self, pcm: bytes, rate: int) -> None:
         if not pcm:
             return
         duration_s = _pcm_seconds(pcm, rate)
-        out, out_rate = upsample_for_attendee(pcm, rate)
+        # 48 kHz with a proper interpolating resample when Attendee is patched
+        # (it then passes bytes through untouched); else native rate and let
+        # Attendee duplicate samples (crashes avoided, but slightly harsher).
+        if _attendee_48k_ok() and rate != _ATTENDEE_PLAYBACK_RATE:
+            out, out_rate = resample_pcm16(pcm, rate, _ATTENDEE_PLAYBACK_RATE), _ATTENDEE_PLAYBACK_RATE
+        else:
+            out, out_rate = pcm, rate
         payload = {
             "trigger": "realtime_audio.bot_output",
             "data": {
@@ -192,13 +262,25 @@ class AudioBridge:
         while not self._stop.is_set():
             if self._send_json(payload):
                 self.chunks_sent += 1
+                self.bytes_sent += len(out)
                 self.audio_s_sent += duration_s
+                self._log_out(out_rate)
+                if self.chunks_sent == 1:
+                    print(
+                        "[voice-out] zoom bot mic state=unmuting — Attendee clicks "
+                        "'unmute my microphone' on first bot_output (it never did "
+                        "before: send_raw_audio crashed). If the tile stays muted the "
+                        "host has muted it / disallowed self-unmute: ask the host to "
+                        "unmute Navigator or enable 'Allow participants to unmute themselves'.",
+                        flush=True,
+                    )
                 return
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.01)
+        self.send_errors += 1
         print(
-            "[audio] dropped outbound chunk: Attendee WS not connected",
+            "[voice-out] ws send error: dropped chunk, Attendee WS not connected",
             flush=True,
         )
 
@@ -310,8 +392,18 @@ class AudioBridge:
         if not chunk_b64:
             return
         try:
-            self.inbound.put(base64.b64decode(chunk_b64))
+            pcm_in = base64.b64decode(chunk_b64)
+            self.inbound.put(pcm_in)
             self.chunks_received += 1
+            self.pcm_recv_bytes = getattr(self, "pcm_recv_bytes", 0) + len(pcm_in)
+            now = time.monotonic()
+            if now - getattr(self, "_last_in_log", 0.0) >= 5.0:
+                self._last_in_log = now
+                print(
+                    f"[voice-in] pcm bytes={self.pcm_recv_bytes} chunks={self.chunks_received} "
+                    f"trigger={msg.get('trigger')!r} rate={data.get('sample_rate')}",
+                    flush=True,
+                )
             if self.chunks_received in (1, 50, 200):
                 print(
                     f"[audio] pcm chunks received={self.chunks_received} "

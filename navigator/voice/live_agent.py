@@ -112,7 +112,14 @@ class LiveAgent:
         self._playback_idle.set()
         self._barge_state: Literal["idle", "probable", "confirmed"] = "idle"
         self._barge_probable_at: float = 0.0
-        self._barge_confirm_s: float = 0.28
+        # Was 0.28s: room echo / a click sound right after login confirmed a
+        # fake barge-in. Real interruptions keep talking well past this.
+        self._barge_confirm_s: float = 0.8
+        #: When the model finished generating the last turn and how long its
+        #: audio still needs to play (lets wait_idle recover from a stuck
+        #: "playing" phase left by nudges/interrupted turns).
+        self._gen_done_at: float = 0.0
+        self._drain_until: float = 0.0
 
         self._cmds: queue.Queue[_Cmd] = queue.Queue()
         self._heard: queue.Queue[str] = queue.Queue()
@@ -239,7 +246,7 @@ class LiveAgent:
                 f"queue={self._cmds.qsize()}",
                 flush=True,
             )
-            self._playback_idle.wait(timeout=90)
+            self._wait_idle_or_recover(uid)
         if self._barge_state == "confirmed":
             self._barge_state = "idle"
         self.last_spoken = text
@@ -255,10 +262,32 @@ class LiveAgent:
         if not self.interrupted:
             self._set_playback("draining", uid or None)
         self._wait_for_playback(started, sent_at_start)
-        if not self.interrupted:
+        # Always leave the pipeline idle, also after an interrupted turn —
+        # otherwise the next step's say() waits on "playing" forever.
+        if self.playback_phase not in {"ready", "finished", "stopped"}:
             self._set_playback("finished", uid or None)
-            self._set_playback("ready", uid or None)
+        self._set_playback("ready", uid or None)
         self.speaking = False
+
+    def _wait_idle_or_recover(self, uid: str, max_wait_s: float = 15.0) -> None:
+        """Wait for in-flight audio; force idle when generation already ended.
+
+        Nudges and interrupted turns leave ``playback_phase`` at "playing"
+        with nobody to move it on, which used to deadlock the walkthrough.
+        """
+        deadline = time.monotonic() + max_wait_s
+        while not self._stop.is_set():
+            if self.can_start_utterance():
+                return
+            now = time.monotonic()
+            if self._gen_done_at and not self.speaking and now >= self._drain_until:
+                print(f"[utterance] id={uid} wait_idle recovered (turn done, drained)", flush=True)
+                break
+            if now >= deadline:
+                print(f"[utterance] id={uid} wait_idle timeout {max_wait_s}s -> force ready", flush=True)
+                break
+            self._playback_idle.wait(timeout=0.25)
+        self._set_playback("ready", uid or None)
 
     def _audio_s_sent(self) -> float:
         """Seconds of bot audio the bridge has handed to the meeting so far."""
@@ -598,6 +627,10 @@ class LiveAgent:
                     self._set_playback("buffering", self._active_utterance_id)
                     self._set_playback("playing", self._active_utterance_id)
                 self.speaking = True
+                self._gen_done_at = 0.0
+                self._turn_audio_s = getattr(self, "_turn_audio_s", 0.0) + len(data) / (
+                    2.0 * OUTPUT_SAMPLE_RATE
+                )
                 self.bridge.push_outbound_pcm(
                     data, sample_rate=OUTPUT_SAMPLE_RATE
                 )
@@ -639,6 +672,12 @@ class LiveAgent:
                     self._emit(LiveEvent(kind="heard", text=text))
             if getattr(sc, "turn_complete", False):
                 self.speaking = False
+                now_tc = time.monotonic()
+                self._gen_done_at = now_tc
+                self._drain_until = now_tc + min(
+                    MAX_DRAIN_S, max(0.0, getattr(self, "_turn_audio_s", 0.0))
+                ) + 0.3
+                self._turn_audio_s = 0.0
                 if self._barge_state == "probable":
                     self._barge_state = "idle"
                 self._turn_done.set()

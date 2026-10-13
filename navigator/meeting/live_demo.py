@@ -1540,8 +1540,15 @@ def run_live_meet_demo(
                         return
                     if time.time() - (relay.last_frame_at or 0) < 1.25:
                         continue
+                    # Re-serve the last frame only. Calling Playwright here (a
+                    # different thread) raised "greenlet.error: Cannot switch to
+                    # a different thread" 130+ times per demo and wedged page
+                    # waits (Locator.wait_for timeouts, stuck navigation).
                     try:
-                        _push()
+                        with relay._lock:
+                            last = relay._frame
+                        if last:
+                            relay.set_frame(last)
                     except Exception:  # noqa: BLE001
                         pass
 

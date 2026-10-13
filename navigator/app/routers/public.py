@@ -37,11 +37,11 @@ def legacy_ops_redirect() -> RedirectResponse:
 
 @router.api_route(
     "/client/record-surf/{token}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 @router.api_route(
     "/client/record-surf/{token}/{path:path}",
-    methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 )
 async def client_record_surf(
     token: str, request: Request, path: str = ""

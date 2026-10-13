@@ -1188,6 +1188,12 @@ class NarrationCapture:
     translate_to: str = "same"
     #: Confirmed AgentTasks from Prompt Listening (persisted into graph _meta).
     agent_tasks: list[Any] = field(default_factory=list)
+    #: Record-surf: each page load is a fresh MediaRecorder stream. Index into
+    #: ``chunks`` where each segment starts, its id, and its offset (ms) on the
+    #: recording clock so segments can be placed on one timeline.
+    seg_starts: list[int] = field(default_factory=list)
+    seg_ids: list[str] = field(default_factory=list)
+    seg_offsets: list[int] = field(default_factory=list)
 
     def apply_config(self, payload: object) -> None:
         if not isinstance(payload, dict):
@@ -1210,12 +1216,73 @@ class NarrationCapture:
         if not self.mime:
             self.mime = str(payload.get("mime") or "")
         try:
-            self.chunks.append(base64.b64decode(b64))
+            data = base64.b64decode(b64)
         except Exception as exc:  # noqa: BLE001
             print(f"[record] narration chunk dropped: {exc}", flush=True)
+            return
+        seg = str(payload.get("seg") or "")
+        if seg and (not self.seg_ids or self.seg_ids[-1] != seg):
+            self.seg_starts.append(len(self.chunks))
+            self.seg_ids.append(seg)
+            try:
+                self.seg_offsets.append(max(0, int(payload.get("seg_offset_ms") or 0)))
+            except (TypeError, ValueError):
+                self.seg_offsets.append(0)
+        self.chunks.append(data)
 
     def audio(self) -> bytes:
-        return b"".join(self.chunks)
+        if len(self.seg_starts) <= 1:
+            return b"".join(self.chunks)
+        merged = self._merge_segments()
+        if merged:
+            return merged
+        # ffmpeg unavailable / failed: first stream decodes, the rest would not.
+        end = self.seg_starts[1]
+        return b"".join(self.chunks[:end])
+
+    def _merge_segments(self) -> bytes:
+        """Place each MediaRecorder stream at its clock offset in one clip."""
+        import shutil
+        import subprocess
+        import tempfile
+
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return b""
+        bounds = self.seg_starts + [len(self.chunks)]
+        lead = b"".join(self.chunks[: self.seg_starts[0]])
+        with tempfile.TemporaryDirectory(prefix="nav-narr-") as tmp:
+            inputs: list[str] = []
+            for i in range(len(self.seg_starts)):
+                blob = b"".join(self.chunks[bounds[i] : bounds[i + 1]])
+                if i == 0 and lead:
+                    blob = lead + blob
+                path = f"{tmp}/seg{i}.webm"
+                with open(path, "wb") as fh:
+                    fh.write(blob)
+                inputs += ["-i", path]
+            n = len(self.seg_starts)
+            base = self.seg_offsets[0] if self.seg_offsets else 0
+            parts = []
+            for i in range(n):
+                off = max(0, (self.seg_offsets[i] if i < len(self.seg_offsets) else 0) - base)
+                parts.append(f"[{i}:a]adelay={off}|{off}[a{i}]")
+            mix = "".join(f"[a{i}]" for i in range(n))
+            graph = ";".join(parts) + f";{mix}amix=inputs={n}:normalize=0[out]"
+            out = f"{tmp}/merged.webm"
+            try:
+                subprocess.run(
+                    [ffmpeg, "-y", "-loglevel", "error", *inputs,
+                     "-filter_complex", graph, "-map", "[out]", "-c:a", "libopus", out],
+                    check=True, timeout=120, capture_output=True,
+                )
+                with open(out, "rb") as fh:
+                    data = fh.read()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[record] narration segment merge failed: {exc}", flush=True)
+                return b""
+        self.mime = "audio/webm"
+        return data
 
 
 def record_session(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 import os
 import secrets
 import time
@@ -738,7 +740,15 @@ def client_get_demo_script(
         flow_id_filter=fid,
     )
     script = merge_manual_overrides(script, stored)
+    try:
+        import yaml as _yaml
+
+        _meta = (_yaml.safe_load(rev.yaml) or {}).get("_meta") or {}
+        narration_status = _meta.get("narration_status") or {}
+    except Exception:  # noqa: BLE001
+        narration_status = {}
     return {
+        "narration_status": narration_status,
         "revision": rev.revision,
         "published_revision": product.active_revision,
         "playlist": playlist_from_graph(graph),
@@ -1366,6 +1376,73 @@ def client_record_event(body: dict = Body(...)) -> dict:
     except RuntimeError as exc:
         raise HTTPException(404, str(exc)) from None
 
+@router.post("/client/api/record/discard")
+def client_record_discard(product: DashboardAuthedProduct) -> dict:
+    """Stop and throw away the active recording. Writes no revision."""
+    from navigator.client.content import discard_recorder
+
+    try:
+        return discard_recorder()
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@router.post("/client/api/record/surf-discard")
+def client_record_surf_discard(body: dict = Body(...)) -> dict:
+    """Discard from the record-surf toolbar. Recording token, not JWT."""
+    from navigator.client.content import discard_recorder
+
+    try:
+        return discard_recorder(str(body.get("token") or ""))
+    except RuntimeError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@router.post("/client/api/record/surf-control")
+def client_record_surf_control(body: dict = Body(...)) -> dict:
+    """Record-surf toolbar (start/pause/resume/status). Recording token, not JWT."""
+    from navigator.client.content import surf_record_control
+
+    try:
+        return surf_record_control(str(body.get("token") or ""), str(body.get("action") or "status"))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from None
+    except RuntimeError as exc:
+        raise HTTPException(404, str(exc)) from None
+
+
+@router.post("/client/api/record/surf-stop")
+def client_record_surf_stop(body: dict = Body(...)) -> dict:
+    """Finish from the record-surf toolbar: merge into the *draft* site graph only."""
+    from navigator.client.content import persist_recorder_job, record_job_for_token
+
+    job = record_job_for_token(str(body.get("token") or ""))
+    if job is None:
+        raise HTTPException(404, "no active recording")
+    try:
+        job = stop_recorder()
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+    result = persist_recorder_job(job, page_id="dashboard")
+    return {
+        "ok": True,
+        "steps": result.get("steps", len(job.steps)) if isinstance(result, dict) else len(job.steps),
+        "narrated_steps": result.get("narrated_steps") if isinstance(result, dict) else None,
+        "published": False,
+    }
+
+
+@router.post("/client/api/record/surf-audio")
+def client_record_surf_audio(body: dict = Body(...)) -> dict:
+    """Narration audio chunk from the record-surf page. Recording token, not JWT."""
+    from navigator.client.content import surf_record_audio
+
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    try:
+        return surf_record_audio(str(body.get("token") or ""), payload)
+    except RuntimeError as exc:
+        raise HTTPException(404, str(exc)) from None
+
 @router.post("/client/api/record/capture")
 def client_record_capture(product: DashboardAuthedProduct) -> dict:
     """Leave Setup: from now on, clicks become flow content."""
@@ -1532,6 +1609,144 @@ def client_guided_hands_barge(product: DashboardAuthedProduct) -> None:
 def client_guided_task_patch(product: DashboardAuthedProduct) -> None:
     _raise_guided_retired(product)
 
+def _recording_audio_dir(product_id: str):
+    from pathlib import Path
+
+    safe = "".join(ch for ch in (product_id or "client") if ch.isalnum() or ch in "-_") or "client"
+    d = Path("archives") / "recordings" / "audio" / safe
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _save_recording_audio(job, audio: bytes, mime: str) -> None:
+    """Keep raw narration + step clock on disk (archives/ is gitignored) for re-transcribe."""
+    if not audio:
+        return
+    import json as _json
+
+    from navigator.automation.record import recorded_step_to_dict
+
+    try:
+        d = _recording_audio_dir(getattr(job, "product_id", "") or "")
+        fid = "".join(ch for ch in (job.flow_id or "flow") if ch.isalnum() or ch in "-_")
+        (d / f"{fid}.webm").write_bytes(audio)
+        (d / f"{fid}.steps.json").write_text(
+            _json.dumps(
+                {
+                    "flow_id": job.flow_id,
+                    "flow_name": getattr(job, "flow_name", ""),
+                    "mime": mime or "audio/webm",
+                    "language": getattr(getattr(job, "narration", None), "language", "auto") or "auto",
+                    "audio_offset_ms": int(
+                        getattr(job.narration, "audio_offset_ms", 0)
+                        or ((getattr(job.narration, "seg_offsets", None) or [0])[0])
+                    ),
+                    "steps": [recorded_step_to_dict(s) for s in job.steps],
+                }
+            )
+        )
+        print(f"[record] narration audio saved ({len(audio)} bytes) → {d / (fid + '.webm')}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[record] narration audio save failed: {exc}", flush=True)
+
+
+@router.post("/client/api/record/retranscribe")
+def client_record_retranscribe(
+    product: DashboardAuthedProduct,
+    registry: Reg,
+    flow_id: Annotated[str, Query()],
+) -> dict:
+    """Re-run speech-to-text on a flow's saved audio. Writes a new *draft* revision."""
+    import json as _json
+    from types import SimpleNamespace
+
+    from navigator.automation.record import recorded_step_from_dict
+
+    d = _recording_audio_dir(product.product_id)
+    fid = "".join(ch for ch in (flow_id or "") if ch.isalnum() or ch in "-_")
+    audio_path, meta_path = d / f"{fid}.webm", d / f"{fid}.steps.json"
+    if not fid or not audio_path.exists() or not meta_path.exists():
+        raise HTTPException(404, "no saved audio for this flow — record it again with the mic on")
+    meta = _json.loads(meta_path.read_text())
+    audio = audio_path.read_bytes()
+    narration = SimpleNamespace(
+        audio=lambda: audio, mime=meta.get("mime", "audio/webm"), chunks=[audio], seg_ids=[],
+        language=meta.get("language", "auto"), translate_to="same",
+        audio_offset_ms=int(meta.get("audio_offset_ms") or 0),
+    )
+    job = SimpleNamespace(
+        narration=narration,
+        steps=[recorded_step_from_dict(s) for s in meta.get("steps") or []],
+        flow_id=meta.get("flow_id") or flow_id,
+        flow_name=meta.get("flow_name") or flow_id,
+        product_id=product.product_id,
+    )
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    import yaml as _yaml
+
+    raw = _yaml.safe_load(rev.yaml) or {}
+    # Old lines must not survive on steps the new transcript leaves silent.
+    for page in (raw.get("pages") or {}).values():
+        flows = (page or {}).get("flows") if isinstance(page, dict) else None
+        flow = flows.get(job.flow_id) if isinstance(flows, dict) else None
+        steps = flow.get("steps") if isinstance(flow, dict) else flow
+        for st in steps if isinstance(steps, list) else []:
+            if isinstance(st, dict):
+                st.pop("spoken", None)
+    base_yaml = _yaml.safe_dump(raw, sort_keys=False)
+    new_yaml, narrated = _attach_recorded_narration(base_yaml, job)
+    out = registry.put_site_graph(product.product_id, new_yaml, "recorded", publish=False)
+    return {"ok": True, "revision": out.revision, "narrated_steps": narrated, "published": False}
+
+
+def _stt_vocabulary_prompt(yaml_text: str, job, steps) -> str:
+    """Whisper prompt from the Client's own registry data (tenant-agnostic).
+
+    Product / company name, page ids and titles, and recorded UI labels, so
+    product names and screen words ("login", "dashboard") transcribe correctly.
+    """
+    import yaml as _yaml
+
+    terms: list[str] = []
+
+    def add(v: object) -> None:
+        t = " ".join(str(v or "").replace("_", " ").replace("-", " ").split())
+        if 1 < len(t) <= 40 and t.lower() not in {x.lower() for x in terms}:
+            terms.append(t)
+
+    try:
+        from navigator.knowledge.company_bio import load_bio
+
+        for f in load_bio(getattr(job, "product_id", "") or "").get("fields") or []:
+            if isinstance(f, dict) and f.get("key") in {"company_name", "product_name"}:
+                add(f.get("value"))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        raw = _yaml.safe_load(yaml_text) or {}
+    except Exception:  # noqa: BLE001
+        raw = {}
+    if isinstance(raw, dict):
+        add(raw.get("site"))
+        host = urlsplit(str(raw.get("base_url") or "")).hostname or ""
+        if host:
+            add(host.removeprefix("www."))
+        for pid, page in (raw.get("pages") or {}).items():
+            add(pid)
+            if isinstance(page, dict):
+                add(page.get("title"))
+                for alias in list((page.get("selectors") or {}).keys())[:20]:
+                    add(alias)
+    for s in steps:
+        add(getattr(s, "alias", ""))
+    if not terms:
+        return ""
+    return "A product walkthrough of " + ", ".join(terms[:60]) + "."
+
+
 def _attach_recorded_narration(
     yaml_text: str,
     job,
@@ -1556,6 +1771,7 @@ def _attach_recorded_narration(
         _attach_meta,
     )
     from navigator.automation.narration import (
+        fold_lines_to_kept,
         compact_timeline,
         narrate_recording,
         speech_windows_payload,
@@ -1580,18 +1796,36 @@ def _attach_recorded_narration(
     used_stt = False
 
     audio = narration.audio()
+    _save_recording_audio(job, audio, getattr(narration, "mime", "") or "")
     keys = groq_key_candidates()
+    reason = ""
     if audio and keys:
         api_key = keys[0]
         try:
-            stt_lines, _stt_timings, _stt_windows = narrate_recording(
+            # Align on the FULL step list so dropped steps keep their time
+            # slot (no index shift), then fold onto the kept steps.
+            full_steps = list(job.steps)
+            kept_idx = [
+                next(i for i, f in enumerate(full_steps) if f is s) for s in scrubbed_steps
+            ]
+            offsets = list(getattr(narration, "seg_offsets", None) or [])
+            stt_full, _stt_timings, _stt_windows = narrate_recording(
                 audio=audio,
-                steps=scrubbed_steps,
+                steps=full_steps,
+                audio_offset_ms=int(getattr(narration, "audio_offset_ms", 0) or (offsets[0] if offsets else 0)),
                 api_key=api_key,
+                prompt=_stt_vocabulary_prompt(yaml_text, job, scrubbed_steps),
                 ask_text=None,  # no enhance / merge
                 language=getattr(narration, "language", "auto") or "auto",
                 translate_to=getattr(narration, "translate_to", "same") or "same",
                 enhance=False,
+            )
+            stt_lines = (
+                fold_lines_to_kept(
+                    stt_full, kept_idx, [int(getattr(f, "at_ms", 0) or 0) for f in full_steps]
+                )
+                if stt_full
+                else []
             )
             if any(str(l).strip() for l in stt_lines):
                 # Pad / trim to step count
@@ -1600,12 +1834,22 @@ def _attach_recorded_narration(
                     lines.append("")
                 lines = lines[: len(scrubbed_steps)]
                 used_stt = True
+            else:
+                reason = "speech-to-text found no speech in the recorded audio"
         except Exception as exc:  # noqa: BLE001
+            reason = f"speech-to-text failed: {exc}"[:300]
             print(f"[record] narration STT failed (leaving silent): {exc}", flush=True)
     elif audio and not keys:
+        reason = "no Groq API key configured for speech-to-text"
         print("[record] narration STT skipped: no Groq API keys", flush=True)
     elif not audio:
+        reason = "no microphone audio reached Navigator (mic blocked or never started)"
         print("[record] narration STT skipped: no audio bytes", flush=True)
+    print(
+        f"[record] narration audio bytes={len(audio or b'')} chunks={len(getattr(narration, 'chunks', []) or [])} "
+        f"segments={len(getattr(narration, 'seg_ids', []) or [])} reason={reason or 'ok'}",
+        flush=True,
+    )
 
     click_ms, windows = compact_timeline(lines if used_stt else [""] * len(scrubbed_steps))
     if not used_stt:
@@ -1659,6 +1903,18 @@ def _attach_recorded_narration(
                 yaml_text = _attach_meta(yaml_text, section, job.flow_id, rows)
     yaml_text = _stamp_spoken_on_flow_steps(yaml_text, job.flow_id, lines)
     narrated = sum(1 for l in lines if str(l).strip())
+    yaml_text = _attach_meta(
+        yaml_text,
+        "narration_status",
+        job.flow_id,
+        {
+            "captured": narrated > 0,
+            "narrated_steps": narrated,
+            "steps": len(lines),
+            "reason": "" if narrated else (reason or "no speech matched any step"),
+            "audio_bytes": len(audio or b""),
+        },
+    )
     print(
         f"[record] narration: {narrated}/{len(lines)} steps have spoken lines",
         flush=True,

@@ -35,3 +35,27 @@ def patch(attendee_dir: Path) -> str:
     )
     path.write_text(text.replace(_NEEDLE, insert, 1), encoding="utf-8")
     return f"patched {path}"
+
+
+_UPS_MARKER = "navigator: return bytes when rates match"
+_UPS_NEEDLE = """        if sample_rate == self.output_sample_rate:
+            return chunk, sample_rate
+"""
+
+
+def patch_upsample(attendee_dir: Path) -> str:
+    """Attendee bug: same-rate chunk returned as a tuple → TypeError, no audio."""
+    path = attendee_dir / "bots" / "bot_controller" / "realtime_audio_output_manager.py"
+    if not path.is_file():
+        return f"missing {path}"
+    text = path.read_text(encoding="utf-8")
+    if _UPS_MARKER in text:
+        return "already patched"
+    if _UPS_NEEDLE not in text:
+        return "upsample shape changed; patch skipped"
+    fixed = (
+        "        if sample_rate == self.output_sample_rate:\n"
+        f"            return chunk  # {_UPS_MARKER}\n"
+    )
+    path.write_text(text.replace(_UPS_NEEDLE, fixed, 1), encoding="utf-8")
+    return f"patched {path}"

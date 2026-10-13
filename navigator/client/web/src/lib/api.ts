@@ -242,7 +242,16 @@ export const INPUT_TYPES = [
   "confirmation",
 ] as const;
 
+export type NarrationStatus = {
+  captured: boolean;
+  narrated_steps: number;
+  steps: number;
+  reason: string;
+  audio_bytes: number;
+};
+
 export type DemoScriptResponse = {
+  narration_status?: Record<string, NarrationStatus>;
   revision: number;
   published_revision: number | null;
   playlist: Flow[];
@@ -288,6 +297,12 @@ export type RecorderStatus = {
   flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
   narrate?: boolean;
   narration_chunks?: number;
+  flow_id?: string | null;
+  done?: boolean;
+  paused?: boolean;
+  live_transcript?: Array<{ at_ms: number; text: string }>;
+  live_error?: string;
+  live_steps?: Array<{ index: number; label: string; tool: string; at_ms: number }>;
   save_mode?: "new" | "update" | string;
   /** Studio Stop — dashboard must POST /record/stop to merge/save. */
   needs_merge?: boolean;
@@ -1006,6 +1021,16 @@ export const api = {
   recordCapture: () =>
     send<{ ok: boolean; phase: string; setup_discarded: number; steps: number }>(
       "/client/api/record/capture",
+      "POST",
+    ),
+  recordRetranscribe: (flowId: string) =>
+    send<{ ok: boolean; revision: number; narrated_steps: number }>(
+      `/client/api/record/retranscribe?flow_id=${encodeURIComponent(flowId)}`,
+      "POST",
+    ),
+  recordDiscard: () =>
+    send<{ ok: boolean; discarded: boolean; steps_dropped: number }>(
+      "/client/api/record/discard",
       "POST",
     ),
   recordStop: () =>

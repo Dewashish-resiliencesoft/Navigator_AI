@@ -34,6 +34,9 @@ type State = {
   /** True only after this browser session called start() — blocks stale done UI. */
   sessionStarted: boolean;
   bootstrapped: boolean;
+  /** Outcome of the last run this session saw finish — survives ack() clearing status. */
+  lastFinish: { phase: "done" | "error"; error?: string | null; at: number } | null;
+  clearLastFinish: () => void;
   refresh: () => Promise<ProductExploreStatus>;
   start: (startUrl?: string) => Promise<ProductExploreStatus>;
   stop: () => Promise<ProductExploreStatus>;
@@ -92,12 +95,17 @@ export const useProductExploreSession = create<State>((set, get) => ({
   stopping: false,
   sessionStarted: false,
   bootstrapped: false,
+  lastFinish: null,
+  clearLastFinish: () => set({ lastFinish: null }),
 
   refresh: async () => {
     try {
       const raw = await api.getProductExplore();
       const status = mapStatus(raw);
       set({ status });
+      if (!status.active && (status.phase === "done" || status.phase === "error")) {
+        set({ lastFinish: finishOf(status) });
+      }
       if (status.active) ensurePoll(get);
       else clearPoll();
       if (status.done || (!status.active && status.phase === "done")) {
@@ -110,7 +118,7 @@ export const useProductExploreSession = create<State>((set, get) => ({
   },
 
   start: async (startUrl) => {
-    set({ starting: true, sessionStarted: true });
+    set({ starting: true, sessionStarted: true, lastFinish: null });
     try {
       let url = (startUrl || "").trim();
       if (!url) {
@@ -151,6 +159,10 @@ export const useProductExploreSession = create<State>((set, get) => ({
   },
 
   ack: async () => {
+    const prev = get().status;
+    if (!prev.active && (prev.phase === "done" || prev.phase === "error")) {
+      set({ lastFinish: finishOf(prev) });
+    }
     try {
       const raw = await api.ackProductExplore();
       const status = mapStatus(raw);
@@ -180,6 +192,35 @@ export const useProductExploreSession = create<State>((set, get) => ({
     });
   },
 }));
+
+function finishOf(st: ProductExploreStatus): State["lastFinish"] {
+  const failed = st.phase === "error" || !!st.error;
+  return { phase: failed ? "error" : "done", error: st.error ?? null, at: Date.now() };
+}
+
+/** Client-facing label for a backend job phase. */
+export function productExplorePhaseLabel(phase?: string): string {
+  switch (phase) {
+    case "starting":
+      return "Starting…";
+    case "signing_in":
+      return "Signing in to your product…";
+    case "crawling":
+      return "Crawling product pages…";
+    case "web_research":
+      return "Gathering public product context…";
+    case "writing_bio":
+      return "Filling company bio…";
+    case "updating_knowledge":
+      return "Updating knowledge…";
+    case "done":
+      return "Done";
+    case "error":
+      return "Explore failed";
+    default:
+      return "Waiting to start…";
+  }
+}
 
 export function productExploreIsLive(status: ProductExploreStatus): boolean {
   return !!status.active;

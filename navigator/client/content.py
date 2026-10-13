@@ -6,6 +6,7 @@ import multiprocessing as mp
 import re
 import secrets
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -567,6 +568,10 @@ def draft_needs_explore_promote(yaml_text: str) -> bool:
     if not isinstance(raw, dict):
         return True
     meta = raw.get("_meta")
+    if isinstance(meta, dict) and meta.get("recorded_flows"):
+        # A Client recording lives in this draft — never overwrite it with the
+        # explore seed (that silently wiped freshly recorded flows).
+        return False
     if isinstance(meta, dict) and meta.get("source") == "product_explore_promote":
         return True
     pages = raw.get("pages")
@@ -1078,6 +1083,27 @@ class RecorderJob:
     persist_result: dict[str, Any] | None = None
     #: Confirmed AgentTasks (prompt channel) if gate not available.
     agent_tasks: list[Any] = field(default_factory=list)
+    #: Record-surf pause: steps and narration are not captured while True.
+    paused: bool = False
+    #: Live transcript while recording: [{"at_ms", "text"}] (best effort, Groq).
+    live_lines: list[dict[str, Any]] = field(default_factory=list)
+    live_error: str = ""
+    live_busy: bool = False
+    live_last_len: int = 0
+    live_last_at: float = 0.0
+    #: Recording clock (monotonic s): starts at capture, excludes paused time.
+    clock_started: float = 0.0
+    clock_paused_total: float = 0.0
+    clock_paused_at: float = 0.0
+
+    def clock_ms(self) -> int:
+        if not self.clock_started:
+            return 0
+        now = time.monotonic()
+        paused = self.clock_paused_total
+        if self.paused and self.clock_paused_at:
+            paused += now - self.clock_paused_at
+        return max(0, int((now - self.clock_started - paused) * 1000))
     #: Manual record in the dashboard user's browser. Empty when Chrome is server-side.
     client_token: str = ""
 
@@ -1245,6 +1271,18 @@ def recorder_status() -> dict[str, Any]:
                 len(job.narration.chunks) if job.narration else 0
             ),
             "needs_merge": needs_merge,
+            "paused": bool(getattr(job, "paused", False)),
+            "live_transcript": list(getattr(job, "live_lines", []) or [])[-200:],
+            "live_error": getattr(job, "live_error", "") or "",
+            "live_steps": [
+                {
+                    "index": i,
+                    "label": (getattr(s, "alias", "") or getattr(s, "selector", "") or getattr(s, "tool", "")),
+                    "tool": getattr(s, "tool", ""),
+                    "at_ms": int(getattr(s, "at_ms", 0) or 0),
+                }
+                for i, s in enumerate(job.steps)
+            ][-200:],
         }
 
 
@@ -1498,6 +1536,8 @@ def ingest_client_record_event(token: str, payload: dict[str, Any]) -> dict[str,
     )
     if reason:
         return {"ok": True, "skipped": reason, "steps": len(job.steps)}
+    if job.paused:
+        return {"ok": True, "paused": True, "steps": len(job.steps)}
     if gate is not None and gate.phase != "capturing":
         gate.setup_discarded += 1
         job.setup_discarded = gate.setup_discarded
@@ -1512,6 +1552,9 @@ def ingest_client_record_event(token: str, payload: dict[str, Any]) -> dict[str,
         if getattr(prev, "tool", "") == "scroll_page":
             job.steps[-1] = step
             return {"ok": True, "steps": len(job.steps), "phase": job.phase}
+    if not step.at_ms:
+        # Server clock: the same one narration segments are placed on.
+        step.at_ms = job.clock_ms()
     job.steps.append(step)
     return {"ok": True, "steps": len(job.steps), "phase": job.phase}
 
@@ -1526,6 +1569,8 @@ def begin_capture() -> RecorderJob:
             raise RuntimeError("recording has no capture gate")
         job.gate.phase = "capturing"
         job.phase = "capturing"
+        if not job.clock_started:
+            job.clock_started = time.monotonic()
         if job.mp_ns is not None:
             job.mp_ns.phase = "capturing"
             try:
@@ -1709,6 +1754,7 @@ def persist_recorder_job(
             vault,
             allow_flows=frozenset({(pid, job.flow_id)}),
         )
+        new_yaml = _mark_recorded_flow(new_yaml, job.flow_id)
         rev = registry.put_site_graph(product_id, new_yaml, "recorded", publish=False)
         graph = parse_site_graph(new_yaml)
         playlist = playlist_from_graph(graph)
@@ -1991,3 +2037,165 @@ def drain_pending_guided_plan(registry: Any, product_id: str) -> bool:
     except Exception as exc:  # noqa: BLE001
         print(f"[guided-ask] draft apply failed: {exc}", flush=True)
         return False
+
+
+
+def surf_record_control(token: str, action: str) -> dict[str, Any]:
+    """Record-surf toolbar: status | start | pause | resume. Token, not JWT."""
+    job = record_job_for_token(token)
+    if job is None:
+        raise RuntimeError("no active recording")
+    act = (action or "status").strip().lower()
+    if act == "start":
+        begin_capture()
+        if job.paused:
+            act = "resume"
+    if act == "pause" and not job.paused and job.phase == "capturing":
+        job.paused = True
+        job.clock_paused_at = time.monotonic()
+    elif act == "resume" and job.paused:
+        if job.clock_paused_at:
+            job.clock_paused_total += time.monotonic() - job.clock_paused_at
+        job.clock_paused_at = 0.0
+        job.paused = False
+    elif act not in {"status", "start", "pause", "resume"}:
+        raise ValueError("unknown action")
+    return {
+        "ok": True,
+        "phase": job.phase,
+        "paused": job.paused,
+        "narrate": job.narration is not None,
+        "steps": len(job.steps),
+        "clock_ms": job.clock_ms(),
+        "narration_chunks": len(job.narration.chunks) if job.narration else 0,
+        "live_tail": " ".join(l.get("text", "") for l in job.live_lines[-2:])[-160:],
+    }
+
+
+def surf_record_audio(token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """One MediaRecorder chunk from the record-surf page (dropped while paused)."""
+    job = record_job_for_token(token)
+    if job is None:
+        raise RuntimeError("no active recording")
+    if job.narration is None or job.paused or job.phase != "capturing":
+        return {"ok": True, "dropped": True}
+    job.narration.on_chunk(payload)
+    _maybe_live_transcribe(job)
+    return {"ok": True, "chunks": len(job.narration.chunks)}
+
+
+
+def _mark_recorded_flow(yaml_text: str, flow_id: str) -> str:
+    """Tag the draft as holding a Client recording so explore auto-promote skips it."""
+    try:
+        raw = yaml.safe_load(yaml_text) or {}
+    except Exception:  # noqa: BLE001
+        return yaml_text
+    if not isinstance(raw, dict):
+        return yaml_text
+    meta = raw.get("_meta")
+    if not isinstance(meta, dict):
+        meta = {}
+        raw["_meta"] = meta
+    flows = [str(f) for f in (meta.get("recorded_flows") or []) if str(f).strip()]
+    if flow_id and flow_id not in flows:
+        flows.append(flow_id)
+    meta["recorded_flows"] = flows or [flow_id or "recorded"]
+    if meta.get("source") == "product_explore_promote":
+        meta["source"] = "recorded"
+    return yaml.safe_dump(raw, sort_keys=False)
+
+
+
+_LIVE_EVERY_S = 4.0
+
+
+def _maybe_live_transcribe(job: RecorderJob) -> None:
+    """Re-transcribe the current audio segment in the background every few seconds.
+
+    MediaRecorder fragments only decode from the segment's first chunk, so the
+    whole current segment is sent each time; finished segments keep their text.
+    Live lines are a preview — the saved script still comes from the full STT
+    pass at Stop.
+    """
+    narr = job.narration
+    if narr is None or job.live_busy:
+        return
+    now = time.monotonic()
+    if now - job.live_last_at < _LIVE_EVERY_S or len(narr.chunks) == job.live_last_len:
+        return
+    starts = narr.seg_starts or [0]
+    seg_idx = len(starts) - 1
+    seg_from = starts[-1]
+    audio = b"".join(narr.chunks[seg_from:]) if seg_idx or narr.seg_starts else b"".join(narr.chunks)
+    offset = narr.seg_offsets[-1] if narr.seg_offsets else 0
+    job.live_busy = True
+    job.live_last_at = now
+    job.live_last_len = len(narr.chunks)
+
+    def _run() -> None:
+        try:
+            from navigator.automation.narration import transcribe_timed
+            from navigator.core.groq_keys import groq_key_candidates
+
+            keys = list(groq_key_candidates())
+            if not keys:
+                job.live_error = "Live transcript off: no Groq API key configured."
+                return
+            segs = transcribe_timed(audio, keys[0], language=getattr(narr, "language", "auto") or "auto")
+            lines = [
+                {"at_ms": int(offset + s.start_ms), "text": s.text.strip(), "seg": seg_idx}
+                for s in segs
+                if (s.text or "").strip()
+            ]
+            kept = [l for l in job.live_lines if l.get("seg", 0) != seg_idx]
+            job.live_lines = kept + lines
+            job.live_error = ""
+        except Exception as exc:  # noqa: BLE001
+            job.live_error = f"Live transcript failed: {exc}"
+            print(f"[record] live transcript failed: {exc}", flush=True)
+        finally:
+            job.live_busy = False
+
+    threading.Thread(target=_run, name="record-live-stt", daemon=True).start()
+
+
+
+def discard_recorder(token: str | None = None) -> dict[str, Any]:
+    """Stop the active recording and throw everything away (no revision written).
+
+    Clears steps, narration audio and live transcript, then frees the slot so a
+    new recording can start immediately. ``token`` scopes the record-surf toolbar.
+    """
+    global _active
+    with _recorder_lock:
+        job = _active
+        if job is None:
+            raise RuntimeError("no active recording")
+        if token is not None and (not token or token != (job.client_token or "")):
+            raise RuntimeError("no active recording")
+        if job.done and job.persist_result is not None and not job.persist_result.get("discarded"):
+            raise RuntimeError("recording already saved")
+    dropped = len(job.steps)
+    # Mark first so a racing studio/auto-persist path cannot write it.
+    job.persist_result = {"ok": False, "discarded": True, "steps": 0}
+    job.needs_merge = False
+    if not job.done:
+        try:
+            stop_recorder()
+        except RuntimeError:
+            pass
+    job.steps = []
+    if job.narration is not None:
+        job.narration.chunks = []
+        job.narration.seg_starts = []
+        job.narration.seg_ids = []
+        job.narration.seg_offsets = []
+    job.live_lines = []
+    job.done = True
+    job.phase = "done"
+    with _recorder_lock:
+        if _active is job:
+            _active = None
+    print(f"[record] discarded recording '{job.flow_id}' ({dropped} steps) — nothing saved", flush=True)
+    return {"ok": True, "discarded": True, "steps_dropped": dropped}

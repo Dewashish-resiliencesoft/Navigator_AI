@@ -367,9 +367,12 @@ class DemoRunner:
         from navigator.meeting.attendee import AttendeeClient
         from navigator.core.settings import settings
 
-        AttendeeClient(settings.attendee_base_url, settings.attendee_api_key).leave(
-            bot_id
-        )
+        try:
+            AttendeeClient(
+                settings.attendee_base_url, settings.attendee_api_key
+            ).leave_if_active(bot_id)
+        except Exception as exc:  # noqa: BLE001 — bot already gone (400) is harmless
+            print(f"[runner] leave skipped: {str(exc).splitlines()[0][:120]}", flush=True)
 
     def wait(self, demo_id: UUID, timeout: float = 60.0) -> DemoHandle | None:
         """Block until a demo finishes. For tests and synchronous callers."""

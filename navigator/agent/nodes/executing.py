@@ -174,9 +174,26 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             narration_started_ns=narration_started_ns,
             action_started_ns=action_started_ns,
         )
-    result, next_page_id = run_tool(
-        deps.page, deps.graph, ran_on, call, on_frame=deps.push_frame
-    )
+    if (
+        _is_login_call(call)
+        and _already_authenticated(deps.page)
+        and not _target_visible(deps, ran_on, call)
+    ):
+        from navigator.core.schemas import ToolResult
+
+        print(f"[exec] skip login step {getattr(call, 'selector', '')!r}: already signed in ({deps.page.url})", flush=True)
+        result, next_page_id = (
+            ToolResult(ok=True, tool=getattr(call, "tool", "click_element"),
+                       detail="skipped: already signed in", duration_ms=0),
+            ran_on,
+        )
+    else:
+        try:
+            result, next_page_id = run_tool(
+                deps.page, deps.graph, ran_on, call, on_frame=deps.push_frame
+            )
+        except Exception as exc:  # noqa: BLE001 — a missing element must never kill the demo
+            result, next_page_id = _recover_failed_step(deps, ran_on, call, exc)
     if is_external_url(deps.page.url, deps.graph.base_url):
         revert_external_navigation(deps.page, product_base=deps.graph.base_url)
         try:
@@ -255,3 +272,115 @@ def _trace_live_input(
             store.close()
     except Exception as exc:  # noqa: BLE001
         print(f"[trace] live_input skipped: {exc}", flush=True)
+
+
+_LOGIN_RE = None
+
+
+def _is_login_call(call) -> bool:
+    import re
+
+    global _LOGIN_RE
+    if _LOGIN_RE is None:
+        _LOGIN_RE = re.compile(
+            r"log\s*-?in|sign\s*-?in|signin|login|e-?mail|password|passwd|username|submit",
+            re.I,
+        )
+    blob = " ".join(
+        str(getattr(call, k, "") or "") for k in ("selector", "text", "label", "value_ref")
+    )
+    return bool(_LOGIN_RE.search(blob))
+
+
+def _already_authenticated(page) -> bool:
+    """Signed in = not on an auth URL and no visible password field."""
+    try:
+        url = (page.url or "").lower()
+        if any(k in url for k in ("login", "signin", "sign-in", "sign_in", "/auth")):
+            return False
+        pw = page.locator("input[type=password]")
+        for i in range(min(pw.count(), 3)):
+            if pw.nth(i).is_visible():
+                return False
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _text_of(selector: str) -> str:
+    sel = (selector or "").strip()
+    for pre in ("text=", "text:"):
+        if sel.startswith(pre):
+            return sel[len(pre):].strip().strip("'\"")
+    return sel if sel and not any(c in sel for c in "#.[]>=:/") else ""
+
+
+def _recover_failed_step(deps, ran_on, call, exc):
+    """Missing/hidden element: try text variants + scroll; else skip, never raise."""
+    from navigator.core.schemas import ToolResult
+
+    tool = getattr(call, "tool", "click_element")
+    first = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+    print(f"[exec] step failed {getattr(call, 'selector', '')!r}: {first}", flush=True)
+    if _is_login_call(call) and _already_authenticated(deps.page):
+        print("[exec] login step skipped: already signed in", flush=True)
+        return ToolResult(ok=True, tool=tool, detail="skipped: already signed in", duration_ms=0), ran_on
+    page = deps.page
+    raw = str(getattr(call, "selector", "") or "")
+    try:
+        el = (deps.graph.pages.get(ran_on).elements or {}).get(raw)  # alias → real selector
+        raw = str(getattr(el, "selector", "") or el or raw) if el else raw
+    except Exception:  # noqa: BLE001
+        pass
+    text = _text_of(raw) or _text_of(str(getattr(call, "selector", "")).replace("_", " "))
+    candidates = []
+    if raw and not raw.startswith("text="):
+        candidates.append(lambda: page.locator(raw))
+    if text:
+        candidates += [
+            lambda: page.get_by_role("button", name=text, exact=False),
+            lambda: page.get_by_role("link", name=text, exact=False),
+            lambda: page.get_by_text(text, exact=False),
+            lambda: page.get_by_text(text.title(), exact=False),
+        ]
+    if tool == "click_element":
+        for make in candidates:
+            try:
+                loc = make()
+                n = min(loc.count(), 5)
+                for i in range(n):
+                    item = loc.nth(i)
+                    try:
+                        item.scroll_into_view_if_needed(timeout=1500)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if item.is_visible():
+                        item.click(timeout=3000)
+                        if deps.push_frame is not None:
+                            deps.push_frame()
+                        print(f"[exec] recovered via fallback for {text or raw!r}", flush=True)
+                        return ToolResult(ok=True, tool=tool, detail=f"clicked {text or raw!r} (fallback)", duration_ms=0), ran_on
+            except Exception:  # noqa: BLE001
+                continue
+    try:
+        bridge = "That part isn't showing on screen right now, so let's move on."
+        say_async = getattr(deps.speaker, "say_async", None)
+        (say_async or deps.speaker.say)(bridge)
+    except Exception:  # noqa: BLE001
+        pass
+    return ToolResult(ok=True, tool=tool, detail=f"skipped: {first}", duration_ms=0), ran_on
+
+
+def _target_visible(deps, page_id, call) -> bool:
+    """True when the step's element is actually on screen (then never skip it)."""
+    raw = str(getattr(call, "selector", "") or "")
+    try:
+        el = (deps.graph.pages.get(page_id).elements or {}).get(raw)
+        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        loc = deps.page.locator(sel)
+        for i in range(min(loc.count(), 3)):
+            if loc.nth(i).is_visible():
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False

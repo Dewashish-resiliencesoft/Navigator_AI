@@ -161,10 +161,15 @@ class Settings(BaseSettings):
     #: 20fps balances motion smoothness vs Cloudflare bandwidth; keep ≤24.
     target_fps: int = 20
     #: JPEG quality for Meet/Zoom screenshare frames (1–100).
-    screenshot_quality: int = 70
+    screenshot_quality: int = 85
     #: Cap CDP screencast width (height scales). 960 cuts tunnel bytes ~40%
     #: vs 1280 while staying sharp enough for product demos.
-    screenshot_max_width: int = 960
+    screenshot_max_width: int = 1280
+    #: CDP everyNthFrame. 0 = derive from target_fps; 1 = every repaint (smoothest).
+    screencast_every_nth: int = 2
+    #: Serve /view via MJPEG push (/stream) — latest frame only, no per-frame
+    #: HTTP round trip through the tunnel. Falls back to polling on error.
+    screencast_mjpeg: bool = True
 
 
 settings = Settings()

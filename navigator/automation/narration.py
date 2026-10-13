@@ -115,6 +115,7 @@ def transcribe_timed(
     model: str = "whisper-large-v3-turbo",
     language: str = "auto",
     transcribe_verbose: Callable[..., Any] | None = None,
+    prompt: str = "",
 ) -> list[Segment]:
     """Transcribe with per-segment timings. Empty list when there is no speech.
 
@@ -128,17 +129,76 @@ def transcribe_timed(
         transcribe_verbose = _groq_verbose
 
     try:
-        raw = transcribe_verbose(
-            audio=audio, api_key=api_key, model=model, language=language
-        )
+        kwargs: dict[str, Any] = {
+            "audio": audio, "api_key": api_key, "model": model, "language": language
+        }
+        if prompt:
+            kwargs["prompt"] = prompt
+        raw = transcribe_verbose(**kwargs)
     except Exception as exc:  # noqa: BLE001
         print(f"[narrate] transcription failed: {exc}", flush=True)
         return []
 
-    return parse_segments(raw)
+    segs = parse_segments(raw)
+    if not segs:
+        unfiltered = parse_segments(raw, filter_hallucinations=False)
+        if unfiltered:
+            print(
+                f"[narrate] quality filter dropped all {len(unfiltered)} segments — keeping them",
+                flush=True,
+            )
+            return unfiltered
+    return segs
 
 
-def parse_segments(raw: Any) -> list[Segment]:
+def _num(v: Any) -> float | None:
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _hallucinated_segment(seg: dict) -> bool:
+    """Whisper loops / silence hallucinations (same thresholds as openai-whisper)."""
+    nsp = _num(seg.get("no_speech_prob"))
+    cr = _num(seg.get("compression_ratio"))
+    lp = _num(seg.get("avg_logprob"))
+    if cr is not None and cr > 2.4:
+        return True
+    # Only drop when Whisper is confident it heard no speech AND decoding was
+    # unsure — accented speech often has low avg_logprob and must survive.
+    if nsp is not None and nsp > 0.8 and (lp is None or lp < -1.0):
+        return True
+    return False
+
+
+def collapse_repeats(text: str, *, max_n: int = 8) -> str:
+    """Collapse back-to-back repeated word n-grams: 'a skin when a skin when' → 'a skin when'."""
+    words = text.split()
+    if len(words) < 2:
+        return text
+    changed = True
+    while changed:
+        changed = False
+        for n in range(min(max_n, len(words) // 2), 0, -1):
+            i = 0
+            out: list[str] = []
+            while i < len(words):
+                chunk = words[i : i + n]
+                nxt = words[i + n : i + 2 * n]
+                if len(chunk) == n and [w.lower().strip(".,!?") for w in chunk] == [
+                    w.lower().strip(".,!?") for w in nxt
+                ]:
+                    i += n  # drop the first copy; the next stays
+                    changed = True
+                    continue
+                out.append(words[i])
+                i += 1
+            words = out
+    return " ".join(words)
+
+
+def parse_segments(raw: Any, *, filter_hallucinations: bool = True) -> list[Segment]:
     """Normalise a Whisper verbose_json response (or plain text) to Segments."""
     if raw is None:
         return []
@@ -166,9 +226,16 @@ def parse_segments(raw: Any) -> list[Segment]:
                 "start": getattr(seg, "start", 0.0),
                 "end": getattr(seg, "end", 0.0),
                 "text": getattr(seg, "text", ""),
+                "no_speech_prob": getattr(seg, "no_speech_prob", None),
+                "compression_ratio": getattr(seg, "compression_ratio", None),
+                "avg_logprob": getattr(seg, "avg_logprob", None),
             }
-        text = str(seg.get("text") or "").strip()
+        if filter_hallucinations and _hallucinated_segment(seg):
+            continue
+        text = collapse_repeats(str(seg.get("text") or "").strip())
         if not text:
+            continue
+        if out and text.lower() == out[-1].text.lower():
             continue
         out.append(
             Segment(
@@ -658,6 +725,9 @@ def narrate_recording(
     language: str = "auto",
     translate_to: str = "same",
     enhance: bool = False,
+    prompt: str = "",
+    model: str = "whisper-large-v3",
+    audio_offset_ms: int = 0,
 ) -> tuple[list[str], list[dict[str, int]], list[tuple[int, int] | None]]:
     """Audio + steps → (line per step, timing, speech windows).
 
@@ -672,11 +742,31 @@ def narrate_recording(
     segments = transcribe_timed(
         audio,
         api_key,
+        model=model,
         language=language,
         transcribe_verbose=transcribe_verbose,
+        prompt=prompt,
     )
+    if prompt:
+        # Whisper sometimes echoes the vocabulary prompt on silence — drop it.
+        norm_prompt = " ".join(prompt.lower().split())
+        segments = [
+            s for s in segments
+            if " ".join(s.text.lower().strip(" .,:;!?").split()) not in norm_prompt
+            or len(s.text.split()) > 6
+        ]
     if not segments:
         return [], [], []
+    if audio_offset_ms:
+        # Audio t=0 is when the mic started, steps use the recording clock.
+        segments = [
+            Segment(s.start_ms + audio_offset_ms, s.end_ms + audio_offset_ms, s.text)
+            for s in segments
+        ]
+    print(
+        f"[narrate] final STT model={model} segments={len(segments)} steps={len(step_times)}",
+        flush=True,
+    )
 
     lines = align(segments, step_times)
     if enhance and ask_text is not None:
@@ -704,8 +794,30 @@ def narrate_recording(
     return lines, timings, windows
 
 
+def _clean_audio_for_stt(audio: bytes) -> tuple[bytes, str, str] | None:
+    """16 kHz mono FLAC, loudness-normalised (ffmpeg). None when unavailable."""
+    import shutil
+    import subprocess
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        return None
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-loglevel", "error", "-i", "pipe:0", "-ac", "1", "-ar", "16000",
+             "-af", "highpass=f=80,loudnorm=I=-18:TP=-2:LRA=11", "-f", "flac", "pipe:1"],
+            input=audio, capture_output=True, timeout=180, check=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[narrate] audio clean skipped: {exc}", flush=True)
+        return None
+    if not proc.stdout:
+        return None
+    return "narration.flac", proc.stdout, "audio/flac"
+
+
 def _groq_verbose(
-    *, audio: bytes, api_key: str, model: str, language: str = "auto"
+    *, audio: bytes, api_key: str, model: str, language: str = "auto", prompt: str = ""
 ) -> Any:
     """Whisper with segment timings. Same client the live STT path uses."""
     from navigator.core.groq_client import transcribe_create
@@ -716,13 +828,49 @@ def _groq_verbose(
     if audio[:4] not in (b"RIFF", b"\x1a\x45\xdf\xa3", b"OggS"):
         payload = pcm16_to_wav_bytes(audio)
 
+    cleaned = _clean_audio_for_stt(payload)
+    file_tuple = cleaned if cleaned else ("narration.webm", payload, "audio/webm")
     kwargs: dict[str, Any] = {
-        "file": ("narration.webm", payload, "audio/webm"),
+        "file": file_tuple,
         "model": model,
         "response_format": "verbose_json",
+        "temperature": 0,
     }
+    if prompt:
+        # Whisper uses only the last ~224 tokens of the prompt.
+        kwargs["prompt"] = prompt[-800:]
     lang = (language or "auto").strip().lower()
     if lang and lang not in {"auto", "same"}:
         kwargs["language"] = lang
 
     return transcribe_create(api_key, **kwargs)
+
+
+
+def fold_lines_to_kept(
+    lines: Sequence[str], kept_idx: Sequence[int], times_ms: Sequence[int]
+) -> list[str]:
+    """Lines aligned on the FULL recorded step list → lines for the kept steps.
+
+    Steps the scrubber drops (e.g. a "show password" toggle) still own a time
+    slot during alignment, so kept steps never shift. Their text is merged into
+    the nearest kept step by time (earlier step wins ties), in time order.
+    """
+    if not kept_idx:
+        return []
+    kept_set = set(kept_idx)
+    extra: dict[int, list[tuple[int, str]]] = {k: [] for k in kept_idx}
+    for i, line in enumerate(lines):
+        text = str(line or "").strip()
+        if not text:
+            continue
+        if i in kept_set:
+            extra[i].append((i, text))
+            continue
+        t = int(times_ms[i]) if i < len(times_ms) else 0
+        best = min(
+            kept_idx,
+            key=lambda k: (abs((int(times_ms[k]) if k < len(times_ms) else 0) - t), k > i),
+        )
+        extra[best].append((i, text))
+    return [" ".join(txt for _, txt in sorted(extra[k])) for k in kept_idx]

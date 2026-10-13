@@ -26,6 +26,7 @@ import { useExploreSession } from "../lib/exploreSession";
 import {
   productExploreIsLive,
   productExplorePct,
+  productExplorePhaseLabel,
   useProductExploreSession,
 } from "../lib/productExploreSession";
 import { useProductData } from "../lib/productData";
@@ -101,6 +102,9 @@ export function OnboardingWizard({
   const exploreStarting = useProductExploreSession((s) => s.starting);
   const startExplore = useProductExploreSession((s) => s.start);
   const ackExplore = useProductExploreSession((s) => s.ack);
+  const refreshExplore = useProductExploreSession((s) => s.refresh);
+  const exploreLastFinish = useProductExploreSession((s) => s.lastFinish);
+  const clearExploreFinish = useProductExploreSession((s) => s.clearLastFinish);
   const exploreLive = productExploreIsLive(exploreStatus);
   const explorePct = productExplorePct(exploreStatus);
 
@@ -119,7 +123,10 @@ export function OnboardingWizard({
   const [knowledge, setKnowledge] = useState("");
   const { progress, refresh } = useOnboardingProgress();
   const progressPct = progress?.percent ?? 0;
-  const exploreFinishLock = useRef(false);
+  const exploreErrorLock = useRef(false);
+  const autoStartTried = useRef(false);
+  const [loaded, setLoaded] = useState(false);
+  const [savingExplore, setSavingExplore] = useState(false);
 
   useEffect(() => {
     let alive = true;
@@ -160,6 +167,16 @@ export function OnboardingWizard({
         if (login.username) setLoginUser(login.username);
         if (know.markdown) setKnowledge(know.markdown);
 
+        // Attach to a job that is already running (e.g. started from another tab).
+        const st = await refreshExplore();
+        if (!alive) return;
+        if (st.active) {
+          autoStartTried.current = true;
+          setStep("explore_running");
+          setLoaded(true);
+          return;
+        }
+
         if (startAt) {
           const map: Partial<Record<OnboardingItemId, StepId>> = {
             product_url: "explore_setup",
@@ -174,6 +191,7 @@ export function OnboardingWizard({
       } catch {
         /* empty form ok */
       }
+      if (alive) setLoaded(true);
     })();
     return () => {
       alive = false;
@@ -181,44 +199,32 @@ export function OnboardingWizard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [startAt]);
 
-  // Explore success inside wizard → celebrate + close (once).
+  // Explore failure inside wizard → fall back to manual setup (once per run).
   useEffect(() => {
-    if (step !== "explore_running") return;
-    if (exploreFinishLock.current) return;
-    if (exploreStatus.phase === "done" && !exploreStatus.error && !exploreLive) {
-      exploreFinishLock.current = true;
-      let cancelled = false;
-      (async () => {
-        try {
-          await ackExplore();
-          invalidate();
-          clearSignupPending();
-          await completeOnboardingWizard();
-          if (cancelled) return;
-          onFullyComplete?.();
-          onClose();
-        } catch (e) {
-          exploreFinishLock.current = false;
-          if (!cancelled) err(errText(e));
-        }
-      })();
-      return () => {
-        cancelled = true;
-      };
+    if (step !== "explore_running") {
+      exploreErrorLock.current = false;
+      return;
     }
-    if (exploreStatus.phase === "error" || exploreStatus.error) {
-      err(exploreStatus.error || "Product Explore failed — continue setup manually.");
-      setStep("company_name");
-    }
+    if (exploreErrorLock.current || exploreLive || exploreStarting) return;
+    const failed =
+      exploreStatus.phase === "error" ||
+      !!exploreStatus.error ||
+      exploreLastFinish?.phase === "error";
+    if (!failed) return;
+    exploreErrorLock.current = true;
+    err(
+      exploreStatus.error ||
+        exploreLastFinish?.error ||
+        "Product Explore failed — continue setup manually.",
+    );
+    setStep("company_name");
   }, [
     step,
     exploreStatus.phase,
     exploreStatus.error,
     exploreLive,
-    ackExplore,
-    invalidate,
-    onFullyComplete,
-    onClose,
+    exploreStarting,
+    exploreLastFinish,
     err,
   ]);
 
@@ -394,11 +400,79 @@ export function OnboardingWizard({
     goNext();
   };
 
+  const crawlArtifact = (exploreStatus.artifacts ?? []).find((a) => a.id === "crawl");
+  const topoArtifact = (exploreStatus.artifacts ?? []).find((a) => a.id === "topology");
+  /** Explore output (map + draft walkthrough) already persisted server-side. */
+  const exploreResultsSaved = topoArtifact?.status === "ok";
+  const exploreHasPriorResults = crawlArtifact?.status === "ok";
+  const exploreFailed =
+    exploreStatus.phase === "error" ||
+    !!exploreStatus.error ||
+    exploreLastFinish?.phase === "error";
+  const exploreFinished =
+    !exploreLive &&
+    !exploreStarting &&
+    !busy &&
+    !exploreFailed &&
+    (exploreStatus.phase === "done" ||
+      exploreLastFinish?.phase === "done" ||
+      exploreHasPriorResults);
+  const headerPct = exploreFinished ? 100 : explorePct;
+  const headerTitle = exploreFinished
+    ? "Product Explore finished"
+    : exploreFailed
+      ? "Product Explore failed"
+      : "Exploring your product…";
+  const headerDetail = exploreFinished
+    ? exploreResultsSaved
+      ? "Results saved as a draft — Publish later from Site graph."
+      : "Review below, then save results as a draft."
+    : exploreLive
+      ? exploreStatus.looking_at ||
+        exploreStatus.current_title ||
+        productExplorePhaseLabel(exploreStatus.phase)
+      : exploreStarting || busy
+        ? productExplorePhaseLabel("starting")
+        : productExplorePhaseLabel(exploreStatus.phase);
+  const explorePhaseChip = exploreFinished
+    ? "Done"
+    : productExplorePhaseLabel(exploreLive ? exploreStatus.phase : exploreStarting || busy ? "starting" : exploreStatus.phase);
+
+  const saveExploreAndContinue = async () => {
+    setSavingExplore(true);
+    try {
+      // Never publishes: promote writes the explore map into the *draft* site graph.
+      if (!exploreResultsSaved) {
+        const res = await api.promoteProductExplore();
+        ok(res.message || "Explore results saved as a draft.");
+      }
+      if (exploreStatus.phase === "done" || exploreStatus.phase === "error") {
+        await ackExplore();
+      }
+      clearExploreFinish();
+      invalidate();
+      clearSignupPending();
+      const updated = await refresh();
+      if (updated?.complete) {
+        finish(updated);
+        return;
+      }
+      // Next onboarding step: review what explore filled in.
+      setStep("company_name");
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setSavingExplore(false);
+    }
+  };
+
   const primaryLabel =
     step === "explore_intro"
       ? "Set up Product Explore"
       : step === "explore_setup"
-        ? "Explore Now"
+        ? exploreHasPriorResults
+          ? "Explore again"
+          : "Explore Now"
         : step === "explore_running"
           ? "Working…"
           : step === "knowledge"
@@ -410,6 +484,19 @@ export function OnboardingWizard({
     !!referralId &&
     (referralId !== "other" || !!referralOther.trim()) &&
     (wantLogin !== true || (!!loginUrl.trim() && !!loginUser.trim()));
+
+  // Auto-start explore once per wizard open when the Client reaches the setup
+  // step with everything already filled in (URL, referral, login if enabled).
+  // Prior saved results are not silently overwritten — the Client re-runs explicitly.
+  useEffect(() => {
+    if (!loaded || autoStartTried.current) return;
+    if (step !== "explore_setup") return;
+    if (!exploreCanStart || busy || exploreStarting || exploreLive) return;
+    autoStartTried.current = true;
+    if (exploreHasPriorResults) return;
+    void runExploreNow();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, step, exploreCanStart, busy, exploreStarting, exploreLive, exploreHasPriorResults]);
 
   return (
     <div
@@ -453,7 +540,7 @@ export function OnboardingWizard({
             style={{
               width: `${
                 step === "explore_running"
-                  ? Math.max(progressPct, explorePct)
+                  ? Math.max(progressPct, headerPct)
                   : progressPct
               }%`,
             }}
@@ -593,27 +680,28 @@ export function OnboardingWizard({
                 <div className="flex items-center gap-3 rounded-xl border px-3 py-3" style={{ borderColor: "var(--line)" }}>
                   <Search size={18} className="shrink-0 text-sky-600 dark:text-sky-400" />
                   <div className="min-w-0 flex-1">
-                    <p className="text-[0.8rem] font-medium">Exploring your product…</p>
+                    <p className="text-[0.8rem] font-medium">{headerTitle}</p>
                     <p className="truncate text-[0.72rem] text-[var(--muted)]">
-                      {exploreStatus.looking_at ||
-                        exploreStatus.current_title ||
-                        "Starting…"}
+                      {headerDetail}
+                    </p>
+                    <p className="text-[0.66rem] uppercase tracking-wide text-[var(--muted)]">
+                      {explorePhaseChip}
                     </p>
                   </div>
                   <span className="font-mono text-[0.8rem] font-semibold tabular-nums text-sky-700 dark:text-sky-300">
-                    {explorePct}%
+                    {headerPct}%
                   </span>
                 </div>
                 <div
                   className="h-1.5 overflow-hidden rounded-full bg-black/[0.06] dark:bg-white/[0.08]"
                   role="progressbar"
-                  aria-valuenow={explorePct}
+                  aria-valuenow={headerPct}
                   aria-valuemin={0}
                   aria-valuemax={100}
                 >
                   <div
                     className="h-full rounded-full bg-sky-500 transition-all"
-                    style={{ width: `${explorePct}%` }}
+                    style={{ width: `${headerPct}%` }}
                   />
                 </div>
                 <StatusChecklist items={exploreStatus.artifacts ?? []} />
@@ -797,7 +885,8 @@ export function OnboardingWizard({
             disabled={
               busy ||
               exploreStarting ||
-              step === "explore_running" ||
+              savingExplore ||
+              (step === "explore_running" && !exploreFinished) ||
               stepIndex(step) === 0
             }
             onClick={() => {
@@ -826,6 +915,21 @@ export function OnboardingWizard({
                     : "Skip"}
                 </Button>
               )}
+            {step === "explore_running" && (
+              <Button
+                disabled={!exploreFinished || savingExplore}
+                onClick={() => void saveExploreAndContinue()}
+              >
+                {(savingExplore || !exploreFinished) && (
+                  <Loader2 size={14} className="animate-spin" />
+                )}
+                {!exploreFinished
+                  ? "Exploring…"
+                  : exploreResultsSaved
+                    ? "Saved as draft — Continue"
+                    : "Save & continue"}
+              </Button>
+            )}
             {step !== "explore_running" && (
               <Button
                 disabled={

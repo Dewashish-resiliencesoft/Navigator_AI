@@ -9,7 +9,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { api, type DemoScriptBeat, type Flow, type RecorderStatus } from "../lib/api";
+import { type NarrationStatus, api, type DemoScriptBeat, type Flow, type RecorderStatus } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import {
@@ -48,6 +48,11 @@ function FlowFieldCell({
   );
 }
 
+/** Generated fallback copy (not the Client's voice) — shown as a hint, never as their words. */
+function isAutoLine(b: DemoScriptBeat): boolean {
+  return b.spoken_source === "generated" || b.spoken_source === "semantics";
+}
+
 function flowScriptLines(beats: DemoScriptBeat[], flowId: string) {
   return beats.filter(
     (b) => b.flow_id === flowId && (b.kind === "flow_step" || b.kind === "live_input"),
@@ -61,7 +66,13 @@ function FlowScriptEditor({
   onSave,
   dirty,
   busy,
+  status,
+  onRetranscribe,
+  retranscribing,
 }: {
+  status?: NarrationStatus;
+  onRetranscribe?: () => void;
+  retranscribing?: boolean;
   flowId: string;
   beats: DemoScriptBeat[];
   onChange: (id: string, spoken: string) => void;
@@ -80,6 +91,47 @@ function FlowScriptEditor({
           <Save size={13} /> {busy ? "Saving…" : "Save script"}
         </Button>
       </div>
+      {status && !status.captured && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.72rem] text-amber-700 dark:text-amber-300">
+          <span>
+            No voice captured: {status.reason || "no speech matched any step"}.
+            {status.audio_bytes > 0 ? ` (${Math.round(status.audio_bytes / 1024)} KB of audio saved)` : ""}
+          </span>
+          {status.audio_bytes > 0 && onRetranscribe && (
+            <Button variant="secondary" disabled={retranscribing} onClick={onRetranscribe}>
+              {retranscribing ? "Transcribing…" : "Re-transcribe"}
+            </Button>
+          )}
+        </div>
+      )}
+      {status?.captured && onRetranscribe && (
+        <div className="flex justify-end">
+          <Button variant="ghost" disabled={retranscribing} onClick={onRetranscribe} className="text-[0.68rem]">
+            {retranscribing ? "Transcribing…" : "Re-transcribe from saved audio"}
+          </Button>
+        </div>
+      )}
+      {lines.length > 0 && (() => {
+        const spoken = lines
+          .filter((b) => !isAutoLine(b))
+          .map((b) => (b.spoken ?? "").trim())
+          .filter(Boolean);
+        return (
+          <div className="rounded-lg border px-3 py-2" style={{ borderColor: "var(--line)" }}>
+            <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+              Full script · {spoken.length} of {lines.length} steps narrated
+            </p>
+            {spoken.length ? (
+              <p className="whitespace-pre-wrap text-[0.78rem] leading-relaxed">{spoken.join(" ")}</p>
+            ) : (
+              <p className="text-[0.72rem] text-[var(--muted)]">
+                No narration captured for this flow yet. Type the lines below, or record again with the
+                mic on (Start recording in the capture page toolbar).
+              </p>
+            )}
+          </div>
+        );
+      })()}
       {!lines.length && (
         <p className="text-[0.72rem] text-[var(--muted)]">
           No steps yet. Record this flow with narration, then the script shows here.
@@ -93,8 +145,12 @@ function FlowScriptEditor({
           </span>
           <Textarea
             rows={2}
-            value={b.spoken ?? ""}
-            placeholder="What the demo says on this step"
+            value={isAutoLine(b) ? "" : b.spoken ?? ""}
+            placeholder={
+              isAutoLine(b) && b.spoken
+                ? `Not narrated — demo would fall back to: “${b.spoken}”`
+                : "What the demo says on this step"
+            }
             onChange={(v) => onChange(b.id, v)}
           />
         </label>
@@ -120,6 +176,11 @@ export function Flows() {
   const [recTargetFlowId, setRecTargetFlowId] = useState("");
   const [recNarrating, setRecNarrating] = useState(false);
   const [narrationChunks, setNarrationChunks] = useState(0);
+  const [liveLines, setLiveLines] = useState<Array<{ at_ms: number; text: string }>>([]);
+  const [liveSteps, setLiveSteps] = useState<Array<{ index: number; label: string; tool: string; at_ms: number }>>([]);
+  const [livePaused, setLivePaused] = useState(false);
+  const [liveError, setLiveError] = useState("");
+  const recFlowRef = useRef<string>("");
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
@@ -129,6 +190,8 @@ export function Flows() {
   const [scriptDirty, setScriptDirty] = useState(false);
   const [scriptBusy, setScriptBusy] = useState(false);
   const [scriptReload, setScriptReload] = useState(0);
+  const [narrationStatus, setNarrationStatus] = useState<Record<string, NarrationStatus>>({});
+  const [retranscribing, setRetranscribing] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
   const mergingRef = useRef(false);
 
@@ -190,7 +253,10 @@ export function Flows() {
     void (async () => {
       try {
         const d = await api.getDemoScript();
-        if (!cancelled) setScriptBeats(d.beats ?? []);
+        if (!cancelled) {
+          setScriptBeats(d.beats ?? []);
+          setNarrationStatus(d.narration_status ?? {});
+        }
       } catch {
         if (!cancelled) setScriptBeats([]);
       }
@@ -263,6 +329,26 @@ export function Flows() {
     }
   }, [err, load, ok, recName, setPlaylist]);
 
+  const discardRecord = useCallback(async () => {
+    try {
+      const r = await api.recordDiscard();
+      stopPolling();
+      setRecording(false);
+      setRecPhase("");
+      setCapturedSteps(0);
+      setSetupDiscarded(0);
+      setNarrationChunks(0);
+      setLiveLines([]);
+      setLiveSteps([]);
+      setLivePaused(false);
+      setLiveError("");
+      recFlowRef.current = "";
+      ok(`Recording discarded${r.steps_dropped ? ` (${r.steps_dropped} steps dropped)` : ""}. Nothing was saved — start again when ready.`);
+    } catch (e) {
+      err(errText(e));
+    }
+  }, [err, ok]);
+
   const poll = useCallback(async () => {
     try {
       const s = await api.recordStatus();
@@ -273,6 +359,11 @@ export function Flows() {
       setCapturedSteps(s.steps ?? 0);
       setRecNarrating(!!s.narrate);
       setNarrationChunks(s.narration_chunks ?? 0);
+      setLiveLines(s.live_transcript ?? []);
+      setLiveSteps(s.live_steps ?? []);
+      setLivePaused(!!s.paused);
+      setLiveError(s.live_error ?? "");
+      if (s.flow_id) recFlowRef.current = s.flow_id;
       if (s.needs_merge && !mergingRef.current) {
         mergingRef.current = true;
         ok("Studio stopped — saving flow…");
@@ -289,6 +380,11 @@ export function Flows() {
         setRecPhase("");
         stopPolling();
         void load();
+        // Stopped from the capture-page toolbar: show the saved script now.
+        setScriptDirty(false);
+        if (recFlowRef.current) setScriptOpen(recFlowRef.current);
+        setScriptReload((n) => n + 1);
+        if (s.done && (s.steps ?? 0) > 0) ok(`Recording saved as draft (${s.steps} steps). Script is open below.`);
       }
     } catch (e) {
       err(errText(e));
@@ -410,6 +506,20 @@ export function Flows() {
         ) ?? prev,
     );
     setScriptDirty(true);
+  };
+
+  const retranscribe = async (flowId: string) => {
+    setRetranscribing(flowId);
+    try {
+      const r = await api.recordRetranscribe(flowId);
+      setScriptDirty(false);
+      setScriptReload((n) => n + 1);
+      ok(`Re-transcribed into draft — ${r.narrated_steps} step${r.narrated_steps === 1 ? "" : "s"} narrated.`);
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setRetranscribing(null);
+    }
   };
 
   const saveScript = async () => {
@@ -581,9 +691,10 @@ export function Flows() {
                 {!!f.flow_id?.trim() && (
                   <Button
                     variant="ghost"
-                    onClick={() =>
-                      setScriptOpen((cur) => (cur === f.flow_id ? null : f.flow_id))
-                    }
+                    onClick={() => {
+                      setScriptOpen((cur) => (cur === f.flow_id ? null : f.flow_id));
+                      if (!scriptDirty) setScriptReload((n) => n + 1);
+                    }}
                     className={`px-1.5 text-[0.68rem] ${
                       scriptOpen === f.flow_id ? "text-[var(--text)]" : ""
                     }`}
@@ -639,6 +750,9 @@ export function Flows() {
                   onSave={() => void saveScript()}
                   dirty={scriptDirty}
                   busy={scriptBusy}
+                  status={narrationStatus[f.flow_id]}
+                  retranscribing={retranscribing === f.flow_id}
+                  onRetranscribe={() => void retranscribe(f.flow_id)}
                 />
               )}
               </motion.div>
@@ -682,6 +796,11 @@ export function Flows() {
             void stopRecord();
           }}
           onCancel={() => setConfirmSaveStop(false)}
+          extraLabel="Discard"
+          onExtra={() => {
+            setConfirmSaveStop(false);
+            void discardRecord();
+          }}
         />
       )}
 
@@ -822,6 +941,42 @@ export function Flows() {
                     ? "Capturing is live in the product window in this browser. Stop when the flow is done."
                     : "Product window is in this browser. Log in, then Start capturing. Live demos still use the server Chrome."}
               </p>
+              {recording && (
+                <div className="mt-2 rounded-lg border px-3 py-2" style={{ borderColor: "var(--line)" }}>
+                  <p className="mb-1 flex items-center gap-2 text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+                    <span
+                      className={`inline-block h-2 w-2 rounded-full ${livePaused ? "bg-amber-500" : "animate-pulse bg-rose-500"}`}
+                    />
+                    Live script {livePaused ? "· paused" : ""} · {liveSteps.length} step{liveSteps.length === 1 ? "" : "s"}
+                  </p>
+                  {liveSteps.length === 0 && liveLines.length === 0 ? (
+                    <p className="text-[0.72rem] text-[var(--muted)]">
+                      Waiting for clicks and narration on the capture page…
+                    </p>
+                  ) : (
+                    <ol className="max-h-56 space-y-1 overflow-auto text-[0.75rem]">
+                      {[
+                        ...liveSteps.map((st) => ({ at: st.at_ms, key: `s${st.index}`, step: st, text: "" })),
+                        ...liveLines.map((l, i) => ({ at: l.at_ms, key: `l${i}`, step: null, text: l.text })),
+                      ]
+                        .sort((a, b) => a.at - b.at)
+                        .map((row) =>
+                          row.step ? (
+                            <li key={row.key} className="font-medium">
+                              Step {row.step.index + 1} · {row.step.label || row.step.tool}
+                            </li>
+                          ) : (
+                            <li key={row.key} className="pl-3 italic text-[var(--muted)]">“{row.text}”</li>
+                          ),
+                        )}
+                    </ol>
+                  )}
+                  {liveError && <p className="mt-1 text-[0.68rem] text-amber-600">{liveError}</p>}
+                  <p className="mt-1 text-[0.62rem] text-[var(--muted)]">
+                    Preview — after Stop the saved script opens below for editing.
+                  </p>
+                </div>
+              )}
               {recNarrating && narrationChunks > 0 && (
                 <p className="text-[0.72rem] text-emerald-600 dark:text-emerald-400">
                   Voice captured — {narrationChunks} audio chunk{narrationChunks === 1 ? "" : "s"}.

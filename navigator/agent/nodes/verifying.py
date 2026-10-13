@@ -33,7 +33,11 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
     # page_id after the call: a navigate's postcondition belongs to where it landed.
     verified_on = state["page_id"]
 
-    if result.ok:
+    if result.ok and str(result.detail or "").startswith("skipped"):
+        # Executing deliberately skipped this step (already signed in / not on
+        # screen). Its postcondition (e.g. #email) can't hold — not a failure.
+        verdict = VerifyResult(passed=True, actual=str(result.detail))
+    elif result.ok:
         verdict = check(deps.page, deps.graph, verified_on, call.expects)
         if verdict.ambiguous:
             try:
@@ -107,7 +111,7 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
             last_result=None,
         )
 
-    line = _narrate(entry, verdict)  # wait_for fails stay silent — see _narrate
+    line = _narrate(entry, verdict, deps)  # wait_for fails stay silent — see _narrate
     narration = [line] if line.strip() else []
     transcript = [f"agent: {line}"] if line.strip() else []
     if (
@@ -162,7 +166,7 @@ def _try_session_recovery(state: CallState, deps: CallDeps, call) -> bool:
         return False
 
 
-def _narrate(entry: ActionLogEntry, verdict: VerifyResult) -> str:
+def _narrate(entry: ActionLogEntry, verdict: VerifyResult, deps=None) -> str:
     """Prospect-facing line. Technical detail stays in the ActionLog only."""
     call = entry.tool_call
     if verdict.passed:
@@ -177,6 +181,16 @@ def _narrate(entry: ActionLogEntry, verdict: VerifyResult) -> str:
     # makes the agent sound broken; the screenshare already moved on.
     if getattr(call, "tool", "") == "wait_for":
         return ""
+    # Recorded clicks often fail a strict postcondition while the screen is
+    # fine. Log every reason; apologise out loud at most once per call.
+    if deps is not None:
+        if getattr(deps, "_glitch_said", False):
+            print("[verify] soft-fail apology suppressed (already said once)", flush=True)
+            return ""
+        try:
+            setattr(deps, "_glitch_said", True)
+        except Exception:  # noqa: BLE001
+            pass
     return (
         "Oh — something glitched on our side there, not yours. "
         "It's nothing you did. We're sorting it; I'll keep going."

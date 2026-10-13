@@ -17,12 +17,58 @@ def _product_name(persona: Persona) -> str:
     return prospect_facing_persona(persona).product_name
 
 
+
+_HINGLISH = {
+    "bol", "rahi", "raha", "rahe", "ho", "hai", "hain", "kya", "nahi", "na", "haan",
+    "ji", "acha", "accha", "theek", "thik", "matlab", "yaar", "toh", "to", "ki", "ka",
+    "ke", "ko", "se", "mein", "main", "aap", "tum", "like", "um", "uh", "hmm", "okay",
+    "ok", "so", "the", "a", "an", "and", "is", "it", "i", "you", "me", "my", "just",
+}
+
+
+def clean_positioning(text: str, max_chars: int = 140) -> str:
+    """One clean spoken sentence from a one-liner that may be a raw page dump."""
+    import re
+
+    t = text or ""
+    t = re.sub(r"https?://\S+", " ", t)
+    t = re.sub(r"(?im)^\s*(url|title)\s*:.*$", " ", t)
+    t = re.sub(r"[#*_`>|\[\]]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" -:|")
+    m = re.search(r"(.+?[.!?])(\s|$)", t)
+    if m and len(m.group(1)) >= 20:
+        t = m.group(1)
+    if len(t) > max_chars:
+        t = t[:max_chars].rsplit(" ", 1)[0]
+    t = t.rstrip(" ,;:-.")
+    words = t.split()
+    # Nav-list dumps: mostly Capitalised single words, no verbs -> reject.
+    caps = sum(1 for w in words if w[:1].isupper())
+    if len(words) < 3 or (len(words) >= 5 and caps / len(words) > 0.7):
+        return ""
+    return t
+
+
+def meaningful_need(text: str) -> str:
+    """Return the need only if it reads like a real ask (not Hinglish/noise)."""
+    import re
+
+    t = (summarize_need(text or "") or text or "").strip()
+    toks = re.findall(r"[A-Za-z]+", t.lower())
+    if len(t) < 4 or not toks:
+        return ""
+    filler = sum(1 for w in toks if w in _HINGLISH)
+    content = [w for w in toks if w not in _HINGLISH and len(w) > 2]
+    if not content or filler / len(toks) >= 0.4:
+        return ""
+    return t
+
 def solution_blurb(persona: Persona, looking_for: str) -> str:
     """Map prospect need → product angle (short, spoken). Tenant-neutral."""
     persona = prospect_facing_persona(persona)
-    need = (looking_for or "").strip()
+    need = meaningful_need(looking_for)
     product = persona.product_name
-    positioning = (persona.one_liner or "").strip()
+    positioning = clean_positioning(persona.one_liner or "")
     if positioning and need:
         return (
             f"{product} is {positioning} — we'll focus the walkthrough on what "

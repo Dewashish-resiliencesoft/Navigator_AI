@@ -1648,6 +1648,9 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
     yaml_hint = format_with_intake(yaml_hint, deps.intake)
     _iname = (getattr(deps.intake, "name", "") or "").strip() if deps.intake else ""
     _ineed = (getattr(deps.intake, "looking_for", "") or "").strip() if deps.intake else ""
+    from navigator.meeting.intake_copy import meaningful_need as _mneed
+
+    _ineed = _mneed(_ineed)
     if (
         step == 0
         and _iname

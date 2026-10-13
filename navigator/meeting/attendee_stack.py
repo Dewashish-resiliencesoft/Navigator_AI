@@ -92,7 +92,15 @@ def _sync_attendee_override(compose_dir: Path) -> None:
         print(f"[attendee] audio-upsample: {ups}", flush=True)
         jit = patch_jitter(compose_dir)
         print(f"[attendee] audio-jitter: {jit}", flush=True)
-        if any(r.startswith("patched ") for r in (result, ups, jit)):
+        from navigator.meeting.attendee_ws_patch import patch_scheduler
+
+        sch = patch_scheduler(compose_dir)
+        print(f"[attendee] audio-scheduler: {sch}", flush=True)
+        from navigator.meeting.attendee_ws_patch import patch_drawloop
+
+        drw = patch_drawloop(compose_dir)
+        print(f"[attendee] share-drawloop: {drw}", flush=True)
+        if any(r.startswith("patched ") for r in (result, ups, jit, sch, drw)):
             _restart_attendee_worker(compose_dir)
     except OSError as exc:
         print(f"[attendee] WARN: audio-ws patch skipped: {exc}", flush=True)

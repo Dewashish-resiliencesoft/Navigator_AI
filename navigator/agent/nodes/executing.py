@@ -74,12 +74,33 @@ def _start_pre_action_speech(state: CallState, deps: CallDeps):
     return handle, started_ns
 
 
+_NUDGE_AFTER_S = 2.0
+
+
 def _nudge_working(deps: CallDeps) -> None:
-    """Keep the Live call alive while Playwright works."""
+    """Filler ack ONLY if the action is still running after 2s (no spam)."""
     lang = getattr(deps, "spoken_language", "en") or "en"
     if lang not in ("en", "hi"):
         lang = "en"
-    maybe_nudge_live(deps.live_agent, language=lang)  # type: ignore[arg-type]
+    done = threading.Event()
+    try:
+        setattr(deps, "_nudge_done", done)
+    except Exception:  # noqa: BLE001
+        return
+
+    def _fire() -> None:
+        if not done.is_set():
+            maybe_nudge_live(deps.live_agent, language=lang)  # type: ignore[arg-type]
+
+    t = threading.Timer(_NUDGE_AFTER_S, _fire)
+    t.daemon = True
+    t.start()
+
+
+def _end_nudge(deps: CallDeps) -> None:
+    ev = getattr(deps, "_nudge_done", None)
+    if ev is not None:
+        ev.set()
 
 
 def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
@@ -101,6 +122,12 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
 
 
 def executing(state: CallState, deps: CallDeps) -> CallState:
+    try:
+        from navigator.meeting.ui_jobs import service_before_step
+
+        service_before_step(deps)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[flow] Q&A service failed: {exc}", flush=True)
     label = state.get("nav_click_label")
     if label:
         from navigator.automation.browser.nav_click import click_nav_label
@@ -109,6 +136,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         _nudge_working(deps)
         try:
             click_nav_label(deps.page, label)
+            _end_nudge(deps)
             detail = f"clicked nav {label!r}"
             ok = True
         except Exception as exc:  # noqa: BLE001
@@ -158,7 +186,8 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             _trace_live_input(deps, state, call, live_detail)
 
     ran_on = state["page_id"]
-    speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
+    # Narrate AFTER the action and a fresh frame (sync: words match the screen).
+    speech_handle, narration_started_ns = None, None
     # Frames pushed *during* the action, not just after it: the screenshare is a
     # JPEG poll, so cursor motion is only visible if we push through the move.
     _nudge_working(deps)
@@ -177,8 +206,9 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
     if (
         _is_login_call(call)
         and _already_authenticated(deps.page)
-        and not _target_visible(deps, ran_on, call)
     ):
+        # Signed in already: any login/sign-in step is pointless (sign_in burned
+        # 30s on the dashboard in the last run).
         from navigator.core.schemas import ToolResult
 
         print(f"[exec] skip login step {getattr(call, 'selector', '')!r}: already signed in ({deps.page.url})", flush=True)
@@ -198,6 +228,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             )
         except Exception as exc:  # noqa: BLE001 — a missing element must never kill the demo
             result, next_page_id = _recover_failed_step(deps, ran_on, call, exc)
+    _end_nudge(deps)
     if is_external_url(deps.page.url, deps.graph.base_url):
         revert_external_navigation(deps.page, product_base=deps.graph.base_url)
         try:
@@ -221,6 +252,8 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         )
     if deps.push_frame is not None:
         deps.push_frame()
+        time.sleep(0.12)  # let the viewer receive the fresh frame first
+    speech_handle, _ = _start_pre_action_speech(state, deps)
 
     _tell_live_where_we_are(deps, next_page_id, result)
 
@@ -404,10 +437,18 @@ def _missing_fast(deps, page_id, call, wait_ms: int = 3000) -> bool:
     try:
         el = (deps.graph.pages.get(page_id).elements or {}).get(raw)
         sel = str(getattr(el, "selector", "") or el or raw) if el else raw
-        deps.page.locator(sel).first.wait_for(state="attached", timeout=wait_ms)
-        return False
-    except Exception as exc:  # noqa: BLE001
-        if "Timeout" in str(exc):
-            print(f"[exec] {raw!r} not on page after {wait_ms}ms — fallback", flush=True)
-            return True
+        loc = deps.page.locator(sel)
+        deadline = time.monotonic() + wait_ms / 1000.0
+        while True:
+            # Attached-but-hidden (duplicate hidden inputs, closed modal) used to
+            # pass this check and then burn 2x15s in the click: require visible.
+            for i in range(min(loc.count(), 5)):
+                if loc.nth(i).is_visible():
+                    return False
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.2)
+        print(f"[exec] {raw!r} not visible after {wait_ms}ms — fallback", flush=True)
+        return True
+    except Exception:  # noqa: BLE001
         return False

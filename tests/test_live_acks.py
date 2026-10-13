@@ -59,10 +59,10 @@ def test_nudge_skipped_while_live_is_speaking():
     assert live.nudges == []
 
 
-def test_executing_nudges_live_before_tool(state, deps):
+def test_executing_no_nudge_for_fast_tool(state, deps):
     reset_nudge_throttle_for_tests()
     live = FakeLive()
     deps = replace(deps, live_agent=live, spoken_language="en")
     state.update(planning(state, deps))
     executing(state, deps)
-    assert live.nudges, "must speak a working ack before the browser action"
+    assert not live.nudges, "fast actions (<2s) must not trigger filler acks"

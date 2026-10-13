@@ -15,16 +15,14 @@ SpokenLanguage = Literal["en", "hi"]
 
 _EN = (
     "One sec…",
-    "Checking that…",
-    "Alright…",
+    "Just a moment…",
 )
 _HI = (
     "Ek second…",
-    "Dekh rahi hoon…",
-    "Theek hai…",
+    "Bas ek pal…",
 )
 
-_NUDGE_GAP_S = 8.0
+_NUDGE_GAP_S = 20.0
 _lock = threading.Lock()
 _last_nudge_at = 0.0
 _en_cycle = itertools.cycle(_EN)

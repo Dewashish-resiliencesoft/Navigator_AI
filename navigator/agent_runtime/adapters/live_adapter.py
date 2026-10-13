@@ -66,7 +66,8 @@ class LiveAdapter:
         if self._live is None:
             return
         ctx = build_dom_state(page, page_id=page_id, detailed=False)
-        nudge = getattr(self._live, "nudge", None)
+        # State lines are context only: nudge() SPEAKS ("User Dashboard updated").
+        nudge = getattr(self._live, "add_context", None)
         if callable(nudge):
             nudge(f"Current page context: {ctx}")
 
@@ -98,7 +99,8 @@ class LiveAdapter:
         if not browser_ready:
             parts.append("browser=loading")
         line = " | ".join(parts) if parts else "ready"
-        nudge = getattr(self._live, "nudge", None)
+        # State lines are context only: nudge() SPEAKS ("User Dashboard updated").
+        nudge = getattr(self._live, "add_context", None)
         if callable(nudge):
             nudge(f"[state] {line}")
 
@@ -106,7 +108,8 @@ class LiveAdapter:
         """Single-line realtime-state hint (LISTENING/WORKING/etc.)."""
         if self._live is None:
             return
-        nudge = getattr(self._live, "nudge", None)
+        # State lines are context only: nudge() SPEAKS ("User Dashboard updated").
+        nudge = getattr(self._live, "add_context", None)
         if callable(nudge):
             nudge(f"[agent] {context_line}")
 

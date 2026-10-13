@@ -245,6 +245,7 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
                         )
                         self.wfile.flush()
                         handle.frames_streamed += 1
+                        handle.frame_hits += 1  # MJPEG counts as a pull too
                 except (BrokenPipeError, ConnectionResetError, OSError):
                     pass
                 finally:

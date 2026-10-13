@@ -61,6 +61,24 @@ from navigator.voice.tts import PrintSpeaker
 from navigator.voice.conversation_language import ConversationLanguage
 
 
+def _attendee_docker_gateway() -> str | None:
+    """Gateway IP of the Attendee docker network (host-only, not LAN)."""
+    import os
+    import subprocess
+
+    if os.environ.get("NAVIGATOR_SCREENSHARE_LOCAL", "1") == "0":
+        return None
+    try:
+        out = subprocess.run(
+            ["docker", "network", "inspect", "attendee_attendee_network",
+             "-f", "{{(index .IPAM.Config 0).Gateway}}"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        return out or None
+    except Exception:
+        return None
+
+
 def _is_likely_echo(heard: str, bot_text: str) -> bool:
     """True when STT likely captured the bot's own TTS, not the prospect."""
     from navigator.meeting.intake_clean import is_likely_bot_echo
@@ -205,6 +223,10 @@ def _start_live_agent(
             language=spoken_language,  # type: ignore[arg-type]
             gender=agent_gender,
         )
+        from navigator.meeting import ui_jobs as _ui
+
+        _ui_bridge = _ui.new_current()
+        instruction = instruction + _ui.LIVE_TOOL_INSTRUCTION
         agent_box: list = []
         last_fail = ""
         for i, key in enumerate(keys):
@@ -217,6 +239,9 @@ def _start_live_agent(
                     language=spoken_language,  # type: ignore[arg-type]
                     vad_silence_ms=settings.live_vad_silence_ms,
                     on_event=_on_event,
+                    tool_handler=_ui_bridge.handle_tool,
+                    tool_declarations=_ui.TOOL_DECLARATIONS,
+                    ui_pump=_ui_bridge.pump,
                 ),
                 audio_bridge,
             )
@@ -300,6 +325,11 @@ def _talk_speaker(meet_speaker, live_box: list):
 
     class _Talk:
         @property
+        def last_wait_timeout_at(self) -> float:
+            live = live_box[0] if live_box else None
+            return float(getattr(live, "last_wait_timeout_at", 0.0) or 0.0)
+
+        @property
         def last_spoken(self) -> str:
             live = live_box[0] if live_box else None
             if live is not None:
@@ -311,6 +341,20 @@ def _talk_speaker(meet_speaker, live_box: list):
             if language and live is not None and hasattr(live, "set_language"):
                 live.set_language(language)
             if live is not None:
+                # Hard pause: never start a scripted line over a live Q&A.
+                try:
+                    from navigator.meeting import ui_jobs as _uj
+
+                    _ui = _uj.CURRENT
+                    if _ui is not None and _ui.hold_active(live):
+                        _t0 = time.monotonic()
+                        print("[flow] scripted line held for Q&A", flush=True)
+                        while _ui.hold_active(live) and time.monotonic() - _t0 < 30:
+                            _ui.pump()
+                            time.sleep(0.05)
+                        print(f"[flow] scripted line released after {time.monotonic() - _t0:.1f}s", flush=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[flow] hold check failed: {exc}", flush=True)
                 live.say(text, mode=mode, utterance_id=utterance_id)
                 return
             try:
@@ -885,7 +929,8 @@ def run_live_meet_demo(
     if (agent_settings.tone or "").strip():
         persona = persona.model_copy(update={"tone": agent_settings.tone.strip()})
 
-    relay = start_relay()
+    _docker_gw = _attendee_docker_gateway()
+    relay = start_relay(host=_docker_gw) if _docker_gw else start_relay()
     tunnel = None
     audio_bridge = None
     audio_tunnel = None
@@ -1050,6 +1095,9 @@ def run_live_meet_demo(
             ),
         )
         public_view = f"{tunnel.public_url}/view"
+        if _docker_gw and relay.host == _docker_gw:
+            # Attendee runs on the same host: skip the tunnel hop for video.
+            public_view = f"http://{_docker_gw}:{relay.port}/view"
         public_agent = f"{tunnel.public_url}/agent"
         print(f"[live] screenshare URL ready: {public_view}", flush=True)
         if tunnel._proc.poll() is not None:
@@ -1361,8 +1409,15 @@ def run_live_meet_demo(
 
                 ensure_playwright_browsers()
                 ensure_headed_display()
+            from navigator.meeting import ui_jobs as _uj_mod
+
+            _cdp_port = _uj_mod.free_port()
             browser = _timed_live_stage(
-                "browser_launch", lambda: pw.chromium.launch(headless=not headful)
+                "browser_launch",
+                lambda: pw.chromium.launch(
+                    headless=not headful,
+                    args=[f"--remote-debugging-port={_cdp_port}", "--remote-debugging-address=127.0.0.1"],
+                ),
             )
             context = browser.new_context(
                 viewport={"width": 1280, "height": 720},
@@ -1537,7 +1592,24 @@ def run_live_meet_demo(
             # Stream repaints instead of polling screenshots: the cursor then
             # animates in-page at ~60fps and the audio thread stops paying ~30ms
             # per hop. Falls back to _push automatically if CDP is unavailable.
-            screencast = start_screencast(relay, page)
+            # Screencast + Live screen tools on a dedicated thread with its own
+            # CDP connection: frames keep flowing while the demo thread blocks.
+            screencast = None
+            _screen = None
+            try:
+                _screen = _uj_mod.ScreenThread(_cdp_port, relay)
+                if _screen.start(timeout=15.0):
+                    screencast = True
+                    if _uj_mod.CURRENT is not None:
+                        _uj_mod.CURRENT.screen = _screen
+                else:
+                    print(f"[live] screen-thread unavailable ({_screen.error}); main-thread screencast", flush=True)
+                    _screen = None
+            except Exception as exc:  # noqa: BLE001
+                print(f"[live] screen-thread failed ({exc}); main-thread screencast", flush=True)
+                _screen = None
+            if screencast is None:
+                screencast = start_screencast(relay, page)
             set_screencast_mode(screencast is not None)
 
             # Headless Chromium sometimes stops CDP screencast after idle paint.
@@ -1569,7 +1641,29 @@ def run_live_meet_demo(
             baseline_hits = relay.frame_hits
             print("[live] enabling screen share…", flush=True)
             relay.set_status("thinking", "Sharing screen…")
-            arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
+            try:
+                arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
+            except Exception as exc:  # noqa: BLE001 — never crash the demo here
+                tunnel_view = f"{tunnel.public_url}/view"
+                if public_view == tunnel_view:
+                    raise
+                print(f"[live] local screenshare rejected ({exc}); falling back to tunnel {tunnel_view}", flush=True)
+                public_view = tunnel_view
+                arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
+            if public_view.startswith("http://"):
+                _t0 = time.monotonic()
+                while relay.frame_hits <= baseline_hits and time.monotonic() - _t0 < 6.0:
+                    time.sleep(0.25)
+                if relay.frame_hits <= baseline_hits:
+                    tunnel_view = f"{tunnel.public_url}/view"
+                    print(f"[live] local screenshare got 0 frame pulls in 6s; falling back to tunnel {tunnel_view}", flush=True)
+                    public_view = tunnel_view
+                    try:
+                        arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[live] tunnel screenshare re-arm failed: {exc}", flush=True)
+                else:
+                    print(f"[live] local screenshare pulling frames (+{relay.frame_hits - baseline_hits} in {time.monotonic() - _t0:.1f}s)", flush=True)
             live = wait_until_screenshare_live(
                 relay,
                 push_frame=_push,

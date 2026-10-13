@@ -16,6 +16,7 @@ import array
 import base64
 import json
 import threading
+import os
 import time
 from collections.abc import Iterator
 from queue import Empty, Queue
@@ -192,7 +193,29 @@ class AudioBridge:
 
     def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
         self.pcm_in_bytes += len(pcm or b"")
+        self._tap_pcm(pcm or b"", sample_rate)
         self._outbound.put((pcm, sample_rate))
+
+    def _tap_pcm(self, pcm: bytes, rate: int) -> None:
+        """Underrun detector + optional WAV tap (NAVIGATOR_VOICE_WAV=/tmp/x.wav)."""
+        now = time.monotonic()
+        play_end = getattr(self, "_tap_play_end", 0.0)
+        if play_end and 0.0 < now - play_end < 2.0:
+            # Gemini chunk arrived after the previous audio already ran out.
+            self.underruns = getattr(self, "underruns", 0) + 1
+            print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns}", flush=True)
+        self._tap_play_end = max(now, play_end) + len(pcm) / (2.0 * rate)
+        path = os.environ.get("NAVIGATOR_VOICE_WAV")
+        if not path:
+            return
+        import wave
+
+        w = getattr(self, "_tap_wav", None)
+        if w is None:
+            w = wave.open(path, "wb")
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            self._tap_wav = w
+        w.writeframes(pcm)
 
     def _log_out(self, rate: int) -> None:
         now = time.monotonic()

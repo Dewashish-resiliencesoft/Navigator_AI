@@ -1368,6 +1368,9 @@ def run_live_meet_demo(
                 viewport={"width": 1280, "height": 720},
                 device_scale_factor=1,
             )
+            from navigator.automation.browser.lighten import block_trackers
+
+            block_trackers(context)
             page = context.new_page()
             install_cursor(page)
 

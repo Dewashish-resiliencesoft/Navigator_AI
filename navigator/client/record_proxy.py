@@ -10,6 +10,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import threading
 from urllib.parse import urlsplit
 
 import httpx
@@ -38,6 +39,12 @@ _DROP_RESP = {
     "content-security-policy-report-only",
     "x-frame-options",
     "strict-transport-security",
+    # Cloudflare's `alt-svc: h3=":443"` made Chrome try HTTP/3 against OUR
+    # origin (127.0.0.1 / tunnel) for later requests → the login POST died
+    # with net::ERR_ALPN_NEGOTIATION_FAILED and the site showed "Login failed".
+    "alt-svc",
+    "nel",
+    "report-to",
 }
 
 _INJECT = """<script data-nav-record="1">
@@ -114,7 +121,25 @@ _INJECT = """<script data-nav-record="1">
         return origFetch.call(this, rewriteApi(String(input)), init);
       if (input && input.url) {
         var next = rewriteApi(input.url);
-        if (next !== input.url) input = new Request(next, input);
+        if (next !== input.url) {
+          // new Request(next, req) turns a POST body into a ReadableStream
+          // (streaming upload) which Chrome refuses over HTTP/1.1 with
+          // net::ERR_ALPN_NEGOTIATION_FAILED — that was "Login failed".
+          // Buffer the body and rebuild the request with a plain init.
+          var src = input, self = this;
+          var m = (src.method || "GET").toUpperCase();
+          var bodyP = (m === "GET" || m === "HEAD") ? Promise.resolve(undefined) : src.clone().arrayBuffer();
+          return bodyP.then(function(buf) {
+            var opts = {
+              method: m, headers: src.headers, body: buf, credentials: src.credentials,
+              cache: src.cache, redirect: src.redirect, referrer: src.referrer,
+              integrity: src.integrity, keepalive: src.keepalive, signal: src.signal, mode: src.mode
+            };
+            if (opts.mode === "navigate") delete opts.mode;
+            if (init) for (var k in init) if (k !== "body" || init.body != null) opts[k] = init[k];
+            return origFetch.call(self, next, opts);
+          });
+        }
       }
       return origFetch.call(this, input, init);
     };
@@ -140,7 +165,7 @@ _INJECT = """<script data-nav-record="1">
         try {
           if (!e.destination || !e.destination.url) return;
           var dest = new URL(e.destination.url);
-          var off = dest.host === HOST || siblingHost(dest.host) && dest.host.replace(/^www\./, "") === HOST.replace(/^www\./, "");
+          var off = dest.host === HOST || siblingHost(dest.host) && dest.host.replace(/^www\\./, "") === HOST.replace(/^www\\./, "");
           if (!off) {
             // Same origin but outside the prefix (client router escaped).
             if (dest.origin === location.origin && dest.pathname.indexOf(PREFIX) !== 0 &&
@@ -199,7 +224,9 @@ _INJECT = """<script data-nav-record="1">
       var href = a.getAttribute("href") || "";
       if (href && href.indexOf("javascript:") !== 0 && href.charAt(0) !== "#") {
         var next = rewrite(a.href);
-        if (next !== a.href) { e.preventDefault(); location.href = next; }
+        // Fix the href in place and let the default / SPA router proceed —
+        // preventDefault + location.href forced a full reload of a heavy app.
+        if (next !== a.href) { try { a.setAttribute("href", next); } catch (err) {} }
       }
     }
     var row = info(e.target, "click_element");
@@ -694,7 +721,8 @@ def proxy_record_xo(token: str, rest: str, request: Request, body: bytes, job) -
     base = recording_base_url(job.start_url)
     origin = f"{urlsplit(base).scheme}://{urlsplit(base).netloc}"
     try:
-        with httpx.Client(follow_redirects=False, timeout=30.0) as client:
+        if True:
+            client = _http()
             upstream = client.request(
                 request.method,
                 target,
@@ -721,6 +749,7 @@ def proxy_record_xo(token: str, rest: str, request: Request, body: bytes, job) -
                 out.headers[key] = rewrite_location(value, job.start_url, token)
             continue
         out.headers[key] = value
+    out.headers["alt-svc"] = "clear"
     return out
 
 
@@ -743,7 +772,11 @@ def proxy_record_document(
     base = recording_base_url(job.start_url)
     headers = _forward_headers(request, f"{urlsplit(base).scheme}://{urlsplit(base).netloc}")
     try:
-        with httpx.Client(follow_redirects=False, timeout=20.0) as client:
+        cached = _static_get(request, target)
+        if cached is not None:
+            return cached
+        if True:
+            client = _http()
             upstream = client.request(
                 request.method,
                 target,
@@ -781,6 +814,8 @@ def proxy_record_document(
         if low in out.headers:
             continue
         out.headers[key] = value
+    # Purge any h3 alt-svc hint the browser already cached for our origin.
+    out.headers["alt-svc"] = "clear"
     # Lets stray root-relative requests (client routers, prefetch) find their way back.
     out.headers.append(
         "set-cookie",
@@ -788,7 +823,62 @@ def proxy_record_document(
     )
     if media and "content-type" not in {k.lower() for k in out.headers.keys()}:
         out.headers["content-type"] = media
+    _static_put(request, target, upstream.status_code, raw, out)
     return out
+
+
+_CLIENT: httpx.Client | None = None
+_CLIENT_LOCK = threading.Lock()
+
+
+def _http() -> httpx.Client:
+    """One pooled keep-alive client: no TLS handshake per asset."""
+    global _CLIENT
+    if _CLIENT is None:
+        with _CLIENT_LOCK:
+            if _CLIENT is None:
+                _CLIENT = httpx.Client(
+                    follow_redirects=False,
+                    timeout=httpx.Timeout(30.0, connect=10.0),
+                    limits=httpx.Limits(max_connections=64, max_keepalive_connections=32),
+                )
+    return _CLIENT
+
+
+#: Content-hashed static assets (Next/Vite/webpack chunks, fonts, images) are
+#: immutable — cache them in memory so repeat page loads are instant.
+_STATIC_RE = re.compile(
+    r"(/_next/static/|/static/|/assets/|\.(?:js|css|woff2?|ttf|png|jpe?g|svg|webp|gif|ico)(?:\?|$))",
+    re.I,
+)
+_STATIC_CACHE: dict[str, Response] = {}
+_STATIC_BYTES = 0
+_STATIC_MAX = 120 * 1024 * 1024
+
+
+def _static_get(request: Request, target: str) -> Response | None:
+    if request.method != "GET" or not _STATIC_RE.search(target):
+        return None
+    hit = _STATIC_CACHE.get(target)
+    if hit is None:
+        return None
+    return Response(content=hit.body, status_code=200, headers=dict(hit.headers))
+
+
+def _static_put(request: Request, target: str, status: int, raw: bytes, out: Response) -> None:
+    global _STATIC_BYTES
+    if request.method != "GET" or status != 200 or not _STATIC_RE.search(target):
+        return
+    ctype = (out.headers.get("content-type") or "").lower()
+    if "html" in ctype or len(raw) > 8 * 1024 * 1024:
+        return
+    if _STATIC_BYTES + len(raw) > _STATIC_MAX:
+        _STATIC_CACHE.clear()
+        _STATIC_BYTES = 0
+    hdrs = {k: v for k, v in out.headers.items() if k.lower() not in {"set-cookie", "content-length"}}
+    hdrs.setdefault("cache-control", "public, max-age=3600")
+    _STATIC_CACHE[target] = Response(content=raw, status_code=200, headers=hdrs)
+    _STATIC_BYTES += len(raw)
 
 
 SURF_COOKIE = "nav_record_surf"

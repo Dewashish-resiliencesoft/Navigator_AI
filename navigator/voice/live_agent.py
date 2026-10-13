@@ -670,6 +670,12 @@ class LiveAgent:
                 else:
                     if self._barge_state == "probable":
                         self._confirm_barge_in(reason="heard")
+                    self.heard_count = getattr(self, "heard_count", 0) + 1
+                    print(
+                        f"[live] heard: {text!r} [voice-in] pcm bytes="
+                        f"{getattr(self.bridge, 'pcm_recv_bytes', 0)} heard={self.heard_count}",
+                        flush=True,
+                    )
                     try:
                         self._heard.put_nowait(text)
                     except queue.Full:

@@ -187,6 +187,10 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
                        detail="skipped: already signed in", duration_ms=0),
             ran_on,
         )
+    elif _missing_fast(deps, ran_on, call):
+        result, next_page_id = _recover_failed_step(
+            deps, ran_on, call, RuntimeError("element not on page (3s check)")
+        )
     else:
         try:
             result, next_page_id = run_tool(
@@ -384,3 +388,26 @@ def _target_visible(deps, page_id, call) -> bool:
     except Exception:  # noqa: BLE001
         return False
     return False
+
+
+def _missing_fast(deps, page_id, call, wait_ms: int = 3000) -> bool:
+    """True when a click/fill target is absent after a short wait.
+
+    Without this every missing recorded element cost a full 15s Playwright
+    timeout (the "slow, heavy" demo), then failed anyway.
+    """
+    if getattr(call, "tool", "") not in {"click_element", "fill_field"}:
+        return False
+    raw = str(getattr(call, "selector", "") or "")
+    if not raw:
+        return False
+    try:
+        el = (deps.graph.pages.get(page_id).elements or {}).get(raw)
+        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        deps.page.locator(sel).first.wait_for(state="attached", timeout=wait_ms)
+        return False
+    except Exception as exc:  # noqa: BLE001
+        if "Timeout" in str(exc):
+            print(f"[exec] {raw!r} not on page after {wait_ms}ms — fallback", flush=True)
+            return True
+        return False

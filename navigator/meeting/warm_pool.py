@@ -217,6 +217,9 @@ class WarmPool:
             context = self._browser.new_context(
                 viewport={"width": 1280, "height": 720}, device_scale_factor=1
             )
+            from navigator.automation.browser.lighten import block_trackers
+
+            block_trackers(context)
             self._page = context.new_page()
             try:
                 install_cursor(self._page)

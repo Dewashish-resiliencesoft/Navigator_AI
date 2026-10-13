@@ -49,7 +49,13 @@ async def client_record_surf(
     """Product page for manual record, shown in the dashboard user's browser."""
     require_local_ops(request)
     body = await request.body()
-    return proxy_record_document(token, path, request, body)
+    # proxy_record_document is blocking (httpx sync). Calling it directly in
+    # this async route froze the event loop, so every asset of the product
+    # loaded one after another (18s landing vs 1.8s direct) and clicks did
+    # nothing until the JS bundles finally hydrated.
+    from starlette.concurrency import run_in_threadpool
+
+    return await run_in_threadpool(proxy_record_document, token, path, request, body)
 
 
 def mount_client_assets(app: FastAPI) -> None:

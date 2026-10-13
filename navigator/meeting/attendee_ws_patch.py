@@ -59,3 +59,25 @@ def patch_upsample(attendee_dir: Path) -> str:
     )
     path.write_text(text.replace(_UPS_NEEDLE, fixed, 1), encoding="utf-8")
     return f"patched {path}"
+
+
+_JIT_MARKER = "navigator: 250ms jitter buffer"
+_JIT_NEEDLE = "            this.nextPlayTime = currentTime;\n"
+
+
+def patch_jitter(attendee_dir: Path) -> str:
+    """Bot voice crackle: Attendee's player restarts at currentTime after every
+    underrun (zero lookahead) while chunks arrive only ~10% faster than real
+    time over chromedriver. Start each burst 250ms ahead so jitter is absorbed.
+    """
+    path = attendee_dir / "bots" / "web_bot_adapter" / "shared_chromedriver_payload.js"
+    if not path.is_file():
+        return f"missing {path}"
+    text = path.read_text(encoding="utf-8")
+    if _JIT_MARKER in text:
+        return "already patched"
+    if _JIT_NEEDLE not in text:
+        return "player shape changed; patch skipped"
+    fixed = f"            this.nextPlayTime = currentTime + 0.25; // {_JIT_MARKER}\n"
+    path.write_text(text.replace(_JIT_NEEDLE, fixed, 1), encoding="utf-8")
+    return f"patched {path}"

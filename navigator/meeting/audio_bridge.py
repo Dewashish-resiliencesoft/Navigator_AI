@@ -150,6 +150,8 @@ class AudioBridge:
         #: is still several buffers behind at that point.
         self.audio_s_sent = 0.0
         self.pcm_in_bytes = 0
+        #: True once Attendee sends per-participant audio (excludes our voice).
+        self.echo_free = False
         self.bytes_sent = 0
         self.send_errors = 0
         self._last_out_log = 0.0
@@ -393,6 +395,8 @@ class AudioBridge:
             return
         try:
             pcm_in = base64.b64decode(chunk_b64)
+            if msg.get("trigger") == "realtime_audio.per_participant":
+                self.echo_free = True
             self.inbound.put(pcm_in)
             self.chunks_received += 1
             self.pcm_recv_bytes = getattr(self, "pcm_recv_bytes", 0) + len(pcm_in)

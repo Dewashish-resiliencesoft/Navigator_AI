@@ -1236,6 +1236,12 @@ def run_live_meet_demo(
                 set_lo = getattr(live, "set_listen_only", None)
                 if set_lo is not None:
                     set_lo(True)
+                # Intake runs in director mode, which DROPS all meeting audio
+                # (accept_inbound) — so nothing was ever heard and name became
+                # "there". Open the mic for the listen window only.
+                prev_director = bool(getattr(live, "director_only", False))
+                live.director_only = False
+                live.speaking = False
                 try:
                     # Keep listening past bot-echo transcripts until timeout.
                     deadline = time.monotonic() + timeout_s
@@ -1258,6 +1264,7 @@ def run_live_meet_demo(
                         return text
                     return ""
                 finally:
+                    live.director_only = prev_director
                     if set_lo is not None:
                         set_lo(False)
             if live_box:

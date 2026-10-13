@@ -33,7 +33,12 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
     # page_id after the call: a navigate's postcondition belongs to where it landed.
     verified_on = state["page_id"]
 
-    if result.ok and str(result.detail or "").startswith("skipped"):
+    from navigator.agent.nodes.executing import _already_authenticated, _is_login_call
+
+    if result.ok and (
+        str(result.detail or "").startswith("skipped")
+        or (_is_login_call(call) and _already_authenticated(deps.page))
+    ):
         # Executing deliberately skipped this step (already signed in / not on
         # screen). Its postcondition (e.g. #email) can't hold — not a failure.
         verdict = VerifyResult(passed=True, actual=str(result.detail))
@@ -126,12 +131,17 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
             transcript=transcript,
             walkthrough_step=int(state["planned_next_step"]),
         )
-    return CallState(
+    out = CallState(
         entries=[entry],
         failures=[entry] if entry.failed else [],
         narration=narration,
         transcript=transcript,
     )
+    if state.get("planned_next_step") is not None and not strict:
+        # Always move on: holding the step on a soft-fail re-planned the same
+        # step and re-spoke its line (narration looped 2x in the live log).
+        out["walkthrough_step"] = int(state["planned_next_step"])
+    return out
 
 
 def _try_session_recovery(state: CallState, deps: CallDeps, call) -> bool:

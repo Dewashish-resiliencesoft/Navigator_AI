@@ -342,6 +342,11 @@ class LiveAgent:
         """
         if self.director_only:
             return False
+        if getattr(self.bridge, "echo_free", False):
+            # Per-participant streams never contain our own voice (Zoom sends
+            # other people's tracks only), so keep listening while we talk —
+            # that's what makes barge-in questions possible.
+            return True
         if self.speaking:
             return False
         # If there is a pending say/nudge command that hasn't been sent to the

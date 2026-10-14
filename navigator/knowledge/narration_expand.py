@@ -163,4 +163,59 @@ def expand_flow(yaml_text: str, flow_id: str, *, facts: dict[str, dict[str, Any]
             steps[i]["spoken"] = new
         report.append({"step": i, "before": base, "after": new if ok else base,
                        "changed": ok and new != base, "screen": screens[i]})
+    build_tours(raw, flow_id)
     return yaml.safe_dump(raw, sort_keys=False, allow_unicode=True), report
+
+
+# ------------------------------------------------------------------ component tour
+
+_TOUR_KEYS = ("headings", "tabs", "buttons", "labels")
+MAX_TOUR = 6
+
+
+def tour_targets(text: str, facts: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Screen components the line names, in spoken order: [{label, at}] where
+    ``at`` is the char offset in the line. Only labels present in the crawled
+    screen facts; destructive controls are never toured."""
+    low = (text or "").lower()
+    seen: dict[str, dict[str, Any]] = {}
+    for key in _TOUR_KEYS:
+        for raw in (facts or {}).get(key) or []:
+            label = re.sub(r"\s+", " ", str(raw)).strip()
+            if not (2 < len(label) <= 40) or DESTRUCTIVE.search(label) or _CHROME.search(label):
+                continue
+            if " " not in label and len(label) <= 4:
+                continue  # "All", "Type", "Name": too generic to point at
+            m = re.search(r"(?<![a-z0-9])" + re.escape(label.lower()) + r"(?![a-z0-9])", low)
+            if not m:
+                continue
+            k = label.lower()
+            if k not in seen or m.start() < seen[k]["at"]:
+                seen[k] = {"label": label, "at": m.start(), "kind": key}
+    out = sorted(seen.values(), key=lambda r: r["at"])
+    # Drop labels nested inside an earlier, longer match ("Tags" inside "Manage Tags").
+    pruned: list[dict[str, Any]] = []
+    for r in out:
+        if pruned and r["at"] < pruned[-1]["at"] + len(pruned[-1]["label"]):
+            if len(r["label"]) > len(pruned[-1]["label"]):
+                pruned[-1] = r
+            continue
+        pruned.append(r)
+    return pruned[:MAX_TOUR]
+
+
+def build_tours(raw: dict[str, Any], flow_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Precompute ``_meta.step_tour[flow][i]`` from step lines + cached screen facts."""
+    from navigator.knowledge.flow_authoring import _find_flow
+
+    _p, steps = _find_flow(raw, flow_id)
+    meta = raw.setdefault("_meta", {})
+    facts = meta.get("screen_facts") or {}
+    screens = step_screens(raw, flow_id)
+    tours: dict[str, list[dict[str, Any]]] = {}
+    for i, st in enumerate(steps):
+        t = tour_targets(str(st.get("spoken") or ""), facts.get(screens[i]))
+        if t:
+            tours[str(i)] = t
+    meta.setdefault("step_tour", {})[flow_id] = tours
+    return tours

@@ -65,15 +65,25 @@ def transcribe_create(api_key: str | None = None, **kwargs: Any) -> Any:
 
 
 _AVAILABLE: list[str] | None = None
+_AVAILABLE_FAILED_AT = 0.0
+_FAIL_TTL_S = 300.0
 
 
 def _available(key: str) -> list[str]:
-    global _AVAILABLE
-    if _AVAILABLE is None:
-        try:
-            _AVAILABLE = [m.id for m in groq_client(key).models.list().data]
-        except Exception:  # noqa: BLE001
-            return []
+    """Live Groq model ids, fetched once per process. A failed fetch is cached
+    for 5 min so a Groq outage never adds a models.list round-trip per call."""
+    global _AVAILABLE, _AVAILABLE_FAILED_AT
+    import time as _time
+
+    if _AVAILABLE is not None:
+        return _AVAILABLE
+    if _time.monotonic() - _AVAILABLE_FAILED_AT < _FAIL_TTL_S and _AVAILABLE_FAILED_AT:
+        return []
+    try:
+        _AVAILABLE = [m.id for m in groq_client(key).models.list().data]
+    except Exception:  # noqa: BLE001
+        _AVAILABLE_FAILED_AT = _time.monotonic()
+        return []
     return _AVAILABLE
 
 

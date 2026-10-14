@@ -92,6 +92,7 @@ function FlowScriptEditor({
         <div className="flex items-center gap-2">
           <SyncScreensButton flowId={flowId} onDone={onReload} />
           <ExpandNarrationButton flowId={flowId} onDone={onReload} />
+          <RevisionBadge />
           <Button onClick={onSave} disabled={!dirty || busy || !lines.length}>
             <Save size={13} /> {busy ? "Saving…" : "Save script"}
           </Button>
@@ -518,6 +519,21 @@ function SyncScreensButton({ flowId, onDone }: { flowId: string; onDone?: () => 
         </div>
       )}
     </div>
+  );
+}
+
+function RevisionBadge() {
+  const [rv, setRv] = useState<{ revision: number; published_revision: number | null } | null>(null);
+  useEffect(() => {
+    api.getSiteGraph().then((g) => setRv({ revision: g.revision, published_revision: g.published_revision })).catch(() => setRv(null));
+  }, []);
+  if (!rv) return null;
+  const draft = rv.published_revision !== rv.revision;
+  return (
+    <span className="self-center rounded border px-2 py-0.5 text-[0.62rem] text-[var(--muted)]" style={{ borderColor: "var(--line)" }}>
+      Test demo runs {draft ? "draft" : "published"} rev {rv.revision}
+      {draft ? ` · live link runs published rev ${rv.published_revision ?? "—"}` : ""}
+    </span>
   );
 }
 

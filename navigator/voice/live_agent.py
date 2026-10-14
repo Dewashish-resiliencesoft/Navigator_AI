@@ -312,6 +312,9 @@ class LiveAgent:
         self._turn_said = []
         self._in_say = True
         self._say_queued_at = time.monotonic()
+        # In-flight line: re-sent on session reconnect (16:20 1006 drop lost it).
+        self._inflight = (text, mode, uid)
+        self._inflight_audio_at_send = self._audio_s_sent()
         self._cmds.put(_Cmd(kind="say", text=text, mode=mode))
         print(f"[speak] {text}", flush=True)
         self._wait_turn_with_watchdog(text, mode, uid, 90)
@@ -339,6 +342,7 @@ class LiveAgent:
         self._set_playback("ready", uid or None)
         self.speaking = False
         self._in_say = False
+        self._inflight = None
 
     def _wait_idle_or_recover(self, uid: str, max_wait_s: float = 15.0) -> None:
         """Wait for in-flight audio; force idle when generation already ended.
@@ -458,7 +462,9 @@ class LiveAgent:
             args = dict(getattr(fc, "args", None) or {})
             print(f"[live] tool_call {name} {args}", flush=True)
             _t0 = time.monotonic()
-            if getattr(self, "_in_say", False):
+            user_turn = max(getattr(self, "_last_heard_at", 0.0), getattr(self, "_last_voice_at", 0.0)) \
+                >= getattr(self, "_say_queued_at", 0.0)
+            if getattr(self, "_in_say", False) and not user_turn:
                 # Scripted line in progress: the flow executor owns the screen.
                 # A model-initiated click here raced the flow and cut the line.
                 print(f"[live] tool_call {name} refused: scripted line in progress", flush=True)
@@ -705,6 +711,9 @@ class LiveAgent:
                     if self._resumption_handle:
                         print("[live] Gemini Live session resumed", flush=True)
                     self._reconnect_req = False
+                    if getattr(self, "_sessions_opened", 0):
+                        self._resend_inflight()
+                    self._sessions_opened = getattr(self, "_sessions_opened", 0) + 1
                     tasks = [
                         asyncio.ensure_future(self._pump_in(session)),
                         asyncio.ensure_future(self._pump_out(session)),
@@ -756,31 +765,68 @@ class LiveAgent:
     def _wait_turn_with_watchdog(self, text: str, mode: Any, uid: str, timeout: float) -> None:
         """Wait for the model turn; recover when Live goes silent.
 
-        12:19 run: one intake line got no audio and no turn_complete; say()
-        blocked the whole demo for 90s. Now: no audio in 10s -> reconnect the
-        session and resend once; give up on the line after 25s."""
+        - No audio 10s after queueing -> reconnect (reconnect re-sends the line).
+        - Audio started but stopped >8s mid-line without turn_complete -> same.
+        - Still silent 25s after the last progress -> give up on the line.
+        16:20 run: ``self.speaking`` (set before the wait) counted as "got audio",
+        so after a 1006 drop the watchdog never fired and the demo sat silent 65s."""
         start = time.monotonic()
-        audio0 = self._audio_s_sent()
-        retried = False
+        last_audio = self._audio_s_sent()
+        last_progress = start
+        recoveries = 0
         while True:
             if self._pumped_wait(self._turn_done, 0.5):
                 return
             if self._stop.is_set():
                 return
-            el = time.monotonic() - start
-            got_audio = self._audio_s_sent() > audio0 or self.speaking
-            if not got_audio and el >= 10 and not retried:
-                print(f"[speak] id={uid} no audio from Live in 10s — reconnecting and resending", flush=True)
-                retried = True
-                self.request_reconnect()
-                self._cmds.put(_Cmd(kind="say", text=text, mode=mode))
-            elif not got_audio and el >= 25:
-                print(f"[speak] id={uid} Live still silent after 25s — skipping line", flush=True)
+            now = time.monotonic()
+            cur = self._audio_s_sent()
+            if cur > last_audio + 1e-3:
+                last_audio, last_progress = cur, now
+            quiet = now - last_progress
+            started_audio = cur > self._inflight_audio0() + 1e-3
+            limit = 8.0 if started_audio else 10.0
+            said_n = len(" ".join(getattr(self, "_turn_said", []) or []).split())
+            if started_audio and quiet >= 2.5 and said_n >= 0.8 * max(1, len(text.split())):
+                # Line was spoken but turn_complete got lost (seen after a resumed session).
+                print(f"[speak] id={uid} line spoken ({said_n} words), no turn_complete — done", flush=True)
                 self._turn_done.set()
                 return
-            elif el >= timeout:
+            if quiet >= limit and recoveries < 2 and not self.answering:
+                recoveries += 1
+                print(f"[speak] id={uid} Live silent {quiet:.0f}s "
+                      f"({'mid-line' if started_audio else 'no audio'}) — reconnecting, line will be re-sent",
+                      flush=True)
+                self.request_reconnect()
+                last_progress = now
+            elif quiet >= 25 and recoveries >= 2:
+                print(f"[speak] id={uid} Live still silent — skipping line", flush=True)
+                self._turn_done.set()
+                return
+            elif now - start >= timeout:
                 print(f"[speak] id={uid} turn timeout {timeout:.0f}s — continuing", flush=True)
                 return
+
+    def _inflight_audio0(self) -> float:
+        return float(getattr(self, "_inflight_audio_at_send", 0.0) or 0.0)
+
+    def _resend_inflight(self) -> None:
+        """After a reconnect: re-send the scripted line the dead session lost."""
+        inflight = getattr(self, "_inflight", None)
+        if not inflight or self._turn_done.is_set() or self._stop.is_set():
+            return
+        text, mode, uid = inflight
+        said_n = len(" ".join(getattr(self, "_turn_said", []) or []).split())
+        words = text.split()
+        # Resume from the start of the sentence that was cut, so it reads naturally.
+        cut = min(said_n, len(words))
+        while cut > 0 and not words[cut - 1].endswith((".", "!", "?")):
+            cut -= 1
+        tail = " ".join(words[cut:])
+        if not tail:
+            return
+        print(f"[speak] id={uid} re-sending in-flight line after reconnect: {tail[:80]!r}", flush=True)
+        self._cmds.put(_Cmd(kind="say", text=tail, mode=mode))
 
     async def _pump_in(self, session: Any) -> None:
         """Meeting audio -> model, continuously. Never batched, never buffered."""
@@ -852,6 +898,11 @@ class LiveAgent:
                         flush=True,
                     )
                     return
+            qa = getattr(self, "_say_queued_at", 0.0)
+            if now - qa < 1.2 and getattr(self, "_last_voice_at", 0.0) < qa:
+                # Sending the next scripted line makes the server mark the previous
+                # (finished) generation "interrupted" ~100ms later. Not the user.
+                return
             if self._barge_state != "probable":
                 self._note_probable_barge()
                 return

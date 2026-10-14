@@ -1064,10 +1064,12 @@ def _walkthrough_spoken(
     flow_id: str,
     nxt: object,
 ) -> str:
-    """Spoken line before a walkthrough step — short for TTS, clicks follow fast."""
+    """Spoken line for a walkthrough step: the author's full line (speech overlaps the action)."""
     from navigator.automation.narration import spoken_for_live_step
 
-    fallback = spoken_for_live_step(yaml_hint, max_len=200) or "Let me show you the next step."
+    # Full authored line: max_len=200 cut every detailed step to its first
+    # sentence ("Now the Phonebook.") — the 16:19 demo dropped the user's script.
+    fallback = spoken_for_live_step(yaml_hint) or "Let me show you the next step."
     if (getattr(deps, "spoken_language", "en") or "en") != "en":
         return _say(
             deps,

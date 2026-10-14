@@ -266,6 +266,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         except Exception:  # noqa: BLE001
             time.sleep(0.12)
     speech_handle, _ = _start_pre_action_speech(state, deps)
+    _component_tour(state, deps, call, speech_handle)
 
     _tell_live_where_we_are(deps, next_page_id, result)
 
@@ -502,6 +503,73 @@ def _sync_screen_to_narration(state: CallState, deps: CallDeps, call) -> None:
             print(f"[sync] step {step}: runtime fallback opened {tgt['label']!r} -> {res.get('ok')}", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[sync] step {step}: skipped ({exc})", flush=True)
+
+
+_CHARS_PER_S = 15.0  # Gemini Live narration pace (~150 wpm)
+_FIRST_AUDIO_S = 1.3
+
+
+def _tour_for_step(state: CallState, deps: CallDeps, call) -> list[dict]:
+    meta = getattr(getattr(deps, "graph", None), "meta", None) or {}
+    flow_id = str(state.get("walkthrough_flow_id") or "")
+    step = str(state.get("executing_step"))
+    tour = ((meta.get("step_tour") or {}).get(flow_id) or {}).get(step)
+    if tour is not None:
+        return list(tour)
+    facts_all = meta.get("screen_facts") or {}
+    if not facts_all:
+        return []
+    # Not precomputed: match the line against this screen's cached facts (string ops only).
+    try:
+        from urllib.parse import urlparse
+
+        from navigator.knowledge.narration_expand import tour_targets
+
+        path = urlparse(deps.page.url or "").path or "/"
+        facts = facts_all.get(path) or facts_all.get(path.rstrip("/") + "/")
+        lines = list(state.get("narration") or [])
+        from navigator.agent.utterance import item_text
+
+        text = item_text(lines[0]) if lines else str(getattr(call, "spoken", "") or "")
+        return tour_targets(text, facts) if facts else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _component_tour(state: CallState, deps: CallDeps, call, handle) -> None:
+    """Outline each screen component as the line names it (hover/outline only,
+    never a click). Targets are precomputed in ``_meta.step_tour``; timing
+    follows Live's transcript of what was actually said, else the speech pace.
+    Runs on the demo thread and keeps pumping Live tool jobs while it waits."""
+    page = getattr(deps, "page", None)
+    if page is None or handle is None:
+        return
+    tour = _tour_for_step(state, deps, call)
+    if not tour:
+        return
+    from navigator.meeting.ui_jobs import highlight_text
+
+    live = getattr(deps, "live_agent", None)
+    t0 = time.monotonic()
+    shown = []
+    for item in tour:
+        label = str(item.get("label") or "")
+        due = t0 + _FIRST_AUDIO_S + float(item.get("at") or 0) / _CHARS_PER_S
+        while time.monotonic() < due and not handle._done.is_set():
+            said = " ".join(getattr(live, "_turn_said", []) or []).lower() if live is not None else ""
+            if said and label.lower() in said:
+                break
+            handle.wait(0.1)
+        if handle._done.is_set() and len(shown) >= 1:
+            break
+        if highlight_text(page, label, timeout_ms=600):
+            shown.append(label)
+            if deps.push_frame is not None:
+                try:
+                    deps.push_frame()
+                except Exception:  # noqa: BLE001
+                    pass
+    print(f"[tour] step {state.get('executing_step')}: {len(shown)}/{len(tour)} components {shown}", flush=True)
 
 
 def visible_controls_safe(page) -> list[str]:

@@ -160,3 +160,145 @@ def test_offline_full_flow_then_qa_with_dead_llm(deps, monkeypatch):
 def re_slug(s):
     import re
     return re.search(r"\b[a-z]+_[a-z_]+\b", s)
+
+
+# ---- 16:18 live run fixes -------------------------------------------------
+
+def _live():
+    import queue as _q
+    from navigator.voice.live_agent import LiveAgent, LiveAgentConfig
+
+    bridge = SimpleNamespace(audio_s_sent=0.0, flush_bot_output=lambda: None,
+                             push_outbound_pcm=lambda *a, **k: None, inbound=_q.Queue())
+    return LiveAgent(LiveAgentConfig(api_key="x", system_instruction="t"), bridge)
+
+
+def test_walkthrough_speaks_full_authored_line():
+    from navigator.automation.narration import spoken_for_live_step
+    from navigator.agent.nodes import planning as pl
+
+    line = "Now the Phonebook. Here we can see all our contacts with their mobile numbers and tags."
+    deps = SimpleNamespace(spoken_language="en")
+    assert pl._walkthrough_spoken(deps, yaml_hint=line, page_id="p", flow_id="f", nxt=None) == spoken_for_live_step(line)
+    assert "mobile numbers" in pl._walkthrough_spoken(deps, yaml_hint=line, page_id="p", flow_id="f", nxt=None)
+
+
+def test_user_tool_call_allowed_during_scripted_line_but_spontaneous_refused():
+    import asyncio
+    import time as _t
+
+    a = _live()
+    calls = []
+    a.cfg.tool_handler = lambda name, args: calls.append(name) or {"ok": True, "url_path": "/phonebook/"}
+    sent = []
+
+    class Sess:
+        async def send_tool_response(self, function_responses):
+            sent.append(function_responses)
+
+    a._session = Sess()
+    a._in_say = True
+    a._say_queued_at = _t.monotonic()
+    fc = SimpleNamespace(name="show_feature", args={"target": "Phonebook"}, id="1")
+
+    def run(coro):
+        import threading
+
+        box = {}
+        t = threading.Thread(target=lambda: box.setdefault("r", asyncio.new_event_loop().run_until_complete(coro)))
+        t.start(); t.join(10)
+
+    run(a._run_tools([fc]))
+    assert calls == []  # model-initiated while reading the script: refused
+    a._last_heard_at = _t.monotonic() + 0.01  # prospect asked "go to phonebook?"
+    run(a._run_tools([fc]))
+    assert calls == ["show_feature"]
+
+
+def test_reconnect_resends_inflight_line_from_cut_sentence():
+    a = _live()
+    a._turn_done.clear()
+    a._inflight = ("First sentence here. Second sentence is longer and important.", "verbatim", "u1")
+    a._turn_said = ["First sentence here.", "Second"]
+    a._resend_inflight()
+    cmd = a._cmds.get_nowait()
+    assert cmd.text == "Second sentence is longer and important."
+    a._inflight = ("Only line.", "verbatim", "u2")
+    a._turn_said = []
+    a._resend_inflight()
+    assert a._cmds.get_nowait().text == "Only line."
+
+
+def test_watchdog_fires_even_while_speaking_flag_set(monkeypatch):
+    a = _live()
+    a.speaking = True  # set by say() before the wait — used to mask the stall
+    a._in_say = True
+    a._turn_done.clear()
+    a._inflight_audio_at_send = 0.0
+    fired = []
+    a.request_reconnect = lambda: fired.append(1)
+    clock = [0.0]
+    import navigator.voice.live_agent as la
+
+    monkeypatch.setattr(la.time, "monotonic", lambda: clock[0])
+
+    def fake_wait(ev, t):
+        clock[0] += 1.0
+        return len(fired) >= 1
+
+    monkeypatch.setattr(a, "_pumped_wait", fake_wait)
+    a._wait_turn_with_watchdog("Now Meta API Keys.", "verbatim", "u", 90)
+    assert fired, "no-audio watchdog must fire"
+
+
+def test_line_start_interrupted_is_not_a_barge():
+    import time as _t
+
+    a = _live()
+    a.director_only = False
+    a._say_queued_at = _t.monotonic()
+    a._handle_server_message(SimpleNamespace(tool_call=None, session_resumption_update=None, go_away=None,
+                                             server_content=SimpleNamespace(interrupted=True)))
+    assert a.barge_in_detected == 0
+
+
+def test_bot_never_speaks_users_words():
+    from navigator.agent.nodes.speaking import _is_user_echo
+
+    st = {"transcript": ["agent: hi", "user: No, no. Still Still you are in the wrong page."]}
+    assert _is_user_echo(st, "No, no. Still Still you are in the wrong page.")
+    assert not _is_user_echo(st, "Let me open the Phonebook for you.")
+
+
+def test_tour_targets_in_spoken_order_and_safe():
+    from navigator.knowledge.narration_expand import tour_targets
+
+    facts = {"headings": ["Unified Contacts"], "buttons": ["Export", "Delete all", "Create Contact", "All"],
+             "tabs": ["Manage Tags"], "labels": ["Tags"]}
+    line = "Here we Export contacts, then Manage Tags. Use Create Contact to add one. Delete all is there too."
+    labels = [t["label"] for t in tour_targets(line, facts)]
+    assert labels == ["Export", "Manage Tags", "Create Contact"]
+
+
+def test_failed_groq_model_list_is_cached(monkeypatch):
+    calls = []
+
+    def boom(key):
+        calls.append(1)
+        raise RuntimeError("down")
+
+    monkeypatch.setattr(groq_client, "_AVAILABLE", None)
+    monkeypatch.setattr(groq_client, "_AVAILABLE_FAILED_AT", 0.0)
+    monkeypatch.setattr(groq_client, "groq_client", boom)
+    for _ in range(5):
+        assert groq_client.resolve_model("openai/gpt-oss-20b", "k") == "openai/gpt-oss-20b"
+    assert len(calls) == 1
+
+
+def test_screen_threads_stopped_at_demo_end():
+    from navigator.meeting import ui_jobs
+
+    sc = ui_jobs.ScreenThread(1, None)
+    assert sc in ui_jobs.ACTIVE_SCREENS
+    assert ui_jobs.stop_all_screens() >= 1
+    assert sc._stop.is_set() and sc not in ui_jobs.ACTIVE_SCREENS

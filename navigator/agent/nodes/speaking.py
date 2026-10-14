@@ -34,6 +34,26 @@ def _authored_lines(graph: object) -> set[str]:
     return out
 
 
+def _norm_words(t: str) -> str:
+    import re
+
+    return " ".join(re.findall(r"[a-z0-9']+", (t or "").lower()))
+
+
+def _is_user_echo(state: CallState, line: str) -> bool:
+    from difflib import SequenceMatcher
+
+    a = _norm_words(line)
+    if len(a) < 6:
+        return False
+    users = [str(t)[5:] for t in list(state.get("transcript") or [])[-8:] if str(t).startswith("user:")]
+    for u in users[-3:]:
+        b = _norm_words(u)
+        if b and (a == b or SequenceMatcher(None, a, b).ratio() >= 0.85):
+            return True
+    return False
+
+
 def _last_user_text(state: CallState) -> str:
     for line in reversed(state.get("transcript") or []):
         if isinstance(line, str) and line.startswith("user:"):
@@ -92,6 +112,15 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
 
     queued_items = stamp_narration(state, state.get("narration") or [], kind="speak")
     queued_text = [prospect_safe_line(item_text(x)) for x in queued_items]
+    # Never read the prospect's own words back to them (16:22: the planner
+    # queued "No, no. Still you are in the wrong page." and the bot said it).
+    echo_pairs = [(it, tx) for it, tx in zip(queued_items, queued_text) if not _is_user_echo(state, tx)]
+    if len(echo_pairs) != len(queued_items):
+        print(f"[speak] dropped {len(queued_items) - len(echo_pairs)} line(s) echoing the user's words", flush=True)
+        queued_items = [it for it, _ in echo_pairs]
+        queued_text = [tx for _, tx in echo_pairs]
+        if not queued_items:
+            return CallState(narration=CLEAR)
     # Live already answered conversational Q&A out loud. Re-saying the
     # planner's reply is a second voice on the same question. Walkthrough
     # lines still go out — those arrive with pending_calls or authored copy.

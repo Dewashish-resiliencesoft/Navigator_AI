@@ -95,6 +95,7 @@ def _run_live_demo(
             except Exception as exc:  # noqa: BLE001
                 print(f"[api] explore auto-promote skipped: {exc}", flush=True)
             revision = registry.latest_revision(product.product_id).revision
+        print(f"[api] demo origin={origin} runs revision {revision}", flush=True)
         graph = registry.load_graph(product.product_id, revision)
     except ProductNotFound as exc:
         raise HTTPException(404, str(exc)) from None

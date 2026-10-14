@@ -23,7 +23,9 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
             "about (e.g. 'Phonebook', 'Settings', 'Profile', 'Logout'). Clicks the "
             "visible control whose text matches. Destructive controls (logout, "
             "delete) are only highlighted, never clicked. Returns what is on screen "
-            "now plus visible controls; explain the feature AFTER this returns."
+            "now plus visible controls; explain the feature AFTER this returns. "
+            "Only say which page we are on from the returned url_path/screen_title; "
+            "if ok is false, say you could not open it. Never guess the current page."
         ),
         "parameters": {
             "type": "object",
@@ -71,6 +73,34 @@ def visible_controls(page) -> list[str]:
         return []
 
 
+_IN_MENU_JS = """e => { for (let a = e.parentElement; a; a = a.parentElement) {
+  if (a.matches('aside, nav, [class*=sidebar i], [class*=sidenav i]') && a.getBoundingClientRect().width < 420) return true; }
+  return false; }"""
+
+
+def _find_main(page, target: str):
+    """Like _find, but prefer a match in the page content over the side menu
+    (the tour points at the screen's own heading/tab, not the nav link)."""
+    pat = re.compile(r"^\s*" + re.escape(target.strip()) + r"\s*$", re.I)
+    loose = re.compile(re.escape(target.strip()), re.I)
+    fallback = None
+    for p in (pat, loose):
+        tries = [page.get_by_role(r, name=p) for r in ("tab", "button", "heading", "columnheader", "link")]
+        tries.append(page.get_by_text(p))
+        for loc in tries:
+            try:
+                for i in range(min(loc.count(), 6)):
+                    el = loc.nth(i)
+                    if not el.is_visible():
+                        continue
+                    if not el.evaluate(_IN_MENU_JS):
+                        return el
+                    fallback = fallback or el
+            except Exception:  # noqa: BLE001
+                continue
+    return fallback
+
+
 def _find(page, target: str):
     pat = re.compile(re.escape(target.strip()), re.I)
     tries = []
@@ -87,6 +117,41 @@ def _find(page, target: str):
         except Exception:  # noqa: BLE001
             continue
     return None
+
+
+NAV_INVENTORY: list = []  # set per demo from _meta.nav_inventory (label/href/group)
+
+
+def _squash(t: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", (t or "").lower())
+
+
+def _hidden_link_href(page, target: str) -> str:
+    """Same-origin href for ``target``: the crawled nav inventory first (links in
+    collapsed menu groups are not in the DOM), then any hidden link in the page."""
+    want = _squash(target)
+    if want:
+        from urllib.parse import urljoin
+
+        for row in NAV_INVENTORY or []:
+            if _squash(str(row.get("label", ""))) == want and str(row.get("href", "")).startswith("/"):
+                return urljoin(page.url, row["href"])
+    try:
+        return page.evaluate("""(t) => {
+          const want = t.trim().toLowerCase();
+          let best = '';
+          for (const a of document.querySelectorAll('a[href]')) {
+            const txt = (a.textContent || a.getAttribute('aria-label') || '').trim().replace(/\\s+/g, ' ').toLowerCase();
+            if (!txt) continue;
+            const u = new URL(a.getAttribute('href'), location.href);
+            if (u.origin !== location.origin) continue;
+            if (txt === want) return u.href;
+            if (!best && txt.includes(want) && txt.length <= want.length + 12) best = u.href;
+          }
+          return best;
+        }""", target) or ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def show_feature(page, target: str, push_frame: Callable[[], None] | None = None) -> dict:
@@ -114,6 +179,25 @@ def show_feature(page, target: str, push_frame: Callable[[], None] | None = None
                 break
             try:
                 page.keyboard.press("Escape")
+            except Exception:  # noqa: BLE001
+                pass
+    if el is None and not DESTRUCTIVE.search(target):
+        # Collapsed menu group (16:21: Phonebook sat under a closed "Overview"):
+        # the link exists in the DOM — go to its href directly.
+        href = _hidden_link_href(page, target)
+        if href:
+            try:
+                page.goto(href, wait_until="domcontentloaded", timeout=15000)
+                page.wait_for_timeout(600)
+                if push_frame is not None:
+                    try:
+                        push_frame()
+                    except Exception:  # noqa: BLE001
+                        pass
+                return {"ok": True, "action": "opened from the menu", "target": target,
+                        "screen_title": page.title(),
+                        "url_path": re.sub(r"^https?://[^/]+", "", page.url or ""),
+                        "visible_controls": visible_controls(page)}
             except Exception:  # noqa: BLE001
                 pass
     if el is None:
@@ -154,6 +238,21 @@ def show_feature(page, target: str, push_frame: Callable[[], None] | None = None
     return {"ok": True, "action": action, "target": target, "screen_title": title,
             "url_path": re.sub(r"^https?://[^/]+", "", page.url or ""),
             "visible_controls": visible_controls(page)}
+
+
+ACTIVE_SCREENS: list = []
+
+
+def stop_all_screens() -> int:
+    """Demo end: stop every screen-capture thread (it outlived the 14:29 demo)."""
+    n = 0
+    for sc in list(ACTIVE_SCREENS):
+        try:
+            sc.stop()
+            n += 1
+        except Exception:  # noqa: BLE001
+            pass
+    return n
 
 
 class UiJobs:
@@ -298,6 +397,7 @@ class ScreenThread:
         self.error = ""
         self.page = None
         self._thread = threading.Thread(target=self._run, name="screen-thread", daemon=True)
+        ACTIVE_SCREENS.append(self)
 
     def start(self, timeout: float = 15.0) -> bool:
         self._thread.start()
@@ -306,6 +406,8 @@ class ScreenThread:
 
     def stop(self) -> None:
         self._stop.set()
+        if self in ACTIVE_SCREENS:
+            ACTIVE_SCREENS.remove(self)
 
     def submit(self, name: str, args: dict, box: dict, done: threading.Event) -> None:
         self._q.put((name, args, box, done))
@@ -325,6 +427,9 @@ class ScreenThread:
                 browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{self.port}")
                 cdp = None
                 while not self._stop.is_set():
+                    if not browser.is_connected():
+                        print("[screen-thread] browser gone — stopping", flush=True)
+                        break
                     pg = self._pick_page(browser)
                     if pg is not None and pg is not self.page:
                         self.page = pg
@@ -375,7 +480,7 @@ def highlight_text(page, target: str, timeout_ms: int = 1200) -> bool:
             e.style.outline = e.dataset.navHl === '-' ? '' : e.dataset.navHl; e.removeAttribute('data-nav-hl'); })""")
     except Exception:  # noqa: BLE001
         pass
-    el = _find(page, target)
+    el = _find_main(page, target)
     if el is None:
         return False
     try:

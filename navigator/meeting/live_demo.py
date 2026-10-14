@@ -1619,6 +1619,10 @@ def run_live_meet_demo(
             screencast = None
             _screen = None
             try:
+                _uj_mod.NAV_INVENTORY = list(((getattr(graph_cfg, "meta", None) or {}).get("nav_inventory")) or [])
+            except Exception:  # noqa: BLE001
+                _uj_mod.NAV_INVENTORY = []
+            try:
                 _screen = _uj_mod.ScreenThread(_cdp_port, relay)
                 if _screen.start(timeout=15.0):
                     screencast = True
@@ -2117,6 +2121,13 @@ def run_live_meet_demo(
     finally:
         clear_demo_usage()
         frame_watch_stop.set()
+        try:
+            from navigator.meeting.ui_jobs import stop_all_screens
+
+            if stop_all_screens():
+                print("[live] screen-capture thread stopped", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
         if bot_id is not None:
             try:
                 if client.leave_if_active(bot_id):

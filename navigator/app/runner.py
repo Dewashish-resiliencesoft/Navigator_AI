@@ -486,12 +486,21 @@ class DemoRunner:
             "[playwright]",
             "[zoom]",
             "[warm]",
+            "[exec]",
+            "[flow]",
+            "[latency]",
+            "[voice-out]",
+            "[verify]",
+            "[ui-tool]",
         )
 
         def _tee_print(*args: object, **kwargs: object) -> None:
             msg = " ".join(str(a) for a in args)
             if any(msg.startswith(p) for p in _log_prefixes):
-                handle.append_live_log(msg)
+                from datetime import datetime as _dt
+
+                # Dashboard live log gets the same HH:MM:SS.mmm stamp as stdout (logtime).
+                handle.append_live_log(f"{_dt.now().strftime('%H:%M:%S.%f')[:-3]} {msg}")
             _orig_print(*args, **kwargs)
 
         try:

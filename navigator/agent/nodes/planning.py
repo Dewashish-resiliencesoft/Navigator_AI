@@ -1664,7 +1664,7 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
         yaml_hint = _say(
             deps,
             intent="resume",
-            fallback=f"Back to where we were. {yaml_hint}",
+            fallback=yaml_hint,  # resume line already spoken; no duplicate filler
             context=yaml_hint,
             pacing=pacing,
         )

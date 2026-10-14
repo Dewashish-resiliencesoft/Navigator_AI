@@ -9,7 +9,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { type NarrationStatus, api, type DemoScriptBeat, type Flow, type RecorderStatus } from "../lib/api";
+import { type NarrationStatus, api, type AiDraftStatus, type DemoScriptBeat, type Flow, type RecorderStatus, type ScriptSplitRow, type ScriptExtra, type StepKind } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import {
@@ -69,7 +69,9 @@ function FlowScriptEditor({
   status,
   onRetranscribe,
   retranscribing,
+  onReload,
 }: {
+  onReload?: () => void;
   status?: NarrationStatus;
   onRetranscribe?: () => void;
   retranscribing?: boolean;
@@ -117,6 +119,18 @@ function FlowScriptEditor({
           .map((b) => (b.spoken ?? "").trim())
           .filter(Boolean);
         return (
+          <FullScriptEditor
+            flowId={flowId}
+            lines={lines}
+            spokenCount={spoken.length}
+            initial={spoken.join("\n\n")}
+            onSaved={onReload}
+          />
+        );
+      })()}
+      {false && lines.length > 0 && (() => {
+        const spoken: string[] = [];
+        return (
           <div className="rounded-lg border px-3 py-2" style={{ borderColor: "var(--line)" }}>
             <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
               Full script · {spoken.length} of {lines.length} steps narrated
@@ -134,14 +148,15 @@ function FlowScriptEditor({
       })()}
       {!lines.length && (
         <p className="text-[0.72rem] text-[var(--muted)]">
-          No steps yet. Record this flow with narration, then the script shows here.
+          No narrated steps yet. Record this flow with narration, then the script shows here.
         </p>
       )}
-      {lines.map((b) => (
-        <label key={b.id} className="block">
-          <span className="mb-0.5 block text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+      {lines.map((b, i) => (
+        <div key={b.id} className="block">
+          <span className="mb-0.5 flex items-center gap-2 text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
             Step {(b.step_index ?? 0) + 1}
-            {b.on_screen ? ` · ${b.on_screen}` : b.tool ? ` · ${b.tool}` : ""}
+            <StepNameInput flowId={flowId} beat={b} />
+            <StepControls flowId={flowId} index={b.step_index ?? 0} isFirst={i === 0} isLast={i === lines.length - 1} onDone={onReload} />
           </span>
           <Textarea
             rows={2}
@@ -153,8 +168,358 @@ function FlowScriptEditor({
             }
             onChange={(v) => onChange(b.id, v)}
           />
-        </label>
+        </div>
       ))}
+    </div>
+  );
+}
+
+function StepNameInput({ flowId, beat }: { flowId: string; beat: DemoScriptBeat }) {
+  const { ok, err } = useUi();
+  const [val, setVal] = useState(beat.step_name ?? "");
+  const [saved, setSaved] = useState(beat.step_name ?? "");
+  useEffect(() => {
+    setVal(beat.step_name ?? "");
+    setSaved(beat.step_name ?? "");
+  }, [beat.step_name]);
+  const commit = async () => {
+    if (val.trim() === saved.trim()) return;
+    try {
+      await api.setStepName(flowId, beat.step_index ?? 0, val.trim());
+      setSaved(val.trim());
+      ok("Step name saved to draft");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+  return (
+    <input
+      className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 py-0.5 text-[0.7rem] normal-case tracking-normal text-[var(--fg)] hover:border-[var(--line)] focus:border-[var(--line)] focus:outline-none"
+      value={val}
+      placeholder={beat.on_screen || beat.tool || "Name this step"}
+      title="Click to rename this step (selector and action stay the same)"
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={() => void commit()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
+
+function FullScriptEditor({
+  flowId,
+  lines,
+  spokenCount,
+  initial,
+  onSaved,
+}: {
+  flowId: string;
+  lines: DemoScriptBeat[];
+  spokenCount: number;
+  initial: string;
+  onSaved?: () => void;
+}) {
+  const { ok, err } = useUi();
+  const [text, setText] = useState(initial);
+  const [preview, setPreview] = useState<ScriptSplitRow[] | null>(null);
+  const [method, setMethod] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [keepOld, setKeepOld] = useState<Record<number, boolean>>({});
+  const [extras, setExtras] = useState<ScriptExtra[]>([]);
+  const [makeExtras, setMakeExtras] = useState(true);
+  useEffect(() => setText(initial), [initial]);
+  const runPreview = async () => {
+    setBusy(true);
+    try {
+      const r = await api.distributeScript(flowId, text, false);
+      setPreview(r.preview);
+      setMethod(r.method);
+      setExtras(r.extras ?? []);
+      setMakeExtras(true);
+      setKeepOld(Object.fromEntries(r.preview.map((p) => [p.step_index, !p.new_name || p.new_name === p.old_name])));
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirm = async () => {
+    if (!preview) return;
+    setBusy(true);
+    try {
+      const names: Record<number, string> = {};
+      for (const p of preview) if (!keepOld[p.step_index] && p.new_name) names[p.step_index] = p.new_name;
+      await api.distributeScript(flowId, text, true, preview.map((p) => p.new), {
+        names,
+        create_extras: makeExtras && extras.length > 0,
+        extras,
+      });
+      ok(makeExtras && extras.length ? `Saved to draft (+${extras.length} narration-only steps)` : "Script split across steps and saved to draft");
+      setPreview(null);
+      onSaved?.();
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const methodLabel: Record<string, string> = {
+    markers: "matched step markers",
+    paragraphs: "one paragraph per step",
+    llm: "AI-aligned to steps",
+    proportional: "split by sentence order",
+    segments: "one segment per step",
+    empty: "empty script",
+  };
+  return (
+    <div className="rounded-lg border px-3 py-2" style={{ borderColor: "var(--line)" }}>
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+          Full script · {spokenCount} of {lines.length} steps narrated
+        </p>
+        <Button variant="secondary" disabled={busy || text.trim() === initial.trim()} onClick={() => void runPreview()}>
+          {busy && !preview ? "Splitting…" : "Preview split"}
+        </Button>
+      </div>
+      <Textarea
+        rows={Math.min(14, Math.max(4, Math.ceil(text.length / 90)))}
+        value={text}
+        placeholder="Write the whole demo script. Tip: start lines with 'Step 2:' or a step name, or use one paragraph per step."
+        onChange={(v) => {
+          setText(v);
+          setPreview(null);
+        }}
+      />
+      {preview && (
+        <div className="mt-2 space-y-1.5">
+          <p className="text-[0.68rem] text-[var(--muted)]">
+            Preview ({methodLabel[method] ?? method}). Nothing is saved until you confirm.
+          </p>
+          {preview.map((p) => (
+            <div key={p.beat_id} className="rounded border px-2 py-1 text-[0.72rem]" style={{ borderColor: "var(--line)" }}>
+              <div className="flex flex-wrap items-center gap-2 font-medium">
+                <span>Step {p.step_index + 1}</span>
+                {p.new_name && p.new_name !== p.old_name ? (
+                  <>
+                    <span className={keepOld[p.step_index] ? "" : "line-through opacity-60"}>{p.old_name || p.label || "unnamed"}</span>
+                    <span>→</span>
+                    <input
+                      className={`rounded border px-1 text-[0.72rem] ${keepOld[p.step_index] ? "opacity-50" : "text-green-700 dark:text-green-400"}`}
+                      style={{ borderColor: "var(--line)" }}
+                      value={p.new_name}
+                      disabled={keepOld[p.step_index]}
+                      onChange={(e) => setPreview(preview.map((q) => (q.beat_id === p.beat_id ? { ...q, new_name: e.target.value } : q)))}
+                    />
+                    <label className="flex items-center gap-1 text-[0.66rem] font-normal text-[var(--muted)]">
+                      <input
+                        type="checkbox"
+                        checked={!!keepOld[p.step_index]}
+                        onChange={(e) => setKeepOld({ ...keepOld, [p.step_index]: e.target.checked })}
+                      />
+                      keep old name
+                    </label>
+                  </>
+                ) : (
+                  <span>{p.old_name || p.label ? `· ${p.old_name || p.label}` : ""}</span>
+                )}
+              </div>
+              {p.old && p.old !== p.new && (
+                <div className="text-red-600 line-through opacity-70 dark:text-red-400">{p.old}</div>
+              )}
+              <div className={p.new ? "text-green-700 dark:text-green-400" : "italic text-[var(--muted)]"}>
+                {p.new || "(no narration for this step)"}
+              </div>
+            </div>
+          ))}
+          {extras.length > 0 && (
+            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[0.72rem]">
+              <label className="flex items-center gap-2 font-medium">
+                <input type="checkbox" checked={makeExtras} onChange={(e) => setMakeExtras(e.target.checked)} />
+                Script has {extras.length} more segment{extras.length > 1 ? "s" : ""} than steps — add as narration-only steps at the end
+              </label>
+              {!makeExtras && <p className="text-[var(--muted)]">Unchecked: this text will be dropped.</p>}
+              {extras.map((x, i) => (
+                <div key={i} className={`mt-1 ${makeExtras ? "" : "line-through opacity-60"}`}>
+                  <span className="font-medium">+ {x.name || "Narration"}:</span> {x.text}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={busy} onClick={() => setPreview(null)}>Cancel</Button>
+            <Button disabled={busy} onClick={() => void confirm()}>
+              <Save size={13} /> {busy ? "Saving…" : "Confirm & save draft"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const STEP_KINDS: { id: StepKind; label: string; hint: string }[] = [
+  { id: "narration", label: "Narration only", hint: "" },
+  { id: "click", label: "Click element (text)", hint: "Visible text, e.g. Inbox" },
+  { id: "navigate", label: "Navigate to URL", hint: "https://… or /path" },
+  { id: "wait", label: "Wait for text", hint: "Text to wait for (empty = short pause)" },
+];
+
+function StepControls({
+  flowId,
+  index,
+  isFirst,
+  isLast,
+  onDone,
+}: {
+  flowId: string;
+  index: number;
+  isFirst: boolean;
+  isLast: boolean;
+  onDone?: () => void;
+}) {
+  const { ok, err } = useUi();
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [kind, setKind] = useState<StepKind>("narration");
+  const [value, setValue] = useState("");
+  const [narration, setNarration] = useState("");
+  const [name, setName] = useState("");
+  const run = async (op: "insert" | "delete" | "up" | "down") => {
+    if (op === "delete" && !window.confirm(`Delete step ${index + 1}? (saved to draft only)`)) return;
+    setBusy(true);
+    try {
+      await api.editStep({ flow_id: flowId, op, index, ...(op === "insert" ? { kind, value, narration, name } : {}) });
+      ok(op === "insert" ? "Step added to draft" : op === "delete" ? "Step deleted from draft" : "Step moved (draft)");
+      setAdding(false);
+      setValue("");
+      setNarration("");
+      setName("");
+      onDone?.();
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const btn = "rounded px-1 text-[0.72rem] normal-case text-[var(--muted)] hover:bg-[var(--line)] disabled:opacity-30";
+  const hint = STEP_KINDS.find((k) => k.id === kind)?.hint ?? "";
+  return (
+    <span className="relative flex items-center gap-0.5">
+      <button type="button" className={btn} title="Move up" disabled={busy || isFirst} onClick={() => void run("up")}>↑</button>
+      <button type="button" className={btn} title="Move down" disabled={busy || isLast} onClick={() => void run("down")}>↓</button>
+      <button type="button" className={btn} title="Add step after this one" disabled={busy} onClick={() => setAdding((v) => !v)}>+ Add</button>
+      <button type="button" className={`${btn} hover:text-red-600`} title="Delete step" disabled={busy} onClick={() => void run("delete")}>Delete</button>
+      {adding && (
+        <div
+          className="absolute right-0 top-6 z-20 w-80 space-y-1.5 rounded-lg border bg-[var(--bg)] p-2 normal-case tracking-normal shadow-lg"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <p className="text-[0.68rem] font-medium text-[var(--fg)]">New step after step {index + 1}</p>
+          <select
+            className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+            style={{ borderColor: "var(--line)" }}
+            value={kind}
+            onChange={(e) => setKind(e.target.value as StepKind)}
+          >
+            {STEP_KINDS.map((k) => (
+              <option key={k.id} value={k.id}>{k.label}</option>
+            ))}
+          </select>
+          {kind !== "narration" && (
+            <input
+              className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+              style={{ borderColor: "var(--line)" }}
+              placeholder={hint}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          )}
+          <input
+            className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+            style={{ borderColor: "var(--line)" }}
+            placeholder="Step name (optional)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <textarea
+            className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+            style={{ borderColor: "var(--line)" }}
+            rows={3}
+            placeholder="What the demo says on this step"
+            value={narration}
+            onChange={(e) => setNarration(e.target.value)}
+          />
+          <div className="flex justify-end gap-1">
+            <Button variant="ghost" disabled={busy} onClick={() => setAdding(false)}>Cancel</Button>
+            <Button
+              disabled={busy || (kind === "narration" ? !narration.trim() : kind !== "wait" && !value.trim())}
+              onClick={() => void run("insert")}
+            >
+              {busy ? "Adding…" : "Add step"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+function AiDraftButton({ onDone }: { onDone: () => void }) {
+  const { ok, err } = useUi();
+  const [st, setSt] = useState<AiDraftStatus | null>(null);
+  const poll = useRef<number | null>(null);
+  const stop = () => {
+    if (poll.current) window.clearInterval(poll.current);
+    poll.current = null;
+  };
+  useEffect(() => stop, []);
+  const tick = async () => {
+    try {
+      const s = await api.getAiDraft();
+      setSt(s);
+      if (s.state !== "running") {
+        stop();
+        if (s.state === "done") {
+          ok(`AI draft flow created (${s.result.steps ?? 0} steps) — review, then publish`);
+          onDone();
+        } else if (s.state === "error") err(s.error || "AI draft failed");
+      }
+    } catch (e) {
+      stop();
+      err(errText(e));
+    }
+  };
+  const start = async () => {
+    try {
+      setSt(await api.startAiDraft());
+      stop();
+      poll.current = window.setInterval(() => void tick(), 2000);
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+  const running = st?.state === "running";
+  return (
+    <div className="relative">
+      <Button variant="secondary" disabled={running} onClick={() => void start()}>
+        {running ? "Generating…" : "Generate with AI"}
+      </Button>
+      {st && st.state !== "idle" && st.progress.length > 0 && (
+        <div className="absolute right-0 z-20 mt-1 w-80 rounded-lg border bg-[var(--bg)] p-2 text-[0.68rem] shadow-lg" style={{ borderColor: "var(--line)" }}>
+          {running && <BarLoader />}
+          <ul className="mt-1 max-h-48 space-y-0.5 overflow-auto">
+            {st.progress.map((m, i) => (
+              <li key={i} className="text-[var(--muted)]">{m}</li>
+            ))}
+          </ul>
+          {!running && (
+            <div className="mt-1 flex justify-end">
+              <Button variant="ghost" onClick={() => setSt(null)}>Close</Button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -600,6 +965,12 @@ export function Flows() {
           hint="Playlist order for guided demos. Top row runs first; demo continues down the list."
           right={
             <div className="flex gap-2">
+              <AiDraftButton
+                onDone={() => {
+                  void load();
+                  setScriptReload((n) => n + 1);
+                }}
+              />
               <Button
                 variant="secondary"
                 onClick={() => setConfirmClearAll(true)}
@@ -753,6 +1124,7 @@ export function Flows() {
                   status={narrationStatus[f.flow_id]}
                   retranscribing={retranscribing === f.flow_id}
                   onRetranscribe={() => void retranscribe(f.flow_id)}
+                  onReload={() => setScriptReload((n) => n + 1)}
                 />
               )}
               </motion.div>

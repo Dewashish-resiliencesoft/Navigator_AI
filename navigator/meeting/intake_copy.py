@@ -49,11 +49,24 @@ def clean_positioning(text: str, max_chars: int = 140) -> str:
     return t
 
 
+def short_need(text: str, max_words: int = 6) -> str:
+    """'I want to grow my business so can I use…' -> 'grow my business'."""
+    import re
+
+    t = (summarize_need(text or "") or text or "").strip().rstrip("?.! ")
+    t = re.sub(r"(?i)^(so\s+|well\s+|um+\s+)?(i|we)\s+(want|would like|'d like|need|wanna)\s+(to\s+)?", "", t)
+    t = re.split(r"(?i)\s+(so|and|but|because|can i|could i)\s+|[,?;]", t)[0].strip()
+    words = t.split()
+    if not words or len(words) > max_words:
+        return ""
+    return t
+
+
 def meaningful_need(text: str) -> str:
     """Return the need only if it reads like a real ask (not Hinglish/noise)."""
     import re
 
-    t = (summarize_need(text or "") or text or "").strip()
+    t = short_need(text or "")
     toks = re.findall(r"[A-Za-z]+", t.lower())
     if len(t) < 4 or not toks:
         return ""
@@ -166,7 +179,7 @@ def pitch_line(
     will_share_screen: bool = True,
 ) -> str:
     name = intake.name or ("वहाँ" if lang == "hi" else "there")
-    need = summarize_need(intake.looking_for) if intake.looking_for else ""
+    need = meaningful_need(intake.looking_for) if intake.looking_for else ""
     solve = (
         solution_blurb(persona, intake.looking_for)
         if need

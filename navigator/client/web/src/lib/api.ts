@@ -187,6 +187,8 @@ export type SystemMetrics = {
   } | null;
 };
 export type DemoScriptBeat = {
+  /** Client-edited display name for the step (draft `_meta.step_names`). */
+  step_name?: string;
   id: string;
   kind: string;
   spoken?: string;
@@ -954,6 +956,23 @@ export const api = {
       "POST",
     ),
 
+  setStepName: (flow_id: string, step_index: number, name: string) =>
+    send<{ ok: boolean; revision: number }>("/client/api/flows/step-name", "POST", { flow_id, step_index, name }),
+  distributeScript: (
+    flow_id: string,
+    text: string,
+    apply: boolean,
+    lines?: string[],
+    opts?: { names?: Record<number, string>; create_extras?: boolean; extras?: ScriptExtra[] },
+  ) =>
+    send<ScriptSplitResponse>("/client/api/flows/script/distribute", "POST", { flow_id, text, apply, lines, ...(opts ?? {}) }),
+  editStep: (body: { flow_id: string; op: "insert" | "update" | "delete" | "up" | "down"; index: number; kind?: StepKind; value?: string; narration?: string; name?: string }) =>
+    send<{ ok: boolean; revision: number; focus: number }>("/client/api/flows/steps/edit", "POST", body),
+  getFlowSteps: (flow_id: string) =>
+    get<{ flow_id: string; page_id: string; steps: FlowStepRow[] }>(`/client/api/flows/steps?flow_id=${encodeURIComponent(flow_id)}`),
+  startAiDraft: () => send<AiDraftStatus>("/client/api/flows/ai-draft/start", "POST"),
+  getAiDraft: () => get<AiDraftStatus>("/client/api/flows/ai-draft"),
+
   getFlows: () => get<{ playlist: Flow[]; site: string }>("/client/api/flows"),
   putFlows: (playlist: Flow[]) =>
     send<{ playlist: Flow[] }>("/client/api/flows", "PUT", { playlist }),
@@ -1139,3 +1158,21 @@ export const slugKey = (label: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_|_$/g, "") || "field";
+
+
+export type ScriptSplitRow = {
+  beat_id: string; step_index: number; label: string; old: string; new: string; old_name?: string; new_name?: string;
+};
+export type ScriptExtra = { name: string; text: string };
+export type ScriptSplitResponse = {
+  ok: boolean; applied: boolean; method: string; preview: ScriptSplitRow[]; extras?: ScriptExtra[]; revision?: number;
+};
+export type StepKind = "navigate" | "click" | "wait" | "narration";
+export type FlowStepRow = { index: number; kind: string; value: string; tool: string; narration: string; name: string };
+export type AiDraftStatus = {
+  state: "idle" | "running" | "done" | "error";
+  progress: string[];
+  result: { flow_id?: string; steps?: number; revision?: number };
+  error: string;
+  elapsed_s?: number;
+};

@@ -223,9 +223,13 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         )
     else:
         try:
+            _st0 = time.monotonic()
             result, next_page_id = run_tool(
                 deps.page, deps.graph, ran_on, call, on_frame=deps.push_frame
             )
+            from navigator.core import logtime as _lt
+
+            _lt.record("step_action", (time.monotonic() - _st0) * 1000, str(getattr(call, "selector", "")))
         except Exception as exc:  # noqa: BLE001 — a missing element must never kill the demo
             result, next_page_id = _recover_failed_step(deps, ran_on, call, exc)
     _end_nudge(deps)
@@ -320,7 +324,7 @@ def _is_login_call(call) -> bool:
     global _LOGIN_RE
     if _LOGIN_RE is None:
         _LOGIN_RE = re.compile(
-            r"log\s*-?in|sign\s*-?in|signin|login|e-?mail|password|passwd|username|submit",
+            r"log[\s_-]*in|sign[\s_-]*in|signin|login|e-?mail|password|passwd|username|submit",
             re.I,
         )
     blob = " ".join(

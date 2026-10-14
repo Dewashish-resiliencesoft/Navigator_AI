@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import array
 import asyncio
+import os
 import queue
 import threading
 import time
@@ -307,9 +308,10 @@ class LiveAgent:
         sent_at_start = self._audio_s_sent()
         self._turn_said = []
         self._in_say = True
+        self._say_queued_at = time.monotonic()
         self._cmds.put(_Cmd(kind="say", text=text, mode=mode))
         print(f"[speak] {text}", flush=True)
-        self._pumped_wait(self._turn_done, 90)
+        self._wait_turn_with_watchdog(text, mode, uid, 90)
         rest = _unspoken_tail(text, " ".join(self._turn_said))
         if rest and max(getattr(self, "_last_heard_at", 0.0),
                         getattr(self, "_last_voice_at", 0.0)) >= started:
@@ -392,6 +394,23 @@ class LiveAgent:
                 self._pump_ui()
                 self._stop.wait(min(0.1, max(0.0, end - time.monotonic())))
 
+    def _note_first_audio(self) -> None:
+        from navigator.core import logtime
+
+        now = time.monotonic()
+        jit = 250.0  # Attendee jitter buffer (patch) — audio heard ~this much later
+        q = getattr(self, "_say_queued_at", 0.0)
+        if q and getattr(self, "_in_say", False):
+            self._say_queued_at = 0.0
+            logtime.record("text_queued->first_audio", (now - q) * 1000)
+            logtime.record("first_audio->heard_in_zoom_est", jit + 40)
+            return
+        u = getattr(self, "_await_answer_from", 0.0)
+        if u and not getattr(self, "_in_say", False):
+            self._await_answer_from = 0.0
+            logtime.record("user_end->first_audio", (now - u) * 1000)
+            logtime.record("first_audio->heard_in_zoom_est", jit + 40)
+
     def _pump_ui(self) -> None:
         pump = self.cfg.ui_pump
         if pump is not None:
@@ -435,10 +454,25 @@ class LiveAgent:
             name = getattr(fc, "name", "")
             args = dict(getattr(fc, "args", None) or {})
             print(f"[live] tool_call {name} {args}", flush=True)
+            _t0 = time.monotonic()
+            if getattr(self, "_in_say", False):
+                # Scripted line in progress: the flow executor owns the screen.
+                # A model-initiated click here raced the flow and cut the line.
+                print(f"[live] tool_call {name} refused: scripted line in progress", flush=True)
+                responses.append(types.FunctionResponse(
+                    id=getattr(fc, "id", None), name=name,
+                    response={"ok": False, "error": "Not now. You are reading a scripted line; the demo "
+                              "drives the screen itself. Do not call tools. Just finish the line verbatim."}))
+                continue
             try:
                 res = await asyncio.to_thread(self.cfg.tool_handler, name, args)
             except Exception as exc:  # noqa: BLE001
                 res = {"ok": False, "error": str(exc)[:200]}
+            from navigator.core import logtime
+
+            logtime.record("tool_call->result", (time.monotonic() - _t0) * 1000, name)
+            # Answer audio latency is measured from the tool result.
+            self._await_answer_from = time.monotonic()
             responses.append(types.FunctionResponse(id=getattr(fc, "id", None), name=name, response=res))
         try:
             await self._session.send_tool_response(function_responses=responses)
@@ -632,6 +666,11 @@ class LiveAgent:
                     disabled=False,
                     prefix_padding_ms=self.cfg.vad_prefix_padding_ms,
                     silence_duration_ms=self.cfg.vad_silence_ms,
+                    end_of_speech_sensitivity=(
+                        types.EndSensitivity.END_SENSITIVITY_HIGH
+                        if os.environ.get("NAVIGATOR_LIVE_EOS_HIGH", "1") == "1"
+                        else None
+                    ),
                 ),
             ),
             thinking_config=types.ThinkingConfig(
@@ -662,11 +701,25 @@ class LiveAgent:
                     self._ready.set()
                     if self._resumption_handle:
                         print("[live] Gemini Live session resumed", flush=True)
-                    await asyncio.gather(
-                        self._pump_in(session),
-                        self._pump_out(session),
-                        self._pump_cmd(session),
+                    self._reconnect_req = False
+                    tasks = [
+                        asyncio.ensure_future(self._pump_in(session)),
+                        asyncio.ensure_future(self._pump_out(session)),
+                        asyncio.ensure_future(self._pump_cmd(session)),
+                        asyncio.ensure_future(self._watch_reconnect()),
+                    ]
+                    # gather() hung forever when one pump died (receive error,
+                    # silent stall): the session was dead but nothing noticed.
+                    _done, pending = await asyncio.wait(
+                        tasks, return_when=asyncio.FIRST_COMPLETED
                     )
+                    for t in pending:
+                        t.cancel()
+                    if self._reconnect_req and not self._stop.is_set():
+                        print("[live] Live session stalled — reconnecting now", flush=True)
+                        self._reconnect_req = False
+                        await asyncio.sleep(0.3)
+                        continue
             except Exception as exc:  # noqa: BLE001
                 if self._stop.is_set():
                     return
@@ -681,10 +734,50 @@ class LiveAgent:
                 self._failed = self._failed or str(exc)
                 self._emit(LiveEvent(kind="error", text=f"session: {exc}"))
                 self._ready.set()
-            if self._stop.is_set() or not self._resumption_handle:
+            if self._stop.is_set() or self._failed:
+                return
+            attempt += 1
+            if attempt > LIVE_CONNECT_ATTEMPTS + 3:
+                self._failed = "Live session kept dropping"
                 return
             print("[live] Live session dropped — reconnecting", flush=True)
             await asyncio.sleep(0.5)
+
+    async def _watch_reconnect(self) -> None:
+        while not self._stop.is_set() and not getattr(self, "_reconnect_req", False):
+            await asyncio.sleep(0.2)
+
+    def request_reconnect(self) -> None:
+        self._reconnect_req = True
+
+    def _wait_turn_with_watchdog(self, text: str, mode: Any, uid: str, timeout: float) -> None:
+        """Wait for the model turn; recover when Live goes silent.
+
+        12:19 run: one intake line got no audio and no turn_complete; say()
+        blocked the whole demo for 90s. Now: no audio in 10s -> reconnect the
+        session and resend once; give up on the line after 25s."""
+        start = time.monotonic()
+        audio0 = self._audio_s_sent()
+        retried = False
+        while True:
+            if self._pumped_wait(self._turn_done, 0.5):
+                return
+            if self._stop.is_set():
+                return
+            el = time.monotonic() - start
+            got_audio = self._audio_s_sent() > audio0 or self.speaking
+            if not got_audio and el >= 10 and not retried:
+                print(f"[speak] id={uid} no audio from Live in 10s — reconnecting and resending", flush=True)
+                retried = True
+                self.request_reconnect()
+                self._cmds.put(_Cmd(kind="say", text=text, mode=mode))
+            elif not got_audio and el >= 25:
+                print(f"[speak] id={uid} Live still silent after 25s — skipping line", flush=True)
+                self._turn_done.set()
+                return
+            elif el >= timeout:
+                print(f"[speak] id={uid} turn timeout {timeout:.0f}s — continuing", flush=True)
+                return
 
     async def _pump_in(self, session: Any) -> None:
         """Meeting audio -> model, continuously. Never batched, never buffered."""
@@ -790,6 +883,7 @@ class LiveAgent:
                     self._set_playback("playing", self._active_utterance_id)
                 self.speaking = True
                 self._gen_done_at = 0.0
+                self._note_first_audio()
                 self._turn_audio_s = getattr(self, "_turn_audio_s", 0.0) + len(data) / (
                     2.0 * OUTPUT_SAMPLE_RATE
                 )
@@ -832,6 +926,7 @@ class LiveAgent:
                         self._confirm_barge_in(reason="heard")
                     self.heard_count = getattr(self, "heard_count", 0) + 1
                     self._last_heard_at = time.monotonic()
+                    self._await_answer_from = getattr(self, "_last_voice_at", 0.0) or self._last_heard_at
                     print(
                         f"[live] heard: {text!r} [voice-in] pcm bytes="
                         f"{getattr(self.bridge, 'pcm_recv_bytes', 0)} heard={self.heard_count}",
@@ -905,7 +1000,7 @@ def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
     if cmd.mode == "result":
         return (
             f"[Deliver the following result to the person{lang_hint}, conversationally, "
-            f"then stop. Do not add follow-up questions.] {cmd.text}"
+            f"then stop. Do not add follow-up questions. Do not call any tools.] {cmd.text}"
         )
     if cmd.mode == "error":
         return (
@@ -915,10 +1010,10 @@ def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
     if cmd.mode == "natural":
         return (
             f"[Say the following to the person{lang_hint}, naturally and conversationally, "
-            f"then stop. Do not add extra commentary or questions after.] {cmd.text}"
+            f"then stop. Do not add extra commentary or questions after. Do not call any tools.] {cmd.text}"
         )
     # verbatim — used only for intake questions where rephrasing would change meaning
     return (
-        f"[Say the following to the person now{lang_hint}, exactly as written, then stop] "
+        f"[Say the following to the person now{lang_hint}, exactly as written, then stop. Do not call any tools.] "
         f"{cmd.text}"
     )

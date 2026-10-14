@@ -78,14 +78,14 @@ def patch_jitter(attendee_dir: Path) -> str:
         import re
 
         new = re.sub(r"currentTime \+ [0-9.]+; // " + re.escape(_JIT_MARKER),
-                     f"currentTime + 0.4; // {_JIT_MARKER}", text)
+                     f"currentTime + 0.25; // {_JIT_MARKER}", text)
         if new == text:
             return "already patched"
         path.write_text(new, encoding="utf-8")
-        return f"jitter buffer -> 400ms in {path}"
+        return f"jitter buffer -> 250ms in {path}"
     if _JIT_NEEDLE not in text:
         return "player shape changed; patch skipped"
-    fixed = f"            this.nextPlayTime = currentTime + 0.4; // {_JIT_MARKER}\n"
+    fixed = f"            this.nextPlayTime = currentTime + 0.25; // {_JIT_MARKER}\n"
     path.write_text(text.replace(_JIT_NEEDLE, fixed, 1), encoding="utf-8")
     return f"patched {path}"
 
@@ -140,3 +140,39 @@ def patch_drawloop(attendee_dir: Path) -> str:
     fixed = f"        const drawInterval = 1000 / 30 - 4; // {_DRAW_MARKER}\n"
     path.write_text(text.replace(_DRAW_NEEDLE, fixed, 1), encoding="utf-8")
     return f"patched {path}"
+
+
+_OVR = Path(__file__).with_name("attendee_overrides")
+_PUSH_MARKER = "navigator: push scheduler v2"
+_PACE_MARKER = "navigator: deadline pacing"
+
+
+def patch_audio_v2(attendee_dir: Path) -> str:
+    """Voice glitches in Zoom (122 underruns x ~460ms in one demo).
+
+    1. Bot-page player was driven by setTimeout, which Chrome throttles in the
+       bot tab -> timers fired ~0.5-1s late while 300-400ms was still queued.
+       Now each chunk is scheduled on arrival (push scheduler).
+    2. Attendee paced output at 0.9x chunk + chromedriver cost (<= real time)
+       and dropped the sub-100ms residue after every >150ms Gemini pause
+       (lost 16% of audio in the loopback test). Now deadline pacing with
+       0.5s lead, residue flushed instead of dropped.
+    """
+    js = attendee_dir / "bots" / "web_bot_adapter" / "shared_chromedriver_payload.js"
+    py = attendee_dir / "bots" / "bot_controller" / "realtime_audio_output_manager.py"
+    if not js.is_file() or not py.is_file():
+        return "attendee files missing; skipped"
+    done = []
+    text = js.read_text(encoding="utf-8")
+    if _PUSH_MARKER not in text:
+        a = text.find("    _processAudioQueue() {")
+        b = text.find("    getAudioContextDestination() {")
+        if a < 0 or b < a:
+            return "player shape changed; patch skipped"
+        text = text[:a] + (_OVR / "push_player.js").read_text(encoding="utf-8") + text[b:]
+        js.write_text(text, encoding="utf-8")
+        done.append("player")
+    if _PACE_MARKER not in py.read_text(encoding="utf-8"):
+        py.write_text((_OVR / "realtime_audio_output_manager.py").read_text(encoding="utf-8"), encoding="utf-8")
+        done.append("pacing")
+    return f"patched {', '.join(done)}" if done else "already patched"

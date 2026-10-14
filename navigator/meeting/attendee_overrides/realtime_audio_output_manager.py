@@ -1,0 +1,163 @@
+import audioop
+import logging
+import queue
+import threading
+import time
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+SAMPLE_WIDTH = 2  # 16-bit PCM
+CHANNELS = 1  # mono
+
+
+def _upsample(chunk: bytes, src_rate: int, dst_rate: int) -> bytes:
+    if src_rate == dst_rate:
+        return chunk  # nothing to do
+
+    # state None ⇒ filter state kept inside audioop (per-call ok for small chunks)
+    converted, _ = audioop.ratecv(
+        chunk,  # fragment
+        SAMPLE_WIDTH,  # width
+        CHANNELS,  # nchannels
+        src_rate,  # inrate
+        dst_rate,  # outrate
+        None,  # state
+    )
+    return converted
+
+
+class RealtimeAudioOutputManager:
+    def __init__(self, play_raw_audio_callback, sleep_time_between_chunks_seconds, output_sample_rate):
+        self.play_raw_audio_callback = play_raw_audio_callback
+        self.sleep_time_between_chunks_seconds = sleep_time_between_chunks_seconds
+
+        self.audio_queue = queue.Queue()
+        self.audio_thread = None
+        self.stop_audio_thread = False
+        self.last_chunk_time = None
+        self.thread_lock = threading.Lock()
+
+        self.output_sample_rate = output_sample_rate
+        self.bytes_per_sample = 2
+        self.chunk_length_seconds = 0.1
+        self.inner_chunk_buffer = b""
+        self.last_chunk_time = time.time()
+        self._buf_lock = threading.RLock()
+        self._buf_rate = output_sample_rate
+        self._pace_t0 = None
+        self._pace_sent_s = 0.0
+
+    def add_chunk(self, chunk, sample_rate):
+        # navigator: flush (never drop) the sub-100ms residue after a pause.
+        # Gemini sends bursts with >150ms gaps; dropping the residue cut up to
+        # 100ms out of the middle of words.
+        with self._buf_lock:
+            if self.inner_chunk_buffer and (
+                time.time() - self.last_chunk_time > 0.15 or sample_rate != self._buf_rate
+            ):
+                self.add_chunk_inner(self.inner_chunk_buffer, self._buf_rate)
+                self.inner_chunk_buffer = b""
+            self._buf_rate = sample_rate
+            self.last_chunk_time = time.time()
+            self.inner_chunk_buffer += chunk
+            chunk_size_bytes = int(self.bytes_per_sample * self.chunk_length_seconds * sample_rate)
+            while len(self.inner_chunk_buffer) >= chunk_size_bytes:
+                self.add_chunk_inner(self.inner_chunk_buffer[:chunk_size_bytes], sample_rate)
+                self.inner_chunk_buffer = self.inner_chunk_buffer[chunk_size_bytes:]
+
+    def _flush_residue_if_idle(self):
+        with self._buf_lock:
+            if self.inner_chunk_buffer and time.time() - self.last_chunk_time > 0.12:
+                residue, self.inner_chunk_buffer = self.inner_chunk_buffer, b""
+                self.audio_queue.put((residue, self._buf_rate))
+
+    def add_chunk_inner(self, chunk, sample_rate):
+        """Add a single chunk of PCM audio to the stream buffer."""
+        self.audio_queue.put((chunk, sample_rate))
+        self.last_chunk_time = time.time()
+
+        # If thread is alive, we don't need to mess with the lock
+        if not (self.audio_thread is None or not self.audio_thread.is_alive()):
+            return
+
+        # Start audio thread if not already running
+        with self.thread_lock:
+            if self.audio_thread is None or not self.audio_thread.is_alive():
+                self._start_audio_thread()
+                logger.info("RealtimeAudioOutputManager: Audio thread started")
+
+    def _start_audio_thread(self):
+        """Start the audio output thread."""
+        self.stop_audio_thread = False
+        self.audio_thread = threading.Thread(target=self._process_audio_queue, daemon=True)
+        self.audio_thread.start()
+
+    def _process_audio_queue(self):
+        """Process audio chunks from the queue until timeout or stop signal."""
+        timeout_seconds = 10
+
+        # navigator: deadline pacing. The old fixed sleep (0.9 x chunk for
+        # Zoom) plus ~10-60ms of chromedriver execute_script per chunk delivered
+        # audio at <= real time, so the browser buffer drained and underran.
+        # Now: send as fast as possible until LEAD seconds ahead of real time.
+        lead_s = 0.5
+        while not self.stop_audio_thread:
+            try:
+                chunk, sample_rate = self.audio_queue.get(timeout=0.05)
+            except queue.Empty:
+                self._flush_residue_if_idle()
+                if self.last_chunk_time and time.time() - self.last_chunk_time > timeout_seconds and self.audio_queue.empty():
+                    break
+                continue
+            chunk_upsampled = self.upsample_chunk_to_output_sample_rate(chunk, sample_rate)
+            dur = len(chunk) / (self.bytes_per_sample * sample_rate)
+            now = time.monotonic()
+            if self._pace_t0 is None or self._pace_sent_s - (now - self._pace_t0) < 0:
+                self._pace_t0, self._pace_sent_s = now, 0.0
+            self.play_raw_audio_callback(bytes=chunk_upsampled, sample_rate=self.output_sample_rate)
+            self._pace_sent_s += dur
+            ahead = self._pace_sent_s - (time.monotonic() - self._pace_t0)
+            if ahead > lead_s:
+                time.sleep(ahead - lead_s)
+
+        logger.info("RealtimeAudioOutputManager: Audio thread exited")
+
+    def upsample_chunk_to_output_sample_rate(self, chunk, sample_rate):
+        # If sample rates are the same, no upsampling needed
+        if sample_rate == self.output_sample_rate:
+            return chunk  # navigator: return bytes when rates match
+
+        # Calculate upsampling ratio
+        ratio = self.output_sample_rate // sample_rate
+
+        # We can't upsample if the ratio is not an integer
+        if self.output_sample_rate % sample_rate != 0 or ratio <= 1:
+            # Use the python upsample function if we have to. Repeating the samples actually performs better
+            # but it only works when the ratio is an integer.
+            return _upsample(chunk, sample_rate, self.output_sample_rate)
+
+        # Convert bytes to 16-bit samples (assuming 16-bit PCM)
+        samples = np.frombuffer(chunk, dtype=np.int16)
+
+        # Repeat each sample 'ratio' times (e.g., [1,2,3] -> [111,222,333])
+        upsampled_samples = np.repeat(samples, ratio)
+
+        # Convert back to bytes
+        return upsampled_samples.tobytes()
+
+    def cleanup(self):
+        """Stop the audio output thread and clear the queue."""
+        self.stop_audio_thread = True
+
+        # Clear the queue
+        while not self.audio_queue.empty():
+            try:
+                self.audio_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        # Wait for thread to finish
+        if self.audio_thread and self.audio_thread.is_alive():
+            self.audio_thread.join()

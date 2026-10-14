@@ -19,16 +19,9 @@ OFF_TOPIC = (
 SILENCE_S = 60.0
 #: After a question detour, wait this long for a reply before auto-resuming.
 RESUME_SILENCE_S = 10.0
-QUESTION_ANSWERED = (
-    "I think that answers your question — does that help, or is there anything else?"
-)
-RESUME_AFTER_QUESTION = (
-    "Great — let's pick up the demo where we left off."
-)
-RESUME_AFTER_SILENCE = (
-    "I think that covers it — let's continue from where we were. "
-    "Feel free to ask me anytime."
-)
+QUESTION_ANSWERED = "Does that help?"
+RESUME_AFTER_QUESTION = "Okay, let's continue."
+RESUME_AFTER_SILENCE = "Let's continue."
 
 
 def is_goodbye(utterance: str) -> bool:

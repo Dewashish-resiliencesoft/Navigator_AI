@@ -741,6 +741,12 @@ def client_get_demo_script(
     )
     script = merge_manual_overrides(script, stored)
     try:
+        from navigator.knowledge.flow_authoring import attach_step_names
+
+        attach_step_names(script.get("beats") or [], rev.yaml)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
         import yaml as _yaml
 
         _meta = (_yaml.safe_load(rev.yaml) or {}).get("_meta") or {}
@@ -2242,3 +2248,232 @@ def client_run_transcript(
         )
         for r in rows
     ]
+
+
+
+# ---------------------------------------------------------------- flow authoring
+from pydantic import BaseModel as _BM, Field as _F  # noqa: E402
+
+
+class StepNameBody(_BM):
+    flow_id: str = _F(min_length=1)
+    step_index: int = _F(ge=0)
+    name: str = ""
+
+
+class ScriptDistributeBody(_BM):
+    flow_id: str = _F(min_length=1)
+    text: str = ""
+    apply: bool = False
+    #: Client-confirmed per-step lines from the preview (skips re-splitting).
+    lines: list[str] | None = None
+    #: step_index -> new name (only rows the client did NOT tick "keep old").
+    names: dict[int, str] | None = None
+    #: Extra segments beyond the step count, appended as narration-only steps when confirmed.
+    create_extras: bool = False
+    extras: list[dict] | None = None
+
+
+class StepEditBody(_BM):
+    flow_id: str = _F(min_length=1)
+    op: str = _F(pattern="^(insert|update|delete|up|down)$")
+    index: int = _F(ge=-1)
+    kind: str = "narration"
+    value: str = ""
+    narration: str | None = None
+    name: str = ""
+
+
+@router.post("/client/api/flows/step-name")
+def client_set_step_name(product: DashboardAuthedProduct, body: StepNameBody, registry: Reg) -> dict:
+    """Rename a step (display label only; selector/action untouched). Draft only."""
+    from navigator.knowledge.flow_authoring import set_step_name, step_names
+
+    try:
+        rev = registry.latest_revision(product.product_id)
+        new_yaml = set_step_name(rev.yaml, flow_id=body.flow_id, step_index=body.step_index, name=body.name)
+        parse_site_graph(new_yaml)
+        updated = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    except (ValueError, SiteGraphError) as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True, "revision": updated.revision, "published": False,
+            "step_names": {str(k): v for k, v in step_names(new_yaml).get(body.flow_id, {}).items()}}
+
+
+@router.post("/client/api/flows/script/distribute")
+def client_distribute_script(
+    product: DashboardAuthedProduct, body: ScriptDistributeBody, registry: Reg, vault: Vault
+) -> dict:
+    """Split one full script across a flow's steps. apply=False -> preview only."""
+    from navigator.knowledge.flow_authoring import attach_step_names, default_llm, distribute_script
+
+    try:
+        rev, graph, bio_fields, knowledge, include_login, stored = _demo_script_inputs(product, registry, vault)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    script = merge_manual_overrides(
+        compose_full_demo_script(graph, product_id=product.product_id, knowledge_md=knowledge,
+                                 bio_fields=bio_fields, include_login=include_login, stored_script=stored),
+        stored,
+    )
+    beats = attach_step_names(list(script.get("beats") or []), rev.yaml)
+    flow = [b for b in beats if b.get("flow_id") == body.flow_id and b.get("kind") in ("flow_step", "live_input")]
+    if not flow:
+        raise HTTPException(404, f"flow {body.flow_id!r} has no steps")
+    auto = {"generated", "semantics"}
+    steps = [{"index": b.get("step_index"), "label": b.get("step_name") or b.get("on_screen") or b.get("tool") or "",
+              "on_screen": b.get("on_screen") or "",
+              "old": "" if b.get("spoken_source") in auto else (b.get("spoken") or "")} for b in flow]
+    from navigator.knowledge.flow_authoring import (
+        append_narration_steps, extract_segments, propose_step_names, set_step_names_bulk, step_names,
+    )
+
+    segs = extract_segments(body.text)
+    extras: list[dict] = []
+    seg_names: list[str | None] = [None] * len(flow)
+    if body.lines is not None and len(body.lines) == len(flow):
+        lines, method = [str(x or "").strip() for x in body.lines], "confirmed"
+        extras = list(body.extras or [])
+    elif len(segs) > len(flow):
+        lines, method = [s["text"] for s in segs[: len(flow)]], "segments"
+        seg_names = [s["name"] for s in segs[: len(flow)]]
+        extras = [{"name": s["name"] or "", "text": s["text"]} for s in segs[len(flow):]]
+    else:
+        lines, method = distribute_script(body.text, steps, default_llm())
+        if method in ("markers", "paragraphs") and len(segs) == len(flow):
+            seg_names = [s["name"] for s in segs]
+    from navigator.knowledge.flow_authoring import strip_leading_title
+
+    # Never speak a step title as part of its narration ('Login Here we…').
+    lines = [strip_leading_title(ln, sn or "")[1] if sn else ln for ln, sn in zip(lines, seg_names)]
+    llm = default_llm() if not body.apply else None
+    if body.apply and body.names is not None:
+        proposed = [""] * len(flow)
+    else:
+        guessed = propose_step_names(lines, llm, [st["label"] for st in steps])
+        proposed = [sn or g for sn, g in zip(seg_names, guessed)]
+    if extras and not body.apply:
+        en = propose_step_names([e["text"] for e in extras], llm)
+        extras = [{**e, "name": e.get("name") or n} for e, n in zip(extras, en)]
+    names_now = step_names(rev.yaml).get(body.flow_id, {})
+    preview = [{"beat_id": b["id"], "step_index": b.get("step_index"), "label": st["label"],
+                "old": st["old"], "new": ln,
+                "old_name": names_now.get(int(b.get("step_index") or 0), ""), "new_name": nm}
+               for b, st, ln, nm in zip(flow, steps, lines, proposed)]
+    if not body.apply:
+        return {"ok": True, "applied": False, "method": method, "preview": preview, "extras": extras}
+    by_id = {p["beat_id"]: p["new"] for p in preview}
+    out_beats = []
+    for b in beats:
+        if b.get("id") in by_id:
+            b = {**b, "spoken": by_id[b["id"]], "spoken_source": "manual"}
+        out_beats.append({k: v for k, v in b.items() if k != "step_name"})
+    try:
+        from navigator.knowledge.demo_script import apply_script_patch
+
+        new_yaml = apply_script_patch(rev.yaml, beats=out_beats, sync_flow_steps=True)
+        names = body.names if body.names is not None else {
+            int(p["step_index"]): p["new_name"] for p in preview if p["new_name"] and p["step_index"] is not None}
+        new_yaml = set_step_names_bulk(new_yaml, flow_id=body.flow_id, names={int(k): v for k, v in names.items() if v})
+        if body.create_extras and extras:
+            new_yaml = append_narration_steps(new_yaml, flow_id=body.flow_id, extras=extras)
+        parse_site_graph(new_yaml)
+        updated = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
+    except (ValueError, SiteGraphError) as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True, "applied": True, "method": method, "preview": preview,
+            "extras_created": len(extras) if body.create_extras else 0,
+            "revision": updated.revision, "published": False}
+
+
+@router.get("/client/api/flows/steps")
+def client_flow_steps(product: DashboardAuthedProduct, registry: Reg, flow_id: str) -> dict:
+    """Editable view of a flow's steps (kind/value/narration/name)."""
+    import yaml as _yaml
+
+    from navigator.knowledge.flow_authoring import _find_flow, step_kind, step_names
+
+    rev = registry.latest_revision(product.product_id)
+    raw = _yaml.safe_load(rev.yaml)
+    try:
+        page_id, steps = _find_flow(raw, flow_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+    names = step_names(rev.yaml).get(flow_id, {})
+    rows = []
+    for i, st in enumerate(steps):
+        kind, value = step_kind(st, (raw["pages"][page_id].get("selectors") or {}))
+        rows.append({"index": i, "kind": kind, "value": value, "tool": st.get("tool"),
+                     "narration": st.get("spoken") or "", "name": names.get(i, "")})
+    return {"flow_id": flow_id, "page_id": page_id, "revision": rev.revision, "steps": rows}
+
+
+@router.post("/client/api/flows/steps/edit")
+def client_flow_step_edit(product: DashboardAuthedProduct, body: StepEditBody, registry: Reg) -> dict:
+    """Insert/update/delete/reorder one step. Saves a DRAFT revision only."""
+    from navigator.knowledge.flow_authoring import edit_flow_steps
+
+    spec = {"kind": body.kind, "value": body.value, "name": body.name}
+    if body.narration is not None:
+        spec["narration"] = body.narration
+    try:
+        rev = registry.latest_revision(product.product_id)
+        new_yaml, focus = edit_flow_steps(rev.yaml, flow_id=body.flow_id, op=body.op, index=body.index, spec=spec)
+        parse_site_graph(new_yaml)
+        updated = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    except (ValueError, SiteGraphError) as exc:
+        raise HTTPException(422, str(exc)) from None
+    return {"ok": True, "revision": updated.revision, "published": False, "focus": focus}
+
+
+@router.post("/client/api/flows/ai-draft/start")
+def client_ai_draft_start(product: DashboardAuthedProduct, registry: Reg, vault: Vault) -> dict:
+    """Explore the live product and save a NEW draft flow (never published)."""
+    from navigator.knowledge.flow_authoring import add_ai_flow_to_yaml, start_ai_flow_job
+
+    try:
+        graph = parse_site_graph(registry.latest_revision(product.product_id).yaml)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    login = None
+    try:
+        creds = vault.credentials_for(product.product_id)
+        if creds:
+            login = (str(creds[0] or ""), str(creds[1] or ""), str(creds[2] or ""))
+    except Exception:  # noqa: BLE001
+        login = None
+    base_url = graph.base_url or (login[0] if login else "")
+    if not base_url:
+        raise HTTPException(422, "set the product URL or demo login first")
+    try:
+        brief = load_product_brief(product.product_id) or load_product_brief(graph.site)
+    except Exception:  # noqa: BLE001
+        brief = ""
+    pid = product.product_id
+
+    def _save(draft: dict) -> dict:
+        rev = registry.latest_revision(pid)
+        new_yaml, flow_id, page_id = add_ai_flow_to_yaml(rev.yaml, draft)
+        parse_site_graph(new_yaml)
+        updated = registry.put_site_graph(pid, new_yaml, "yaml", publish=False)
+        return {"flow_id": flow_id, "page_id": page_id, "revision": updated.revision,
+                "steps": len(draft["steps"]), "published": False}
+
+    try:
+        job = start_ai_flow_job(product_id=pid, base_url=base_url, login=login, brief=brief,
+                                site=graph.site, save=_save)
+    except RuntimeError as exc:
+        raise HTTPException(409, str(exc)) from None
+    return job.view()
+
+
+@router.get("/client/api/flows/ai-draft")
+def client_ai_draft_status(product: DashboardAuthedProduct) -> dict:
+    from navigator.knowledge.flow_authoring import ai_job
+
+    job = ai_job(product.product_id)
+    return job.view() if job else {"state": "idle", "progress": [], "result": {}, "error": ""}

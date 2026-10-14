@@ -61,6 +61,10 @@ from navigator.voice.tts import PrintSpeaker
 from navigator.voice.conversation_language import ConversationLanguage
 
 
+class _LocalAudioReady(Exception):
+    """Control flow: local docker-gateway audio WS is up, skip the tunnel."""
+
+
 def _attendee_docker_gateway() -> str | None:
     """Gateway IP of the Attendee docker network (host-only, not LAN)."""
     import os
@@ -953,7 +957,23 @@ def run_live_meet_demo(
         try:
             from navigator.meeting.audio_bridge import AudioBridge
 
+            import os as _os
+
+            if _docker_gw and _os.environ.get("NAVIGATOR_AUDIO_WS_LOCAL", "1") != "0":
+                # Attendee worker reaches the host on the docker gateway: no
+                # Cloudflare hop (tunnel added jitter to every bot_output chunk).
+                audio_bridge = AudioBridge(host=_docker_gw).start()
+                audio_ws_url = f"ws://{_docker_gw}:{audio_bridge.port}"
+            else:
+                audio_bridge = AudioBridge().start()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live] local audio ws failed ({exc}); using tunnel", flush=True)
             audio_bridge = AudioBridge().start()
+            audio_ws_url = None
+        try:
+            if audio_ws_url:
+                print(f"[live] audio websocket ready: {audio_ws_url} (local docker gateway, no tunnel)", flush=True)
+                raise _LocalAudioReady()
             audio_tunnel = _timed_live_stage(
                 "audio_tunnel_start",
                 lambda: publish_ws_or_tunnel(
@@ -972,6 +992,8 @@ def run_live_meet_demo(
                     verify_attendee_docker_dns(audio_host)
                 except RuntimeError as exc:
                     print(f"[live] audio tunnel DNS warn: {exc}", flush=True)
+        except _LocalAudioReady:
+            pass
         except Exception as exc:  # noqa: BLE001
             print(f"[live] audio bridge skipped: {exc}", flush=True)
             audio_bridge = None
@@ -1639,12 +1661,20 @@ def run_live_meet_demo(
             ).start()
 
             baseline_hits = relay.frame_hits
+            # End pressed while the page was loading: don't arm a dead bot.
+            _check_stop(stop_event)
             print("[live] enabling screen share…", flush=True)
             relay.set_status("thinking", "Sharing screen…")
             try:
                 arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
             except Exception as exc:  # noqa: BLE001 — never crash the demo here
                 tunnel_view = f"{tunnel.public_url}/view"
+                _msg = str(exc).lower()
+                if "state ended" in _msg or "fatal_error" in _msg or "post_processing" in _msg:
+                    # The bot left the meeting (e.g. host left / meeting ended);
+                    # this is not a URL problem, so a tunnel retry cannot help.
+                    print(f"[live] bot {bot.id} already left the meeting — stopping this demo run ({exc})", flush=True)
+                    raise RuntimeError(f"bot {bot.id} left the meeting before screenshare") from exc
                 if public_view == tunnel_view:
                     raise
                 print(f"[live] local screenshare rejected ({exc}); falling back to tunnel {tunnel_view}", flush=True)
@@ -2032,6 +2062,12 @@ def run_live_meet_demo(
                 f"failures={failures}",
                 flush=True,
             )
+            try:
+                from navigator.core import logtime as _lt
+
+                _lt.summary()
+            except Exception:  # noqa: BLE001
+                pass
             if fail_entries:
                 try:
                     from navigator.agent.nodes.reflecting import reflecting

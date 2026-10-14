@@ -172,4 +172,5 @@ def build_graph(deps: CallDeps, *, entry: str = "joining"):
 
     # A scripted turn is ~4 calls x 3 nodes; the cap only guards against a
     # routing bug looping forever.
-    return builder.compile().with_config(recursion_limit=100)
+    # 100 was hit by a real 12-step demo with Q&A turns (GraphRecursionError at 12:40).
+    return builder.compile().with_config(recursion_limit=400)

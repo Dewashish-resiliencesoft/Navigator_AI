@@ -54,6 +54,10 @@ from navigator.auth.routes import build_auth_router
 from navigator.core.settings import settings  # noqa: F401 — tests patch app_module.settings
 from navigator.meeting.providers import make_provider  # noqa: F401 — tests patch this
 
+from navigator.core import logtime as _logtime
+
+_logtime.install()
+
 app = FastAPI(
     title="Navigator AI",
     version="0.1.0",

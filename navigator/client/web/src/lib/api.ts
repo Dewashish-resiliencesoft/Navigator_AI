@@ -970,6 +970,10 @@ export const api = {
     send<{ ok: boolean; revision: number; focus: number }>("/client/api/flows/steps/edit", "POST", body),
   getFlowSteps: (flow_id: string) =>
     get<{ flow_id: string; page_id: string; steps: FlowStepRow[] }>(`/client/api/flows/steps?flow_id=${encodeURIComponent(flow_id)}`),
+  alignFlow: (flow_id: string, apply: boolean, recrawl = false) =>
+    send<{ ok: boolean; applied: boolean; revision?: number; report: FlowAlignRow[] }>("/client/api/flows/align", "POST", { flow_id, apply, recrawl }),
+  expandNarration: (flow_id: string, apply: boolean, recrawl = false) =>
+    send<{ ok: boolean; applied: boolean; revision?: number; report: FlowExpandRow[] | null }>("/client/api/flows/expand", "POST", { flow_id, apply, recrawl }),
   startAiDraft: () => send<AiDraftStatus>("/client/api/flows/ai-draft/start", "POST"),
   getAiDraft: () => get<AiDraftStatus>("/client/api/flows/ai-draft"),
 
@@ -1168,6 +1172,8 @@ export type ScriptSplitResponse = {
   ok: boolean; applied: boolean; method: string; preview: ScriptSplitRow[]; extras?: ScriptExtra[]; revision?: number;
 };
 export type StepKind = "navigate" | "click" | "wait" | "narration";
+export type FlowAlignRow = { step: number; narration: string; target: string; href: string; highlight: string; action: string };
+export type FlowExpandRow = { step: number; before: string; after: string; changed: boolean; screen: string };
 export type FlowStepRow = { index: number; kind: string; value: string; tool: string; narration: string; name: string };
 export type AiDraftStatus = {
   state: "idle" | "running" | "done" | "error";

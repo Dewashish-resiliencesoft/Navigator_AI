@@ -114,6 +114,9 @@ class _RecordingSpeaker:
         self._handle = handle
 
     def say(self, text: str, *, language: str | None = None, **kwargs) -> None:
+        from navigator.agent.speech_safety import humanize_ids
+
+        text = humanize_ids(text)
         self._handle.said.append(text)
         self._handle.current_narration = text
         self._handle.speech_status = "speaking"

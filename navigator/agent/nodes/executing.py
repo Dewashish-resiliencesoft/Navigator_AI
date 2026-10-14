@@ -254,9 +254,17 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         result = result.model_copy(
             update={"detail": f"filled {call.selector} from vault"}
         )
+    _sync_screen_to_narration(state, deps, call)
     if deps.push_frame is not None:
         deps.push_frame()
-        time.sleep(0.12)  # let the viewer receive the fresh frame first
+        try:
+            from navigator.meeting.relay import wait_frame_sent
+
+            # Narration starts only once a frame showing this screen went out.
+            if not wait_frame_sent(0.7):
+                time.sleep(0.12)
+        except Exception:  # noqa: BLE001
+            time.sleep(0.12)
     speech_handle, _ = _start_pre_action_speech(state, deps)
 
     _tell_live_where_we_are(deps, next_page_id, result)
@@ -456,3 +464,50 @@ def _missing_fast(deps, page_id, call, wait_ms: int = 3000) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+def _sync_screen_to_narration(state: CallState, deps: CallDeps, call) -> None:
+    """Show what the line is about before it is spoken.
+
+    Authoring time (script_sync.align_flow) already turned mismatched steps
+    into navigate steps and cached a highlight per step in
+    ``_meta.step_highlights``; here we only outline that control (no click,
+    ~50ms). Runtime fallback for flows never aligned: a narration-only step
+    whose line names a visible nav item opens it.
+    """
+    page = getattr(deps, "page", None)
+    if page is None:
+        return
+    flow_id = str(state.get("walkthrough_flow_id") or "")
+    step = state.get("executing_step")
+    meta = getattr(getattr(deps, "graph", None), "meta", None) or {}
+    try:
+        from navigator.meeting.ui_jobs import highlight_text, show_feature
+
+        hl = ((meta.get("step_highlights") or {}).get(flow_id) or {}).get(str(step), "")
+        if hl:
+            ok = highlight_text(page, hl)
+            print(f"[sync] step {step}: highlight {hl!r} -> {'shown' if ok else 'not on screen'}", flush=True)
+            return
+        aligned = flow_id in (meta.get("step_sync") or {})
+        spoken = str(getattr(call, "spoken", "") or "")
+        if aligned or not spoken or getattr(call, "tool", "") != "wait_for" or getattr(call, "selector", "") != "body":
+            return
+        from navigator.knowledge.script_sync import heuristic_target
+
+        controls = [{"label": c, "href": ""} for c in visible_controls_safe(page)]
+        tgt = heuristic_target(spoken, controls)
+        if tgt:
+            res = show_feature(page, tgt["label"], None)
+            print(f"[sync] step {step}: runtime fallback opened {tgt['label']!r} -> {res.get('ok')}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sync] step {step}: skipped ({exc})", flush=True)
+
+
+def visible_controls_safe(page) -> list[str]:
+    try:
+        from navigator.meeting.ui_jobs import visible_controls
+
+        return visible_controls(page)
+    except Exception:  # noqa: BLE001
+        return []

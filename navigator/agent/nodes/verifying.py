@@ -208,7 +208,10 @@ def _success_line(call) -> str:
     """
     match call.tool:
         case "navigate":
-            return f"Okay, we're on the {call.page_id} page now."
+            # Silent: every scripted step already speaks its own narration, and
+            # the page_id slug ("page_automation_integrations") was being read
+            # aloud as a duplicate filler line.
+            return ""
         case "fill_field" | "click_element" | "wait_for":
             return ""
         case _:

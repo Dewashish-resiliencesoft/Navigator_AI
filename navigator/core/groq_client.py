@@ -39,6 +39,9 @@ def chat_completions_create(
     if not keys:
         raise RuntimeError("no Groq API keys configured")
 
+    if kwargs.get("model"):
+        kwargs["model"] = resolve_model(str(kwargs["model"]), keys[0])
+
     def _call(key: str):
         resp = groq_client(key).chat.completions.create(**kwargs)
         record_groq_chat(resp, purpose=purpose, model=str(kwargs.get("model") or ""))
@@ -59,3 +62,39 @@ def transcribe_create(api_key: str | None = None, **kwargs: Any) -> Any:
         return groq_client(key).audio.transcriptions.create(**kwargs)
 
     return call_with_rotation(_call, keys, label="groq-stt")
+
+
+_AVAILABLE: list[str] | None = None
+
+
+def _available(key: str) -> list[str]:
+    global _AVAILABLE
+    if _AVAILABLE is None:
+        try:
+            _AVAILABLE = [m.id for m in groq_client(key).models.list().data]
+        except Exception:  # noqa: BLE001
+            return []
+    return _AVAILABLE
+
+
+def resolve_model(model: str, key: str) -> str:
+    """Map a retired Groq model id to a live chat model of similar size.
+
+    Groq retired llama-3.3-70b-versatile / llama-3.1-8b-instant; configs and
+    saved agent settings still name them and the 404 killed a live demo.
+    """
+    avail = _available(key)
+    if not avail or model in avail:
+        return model
+    chat = [m for m in avail if not any(x in m for x in ("whisper", "guard", "orpheus", "safeguard", "tts"))]
+    if not chat:
+        return model
+    import re as _re
+
+    size = _re.search(r"(\d+)b", model.lower())
+    big = int(size.group(1)) >= 30 if size else True
+    ranked = sorted(chat, key=lambda m: int((_re.search(r"(\d+)b", m.lower()) or [0, 0])[1]), reverse=big)
+    pref = "openai/gpt-oss-120b" if big else "openai/gpt-oss-20b"
+    pick = pref if pref in chat else ranked[0]
+    print(f"[groq] model {model!r} unavailable -> using {pick!r}", flush=True)
+    return pick

@@ -15,6 +15,8 @@ Every live turn writes one DecisionTrace row -- including the boring ones.
 
 from __future__ import annotations
 
+import re
+
 from navigator.agent.call_memory import CallMemory
 from navigator.agent.end_policy import (
     ANYTHING_ELSE,
@@ -440,7 +442,14 @@ def _plan_anything_else(
         chunks = []
     spoken = (chunks[0] or "").strip()[:280] if chunks else ""
     if not spoken:
-        spoken = OFF_TOPIC
+        if re.match(r"^\W*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b", utterance or "", re.I):
+            spoken = "Hi! I'm still here. Do you have any questions about what we just saw?"
+        else:
+            spoken = OFF_TOPIC
+            # Never the same refusal twice in a row (13:54 Q&A).
+            last_agent = next((t for t in reversed(transcript) if str(t).startswith("agent:")), "")
+            if OFF_TOPIC in str(last_agent):
+                spoken = "I'll check on that and follow up after the call. Is there anything else in the product you'd like to see?"
     return CallState(
         phase="anything_else",
         silence_rounds=0,

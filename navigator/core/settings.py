@@ -125,9 +125,9 @@ class Settings(BaseSettings):
     live_walkthrough_flow: str = "default_walkthrough"
     live_max_turns: int = 50
     #: Brain model pins (override provider defaults).
-    brain_planning_model: str = "llama-3.3-70b-versatile"
-    brain_phrasing_model: str = "llama-3.1-8b-instant"
-    brain_classify_model: str = "llama-3.1-8b-instant"
+    brain_planning_model: str = "openai/gpt-oss-120b"
+    brain_phrasing_model: str = "openai/gpt-oss-20b"
+    brain_classify_model: str = "openai/gpt-oss-20b"
     brain_stt_model: str = "whisper-large-v3-turbo"
     brain_vision_text_model: str = "gemini-3.6-flash"
     brain_vision_image_model: str = "gemini-3.6-flash"

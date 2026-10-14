@@ -281,7 +281,28 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
     handle = RelayHandle(host=host, port=real_port, _httpd=httpd, _thread=thread)
     holder["h"] = handle
     thread.start()
+    global LAST_HANDLE
+    LAST_HANDLE = handle
     return handle
+
+
+LAST_HANDLE: "RelayHandle | None" = None
+
+
+def wait_frame_sent(timeout_s: float = 0.7) -> bool:
+    """Block until the viewer has been sent a frame newer than now.
+
+    Narration waits on this so words never run ahead of the screen."""
+    h = LAST_HANDLE
+    if h is None or h._closed or h.stream_clients <= 0:
+        return False
+    start = h.frames_streamed
+    end = time.time() + timeout_s
+    while time.time() < end:
+        if h.frames_streamed > start:
+            return True
+        time.sleep(0.02)
+    return False
 
 
 def start_screencast(handle: RelayHandle, page: Page):

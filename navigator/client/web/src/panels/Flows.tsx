@@ -9,7 +9,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
-import { type NarrationStatus, api, type AiDraftStatus, type DemoScriptBeat, type Flow, type RecorderStatus, type ScriptSplitRow, type ScriptExtra, type StepKind } from "../lib/api";
+import { type NarrationStatus, api, type AiDraftStatus, type DemoScriptBeat, type Flow, type RecorderStatus, type ScriptSplitRow, type ScriptExtra, type StepKind, type FlowAlignRow, type FlowExpandRow } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
 import {
@@ -89,9 +89,13 @@ function FlowScriptEditor({
         <p className="text-[0.72rem] text-[var(--muted)]">
           Spoken script from the recording. Edit a line, then save. Draft only — publish the site graph to make it live.
         </p>
-        <Button onClick={onSave} disabled={!dirty || busy || !lines.length}>
-          <Save size={13} /> {busy ? "Saving…" : "Save script"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <SyncScreensButton flowId={flowId} onDone={onReload} />
+          <ExpandNarrationButton flowId={flowId} onDone={onReload} />
+          <Button onClick={onSave} disabled={!dirty || busy || !lines.length}>
+            <Save size={13} /> {busy ? "Saving…" : "Save script"}
+          </Button>
+        </div>
       </div>
       {status && !status.captured && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.72rem] text-amber-700 dark:text-amber-300">
@@ -462,6 +466,104 @@ function StepControls({
         </div>
       )}
     </span>
+  );
+}
+
+/** Point every step at the screen its narration talks about (draft only). */
+function SyncScreensButton({ flowId, onDone }: { flowId: string; onDone?: () => void }) {
+  const { ok, err } = useUi();
+  const [rows, setRows] = useState<FlowAlignRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (apply: boolean, recrawl = false) => {
+    setBusy(true);
+    try {
+      const r = await api.alignFlow(flowId, apply, recrawl);
+      if (apply) {
+        ok(`Screens synced to the script — saved as draft revision ${r.revision ?? ""} (not published)`);
+        setRows(null);
+        onDone?.();
+      } else setRows(r.report);
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="relative">
+      <Button variant="secondary" disabled={busy} onClick={() => void run(false)}>
+        {busy ? "Matching screens…" : "Sync screens to script"}
+      </Button>
+      {rows && (
+        <div className="absolute right-0 z-20 mt-1 w-[34rem] rounded-lg border bg-[var(--bg)] p-2 text-[0.68rem] shadow-lg" style={{ borderColor: "var(--line)" }}>
+          <table className="w-full">
+            <thead><tr className="text-left text-[var(--muted)]"><th>#</th><th>Narration</th><th>Screen</th><th>Highlight</th><th>Change</th></tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.step} className="align-top">
+                  <td>{r.step + 1}</td>
+                  <td className="pr-2">{r.narration.slice(0, 60)}</td>
+                  <td>{r.target || "—"}</td>
+                  <td>{r.highlight || "—"}</td>
+                  <td className={r.action.startsWith("navigate") ? "text-amber-600" : "text-[var(--muted)]"}>{r.action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setRows(null)}>Cancel</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void run(false, true)}>Re-read product menu</Button>
+            <Button disabled={busy} onClick={() => void run(true)}>Apply to draft</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ExpandNarrationButton({ flowId, onDone }: { flowId: string; onDone?: () => void }) {
+  const { ok, err } = useUi();
+  const [rows, setRows] = useState<FlowExpandRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (apply: boolean, recrawl = false) => {
+    setBusy(true);
+    try {
+      const r = await api.expandNarration(flowId, apply, recrawl);
+      if (apply) {
+        ok(`Narration expanded — saved as draft revision ${r.revision ?? ""} (not published). Edit any line below.`);
+        setRows(null);
+        onDone?.();
+      } else setRows(r.report ?? []);
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const changed = (rows ?? []).filter((r) => r.changed);
+  return (
+    <div className="relative">
+      <Button variant="secondary" disabled={busy} onClick={() => void run(false)}>
+        {busy ? "Reading screens…" : "Expand narration"}
+      </Button>
+      {rows && (
+        <div className="absolute right-0 z-20 mt-1 max-h-[28rem] w-[38rem] overflow-auto rounded-lg border bg-[var(--bg)] p-2 text-[0.68rem] shadow-lg" style={{ borderColor: "var(--line)" }}>
+          <p className="mb-1 text-[var(--muted)]">{changed.length} of {rows.length} lines get extra detail from what is on screen. Your lines stay as written; additions are appended.</p>
+          {changed.map((r) => (
+            <div key={r.step} className="mb-2">
+              <div className="font-medium">Step {r.step + 1}</div>
+              <div className="text-[var(--muted)]">{r.before}</div>
+              <div className="text-emerald-700 dark:text-emerald-400">+ {r.after.slice(r.before.length).trim()}</div>
+            </div>
+          ))}
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setRows(null)}>Cancel</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void run(false, true)}>Re-read screens</Button>
+            <Button disabled={busy || !changed.length} onClick={() => void run(true)}>Save as draft</Button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 

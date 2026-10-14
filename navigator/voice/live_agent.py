@@ -281,6 +281,9 @@ class LiveAgent:
 
         Matches ``MeetSpeaker.say`` so SPEAKING can call either one.
         """
+        from navigator.agent.speech_safety import humanize_ids
+
+        text = humanize_ids(text)
         if not (text or "").strip():
             return
         uid = utterance_id or ""
@@ -939,6 +942,9 @@ class LiveAgent:
                     self._emit(LiveEvent(kind="heard", text=text))
             if getattr(sc, "turn_complete", False):
                 self.speaking = False
+                mark = getattr(self.bridge, "mark_line_end", None)
+                if callable(mark):
+                    mark()
                 now_tc = time.monotonic()
                 self._gen_done_at = now_tc
                 self._drain_until = now_tc + min(

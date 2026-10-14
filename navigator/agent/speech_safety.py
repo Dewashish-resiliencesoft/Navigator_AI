@@ -61,8 +61,26 @@ REFUSE_SPOKEN = (
 )
 
 
+_UUID = re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.I)
+_HEXID = re.compile(r"\b(?=[0-9a-f]*\d)(?=[0-9a-f]*[a-f])[0-9a-f]{12,}\b", re.I)
+_SLUG = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+\b")
+_SLUG_PREFIX = re.compile(r"^(page|flow|step|feature|section|btn|nav|tab)_", re.I)
+
+
+def _humanize_slug(m: re.Match) -> str:
+    raw = _SLUG_PREFIX.sub("", m.group(0))
+    return raw.replace("_", " ").strip()
+
+
+def humanize_ids(text: str) -> str:
+    """Never read internal ids aloud: page_automation_integrations -> automation integrations."""
+    text = _UUID.sub("", text or "")
+    text = _HEXID.sub("", text)
+    return _SLUG.sub(_humanize_slug, text)
+
+
 def prospect_safe_line(line: str) -> str:
-    text = line or ""
+    text = humanize_ids(line or "")
     if not text.strip():
         return ""
     if _TECH.search(text) or _SECRET.search(text):

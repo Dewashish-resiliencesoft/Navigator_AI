@@ -695,7 +695,7 @@ def _brain_complete(system: str, user: str) -> str:
 
             client = Groq(api_key=key)
             resp = client.chat.completions.create(
-                model=settings.brain_phrasing_model or "llama-3.3-70b-versatile",
+                model=settings.brain_phrasing_model or "openai/gpt-oss-120b",
                 messages=[
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},

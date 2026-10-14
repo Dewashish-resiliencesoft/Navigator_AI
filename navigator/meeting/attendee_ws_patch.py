@@ -176,3 +176,54 @@ def patch_audio_v2(attendee_dir: Path) -> str:
         py.write_text((_OVR / "realtime_audio_output_manager.py").read_text(encoding="utf-8"), encoding="utf-8")
         done.append("pacing")
     return f"patched {', '.join(done)}" if done else "already patched"
+
+
+_DRAW2_MARKER = "navigator: frame-driven draw v2"
+_FLAGS_MARKER = "navigator: no background throttling"
+_FLAGS_NEEDLE = '        options.add_argument("--disable-application-cache")\n'
+_FLAGS = (
+    f'        # {_FLAGS_MARKER}\n'
+    '        for _nav_flag in ("--disable-background-timer-throttling",\n'
+    '                          "--disable-renderer-backgrounding",\n'
+    '                          "--disable-backgrounding-occluded-windows"):\n'
+    '            options.add_argument(_nav_flag)\n'
+)
+
+
+def patch_video_v2(attendee_dir: Path) -> str:
+    """Screenshare smoothness in the bot and streamer Chromes.
+
+    - Bot draw loop: draw each decoded share frame once via
+      requestVideoFrameCallback (old rAF loop drew 30/s for a 20fps source:
+      a third were duplicates, plus up to a vsync of extra delay). Logs
+      [bot-video] draw_fps every 10s to the worker log.
+    - Bot + webpage-streamer Chrome: disable timer/renderer background
+      throttling so timers and painting are never slowed.
+    """
+    js = attendee_dir / "bots" / "web_bot_adapter" / "shared_chromedriver_payload.js"
+    done = []
+    if js.is_file():
+        text = js.read_text(encoding="utf-8")
+        if _DRAW2_MARKER not in text:
+            a = text.find("    _startVideoDrawingLoop() {")
+            b = text.find("    _stopVideoPlayback() {")
+            if 0 <= a < b:
+                text = text[:a] + (_OVR / "draw_loop.js").read_text(encoding="utf-8") + text[b:]
+                text = text.replace(
+                    "        if (this.videoRafId != null) {\n            cancelAnimationFrame(this.videoRafId);",
+                    "        if (this._navKeepalive) { clearInterval(this._navKeepalive); this._navKeepalive = null; }\n"
+                    "        if (this.videoRafId != null) {\n            if (this.videoRafId > 0) cancelAnimationFrame(this.videoRafId);",
+                    1,
+                )
+                js.write_text(text, encoding="utf-8")
+                done.append("draw")
+    for rel in (("web_bot_adapter", "web_bot_adapter.py"), ("webpage_streamer", "webpage_streamer.py")):
+        f = attendee_dir / "bots" / rel[0] / rel[1]
+        if not f.is_file():
+            continue
+        t = f.read_text(encoding="utf-8")
+        if _FLAGS_MARKER in t or _FLAGS_NEEDLE not in t:
+            continue
+        f.write_text(t.replace(_FLAGS_NEEDLE, _FLAGS_NEEDLE + _FLAGS, 1), encoding="utf-8")
+        done.append(rel[0])
+    return f"patched {', '.join(done)}" if done else "already patched"

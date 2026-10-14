@@ -196,11 +196,19 @@ class AudioBridge:
         self._tap_pcm(pcm or b"", sample_rate)
         self._outbound.put((pcm, sample_rate))
 
+    def mark_line_end(self) -> None:
+        """Model finished a line. The silence before the next line's first chunk
+        is a pause between utterances (incl. LLM/TTS latency), not an underrun.
+        Before this, ~1-1.9s gaps at every line start were counted as underruns."""
+        self._tap_play_end = 0.0
+
     def _tap_pcm(self, pcm: bytes, rate: int) -> None:
         """Underrun detector + optional WAV tap (NAVIGATOR_VOICE_WAV=/tmp/x.wav)."""
         now = time.monotonic()
         play_end = getattr(self, "_tap_play_end", 0.0)
-        if play_end and 0.0 < now - play_end < 2.0:
+        if not play_end:
+            self.line_starts = getattr(self, "line_starts", 0) + 1
+        elif 0.0 < now - play_end < 2.0:
             # Gemini chunk arrived after the previous audio already ran out.
             self.underruns = getattr(self, "underruns", 0) + 1
             print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns}", flush=True)

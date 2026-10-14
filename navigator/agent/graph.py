@@ -129,9 +129,83 @@ def anything_else_entry_state(
 _STAMP_NODES = frozenset({"planning", "introducing", "verifying"})
 
 
+SAFE_FALLBACK_LINE = "Good question. Let me make a note of that and come back to it, or I can show you anything else in the product meanwhile."
+_FALLBACK_LINES = (
+    SAFE_FALLBACK_LINE,
+    "I want to give you an accurate answer on that, so I'll follow up after the call. What else would you like to see?",
+    "Happy to dig into that with the team afterwards. Is there another part of the product you'd like me to show?",
+)
+_GUARDED_NODES = frozenset({"planning", "reflecting"})
+
+
+def _last_user_text(state: CallState) -> str:
+    for line in reversed(list(state.get("transcript") or [])):
+        if isinstance(line, str) and line.startswith("user:"):
+            return line[5:].strip()
+    return ""
+
+
+def _fallback_answer(state: CallState, deps: CallDeps) -> str:
+    """Next provider (Gemini text) for a short spoken reply; then a safe canned line."""
+    utter = _last_user_text(state)
+    if utter:
+        try:
+            from navigator.knowledge.flow_authoring import default_llm
+
+            llm = default_llm()
+            if llm is not None:
+                persona = getattr(getattr(deps, "graph", None), "persona", None)
+                product = getattr(persona, "product_name", "") or "the product"
+                text = llm(
+                    f"You are presenting a live demo of {product} on a video call. "
+                    "Reply to the attendee in 1-2 short spoken sentences. Be accurate: "
+                    "if you are not sure, say you'll follow up, and offer to show something. "
+                    "No markdown, no ids, no URLs.",
+                    utter,
+                )
+                text = " ".join((text or "").split())
+                if text and len(text) < 400:
+                    return text
+        except Exception as exc:  # noqa: BLE001
+            print(f"[graph] fallback provider failed: {type(exc).__name__}", flush=True)
+    n = int(state.get("turns") or 0)
+    return _FALLBACK_LINES[n % len(_FALLBACK_LINES)]
+
+
+def _guard(name: str, fn, deps: CallDeps):
+    """An LLM/provider error in planning or reflecting must never end the call.
+
+    13:54 live demo: a retired Groq model raised NotFoundError inside planning,
+    the graph died and the bot left the meeting. Now planning answers via the
+    next provider (or a safe spoken line) and returns to listening; reflecting
+    just becomes a no-op.
+    """
+
+    def _safe(state: CallState) -> CallState:
+        try:
+            return fn(state)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[graph] {name} failed, degrading: {type(exc).__name__}: {exc}"[:400], flush=True)
+            if name != "planning":
+                return CallState()
+            from navigator.core.schemas import Plan
+
+            line = _fallback_answer(state, deps)
+            return CallState(
+                plan=Plan(spoken_response=line, tool_calls=[]),
+                pending_calls=[],
+                narration=[line],
+                transcript=[f"agent: {line}"],
+            )
+
+    return _safe
+
+
 def _bind_node(name: str, fn, deps: CallDeps):
     """Bind deps; stamp utterance ids onto narration at the graph edge."""
     bound = partial(fn, deps=deps)
+    if name in _GUARDED_NODES:
+        bound = _guard(name, bound, deps)
     if name not in _STAMP_NODES:
         return bound
 

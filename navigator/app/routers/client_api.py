@@ -2379,6 +2379,15 @@ def client_distribute_script(
         new_yaml = set_step_names_bulk(new_yaml, flow_id=body.flow_id, names={int(k): v for k, v in names.items() if v})
         if body.create_extras and extras:
             new_yaml = append_narration_steps(new_yaml, flow_id=body.flow_id, extras=extras)
+        try:  # keep screens in step with the new script (cached menu; draft only)
+            import yaml as _y
+
+            if ((_y.safe_load(new_yaml) or {}).get("_meta") or {}).get("nav_inventory"):
+                from navigator.knowledge.script_sync import align_flow
+
+                new_yaml, _ = align_flow(new_yaml, body.flow_id, llm=default_llm())
+        except Exception as exc:  # noqa: BLE001
+            print(f"[flows] screen sync skipped: {exc}", flush=True)
         parse_site_graph(new_yaml)
         updated = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
     except (ValueError, SiteGraphError) as exc:
@@ -2386,6 +2395,111 @@ def client_distribute_script(
     return {"ok": True, "applied": True, "method": method, "preview": preview,
             "extras_created": len(extras) if body.create_extras else 0,
             "revision": updated.revision, "published": False}
+
+
+class FlowAlignBody(_BM):
+    flow_id: str
+    apply: bool = False
+    recrawl: bool = False
+
+
+@router.post("/client/api/flows/align")
+def client_flow_align(product: DashboardAuthedProduct, body: FlowAlignBody, registry: Reg, vault: Vault) -> dict:
+    """Script-to-screen sync: point each step at the screen its narration talks
+    about. apply=False -> preview. apply=True saves a DRAFT only (never publishes)."""
+    import yaml as _yaml
+
+    from navigator.knowledge.flow_authoring import default_llm
+    from navigator.knowledge.script_sync import align_flow, crawl_inventory
+
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    inventory = None
+    raw = _yaml.safe_load(rev.yaml) or {}
+    if body.recrawl or not (raw.get("_meta") or {}).get("nav_inventory"):
+        login = None
+        try:
+            creds = vault.credentials_for(product.product_id)
+            if creds:
+                login = (str(creds[0] or ""), str(creds[1] or ""), str(creds[2] or ""))
+        except Exception:  # noqa: BLE001
+            login = None
+        try:
+            inventory = crawl_inventory(str(raw.get("base_url") or ""), login)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(502, f"could not read the product menu: {exc}") from None
+    try:
+        new_yaml, report = align_flow(rev.yaml, body.flow_id, inventory=inventory, llm=default_llm())
+        parse_site_graph(new_yaml)
+    except (ValueError, SiteGraphError) as exc:
+        raise HTTPException(422, str(exc)) from None
+    if not body.apply:
+        return {"ok": True, "applied": False, "report": report}
+    updated = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
+    return {"ok": True, "applied": True, "report": report, "revision": updated.revision, "published": False}
+
+
+class FlowExpandBody(_BM):
+    flow_id: str
+    apply: bool = False
+    recrawl: bool = False
+
+
+_EXPAND_PREVIEW: dict[tuple[str, int, str], str] = {}
+
+
+@router.post("/client/api/flows/expand")
+def client_flow_expand(product: DashboardAuthedProduct, body: FlowExpandBody, registry: Reg, vault: Vault) -> dict:
+    """Expand narration: append 1-2 screen-grounded sentences to each step line.
+    Precomputed at authoring time (no live latency). apply=True saves a DRAFT only."""
+    import yaml as _yaml
+
+    from navigator.knowledge.flow_authoring import default_llm
+    from navigator.knowledge.narration_expand import crawl_screen_facts, expand_flow, step_screens
+
+    try:
+        rev = registry.latest_revision(product.product_id)
+    except ProductNotFound as exc:
+        raise HTTPException(404, str(exc)) from None
+    key = (product.product_id, rev.revision, body.flow_id)
+    if body.apply and key in _EXPAND_PREVIEW:
+        new_yaml = _EXPAND_PREVIEW.pop(key)
+        report = None
+    else:
+        raw = _yaml.safe_load(rev.yaml) or {}
+        llm = default_llm()
+        if llm is None:
+            raise HTTPException(503, "no LLM key configured for narration")
+        try:
+            paths = step_screens(raw, body.flow_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        cached = (raw.get("_meta") or {}).get("screen_facts") or {}
+        facts = None
+        if body.recrawl or any(p not in cached for p in paths):
+            login = None
+            try:
+                creds = vault.credentials_for(product.product_id)
+                if creds:
+                    login = (str(creds[0] or ""), str(creds[1] or ""), str(creds[2] or ""))
+            except Exception:  # noqa: BLE001
+                login = None
+            try:
+                facts = crawl_screen_facts(str(raw.get("base_url") or ""), paths, login)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(502, f"could not read the product screens: {exc}") from None
+        try:
+            new_yaml, report = expand_flow(rev.yaml, body.flow_id, facts=facts, llm=llm)
+            parse_site_graph(new_yaml)
+        except (ValueError, SiteGraphError) as exc:
+            raise HTTPException(422, str(exc)) from None
+        if not body.apply:
+            _EXPAND_PREVIEW[key] = new_yaml
+            return {"ok": True, "applied": False, "report": report}
+    updated = registry.put_site_graph(product.product_id, new_yaml, "yaml", publish=False)
+    return {"ok": True, "applied": True, "report": report, "revision": updated.revision, "published": False}
 
 
 @router.get("/client/api/flows/steps")

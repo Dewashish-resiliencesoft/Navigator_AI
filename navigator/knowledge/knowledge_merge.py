@@ -121,7 +121,7 @@ def _merge_with_llm(user_md: str, explore_md: str) -> str | None:
             f"## Explore knowledge\n{explore_md or '(empty)'}\n"
         )
         resp = client.chat.completions.create(
-            model=settings.brain_phrasing_model or "llama-3.3-70b-versatile",
+            model=settings.brain_phrasing_model or "openai/gpt-oss-120b",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
             max_tokens=4000,

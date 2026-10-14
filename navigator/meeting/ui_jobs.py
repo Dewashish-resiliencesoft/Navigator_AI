@@ -363,3 +363,26 @@ class ScreenThread:
             print(f"[screen-thread] stopped: {exc}", flush=True)
         finally:
             self.ready.set()
+
+
+def highlight_text(page, target: str, timeout_ms: int = 1200) -> bool:
+    """Outline (never click) the control a narration line talks about."""
+    target = (target or "").strip()
+    if not target or len(target) > 60:
+        return False
+    try:
+        page.evaluate("""() => document.querySelectorAll('[data-nav-hl]').forEach(e => {
+            e.style.outline = e.dataset.navHl === '-' ? '' : e.dataset.navHl; e.removeAttribute('data-nav-hl'); })""")
+    except Exception:  # noqa: BLE001
+        pass
+    el = _find(page, target)
+    if el is None:
+        return False
+    try:
+        el.scroll_into_view_if_needed(timeout=timeout_ms)
+        el.evaluate("""e => { e.dataset.navHl = e.style.outline || '-';
+            e.style.outline = '3px solid #ffb020'; e.style.outlineOffset = '3px'; }""")
+        el.hover(timeout=timeout_ms)  # moves the demo cursor there; hover is not a click
+        return True
+    except Exception:  # noqa: BLE001
+        return False

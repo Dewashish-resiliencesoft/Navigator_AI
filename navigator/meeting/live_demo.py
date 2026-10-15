@@ -1532,6 +1532,12 @@ def run_live_meet_demo(
                 )
 
             playlist_login = playlist_has_login_flow(graph_cfg)
+            # The starting flow itself walks landing -> Login -> sign in: start
+            # signed out on the site root and let the flow log in on screen.
+            from navigator.agent.nodes import executing as _exec_mod
+
+            _exec_mod.LOGIN_CREDS = None
+            flow_login = False
             if auto_play:
                 page_id, flow_id = live_start_flow(
                     graph_cfg,
@@ -1541,11 +1547,33 @@ def run_live_meet_demo(
                 )
             start_spec = graph_cfg.page(page_id)
             hold_url = urljoin(origin, start_spec.url.lstrip("/") or "/")
+            if auto_play and login_email and login_password and not playlist_login:
+                try:
+                    _first = list(graph_cfg.flow(page_id, flow_id))[:3]
+                    flow_login = any(
+                        _exec_mod._is_login_call(c) and getattr(c, "tool", "") != "navigate"
+                        for c in _first
+                    )
+                except Exception:  # noqa: BLE001
+                    flow_login = False
+            if flow_login:
+                _exec_mod.LOGIN_CREDS = (login_email, login_password)
+                hold_url = urljoin(origin, "/")
+                try:
+                    context.clear_cookies()
+                except Exception:  # noqa: BLE001
+                    pass
+                print(
+                    f"[live] flow walks landing -> login itself: fresh signed-out context, "
+                    f"starting on site root {hold_url}",
+                    flush=True,
+                )
 
             show_login = bool(
                 login_email
                 and login_password
                 and not playlist_login
+                and not flow_login
                 and show_login_on_screenshare(
                     graph_cfg,
                     login_url=login_url or "",
@@ -1553,7 +1581,10 @@ def run_live_meet_demo(
                 )
             )
 
-            if playlist_login:
+            if flow_login:
+                print(f"[live] opening start page: {hold_url}", flush=True)
+                page.goto(hold_url, wait_until="domcontentloaded", timeout=60_000)
+            elif playlist_login:
                 print(
                     "[live] playlist includes a login walkthrough — "
                     "skipping pre-demo sign-in; flows run as recorded",
@@ -2121,6 +2152,12 @@ def run_live_meet_demo(
     finally:
         clear_demo_usage()
         frame_watch_stop.set()
+        try:
+            from navigator.agent.nodes import executing as _exec_end
+
+            _exec_end.LOGIN_CREDS = None
+        except Exception:  # noqa: BLE001
+            pass
         try:
             from navigator.meeting.ui_jobs import stop_all_screens
 

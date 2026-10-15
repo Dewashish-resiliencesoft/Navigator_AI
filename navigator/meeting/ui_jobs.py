@@ -34,6 +34,46 @@ TOOL_DECLARATIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "do_task",
+        "description": (
+            "Do or demonstrate a task on the shared screen when the prospect asks, e.g. 'how do I "
+            "create a contact' (mode=explain: opens the form and lights up each field; explain each "
+            "field in order, never submit) or 'create a contact, name X, phone Y' (mode=do: types the "
+            "details visibly). Say a short 'Sure, let me do that' BEFORE calling. In do mode the result "
+            "may be status=need_details (ask for the missing fields by voice, then call again with all "
+            "details), or status=awaiting_confirmation (read the details back and ask 'shall I save "
+            "it?'; on yes call confirm_submit). Set confirmed=true only if the prospect already said to "
+            "save/submit. Deleting, sending messages/campaigns, payments, passwords, API keys and "
+            "account settings are refused: show and explain only. Report only what the result says."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "The task in the prospect's words, e.g. 'create a contact'"},
+                "mode": {"type": "string", "enum": ["explain", "do"]},
+                "details": {"type": "string", "description": "Values to type, as 'field: value; field: value'"},
+                "confirmed": {"type": "boolean"},
+            },
+            "required": ["goal", "mode"],
+        },
+    },
+    {
+        "name": "confirm_submit",
+        "description": "Press the save/create button of the form do_task filled, after the prospect said yes. Returns whether it saved (checked on screen).",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "fill_field",
+        "description": "Type a value into one visible form field (by its label), e.g. to correct a detail.",
+        "parameters": {"type": "object", "properties": {"label": {"type": "string"}, "value": {"type": "string"}},
+                       "required": ["label", "value"]},
+    },
+    {
+        "name": "click_control",
+        "description": "Click a non-destructive visible control (tab, 'Create', 'Manual entry') or open a list entry: 'first chat', 'last contact', or a person's/item's name. Never for save/delete/send.",
+        "parameters": {"type": "object", "properties": {"label": {"type": "string"}}, "required": ["label"]},
+    },
+    {
         "name": "list_screen_controls",
         "description": "List visible nav items and buttons on the shared screen right now.",
         "parameters": {"type": "object", "properties": {}},
@@ -46,8 +86,74 @@ LIVE_TOOL_INSTRUCTION = (
     "product, call show_feature (call list_screen_controls first if unsure, and open "
     "a parent menu such as Profile first when needed), wait for the result, then "
     "explain what is now on screen. Never say you cannot show something before "
-    "trying the tool. Logout/delete are highlighted, not clicked."
+    "trying the tool. Logout/delete are highlighted, not clicked. For 'how do I X' or 'do X for me' "
+    "use do_task (explain or do). To open an entry in a list (a chat in the Inbox, a contact, a row) call "
+    "click_control with e.g. 'first chat' or the name: never ask the prospect to click anything and never "
+    "say you cannot see the screen. Tools are only for the prospect's requests, never on your own "
+    "while reading the script."
 )
+
+#: URL the scripted flow was on before a prospect's request moved the screen;
+#: the flow executor returns there before its next step.
+DETOUR_FROM: list[str] = []
+#: Explain-mode field tours waiting to be paced on the screen thread.
+DEFERRED_TOURS: list = []
+
+
+def dispatch(page, name: str, args: dict, push_frame=None) -> dict:
+    """One place that runs a Live screen tool (screen thread or demo thread)."""
+    from navigator.meeting import task_runner as tr
+
+    url0 = getattr(page, "url", "") or ""
+    if name == "show_feature":
+        res = show_feature(page, str(args.get("target", "")), push_frame)
+    elif name == "list_screen_controls":
+        res = {"ok": True, "visible_controls": visible_controls(page)}
+    elif name == "do_task":
+        res = tr.do_task(page, str(args.get("goal", "")), args.get("details", ""),
+                         str(args.get("mode", "explain")), bool(args.get("confirmed", False)), push_frame)
+        if res.get("tour"):
+            DEFERRED_TOURS.append((time.monotonic(), res.pop("tour")))
+    elif name == "confirm_submit":
+        res = tr.confirm_submit(page, push_frame)
+    elif name == "fill_field":
+        res = tr.fill_field(page, str(args.get("label", "")), str(args.get("value", "")), push_frame)
+    elif name == "click_control":
+        res = tr.click_control(page, str(args.get("label", "")), push_frame)
+    else:
+        res = {"ok": False, "error": f"unknown tool {name}"}
+    try:
+        if (page.url or "") != url0 and not DETOUR_FROM:
+            DETOUR_FROM.append(url0)
+    except Exception:  # noqa: BLE001
+        pass
+    return res
+
+
+def run_deferred_tours(page, push_frame=None) -> None:
+    """Pace explain-mode field highlights to Live's narration (~2.2s per field)."""
+    if not DEFERRED_TOURS:
+        return
+    from navigator.meeting.task_runner import _outline
+
+    t_req, ids = DEFERRED_TOURS[0]
+    now = time.monotonic()
+    i = int((now - t_req - 1.5) // 2.2)
+    if i < 0:
+        return
+    if i >= len(ids):
+        DEFERRED_TOURS.pop(0)
+        return
+    key = (t_req, i)
+    if getattr(run_deferred_tours, "_last", None) == key:
+        return
+    run_deferred_tours._last = key
+    try:
+        _outline(page, page.locator(f"[data-nav-field='{ids[i]}']").first, "#2f80ed")
+        if push_frame is not None:
+            push_frame()
+    except Exception:  # noqa: BLE001
+        pass
 
 _CONTROLS_JS = """
 () => {
@@ -288,7 +394,7 @@ class UiJobs:
             st.submit(name, dict(args or {}), box, done)
         else:
             self._q.put((name, dict(args or {}), box, done))
-        if not done.wait(timeout=30.0):
+        if not done.wait(timeout=120.0 if name in ("do_task", "confirm_submit") else 30.0):
             return {"ok": False, "error": "screen busy, try again in a moment"}
         self.hold_until = time.monotonic() + 8.0
         return box.get("result") or {"ok": False}
@@ -305,12 +411,7 @@ class UiJobs:
                 return n
             t0 = time.monotonic()
             try:
-                if name == "show_feature":
-                    box["result"] = show_feature(self.page, str(args.get("target", "")), self.push_frame)
-                elif name == "list_screen_controls":
-                    box["result"] = {"ok": True, "visible_controls": visible_controls(self.page)}
-                else:
-                    box["result"] = {"ok": False, "error": f"unknown tool {name}"}
+                box["result"] = dispatch(self.page, name, args, self.push_frame)
             except Exception as exc:  # noqa: BLE001
                 box["result"] = {"ok": False, "error": str(exc)[:200]}
             print(f"[ui-tool] ran {name} {args} in {time.monotonic() - t0:.2f}s -> "
@@ -446,18 +547,15 @@ class ScreenThread:
                             break
                         t0 = time.monotonic()
                         try:
-                            if name == "show_feature":
-                                box["result"] = show_feature(self.page, str(args.get("target", "")), None)
-                            elif name == "list_screen_controls":
-                                box["result"] = {"ok": True, "visible_controls": visible_controls(self.page)}
-                            else:
-                                box["result"] = {"ok": False, "error": f"unknown tool {name}"}
+                            box["result"] = dispatch(self.page, name, args, None)
                         except Exception as exc:  # noqa: BLE001
                             box["result"] = {"ok": False, "error": str(exc)[:200]}
                         print(f"[ui-tool] screen-thread ran {name} {args} in {time.monotonic() - t0:.2f}s -> "
                               f"ok={box['result'].get('ok')} {box['result'].get('action', box['result'].get('error', ''))}",
                               flush=True)
                         done.set()
+                    if DEFERRED_TOURS and self.page is not None:
+                        run_deferred_tours(self.page)
                     try:
                         # Keeps CDP screencast events flowing continuously.
                         (self.page or pg).wait_for_timeout(20)

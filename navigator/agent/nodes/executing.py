@@ -185,7 +185,21 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             call, live_detail = _resolve_user_fill(deps, call)
             _trace_live_input(deps, state, call, live_detail)
 
+    # Strict sync: never act while the previous line is still playing (a
+    # multi-call step left its line running while the next call navigated).
+    prior = state.get("pre_action_speech")
+    if prior is not None and hasattr(prior, "wait"):
+        prior.wait(timeout=120.0)
+    _return_from_detour(deps, call)
+    _restore_step_screen(deps, call)
     ran_on = state["page_id"]
+    # Speak-then-act: the part of the line about the page we are LEAVING
+    # ("this is the landing page, let's click Login") is spoken before the click.
+    pre_text, post_items = _split_speak_then_act(state, deps, call)
+    if pre_text:
+        _speak_blocking(deps, pre_text)
+        state = dict(state)
+        state["narration"] = post_items
     # Narrate AFTER the action and a fresh frame (sync: words match the screen).
     speech_handle, narration_started_ns = None, None
     # Frames pushed *during* the action, not just after it: the screenshare is a
@@ -203,10 +217,16 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             narration_started_ns=narration_started_ns,
             action_started_ns=action_started_ns,
         )
-    if (
+    skip_narration = False
+    if _is_login_call(call) and LOGIN_CREDS and not isinstance(call, FillField) \
+            and _visible_password(deps.page):
+        # The flow walks the real login: sign in visibly (password masked).
+        result, next_page_id = _visible_login(deps, call, ran_on)
+    elif (
         _is_login_call(call)
         and _already_authenticated(deps.page)
     ):
+        skip_narration = True
         # Signed in already: any login/sign-in step is pointless (sign_in burned
         # 30s on the dashboard in the last run).
         from navigator.core.schemas import ToolResult
@@ -254,6 +274,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         result = result.model_copy(
             update={"detail": f"filled {call.selector} from vault"}
         )
+    _verify_step_screen(deps, call)
     _sync_screen_to_narration(state, deps, call)
     if deps.push_frame is not None:
         deps.push_frame()
@@ -265,10 +286,17 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
                 time.sleep(0.12)
         except Exception:  # noqa: BLE001
             time.sleep(0.12)
-    speech_handle, _ = _start_pre_action_speech(state, deps)
-    _component_tour(state, deps, call, speech_handle)
+    if skip_narration:
+        # A login step we did not perform must not be narrated ("enter email and
+        # password" over the dashboard was spoken twice in the 17:30 run).
+        print("[exec] login step skipped — its narration is skipped too", flush=True)
+        speech_handle = None
+    else:
+        speech_handle, _ = _start_pre_action_speech(state, deps)
+        _component_tour(state, deps, call, speech_handle)
 
     _tell_live_where_we_are(deps, next_page_id, result)
+    _note_step_screen(deps)
 
     return CallState(
         narration=CLEAR,
@@ -348,6 +376,8 @@ def _already_authenticated(page) -> bool:
         url = (page.url or "").lower()
         if any(k in url for k in ("login", "signin", "sign-in", "sign_in", "/auth")):
             return False
+        if _visible_login_entry(page):
+            return False  # public landing page with a "Log in" button: signed out
         pw = page.locator("input[type=password]")
         for i in range(min(pw.count(), 3)):
             if pw.nth(i).is_visible():
@@ -355,6 +385,75 @@ def _already_authenticated(page) -> bool:
         return True
     except Exception:  # noqa: BLE001
         return False
+
+
+#: (email, password) when the demo flow itself walks landing -> login. Set by
+#: live_demo per demo; None means sign-in already happened before the flow.
+LOGIN_CREDS: tuple[str, str] | None = None
+
+_LOGIN_ENTRY_JS = r"""() => Array.from(document.querySelectorAll('a,button,[role=button]')).some(e => {
+  const t = (e.innerText || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const r = e.getBoundingClientRect();
+  return r.width > 2 && r.height > 2 && /^(log ?in|sign ?in|login)$/.test(t);
+})"""
+
+
+def _visible_login_entry(page) -> bool:
+    try:
+        return bool(page.evaluate(_LOGIN_ENTRY_JS))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _visible_password(page) -> bool:
+    try:
+        pw = page.locator("input[type=password]")
+        return any(pw.nth(i).is_visible() for i in range(min(pw.count(), 3)))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _visible_login(deps, call, ran_on):
+    """Fill the login form on screen: email typed visibly, password masked, submit."""
+    from navigator.core.schemas import ToolResult
+
+    page = deps.page
+    email, password = LOGIN_CREDS or ("", "")
+    t0 = time.monotonic()
+    try:
+        user = page.locator(
+            "input[type=email]:visible, input[name*=email i]:visible, input[name*=user i]:visible, "
+            "input[autocomplete=username]:visible, input[type=text]:visible").first
+        user.click(timeout=4000)
+        user.fill("")
+        user.press_sequentially(email, delay=45)
+        if deps.push_frame is not None:
+            deps.push_frame()
+        pw = page.locator("input[type=password]:visible").first
+        pw.click(timeout=4000)
+        pw.fill("")
+        pw.press_sequentially(password, delay=35)  # type=password: shown as dots
+        if deps.push_frame is not None:
+            deps.push_frame()
+        btn = page.locator(
+            "button[type=submit]:visible, button:visible:text-matches('^\\s*(sign ?in|log ?in|login|continue|submit)\\s*$', 'i'), "
+            "input[type=submit]:visible").first
+        try:
+            btn.click(timeout=4000)
+        except Exception:  # noqa: BLE001
+            pw.press("Enter")
+        for _ in range(40):
+            page.wait_for_timeout(250)
+            if not _visible_password(page):
+                break
+        ok = not _visible_password(page)
+        print(f"[exec] visible login {'ok' if ok else 'still on login form'} -> {page.url}", flush=True)
+        detail = "signed in on screen" if ok else "login form still shown after submit"
+    except Exception as exc:  # noqa: BLE001
+        ok, detail = False, f"visible login failed: {str(exc).splitlines()[0]}"
+        print(f"[exec] {detail}", flush=True)
+    return ToolResult(ok=ok, tool=getattr(call, "tool", "click_element"), detail=detail,
+                      duration_ms=int((time.monotonic() - t0) * 1000)), ran_on
 
 
 def _text_of(selector: str) -> str:
@@ -509,6 +608,34 @@ _CHARS_PER_S = 15.0  # Gemini Live narration pace (~150 wpm)
 _FIRST_AUDIO_S = 1.3
 
 
+def _return_from_detour(deps: CallDeps, call) -> None:
+    """A prospect's request (show_feature/do_task) moved the screen: go back to
+    where the scripted flow was before running its next step. A navigate step
+    goes where it needs anyway."""
+    try:
+        from navigator.meeting import task_runner, ui_jobs
+
+        if not ui_jobs.DETOUR_FROM:
+            return
+        back = ui_jobs.DETOUR_FROM.pop()
+        ui_jobs.DETOUR_FROM.clear()
+        ui_jobs.DEFERRED_TOURS.clear()
+        task_runner.PENDING.clear()
+        page = deps.page
+        if page is None or getattr(call, "tool", "") == "navigate" or not back:
+            return
+        try:
+            page.keyboard.press("Escape")  # close a form the detour left open
+        except Exception:  # noqa: BLE001
+            pass
+        if (page.url or "") != back:
+            page.goto(back, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(500)
+        print(f"[exec] resumed scripted flow at {back}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[exec] detour return skipped: {exc}", flush=True)
+
+
 def _tour_for_step(state: CallState, deps: CallDeps, call) -> list[dict]:
     meta = getattr(getattr(deps, "graph", None), "meta", None) or {}
     flow_id = str(state.get("walkthrough_flow_id") or "")
@@ -579,3 +706,145 @@ def visible_controls_safe(page) -> list[str]:
         return visible_controls(page)
     except Exception:  # noqa: BLE001
         return []
+
+
+# ---- strict screen/voice sync helpers -------------------------------------
+import re as _re
+
+#: URL the scripted flow last left the screen on (after its step + frame).
+STEP_URL: str = ""
+_ACT_VERB = _re.compile(r"\b(click|tap|press|choose|select|open|sign in|log in|login)\b", _re.I)
+_NEW_SCREEN = _re.compile(r"^(now|here|this is|next|finally|on the|we are|in the|below|at the top)\b", _re.I)
+
+
+def _sentences(text: str) -> list[str]:
+    parts = _re.split(r"(?<=[.!?।])\s+", (text or "").strip())
+    return [p for p in parts if p.strip()]
+
+
+def _target_words(state, deps, call) -> list[str]:
+    words = []
+    sel = str(getattr(call, "selector", "") or "")
+    if sel and not any(ch in sel for ch in "#.[]=>:/"):
+        words.append(sel.replace("_", " ").replace("-", " ").strip())
+    meta = getattr(getattr(deps, "graph", None), "meta", None) or {}
+    flow_id = str(state.get("walkthrough_flow_id") or "")
+    hl = ((meta.get("step_highlights") or {}).get(flow_id) or {}).get(str(state.get("executing_step")), "")
+    if hl:
+        words.append(str(hl))
+    return [w for w in words if len(w) >= 3]
+
+
+def split_speak_then_act(text: str, tool: str, targets: list[str]) -> tuple[str, str]:
+    """(before, after) for a step's line. Click-type steps speak the sentences
+    up to the one naming the clicked control (plus follow-ups that still talk
+    about the current page) BEFORE acting; navigate steps act first."""
+    if tool == "navigate" or not targets:
+        return "", text
+    sents = _sentences(text)
+    hit = -1
+    for i, sn in enumerate(sents):
+        low = sn.lower()
+        if _ACT_VERB.search(sn) and any(t.lower() in low for t in targets):
+            hit = i
+            break
+    if hit < 0:
+        return "", text
+    end = hit + 1
+    while end < len(sents) and not _NEW_SCREEN.match(sents[end].strip()):
+        end += 1
+    return " ".join(sents[:end]), " ".join(sents[end:])
+
+
+def _split_speak_then_act(state, deps, call):
+    lines = list(state.get("narration") or [])
+    if not lines:
+        return "", lines
+    if _is_login_call(call) and not (LOGIN_CREDS and _visible_password(deps.page)) \
+            and _already_authenticated(deps.page):
+        return "", lines  # step will be skipped silently
+    try:
+        from navigator.agent.utterance import item_text
+
+        text = item_text(lines[0])
+        pre, post = split_speak_then_act(text, str(getattr(call, "tool", "")), _target_words(state, deps, call))
+        if not pre:
+            return "", lines
+        print(f"[sync] speak-then-act: {pre[:70]!r} before {getattr(call, 'tool', '')}", flush=True)
+        return pre, ([post] + lines[1:]) if post else lines[1:]
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sync] split skipped: {exc}", flush=True)
+        return "", lines
+
+
+def _speak_blocking(deps, text: str) -> None:
+    from navigator.agent.speech_safety import prospect_safe_line
+
+    text = prospect_safe_line(text)
+    if not text.strip():
+        return
+    if deps.push_frame is not None:
+        deps.push_frame()
+    try:
+        deps.speaker.say(text)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sync] pre-action line failed: {exc}", flush=True)
+
+
+def _note_step_screen(deps) -> None:
+    global STEP_URL
+    try:
+        STEP_URL = deps.page.url or ""
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _restore_step_screen(deps, call) -> None:
+    """Q&A/tool detours that left no DETOUR_FROM mark still moved the screen:
+    put the flow's last screen back before an in-page step speaks about it."""
+    page = getattr(deps, "page", None)
+    if page is None or not STEP_URL or getattr(call, "tool", "") == "navigate":
+        return
+    try:
+        cur = page.url or ""
+        if cur.split("#")[0].rstrip("/") != STEP_URL.split("#")[0].rstrip("/"):
+            print(f"[sync] screen drifted to {cur} — restoring {STEP_URL}", flush=True)
+            page.goto(STEP_URL, wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(400)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sync] restore skipped: {exc}", flush=True)
+
+
+def expected_path(graph, call) -> str:
+    if getattr(call, "tool", "") != "navigate":
+        return ""
+    try:
+        pg = graph.pages.get(getattr(call, "page_id", "")) if graph is not None else None
+        u = str(getattr(pg, "url", "") or "")
+    except Exception:  # noqa: BLE001
+        return ""
+    if not u or any(ch in u for ch in "*{}<>"):
+        return ""
+    from urllib.parse import urlparse
+
+    return (urlparse(u).path or "/").rstrip("/") or "/"
+
+
+def _verify_step_screen(deps, call) -> None:
+    """navigate -> verify the URL is the step's screen (retry once) before speaking."""
+    want = expected_path(getattr(deps, "graph", None), call)
+    page = getattr(deps, "page", None)
+    if not want or page is None:
+        return
+    from urllib.parse import urljoin, urlparse
+
+    for attempt in range(2):
+        cur = (urlparse(page.url or "").path or "/").rstrip("/") or "/"
+        if cur == want or cur.startswith(want + "/"):
+            return
+        print(f"[sync] step screen mismatch: on {cur}, expected {want} — re-navigating", flush=True)
+        try:
+            page.goto(urljoin(deps.graph.base_url, want if want == "/" else want + "/"), wait_until="domcontentloaded", timeout=15000)
+            page.wait_for_timeout(500)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[sync] re-navigate failed: {exc}", flush=True)

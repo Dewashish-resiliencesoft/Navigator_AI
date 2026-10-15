@@ -87,6 +87,12 @@ def _is_real_speech(text: str) -> bool:
 
 
 
+import weakref
+
+#: Every LiveAgent that has started and not closed: there must only ever be one.
+_OPEN_AGENTS: "weakref.WeakSet[LiveAgent]" = weakref.WeakSet()
+
+
 @dataclass
 class LiveEvent:
     """Something the session noticed that the demo director may care about."""
@@ -182,6 +188,15 @@ class LiveAgent:
 
     def start(self, *, timeout_s: float = 15.0) -> bool:
         """Open the session. False means the caller should stop the demo."""
+        for other in list(_OPEN_AGENTS):
+            if other is not self and not other._stop.is_set():
+                print("[audio-arbiter] concurrent writer: another Live session is still open — "
+                      "closing it before starting this one", flush=True)
+                try:
+                    other.close()
+                except Exception:  # noqa: BLE001
+                    pass
+        _OPEN_AGENTS.add(self)
         self._thread = threading.Thread(
             target=self._run_loop, name="gemini-live-agent", daemon=True
         )
@@ -196,6 +211,15 @@ class LiveAgent:
 
     def close(self) -> None:
         self._stop.set()
+        # Demo over / human left: nothing more may reach the meeting.
+        self.listen_only = True
+        try:
+            dropped = self.bridge.clear_outbound()
+            if dropped:
+                print(f"[audio-arbiter] demo ended — dropped {dropped} queued chunk(s)", flush=True)
+        except Exception:  # noqa: BLE001
+            pass
+        _OPEN_AGENTS.discard(self)
         self._cmds.put(_Cmd(kind="close"))
         if self._thread is not None:
             self._thread.join(timeout=5)
@@ -293,6 +317,11 @@ class LiveAgent:
             print(f"[utterance] id={uid} skip replay of already-spoken line", flush=True)
             return
         spoken.add(key)
+        _lang0 = str(getattr(self.cfg, "language", "en") or "en")
+        if _lang0 != "en" and mode in ("verbatim", "natural"):
+            from navigator.voice import line_prep
+
+            line_prep.prefetch(text, _lang0)  # translate while we wait for the floor
         if not self.can_start_utterance():
             print(
                 f"[utterance] id={uid} wait_idle phase={self.playback_phase} "
@@ -302,36 +331,70 @@ class LiveAgent:
             self._wait_idle_or_recover(uid)
         if self._barge_state == "confirmed":
             self._barge_state = "idle"
-        self.last_spoken = text
+        lang = str(getattr(self.cfg, "language", "en") or "en")
+        say_text = text
+        if lang != "en" and mode in ("verbatim", "natural"):
+            # Pre-translate: Live translating a long line on the fly delivered audio
+            # slower than realtime (17:38 Hindi line: ~30 underruns).
+            from navigator.voice import line_prep
+
+            t0 = time.monotonic()
+            say_text = line_prep.translate(text, lang)
+            if say_text != text:
+                print(f"[speak] pre-translated to {lang} in {time.monotonic() - t0:.1f}s", flush=True)
+        from navigator.voice.line_prep import est_seconds, pieces as _pieces
+
+        parts = _pieces(say_text) if len(say_text) > 240 else [say_text]
+        self.last_spoken = say_text
         self.interrupted = False
         self.speaking = True
-        self._turn_done.clear()
         self._set_playback("synthesizing", uid or None)
         started = time.monotonic()
         sent_at_start = self._audio_s_sent()
-        self._turn_said = []
         self._in_say = True
         self._say_queued_at = time.monotonic()
-        # In-flight line: re-sent on session reconnect (16:20 1006 drop lost it).
-        self._inflight = (text, mode, uid)
-        self._inflight_audio_at_send = self._audio_s_sent()
-        self._cmds.put(_Cmd(kind="say", text=text, mode=mode))
         print(f"[speak] {text}", flush=True)
-        self._wait_turn_with_watchdog(text, mode, uid, 90)
-        rest = _unspoken_tail(text, " ".join(self._turn_said))
-        if rest and max(getattr(self, "_last_heard_at", 0.0),
-                        getattr(self, "_last_voice_at", 0.0)) >= started:
-            # The prospect spoke during this line: Live answered them instead.
-            # Re-reading the tail afterwards sounded robotic in the e2e run.
-            print(f"[speak] line cut by prospect question; not replaying tail", flush=True)
-            rest = ""
-        if rest and not self.interrupted and not self._stop.is_set():
-            # Model stopped early (last run: spoke only "let go" of a long line).
-            print(f"[speak] line cut short; finishing: {rest}", flush=True)
-            self._turn_said = []
+        for i, part in enumerate(parts):
             self._turn_done.clear()
-            self._cmds.put(_Cmd(kind="say", text=rest, mode="verbatim"))
-            self._pumped_wait(self._turn_done, 60)
+            self._turn_said = []
+            self._last_turn_audio_s = 0.0
+            # In-flight piece: re-sent on session reconnect (16:20 1006 drop lost it).
+            self._inflight = (part, mode, uid)
+            self._inflight_audio_at_send = self._audio_s_sent()
+            expect = getattr(self.bridge, "expect_line", None)
+            if callable(expect):
+                expect(est_seconds(part, lang))
+            self._cmds.put(_Cmd(kind="say", text=part, mode=mode))
+            if len(parts) > 1:
+                print(f"[speak] piece {i + 1}/{len(parts)}: {part[:60]}", flush=True)
+            self._wait_turn_with_watchdog(part, mode, uid, 90)
+            rest = _unspoken_tail(part, " ".join(self._turn_said))
+            cut_by_user = max(getattr(self, "_last_heard_at", 0.0),
+                              getattr(self, "_last_voice_at", 0.0)) >= started
+            asked = getattr(self, "_last_heard_at", 0.0) >= started
+            if (rest and cut_by_user) or (asked and i + 1 < len(parts)):
+                # The prospect spoke during this line: Live answers them; sending
+                # the next piece would talk over (and cancel) that answer.
+                print(f"[speak] line cut by prospect question; not replaying tail"
+                      f"{' / dropping remaining pieces' if i + 1 < len(parts) else ''}", flush=True)
+                break
+            if self.interrupted or self._stop.is_set():
+                break
+            produced = float(getattr(self, "_last_turn_audio_s", 0.0) or 0.0)
+            if rest and produced >= 0.6 * est_seconds(part, lang):
+                # Audio for (nearly) the whole piece was generated; the transcript
+                # just lagged. Replaying the "tail" spoke words twice.
+                rest = ""
+            if rest and len(rest.split()) >= 3 and self._barge_state != "probable":
+                # Model stopped early (last run: spoke only "let go" of a long line).
+                print(f"[speak] line cut short; finishing: {rest}", flush=True)
+                self._turn_said = []
+                self._turn_done.clear()
+                self._inflight = (rest, "verbatim", uid)
+                self._cmds.put(_Cmd(kind="say", text=rest, mode="verbatim"))
+                self._pumped_wait(self._turn_done, 60)
+            elif rest:
+                print(f"[speak] short tail not replayed: {rest!r}", flush=True)
         if not self.interrupted:
             self._set_playback("draining", uid or None)
         self._wait_for_playback(started, sent_at_start)
@@ -369,6 +432,19 @@ class LiveAgent:
                 print(f"[utterance] id={uid} wait_idle recovered (turn done, drained)", flush=True)
                 break
             if now >= deadline:
+                # Single-voice rule: never start a line over audio that is still
+                # playing or a Live answer still being generated.
+                live_answer = self.speaking and not getattr(self, "_in_say", False)
+                if (now < play_end or (live_answer and now - self._last_audio_rx_at() < 2.0)) \
+                        and now < deadline + 45.0:
+                    if not getattr(self, "_floor_wait_logged", False):
+                        self._floor_wait_logged = True
+                        print(f"[audio-arbiter] id={uid} floor busy (audio playing / Live answering) — "
+                              f"holding scripted line", flush=True)
+                    self._pump_ui()
+                    self._playback_idle.wait(timeout=0.25)
+                    continue
+                self._floor_wait_logged = False
                 print(f"[utterance] id={uid} wait_idle timeout {max_wait_s}s -> force ready", flush=True)
                 # Usually a live answer still talking: not a glitch to apologise for.
                 self.last_wait_timeout_at = now
@@ -376,6 +452,9 @@ class LiveAgent:
             self._pump_ui()
             self._playback_idle.wait(timeout=0.25)
         self._set_playback("ready", uid or None)
+
+    def _last_audio_rx_at(self) -> float:
+        return float(getattr(self, "_audio_rx_at", 0.0) or 0.0)
 
     def _audio_s_sent(self) -> float:
         """Seconds of bot audio the bridge has handed to the meeting so far."""
@@ -462,12 +541,16 @@ class LiveAgent:
             args = dict(getattr(fc, "args", None) or {})
             print(f"[live] tool_call {name} {args}", flush=True)
             _t0 = time.monotonic()
-            user_turn = max(getattr(self, "_last_heard_at", 0.0), getattr(self, "_last_voice_at", 0.0)) \
-                >= getattr(self, "_say_queued_at", 0.0)
-            if getattr(self, "_in_say", False) and not user_turn:
+            # Only a real transcribed request opens the user's turn. Mic energy
+            # (_last_voice_at) let Live run do_task 'login' on its own mid-line
+            # at 18:53:34, moving the screen under the narration.
+            heard = getattr(self, "_last_heard_at", 0.0)
+            user_turn = time.monotonic() - heard < 10.0 and (
+                not getattr(self, "_in_say", False) or heard >= getattr(self, "_say_queued_at", 0.0))
+            if not user_turn:
                 # Scripted line in progress: the flow executor owns the screen.
                 # A model-initiated click here raced the flow and cut the line.
-                print(f"[live] tool_call {name} refused: scripted line in progress", flush=True)
+                print(f"[live] tool_call {name} refused: not the user's turn (spontaneous)", flush=True)
                 responses.append(types.FunctionResponse(
                     id=getattr(fc, "id", None), name=name,
                     response={"ok": False, "error": "Not now. You are reading a scripted line; the demo "
@@ -538,6 +621,10 @@ class LiveAgent:
 
     def _is_self_echo(self, heard: str) -> bool:
         if not (heard or "").strip() or not (self.last_spoken or "").strip():
+            return False
+        if getattr(self.bridge, "echo_free", False):
+            # Per-participant audio never contains our own voice: a match is the
+            # prospect repeating words from the line (17:33 "inboxes" was dropped).
             return False
         from navigator.meeting.intake_clean import is_likely_bot_echo
 
@@ -706,7 +793,13 @@ class LiveAgent:
                 async with client.aio.live.connect(
                     model=self.cfg.model, config=self._build_config()
                 ) as session:
+                    old = getattr(self, "_session", None)
                     self._session = session
+                    self._session_gen = getattr(self, "_session_gen", 0) + 1
+                    self._writer_tag = f"live{id(self) & 0xffff:x}-s{self._session_gen}"
+                    if old is not None and old is not session:
+                        print(f"[audio-arbiter] new Live session {self._writer_tag}; "
+                              f"previous session's audio is now ignored", flush=True)
                     self._ready.set()
                     if self._resumption_handle:
                         print("[live] Gemini Live session resumed", flush=True)
@@ -863,6 +956,11 @@ class LiveAgent:
                 async for msg in session.receive():
                     if self._stop.is_set():
                         return
+                    if session is not self._session:
+                        self.stale_session_msgs = getattr(self, "stale_session_msgs", 0) + 1
+                        print("[audio-arbiter] concurrent writer: message from a replaced Live "
+                              "session dropped", flush=True)
+                        return
                     self._handle_server_message(msg)
             except Exception as exc:  # noqa: BLE001
                 if self._stop.is_set():
@@ -936,13 +1034,15 @@ class LiveAgent:
                     self._set_playback("buffering", self._active_utterance_id)
                     self._set_playback("playing", self._active_utterance_id)
                 self.speaking = True
+                self._turn_closed = False
                 self._gen_done_at = 0.0
                 self._note_first_audio()
                 self._turn_audio_s = getattr(self, "_turn_audio_s", 0.0) + len(data) / (
                     2.0 * OUTPUT_SAMPLE_RATE
                 )
+                self._audio_rx_at = time.monotonic()
                 self.bridge.push_outbound_pcm(
-                    data, sample_rate=OUTPUT_SAMPLE_RATE
+                    data, sample_rate=OUTPUT_SAMPLE_RATE, writer=getattr(self, "_writer_tag", "live")
                 )
 
         # `msg.data` is the SDK's flattened view of the same audio; only use it
@@ -959,7 +1059,10 @@ class LiveAgent:
                 self._set_playback("buffering", self._active_utterance_id)
                 self._set_playback("playing", self._active_utterance_id)
             self.speaking = True
-            self.bridge.push_outbound_pcm(msg.data, sample_rate=OUTPUT_SAMPLE_RATE)
+            self._turn_closed = False
+            self._audio_rx_at = time.monotonic()
+            self.bridge.push_outbound_pcm(msg.data, sample_rate=OUTPUT_SAMPLE_RATE,
+                                          writer=getattr(self, "_writer_tag", "live"))
 
         if sc is not None:
             out = getattr(sc, "output_transcription", None)
@@ -991,7 +1094,18 @@ class LiveAgent:
                     except queue.Full:
                         pass
                     self._emit(LiveEvent(kind="heard", text=text))
-            if getattr(sc, "turn_complete", False):
+            # gemini-3.1-flash-live sends generation_complete and often no
+            # turn_complete at all: every line then sat 2.5s on the "no
+            # turn_complete" watchdog before the next one could start.
+            ended = getattr(sc, "turn_complete", False) or getattr(sc, "generation_complete", False)
+            # A turn ends once: generation_complete and a late turn_complete for the
+            # SAME turn used to land after the next say() had started, ending that
+            # line instantly — the flow then navigated while its audio played.
+            done_now = ended and not getattr(self, "_turn_closed", False)
+            if ended:
+                self._turn_closed = True
+            if done_now:
+                self._last_turn_audio_s = getattr(self, "_turn_audio_s", 0.0)
                 self.speaking = False
                 mark = getattr(self.bridge, "mark_line_end", None)
                 if callable(mark):

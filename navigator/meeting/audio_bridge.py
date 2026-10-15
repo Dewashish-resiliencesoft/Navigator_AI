@@ -191,16 +191,60 @@ class AudioBridge:
         self._server = None
         self._ws = None
 
-    def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
+    def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000, writer: str | None = None) -> None:
+        # Single-voice audit: two different producers feeding the meeting within
+        # 0.5s means two voices are being interleaved into one output.
+        who = writer or threading.current_thread().name
+        now = time.monotonic()
+        last_who, last_at = getattr(self, "_last_writer", (None, 0.0))
+        if last_who is not None and who != last_who and now - last_at < 0.5:
+            self.concurrent_writers = getattr(self, "concurrent_writers", 0) + 1
+            print(f"[audio-arbiter] CONCURRENT WRITERS {last_who!r} and {who!r} "
+                  f"(n={self.concurrent_writers})", flush=True)
+        self._last_writer = (who, now)
+        self._line_rx(pcm or b"", sample_rate, now)
         self.pcm_in_bytes += len(pcm or b"")
         self._tap_pcm(pcm or b"", sample_rate)
         self._outbound.put((pcm, sample_rate))
+
+    # ---- adaptive pre-buffer -------------------------------------------
+    # Gemini sometimes generates slower than realtime (long lines, on-the-fly
+    # translation). Sending each chunk as it lands then starves the meeting
+    # mid-sentence. Hold the start of a line until enough audio is buffered to
+    # cover the expected shortfall: need = remaining_s * (1 - rate) + 0.25s.
+
+    def expect_line(self, seconds: float) -> None:
+        """Next line is expected to last about ``seconds`` (from its text)."""
+        self._line_est_s = max(0.5, float(seconds or 0.0))
+
+    def _line_rx(self, pcm: bytes, rate: int, now: float) -> None:
+        if not getattr(self, "_line_open", False):
+            self._line_open = True
+            self._line_ended = False
+            self._line_t0 = now
+            self._line_rx_s = 0.0
+            self._line_holding = True
+            self._line_sent_any = False
+        self._line_rx_s += len(pcm) / (2.0 * rate) if rate else 0.0
+        self._line_last_rx = now
+
+    def _prebuffer_need(self, now: float) -> float:
+        rx = getattr(self, "_line_rx_s", 0.0)
+        elapsed = max(1e-3, now - getattr(self, "_line_t0", now))
+        est = getattr(self, "_line_est_s", 6.0)
+        r = rx / elapsed if elapsed >= 0.35 else 1.5  # audio seconds per wall second
+        remaining = max(0.0, est - rx)
+        if r >= 1.05:
+            return 0.25
+        return min(5.0, max(0.25, remaining * (1.0 - r) + 0.35))
 
     def mark_line_end(self) -> None:
         """Model finished a line. The silence before the next line's first chunk
         is a pause between utterances (incl. LLM/TTS latency), not an underrun.
         Before this, ~1-1.9s gaps at every line start were counted as underruns."""
         self._tap_play_end = 0.0
+        self._line_open = False
+        self._line_ended = True
 
     def _tap_pcm(self, pcm: bytes, rate: int) -> None:
         """Underrun detector + optional WAV tap (NAVIGATOR_VOICE_WAV=/tmp/x.wav)."""
@@ -210,8 +254,7 @@ class AudioBridge:
             self.line_starts = getattr(self, "line_starts", 0) + 1
         elif 0.0 < now - play_end < 2.0:
             # Gemini chunk arrived after the previous audio already ran out.
-            self.underruns = getattr(self, "underruns", 0) + 1
-            print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns}", flush=True)
+            self.arrival_gaps = getattr(self, "arrival_gaps", 0) + 1
         self._tap_play_end = max(now, play_end) + len(pcm) / (2.0 * rate)
         path = os.environ.get("NAVIGATOR_VOICE_WAV")
         if not path:
@@ -325,47 +368,74 @@ class AudioBridge:
             time.sleep(0.01)
 
     def _run_sender(self) -> None:
-        """Push bot audio coalesced (~100ms) + upsampled as soon as queued."""
+        """Push bot audio coalesced (~100ms), with an adaptive start-of-line hold."""
         buf = bytearray()
         buf_rate = 0
         epoch = self._out_epoch
+        play_end = 0.0  # when the audio we already sent finishes playing
         while not self._stop.is_set():
             if self._out_epoch != epoch:
                 buf.clear()
                 buf_rate = 0
                 epoch = self._out_epoch
             try:
-                pcm, rate = self._outbound.get(timeout=0.03)
-            except Empty:
-                if buf and buf_rate and self._out_epoch == epoch:
+                pcm, rate = self._outbound.get(timeout=0.02)
+                if buf_rate and rate != buf_rate:
                     self._wait_ws()
-                    if self._out_epoch == epoch:
-                        self._send_pcm(bytes(buf), buf_rate)
+                    play_end = self._send_timed(bytes(buf), buf_rate, play_end)
                     buf.clear()
-                    buf_rate = 0
+                buf_rate = rate
+                buf.extend(pcm)
+            except Empty:
+                pass
+            if not buf or not buf_rate:
                 continue
-            if self._out_epoch != epoch:
-                buf.clear()
-                buf_rate = 0
-                epoch = self._out_epoch
-                continue
+            now = time.monotonic()
+            buffered = len(buf) / (2.0 * buf_rate)
+            holding = getattr(self, "_line_holding", False)
+            if holding:
+                ended = getattr(self, "_line_ended", False) or not getattr(self, "_line_open", False)
+                ahead = max(0.0, play_end - now)
+                need = self._prebuffer_need(now)
+                if not getattr(self, "_hold_since", 0.0):
+                    self._hold_since = now
+                idle_rx = now - getattr(self, "_line_last_rx", now)
+                held = now - self._hold_since
+                if ended or buffered + ahead >= need or idle_rx > 0.4 or held > min(6.0, need + 1.0):
+                    if need > 0.3:
+                        print(f"[voice-out] prebuffer {buffered * 1000:.0f}ms (need {need * 1000:.0f}ms, "
+                              f"slow generation) — starting", flush=True)
+                    self._line_holding = False
+                    self._hold_since = 0.0
+                else:
+                    continue
+            need_b = _coalesce_bytes(buf_rate)
             self._wait_ws()
-            if buf_rate and rate != buf_rate:
-                self._send_pcm(bytes(buf), buf_rate)
+            if self._out_epoch != epoch:
+                continue
+            while len(buf) >= need_b:
+                piece = bytes(buf[:need_b])
+                del buf[:need_b]
+                play_end = self._send_timed(piece, buf_rate, play_end)
+            if buf and self._outbound.empty():
+                play_end = self._send_timed(bytes(buf), buf_rate, play_end)
                 buf.clear()
-            buf_rate = rate
-            buf.extend(pcm)
-            need = _coalesce_bytes(rate)
-            while len(buf) >= need and self._out_epoch == epoch:
-                piece = bytes(buf[:need])
-                del buf[:need]
-                self._send_pcm(piece, rate)
             if not buf:
                 buf_rate = 0
-            if self._out_epoch != epoch:
-                buf.clear()
-                buf_rate = 0
-                epoch = self._out_epoch
+                # Starving mid-line: re-arm the hold so the next burst is buffered.
+                if getattr(self, "_line_open", False) and play_end - time.monotonic() < 0.08:
+                    self._line_holding = True
+
+    def _send_timed(self, pcm: bytes, rate: int, play_end: float) -> float:
+        now = time.monotonic()
+        mid_line = getattr(self, "_line_sent_any", False) and getattr(self, "_line_open", False)
+        if play_end and now > play_end + 0.02 and mid_line:
+            self.underruns = getattr(self, "underruns", 0) + 1
+            self.underrun_ms = getattr(self, "underrun_ms", 0.0) + (now - play_end) * 1000
+            print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns}", flush=True)
+        self._line_sent_any = True
+        self._send_pcm(pcm, rate)
+        return max(now, play_end) + len(pcm) / (2.0 * rate)
 
     def frames(self, *, timeout_s: float | None = None) -> Iterator[bytes]:
         while not self._stop.is_set():
@@ -385,6 +455,15 @@ class AudioBridge:
 
         def handler(ws: Any) -> None:
             self.clients_connected += 1
+            old = self._ws
+            if old is not None and old is not ws:
+                self.concurrent_writers = getattr(self, "concurrent_writers", 0) + 1
+                print("[audio-arbiter] second Attendee audio client connected — closing the old one "
+                      f"(n={self.concurrent_writers})", flush=True)
+                try:
+                    old.close()
+                except Exception:  # noqa: BLE001
+                    pass
             self._ws = ws
             print(
                 f"[audio] Attendee websocket connected (clients={self.clients_connected})",

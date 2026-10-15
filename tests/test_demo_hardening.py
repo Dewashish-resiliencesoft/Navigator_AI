@@ -118,10 +118,12 @@ def test_between_line_silence_is_not_an_underrun():
     import time
     time.sleep(0.3)
     b._tap_pcm(b"\0" * 3200, 16000)  # next line after a pause
-    assert getattr(b, "underruns", 0) == 0
+    # Arrival gaps are tracked here; real (playback) underruns are counted by
+    # the sender, which pre-buffers slow lines.
+    assert getattr(b, "arrival_gaps", 0) == 0
     time.sleep(0.25)  # mid-line starvation still counts
     b._tap_pcm(b"\0" * 3200, 16000)
-    assert b.underruns == 1
+    assert b.arrival_gaps == 1
 
 
 def test_offline_full_flow_then_qa_with_dead_llm(deps, monkeypatch):
@@ -302,3 +304,122 @@ def test_screen_threads_stopped_at_demo_end():
     assert sc in ui_jobs.ACTIVE_SCREENS
     assert ui_jobs.stop_all_screens() >= 1
     assert sc._stop.is_set() and sc not in ui_jobs.ACTIVE_SCREENS
+
+
+# ---- live do_task (task_runner) -------------------------------------------
+
+def test_task_blocked_goals_refused_without_touching_page():
+    from navigator.meeting import task_runner as tr
+
+    for g in ("delete that contact", "log out", "send a broadcast to all", "change password",
+              "regenerate api key", "pay the invoice"):
+        assert tr.BLOCKED.search(g), g
+    for g in ("create a contact", "add a tag", "edit the contact name", "show me phonebook"):
+        assert not tr.BLOCKED.search(g), g
+
+
+def test_task_parse_and_map_details():
+    from navigator.meeting import task_runner as tr
+
+    vals = tr.parse_details("name: Test Navigator, phone: +91 9000000001, email: test.navigator@example.com")
+    fields = [
+        {"id": "f0", "label": "First Name *", "type": "text", "name": "first_name", "placeholder": "", "required": True, "value": ""},
+        {"id": "f1", "label": "Last Name", "type": "text", "name": "last_name", "placeholder": "", "required": False, "value": ""},
+        {"id": "f2", "label": "Mobile Number *", "type": "text", "name": "phone", "placeholder": "918888888888", "required": True, "value": ""},
+        {"id": "f3", "label": "Email Address", "type": "text", "name": "email", "placeholder": "", "required": False, "value": ""},
+    ]
+    m = tr.map_details(fields, vals, None)
+    assert m["f0"] == "Test" and m["f1"] == "Navigator"
+    assert "9000000001" in m["f2"].replace(" ", "")
+    assert m["f3"] == "test.navigator@example.com"
+
+
+def test_task_submit_label_filters():
+    from navigator.meeting import task_runner as tr
+
+    assert tr.BLOCKED.search("Delete Contact")
+    assert tr.SINGLE_HINT.search("Manual Entry Add a single record")  # chooser option, never a submit
+
+
+# ---- single voice + slow-generation pre-buffer ------------------------------
+
+def _fake_attendee(url, stats):
+    import base64, json, time
+    from websockets.sync.client import connect
+
+    nxt = 0.0
+    with connect(url) as ws:
+        while not stats.get("stop"):
+            try:
+                raw = ws.recv(timeout=0.2)
+            except TimeoutError:
+                continue
+            except Exception:  # noqa: BLE001
+                return
+            m = json.loads(raw)
+            d = m.get("data") or {}
+            if m.get("trigger") != "realtime_audio.bot_output":
+                continue
+            dur = len(base64.b64decode(d["chunk"])) / (2.0 * d["sample_rate"])
+            now = time.monotonic()
+            if not nxt or nxt < now + 0.02:
+                if nxt and -0.02 < now - nxt < 0.7:
+                    stats["underruns"] = stats.get("underruns", 0) + 1
+                nxt = now + 0.1
+            nxt += dur
+
+
+def test_prebuffer_smooths_slower_than_realtime_generation():
+    import threading, time
+    from navigator.meeting.audio_bridge import AudioBridge
+
+    b = AudioBridge().start()
+    stats: dict = {}
+    t = threading.Thread(target=_fake_attendee, args=(b.local_url, stats), daemon=True)
+    t.start()
+    time.sleep(0.3)
+    b.expect_line(6.0)
+    chunk = b"\x01\x00" * 960  # 40ms @24k
+    t0 = time.monotonic()
+    for i in range(150):  # 6s of audio delivered at ~0.75x realtime
+        b.push_outbound_pcm(chunk, sample_rate=24000, writer="live-s1")
+        time.sleep(0.04 / 0.75)
+    b.mark_line_end()
+    time.sleep(1.5)
+    stats["stop"] = True
+    b.stop()
+    assert stats.get("underruns", 0) <= 1, stats
+    assert getattr(b, "concurrent_writers", 0) == 0
+
+
+def test_concurrent_writers_are_detected():
+    from navigator.meeting.audio_bridge import AudioBridge
+
+    b = AudioBridge()
+    b._outbound.put = lambda *_a, **_k: None
+    b.push_outbound_pcm(b"\x00\x00" * 10, sample_rate=24000, writer="live-s1")
+    b.push_outbound_pcm(b"\x00\x00" * 10, sample_rate=24000, writer="live-s2")
+    assert b.concurrent_writers == 1
+
+
+def test_line_prep_pieces_and_short_lines():
+    from navigator.voice.line_prep import pieces
+
+    assert pieces("One. Two.") == ["One. Two."]
+    long = " ".join(f"Sentence number {i} is here." for i in range(20))
+    ps = pieces(long)
+    assert len(ps) > 1 and all(len(p) <= 220 for p in ps)
+    assert " ".join(ps) == long
+
+
+def test_landing_page_with_login_button_is_not_signed_in():
+    from navigator.agent.nodes import executing as ex
+
+    class P:
+        url = "https://example.test/"
+        def evaluate(self, js): return True  # a visible "Log in" button
+        def locator(self, sel):
+            class L:
+                def count(self): return 0
+            return L()
+    assert ex._already_authenticated(P()) is False

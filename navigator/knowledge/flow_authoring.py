@@ -170,7 +170,10 @@ def default_llm() -> Callable[[str, str], str] | None:
         keys = gemini_key_candidates()
         if not keys:
             return None
-        model = getattr(settings, "gemini_text_model", "") or "gemini-2.5-flash"
+        from navigator.core.gemini_keys import normalize_gemini_model
+
+        model = normalize_gemini_model(
+            getattr(settings, "gemini_text_model", "") or getattr(settings, "brain_reasoning_model", "") or "gemini-3.6-flash")
 
         def _call(system: str, user: str) -> str:
             from google import genai

@@ -12,6 +12,8 @@ _RETIRED_GEMINI_MODELS: dict[str, str] = {
     "gemini-2.0-flash-001": "gemini-3.6-flash",
     "gemini-2.0-flash-lite": "gemini-3.6-flash",
     "gemini-2.0-flash-lite-001": "gemini-3.6-flash",
+    "gemini-2.5-flash": "gemini-3.6-flash",
+    "gemini-2.5-flash-lite": "gemini-3.6-flash",
 }
 
 # models.list still returns shut-down families with no status field — drop by id.

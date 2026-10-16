@@ -299,9 +299,6 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
                 if not result.ok and not str(result.detail).startswith("skipped"):
                     reason = "stuck" if str(result.detail).startswith("watchdog") else "action_failed"
                     _look(deps, reason)
-                    result, next_page_id = _recover_failed_step(
-                        deps, ran_on, call, RuntimeError(result.detail)
-                    )
             except Exception as exc:  # noqa: BLE001 — a missing element must never kill the demo
                 _look(deps, "action_failed")
                 result, next_page_id = _recover_failed_step(deps, ran_on, call, exc)

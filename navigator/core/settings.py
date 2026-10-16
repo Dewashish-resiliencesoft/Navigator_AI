@@ -116,11 +116,12 @@ class Settings(BaseSettings):
     #: this host (rootless Docker, ``EADDRNOTAVAIL`` / errno 99).
     relay_bind_host: str = ""
     #: Host written into the screenshare URL handed to Attendee containers.
-    #: Empty: the bind address, when that address is a specific IP. Required
-    #: when the relay falls back to ``0.0.0.0`` — a container cannot dial the
-    #: bridge gateway on rootless Docker. ``host.docker.internal`` needs
+    #: Empty: the bind address, when that address is a specific IP. When the
+    #: relay falls back to ``0.0.0.0`` on rootless slirp4netns, Navigator uses
+    #: ``10.0.2.2`` and logs that choice. pasta is not given that default.
+    #: ``host.docker.internal`` needs
     #: ``extra_hosts: ["host.docker.internal:host-gateway"]`` on the
-    #: webpage-streamer service. slirp4netns can use ``10.0.2.2``.
+    #: webpage-streamer service.
     relay_public_host: str = ""
 
     # Phase 3: Meet + email notify + product login

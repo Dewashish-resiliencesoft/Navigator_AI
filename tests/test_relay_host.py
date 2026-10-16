@@ -13,13 +13,17 @@ from navigator.meeting.relay_host import (
     docker_network_gateway,
     local_screenshare_url,
     open_screenshare_relay,
+    parse_rootless_network_driver,
+    publish_screenshare,
+    rootless_network_driver,
 )
 
 
 class _Proc:
-    def __init__(self, returncode: int, stdout: str):
+    def __init__(self, returncode: int, stdout: str, stderr: str = ""):
         self.returncode = returncode
         self.stdout = stdout
+        self.stderr = stderr
 
 
 def _handle(host: str) -> SimpleNamespace:
@@ -139,6 +143,7 @@ def test_fallback_without_public_host_warns(monkeypatch, capsys):
         meeting_url="",
         gateway=None,
         start=start,
+        rootless_driver=lambda: None,
     )
     assert url_host is None
     err = capsys.readouterr().out
@@ -180,3 +185,151 @@ def test_screenshare_local_off_does_not_bind_wildcard(monkeypatch, capsys):
     assert url_host is None
     assert calls == [{"meeting_url": "https://meet.google.com/abc"}]
     assert capsys.readouterr().out == ""
+
+
+_SLIRP_INFO = """
+Security Options:
+ name=rootless
+rootlesskit:
+ NetworkDriver: slirp4netns
+"""
+
+_PASTA_INFO = """
+Security Options:
+ name=rootless
+ NetworkDriver: pasta
+"""
+
+
+def test_parse_rootless_drivers():
+    assert parse_rootless_network_driver(_SLIRP_INFO) == "slirp4netns"
+    assert parse_rootless_network_driver(_PASTA_INFO) == "pasta"
+    assert parse_rootless_network_driver("Security Options:\n name=seccomp\n") is None
+    assert parse_rootless_network_driver("name=rootless\n") == "slirp4netns"
+
+
+def test_rootless_info_does_not_listen(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: _Proc(0, _SLIRP_INFO),
+    )
+    assert rootless_network_driver() == "slirp4netns"
+
+
+def test_slirp_defaults_public_host(monkeypatch, capsys):
+    monkeypatch.setattr(settings, "relay_bind_host", "")
+    monkeypatch.setattr(settings, "relay_public_host", "")
+
+    def start(*, host, meeting_url):
+        assert host == "0.0.0.0"
+        return _handle(host)
+
+    _relay, url_host = open_screenshare_relay(
+        meeting_url="",
+        gateway=None,
+        start=start,
+        rootless_driver=lambda: "slirp4netns",
+    )
+    assert url_host == "10.0.2.2"
+    log = capsys.readouterr().out
+    assert "slirp4netns" in log
+    assert "using 10.0.2.2" in log
+
+
+def test_pasta_does_not_default_to_slirp_host(monkeypatch, capsys):
+    monkeypatch.setattr(settings, "relay_bind_host", "")
+    monkeypatch.setattr(settings, "relay_public_host", "")
+
+    def start(*, host, meeting_url):
+        return _handle(host)
+
+    _relay, url_host = open_screenshare_relay(
+        meeting_url="",
+        gateway=None,
+        start=start,
+        rootless_driver=lambda: "pasta",
+    )
+    assert url_host is None
+    log = capsys.readouterr().out
+    assert "pasta" in log
+    assert "not using 10.0.2.2" in log
+
+
+def test_explicit_public_host_skips_rootless_default(monkeypatch):
+    monkeypatch.setattr(settings, "relay_bind_host", "")
+    monkeypatch.setattr(settings, "relay_public_host", "host.docker.internal")
+    called = {"n": 0}
+
+    def driver():
+        called["n"] += 1
+        return "slirp4netns"
+
+    def start(*, host, meeting_url):
+        return _handle(host)
+
+    _relay, url_host = open_screenshare_relay(
+        meeting_url="",
+        gateway=None,
+        start=start,
+        rootless_driver=driver,
+    )
+    assert url_host == "host.docker.internal"
+    assert called["n"] == 0
+
+
+class _Tunnel:
+    def __init__(self, url: str, dead: bool = False):
+        self.public_url = url
+        self._proc = SimpleNamespace(poll=lambda: 1 if dead else None)
+
+
+def test_local_screenshare_skips_tunnel(capsys):
+    def open_tunnel():
+        raise AssertionError("cloudflared should not start")
+
+    published = publish_screenshare(
+        local_enabled=True,
+        share_host="10.0.2.2",
+        port=4321,
+        open_tunnel=open_tunnel,
+    )
+    assert published.tunnel is None
+    assert published.view_url == "http://10.0.2.2:4321/view"
+    assert published.agent_url == "http://10.0.2.2:4321/agent"
+    assert "no Cloudflare tunnel" in capsys.readouterr().out
+
+
+def test_tunnel_failure_propagates_without_local_host():
+    def open_tunnel():
+        raise RuntimeError("429 1015")
+
+    with pytest.raises(RuntimeError, match="429"):
+        publish_screenshare(
+            local_enabled=True,
+            share_host=None,
+            port=9,
+            open_tunnel=open_tunnel,
+        )
+
+
+def test_remote_screenshare_uses_tunnel():
+    published = publish_screenshare(
+        local_enabled=False,
+        share_host=None,
+        port=9,
+        open_tunnel=lambda: _Tunnel("https://word-word.trycloudflare.com/"),
+    )
+    assert published.view_url == "https://word-word.trycloudflare.com/view"
+    assert published.agent_url == "https://word-word.trycloudflare.com/agent"
+    assert published.tunnel is not None
+
+
+def test_dead_cloudflared_raises_when_tunnel_is_required():
+    with pytest.raises(RuntimeError, match="cloudflared died"):
+        publish_screenshare(
+            local_enabled=False,
+            share_host=None,
+            port=9,
+            open_tunnel=lambda: _Tunnel("https://example.trycloudflare.com", dead=True),
+        )

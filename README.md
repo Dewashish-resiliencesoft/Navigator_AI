@@ -546,7 +546,12 @@ NAVIGATOR_RELAY_PUBLIC_HOST=host.docker.internal
 
 Optional: `NAVIGATOR_RELAY_BIND_HOST=0.0.0.0` skips the gateway attempt.
 If the relay falls back to `0.0.0.0` and `NAVIGATOR_RELAY_PUBLIC_HOST` is
-unset, the log names that variable and screenshare stays on the public tunnel.
+unset on rootless slirp4netns, Navigator uses `10.0.2.2` and logs that
+choice. pasta is not given that default.
+
+`NAVIGATOR_SCREENSHARE_LOCAL=1` (the default) with a dialable relay host
+does not open a Cloudflare quick tunnel. `/view` and `/agent` are both
+served from that host, so a trycloudflare 429 does not block the demo.
 
 **Never** expose Attendee’s API or Django UI to Clients or End Users (Elastic
 License 2.0). Only Navigator’s process talks to it.

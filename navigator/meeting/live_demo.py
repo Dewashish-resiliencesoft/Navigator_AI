@@ -51,7 +51,11 @@ from navigator.meeting.relay import (
     start_screencast,
     stop_screencast,
 )
-from navigator.meeting.relay_host import local_screenshare_url, open_screenshare_relay
+from navigator.meeting.relay_host import (
+    open_screenshare_relay,
+    publish_screenshare,
+    tunnel_screenshare_url,
+)
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
 from navigator.meeting.tunnel import verify_attendee_docker_dns
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
@@ -1110,32 +1114,36 @@ def run_live_meet_demo(
                 )
                 webbrowser.open(meeting_url)
 
-        # Screenshare tunnel after bot join (Meet + Zoom web SDK).
+        # Local screenshare (NAVIGATOR_SCREENSHARE_LOCAL=1) with a dialable
+        # relay host does not start a Cloudflare quick tunnel. 429/1015 on
+        # trycloudflare must not block /view or /agent.
         public_agent: str | None = None
-        print("[live] starting screenshare tunnel…", flush=True)
-        # 0.0.0.0 is a bind address, not a dial address. The tunnel runs on
-        # this host, so it reaches a wildcard relay via loopback.
-        _tunnel_host = "127.0.0.1" if relay.host in ("0.0.0.0", "::") else relay.host
-        tunnel = _timed_live_stage(
-            "screenshare_tunnel_start",
-            lambda: publish_http_or_tunnel(
-                _tunnel_host,
-                relay.port,
-                binary=settings.tunnel_bin,
-                ready_path="/view",
-            ),
+
+        def _open_screenshare_tunnel():
+            print("[live] starting screenshare tunnel…", flush=True)
+            # 0.0.0.0 is a bind address, not a dial address. The tunnel runs on
+            # this host, so it reaches a wildcard relay via loopback.
+            _tunnel_host = "127.0.0.1" if relay.host in ("0.0.0.0", "::") else relay.host
+            return _timed_live_stage(
+                "screenshare_tunnel_start",
+                lambda: publish_http_or_tunnel(
+                    _tunnel_host,
+                    relay.port,
+                    binary=settings.tunnel_bin,
+                    ready_path="/view",
+                ),
+            )
+
+        _published = publish_screenshare(
+            local_enabled=_local_share,
+            share_host=_share_host,
+            port=relay.port,
+            open_tunnel=_open_screenshare_tunnel,
         )
-        public_view = f"{tunnel.public_url}/view"
-        if _share_host:
-            # Attendee runs on the same host: skip the tunnel hop for video.
-            # ``_share_host`` is the address containers can dial (gateway IP,
-            # or NAVIGATOR_RELAY_PUBLIC_HOST after a 0.0.0.0 bind).
-            public_view = local_screenshare_url(_share_host, relay.port)
-        public_agent = f"{tunnel.public_url}/agent"
+        public_view = _published.view_url
+        public_agent = _published.agent_url
+        tunnel = _published.tunnel
         print(f"[live] screenshare URL ready: {public_view}", flush=True)
-        if tunnel._proc.poll() is not None:
-            raise RuntimeError("cloudflared died before screenshare")
-        _ = public_agent  # avatar tile path reserved for later
 
         if audio_bridge is not None:
             print("[live] waiting for Attendee audio websocket…", flush=True)
@@ -1714,14 +1722,19 @@ def run_live_meet_demo(
             try:
                 arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
             except Exception as exc:  # noqa: BLE001 — never crash the demo here
-                tunnel_view = f"{tunnel.public_url}/view"
+                tunnel_view = tunnel_screenshare_url(tunnel)
                 _msg = str(exc).lower()
                 if "state ended" in _msg or "fatal_error" in _msg or "post_processing" in _msg:
                     # The bot left the meeting (e.g. host left / meeting ended);
                     # this is not a URL problem, so a tunnel retry cannot help.
                     print(f"[live] bot {bot.id} already left the meeting — stopping this demo run ({exc})", flush=True)
                     raise RuntimeError(f"bot {bot.id} left the meeting before screenshare") from exc
-                if public_view == tunnel_view:
+                if tunnel_view is None or public_view == tunnel_view:
+                    print(
+                        f"[live] WARN: screenshare rejected ({exc}); "
+                        "no Cloudflare tunnel to fall back to",
+                        flush=True,
+                    )
                     raise
                 print(f"[live] local screenshare rejected ({exc}); falling back to tunnel {tunnel_view}", flush=True)
                 public_view = tunnel_view
@@ -1731,14 +1744,21 @@ def run_live_meet_demo(
                 while relay.frame_hits <= baseline_hits and time.monotonic() - _t0 < 6.0:
                     time.sleep(0.25)
                 if relay.frame_hits <= baseline_hits:
-                    tunnel_view = f"{tunnel.public_url}/view"
-                    print(f"[live] local screenshare got 0 frame pulls in 6s; falling back to tunnel {tunnel_view}", flush=True)
-                    public_view = tunnel_view
-                    try:
-                        arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[live] tunnel screenshare re-arm failed: {exc}", flush=True)
-                    baseline_hits = relay.frame_hits  # count only the tunnel's own pulls
+                    tunnel_view = tunnel_screenshare_url(tunnel)
+                    if tunnel_view is None:
+                        print(
+                            "[live] WARN: local screenshare got 0 frame pulls in 6s; "
+                            f"staying on {public_view} (no Cloudflare tunnel)",
+                            flush=True,
+                        )
+                    else:
+                        print(f"[live] local screenshare got 0 frame pulls in 6s; falling back to tunnel {tunnel_view}", flush=True)
+                        public_view = tunnel_view
+                        try:
+                            arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
+                        except Exception as exc:  # noqa: BLE001
+                            print(f"[live] tunnel screenshare re-arm failed: {exc}", flush=True)
+                        baseline_hits = relay.frame_hits  # count only the tunnel's own pulls
                 else:
                     print(f"[live] local screenshare pulling frames (+{relay.frame_hits - baseline_hits} in {time.monotonic() - _t0:.1f}s)", flush=True)
             live = wait_until_screenshare_live(

@@ -42,7 +42,7 @@ def voice_keys_ready(monkeypatch):
 
     Live voice is ready when a Gemini key is set, Groq is required for
     conversational interrupts, and a public demo also needs Attendee. These
-    tests do not call those services.
+    tests do not call those services. The production readiness checks stay in place.
     """
     from navigator.core.settings import settings
 

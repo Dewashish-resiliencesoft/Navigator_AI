@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from navigator.agent.nodes.speaking import speaking
 from navigator.agent.state import CLEAR, queue
 from navigator.agent.utterance import logic_id, merge_narration, stamp_narration
@@ -85,6 +87,10 @@ def test_confirmed_barge_in_flushes_and_stops():
     agent._set_playback("playing", "u1")
     agent._barge_confirm_s = 0.0
     agent._handle_server_message(_msg(interrupted=True))
+    assert agent.barge_in_confirmed == 0
+    assert bridge.n == 0
+    # Recent inbound energy cuts playback without waiting for the transcript.
+    agent._last_voice_at = time.monotonic()
     agent._handle_server_message(_msg(interrupted=True))
     assert agent.barge_in_confirmed == 1
     assert agent.interrupted is True

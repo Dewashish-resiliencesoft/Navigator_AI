@@ -32,6 +32,39 @@ def test_assess_demo_readiness_new_product(tmp_path: Path):
     assert live.blocking is True
 
 
+def test_live_readiness_accepts_live_key_or_general_key(tmp_path: Path, monkeypatch):
+    """Voice can start from NAVIGATOR_GEMINI_LIVE_API_KEY alone, else the general key."""
+    from navigator.core.settings import settings
+
+    for name in (
+        "gemini_api_key",
+        "gemini_api_key_backup",
+        "gemini_api_keys",
+        "gemini_live_api_key",
+        "gemini_live_api_keys",
+    ):
+        monkeypatch.setattr(settings, name, "")
+
+    db = tmp_path / "nav.db"
+    with Registry(db) as reg:
+        reg.register(NewProduct(product_id="acme", name="Acme", api_key="nav_test_key"))
+
+        blocked = assess_demo_readiness(reg, "acme", origin="dashboard_test")
+        live = next(c for c in blocked.checks if c.id == "live")
+        assert live.ok is False
+        assert "NAVIGATOR_GEMINI_LIVE_API_KEY" in live.message
+        assert "NAVIGATOR_GEMINI_API_KEY" in live.message
+
+        monkeypatch.setattr(settings, "gemini_live_api_key", "live-only")
+        live_only = assess_demo_readiness(reg, "acme", origin="dashboard_test")
+        assert next(c for c in live_only.checks if c.id == "live").ok is True
+
+        monkeypatch.setattr(settings, "gemini_live_api_key", "")
+        monkeypatch.setattr(settings, "gemini_api_key", "general")
+        general = assess_demo_readiness(reg, "acme", origin="dashboard_test")
+        assert next(c for c in general.checks if c.id == "live").ok is True
+
+
 def test_has_offerable_flow_uses_page_keys(site_graph):
     """Regression: PageSpec has no .id — page_id comes from graph.pages keys."""
     assert _has_offerable_flow(site_graph) is True

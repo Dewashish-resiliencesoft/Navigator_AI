@@ -90,7 +90,9 @@ def test_normalize_gemini_model_remaps_retired_flash() -> None:
 def test_is_gemini_model_served_drops_shutdown_families() -> None:
     assert not gemini_keys.is_gemini_model_served("gemini-2.0-flash")
     assert not gemini_keys.is_gemini_model_served("models/gemini-1.5-pro")
-    assert gemini_keys.is_gemini_model_served("gemini-2.5-flash")
+    # 2.5 Flash is retired and remapped; models.list may still return the id.
+    assert not gemini_keys.is_gemini_model_served("gemini-2.5-flash")
+    assert not gemini_keys.is_gemini_model_served("gemini-2.5-flash-lite")
     assert gemini_keys.is_gemini_model_served("gemini-3.6-flash")
     assert gemini_keys.is_gemini_model_served("gemini-3.1-flash-live-preview")
 

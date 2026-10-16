@@ -35,16 +35,48 @@ def _send_interrupted(agent):
     msg.go_away = None
     msg.server_content = sc
     msg.data = None
+    msg.tool_call = None
     agent._handle_server_message(msg)
 
 
-def test_first_barge_in_confirmed():
+def _send_heard(agent, text="stop there"):
+    """A real input transcript. That is what confirms a probable barge-in."""
+    msg = MagicMock()
+    sc = MagicMock()
+    sc.interrupted = False
+    sc.model_turn = None
+    sc.output_transcription = None
+    heard = MagicMock()
+    heard.text = text
+    sc.input_transcription = heard
+    msg.session_resumption_update = None
+    msg.go_away = None
+    msg.server_content = sc
+    msg.data = None
+    msg.tool_call = None
+    agent._handle_server_message(msg)
+
+
+def test_server_interrupt_stays_probable_until_speech():
+    """A server interrupted event alone does not cut playback."""
     agent, bridge = _make_agent()
     agent._barge_confirm_s = 0.0
     _send_interrupted(agent)
     assert agent.barge_in_confirmed == 0
+    assert bridge.flush_bot_output.call_count == 0
+    _send_heard(agent)
+    assert agent.barge_in_confirmed == 1
+    assert bridge.flush_bot_output.call_count == 1
+
+
+def test_recent_voice_cuts_playback_without_waiting_for_stt():
+    """Inbound energy while we are speaking flushes immediately."""
+    agent, bridge = _make_agent()
+    agent.speaking = True
+    agent._last_voice_at = time.monotonic()
     _send_interrupted(agent)
     assert agent.barge_in_confirmed == 1
+    assert agent.interrupted is True
     assert bridge.flush_bot_output.call_count == 1
 
 
@@ -52,7 +84,7 @@ def test_duplicate_barge_in_suppressed_in_cooldown():
     agent, bridge = _make_agent()
     agent._barge_confirm_s = 0.0
     _send_interrupted(agent)
-    _send_interrupted(agent)
+    _send_heard(agent)
     _send_interrupted(agent)
     assert agent.barge_in_confirmed == 1
     assert agent.barge_in_rejected_cooldown == 1
@@ -64,10 +96,10 @@ def test_barge_in_after_cooldown_accepted():
     agent._barge_confirm_s = 0.0
     agent._interrupt_cooldown_s = 0.05
     _send_interrupted(agent)
-    _send_interrupted(agent)
+    _send_heard(agent, "stop")
     time.sleep(0.1)
     _send_interrupted(agent)
-    _send_interrupted(agent)
+    _send_heard(agent, "wait")
     assert agent.barge_in_confirmed == 2
     assert bridge.flush_bot_output.call_count == 2
 
@@ -85,8 +117,8 @@ def test_flush_count_tracked():
     agent._barge_confirm_s = 0.0
     agent._interrupt_cooldown_s = 0.01
     _send_interrupted(agent)
-    _send_interrupted(agent)
+    _send_heard(agent, "stop")
     time.sleep(0.05)
     _send_interrupted(agent)
-    _send_interrupted(agent)
+    _send_heard(agent, "wait")
     assert agent.audio_flush_count == 2

@@ -16,6 +16,10 @@ from navigator.core.schemas import (
 )
 
 TS = datetime(2026, 7, 31, 12, 0, tzinfo=timezone.utc)
+# product_metrics / demo_run_metrics keep a rolling window that ends at `now`
+# (default: wall clock). These rows are dated 2026-07-31 and 2026-08-01, so the
+# clock has to be pinned or they fall out of the default 14-day window.
+METRICS_NOW = TS + timedelta(days=1, hours=1)
 
 
 def entry(session_id, *, ok=True, passed=True, verify=True, source="agent", tool="click"):
@@ -63,13 +67,13 @@ def test_product_metrics_aggregates_by_day_and_scopes_by_product(log):
     other.product_id = "globex"
     log.append(other)
 
-    m = log.product_metrics("acme")
+    m = log.product_metrics("acme", now=METRICS_NOW)
     assert m["actions"] == 2
     assert m["sessions"] == 1, "both acme rows share a session"
     assert m["failures"] == 1
     assert (m["verified"], m["passed"]) == (2, 1)
     assert [d["day"] for d in m["series"]] == ["2026-07-31", "2026-08-01"]
-    assert log.product_metrics("globex")["actions"] == 1
+    assert log.product_metrics("globex", now=METRICS_NOW)["actions"] == 1
 
 
 def test_round_trip_preserves_the_tool_call_union(log):
@@ -159,7 +163,7 @@ def test_demo_run_metrics_counts_test_and_live_runs(log):
         started_at=day_two,
     )
 
-    m = log.demo_run_metrics("acme", days=14)
+    m = log.demo_run_metrics("acme", days=14, now=METRICS_NOW)
 
     assert m["total"] == 2
     assert m["failed"] == 1
@@ -203,7 +207,7 @@ def test_dashboard_metrics_aligns_runs_actions_and_failures(log):
     bad.timestamp = day_two
     log.append(bad)
 
-    m = log.dashboard_metrics("acme", days=14, now=day_two + timedelta(hours=1))
+    m = log.dashboard_metrics("acme", days=14, now=METRICS_NOW)
 
     assert m["sessions"] == 2
     assert m["actions"] == 2

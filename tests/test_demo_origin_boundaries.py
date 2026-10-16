@@ -15,7 +15,7 @@ from uuid import uuid4
 import pytest
 
 from navigator.logs.store import ActionLog
-from test_action_log import TS, entry
+from test_action_log import METRICS_NOW, TS, entry
 from test_api import ACME_LIVE as ACME, register
 from test_client_dashboard import _client, _cleanup
 
@@ -186,7 +186,7 @@ def test_usage_aggregation_ignores_test_sessions(tmp_path):
             action.product_id = "acme"
             log.append(action)
 
-        m = log.product_metrics("acme")
+        m = log.product_metrics("acme", now=METRICS_NOW)
 
     assert m["sessions"] == 1, "only the End User's session is billable"
     assert m["actions"] == 1

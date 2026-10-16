@@ -2,17 +2,30 @@
 
 ponytail: one threaded sync websockets server. Ceiling: single connection handler
 loop. Upgrade: per-bot hubs.
+
+Outbound path (glitch fixes):
+1. Coalesce ~100ms of PCM — Gemini Live emits tiny chunks; shipping each through
+   Cloudflare live-ws causes Zoom/Meet underruns.
+2. Upsample 24 kHz → 48 kHz — Zoom web AudioContext is 48 kHz; mismatched
+   AudioBuffers click when the browser resamples many tiny buffers.
 """
 
 from __future__ import annotations
 
+import array
 import base64
 import json
 import threading
+import os
 import time
 from collections.abc import Iterator
 from queue import Empty, Queue
 from typing import Any
+
+#: Coalesce bot PCM before Attendee (~100ms at source rate).
+_OUTBOUND_COALESCE_S = 0.10
+#: Zoom web virtual mic AudioContext is 48 kHz.
+_ATTENDEE_PLAYBACK_RATE = 48_000
 
 
 def _pcm_seconds(pcm: bytes, sample_rate: int) -> float:
@@ -20,10 +33,123 @@ def _pcm_seconds(pcm: bytes, sample_rate: int) -> float:
     return len(pcm) / float(max(1, sample_rate) * 2)
 
 
+def _coalesce_bytes(sample_rate: int, seconds: float = _OUTBOUND_COALESCE_S) -> int:
+    return max(640, int(sample_rate * 2 * seconds))
+
+
+def upsample_pcm16_mono(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linear upsample int16 mono. Exact 2× (24→48k) uses sample doubling."""
+    if not pcm or src_rate <= 0 or src_rate == dst_rate:
+        return pcm
+    if len(pcm) % 2:
+        pcm = pcm[:-1]
+    if not pcm:
+        return pcm
+    src = array.array("h")
+    src.frombytes(pcm)
+    if dst_rate == src_rate * 2:
+        # Exact 2× — zero-order hold is enough and click-free for speech.
+        out = array.array("h", [0]) * (len(src) * 2)
+        j = 0
+        for s in src:
+            out[j] = s
+            out[j + 1] = s
+            j += 2
+        return out.tobytes()
+    # Generic linear (rare path).
+    n_out = max(1, int(round(len(src) * dst_rate / src_rate)))
+    out = array.array("h", [0]) * n_out
+    last = len(src) - 1
+    for i in range(n_out):
+        pos = i * (len(src) - 1) / max(1, n_out - 1)
+        i0 = int(pos)
+        i1 = min(i0 + 1, last)
+        frac = pos - i0
+        out[i] = int(src[i0] * (1 - frac) + src[i1] * frac)
+    return out.tobytes()
+
+
+def upsample_for_attendee(
+    pcm: bytes,
+    src_rate: int,
+    *,
+    dst_rate: int = _ATTENDEE_PLAYBACK_RATE,
+) -> tuple[bytes, int]:
+    """Return (pcm, out_rate).
+
+    NOT used on the send path any more: Attendee's RealtimeAudioOutputManager
+    returns a ``(chunk, rate)`` tuple when the incoming rate already equals its
+    output rate (48 kHz on Zoom web / Meet), and ``send_raw_audio`` then dies
+    with ``TypeError: a bytes-like object is required, not 'tuple'`` on every
+    chunk — the bot is silent. Sending Gemini's native 24 kHz lets Attendee do
+    an integer 2x upsample that returns bytes.
+    """
+    if not pcm or src_rate == dst_rate:
+        return pcm, src_rate
+    return upsample_pcm16_mono(pcm, src_rate, dst_rate), dst_rate
+
+
+_PATCH_OK: bool | None = None
+
+
+def _attendee_48k_ok() -> bool:
+    """True when Attendee's same-rate tuple bug is patched (see attendee_ws_patch)."""
+    global _PATCH_OK
+    if _PATCH_OK is None:
+        try:
+            from pathlib import Path
+
+            from navigator.meeting.attendee_stack import _compose_dir
+            from navigator.meeting.attendee_ws_patch import _UPS_MARKER
+
+            f = Path(_compose_dir()) / "bots" / "bot_controller" / "realtime_audio_output_manager.py"
+            _PATCH_OK = f.is_file() and _UPS_MARKER in f.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            _PATCH_OK = False
+        print(f"[voice-out] attendee 48k passthrough={'on' if _PATCH_OK else 'off (24k native)'}", flush=True)
+    return _PATCH_OK
+
+
+def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Band-limited-ish resample (linear interp, vectorised). No sample doubling."""
+    import numpy as np
+
+    if not pcm or src_rate == dst_rate:
+        return pcm
+    x = np.frombuffer(pcm[: len(pcm) - (len(pcm) % 2)], dtype=np.int16).astype(np.float32)
+    if x.size == 0:
+        return b""
+    n_out = int(round(x.size * dst_rate / src_rate))
+    t = np.arange(n_out, dtype=np.float64) * (src_rate / dst_rate)
+    y = np.interp(t, np.arange(x.size), x)
+    return np.clip(y, -32768, 32767).astype(np.int16).tobytes()
+
+
+ACTIVE: "AudioBridge | None" = None  # the meeting's bridge (for "fully heard" waits)
+
+
+def wait_heard(cap_s: float = 30.0, player_latency_s: float = 0.35) -> float:
+    """Block until everything sent to the meeting has been played out (plus the
+    Attendee player's own latency). Returns seconds waited."""
+    b = ACTIVE
+    t0 = time.monotonic()
+    if b is None:
+        return 0.0
+    while time.monotonic() - t0 < cap_s:
+        end = float(getattr(b, "out_play_end", 0.0) or 0.0) + player_latency_s
+        q = getattr(b, "_outbound", None)
+        if time.monotonic() >= end and (q is None or q.empty()):
+            break
+        time.sleep(0.05)
+    return time.monotonic() - t0
+
+
 class AudioBridge:
     """Receives Attendee realtime_audio chunks into ``inbound`` queue."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
+        global ACTIVE
+        ACTIVE = self
         self.host = host
         self.port = port
         self.inbound: Queue[bytes] = Queue()
@@ -38,11 +164,19 @@ class AudioBridge:
         self.clients_connected = 0
         self.chunks_received = 0
         self.chunks_sent = 0
+        #: Bumped on flush_bot_output so the sender drops its coalesce buffer.
+        self._out_epoch = 0
         #: Seconds of bot audio actually handed to Attendee. Callers compare
         #: this against wall-clock to tell whether a line has finished playing —
         #: Gemini's turn_complete only says generation stopped, and the meeting
         #: is still several buffers behind at that point.
         self.audio_s_sent = 0.0
+        self.pcm_in_bytes = 0
+        #: True once Attendee sends per-participant audio (excludes our voice).
+        self.echo_free = False
+        self.bytes_sent = 0
+        self.send_errors = 0
+        self._last_out_log = 0.0
 
     @property
     def local_url(self) -> str:
@@ -78,8 +212,105 @@ class AudioBridge:
         self._server = None
         self._ws = None
 
-    def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
+    def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000, writer: str | None = None) -> None:
+        # Single-voice audit: two different producers feeding the meeting within
+        # 0.5s means two voices are being interleaved into one output.
+        who = writer or threading.current_thread().name
+        now = time.monotonic()
+        last_who, last_at = getattr(self, "_last_writer", (None, 0.0))
+        if last_who is not None and who != last_who and now - last_at < 0.5:
+            self.concurrent_writers = getattr(self, "concurrent_writers", 0) + 1
+            print(f"[audio-arbiter] CONCURRENT WRITERS {last_who!r} and {who!r} "
+                  f"(n={self.concurrent_writers})", flush=True)
+        self._last_writer = (who, now)
+        self._line_rx(pcm or b"", sample_rate, now)
+        self.pcm_in_bytes += len(pcm or b"")
+        self._tap_pcm(pcm or b"", sample_rate)
         self._outbound.put((pcm, sample_rate))
+
+    # ---- adaptive pre-buffer -------------------------------------------
+    # Gemini sometimes generates slower than realtime (long lines, on-the-fly
+    # translation). Sending each chunk as it lands then starves the meeting
+    # mid-sentence. Hold the start of a line until enough audio is buffered to
+    # cover the expected shortfall: need = remaining_s * (1 - rate) + 0.25s.
+
+    def expect_line(self, seconds: float) -> None:
+        """Next line is expected to last about ``seconds`` (from its text)."""
+        self._line_est_s = max(0.5, float(seconds or 0.0))
+
+    def _line_rx(self, pcm: bytes, rate: int, now: float) -> None:
+        if not getattr(self, "_line_open", False):
+            self._line_open = True
+            self._line_ended = False
+            self._line_t0 = now
+            self._line_rx_s = 0.0
+            self._line_holding = True
+            self._line_sent_any = False
+        self._line_rx_s += len(pcm) / (2.0 * rate) if rate else 0.0
+        self._line_last_rx = now
+
+    def _prebuffer_need(self, now: float) -> float:
+        rx = getattr(self, "_line_rx_s", 0.0)
+        elapsed = max(1e-3, now - getattr(self, "_line_t0", now))
+        est = getattr(self, "_line_est_s", 6.0)
+        extra = float(getattr(self, "jitter_extra_s", 0.0) or 0.0)
+        if elapsed < 0.35:
+            # Rate unknown yet: Live's first chunks are bursty; starting on 250ms
+            # gave a 444ms underrun at the start of answers (13:23 run).
+            return 0.45 + extra
+        r = rx / elapsed  # audio seconds per wall second
+        remaining = max(0.0, est - rx)
+        if r >= 1.05:
+            return 0.25 + extra
+        return min(5.0, max(0.25, remaining * (1.0 - r) + 0.35) + extra)
+
+    def mark_line_end(self) -> None:
+        """Model finished a line. The silence before the next line's first chunk
+        is a pause between utterances (incl. LLM/TTS latency), not an underrun.
+        Before this, ~1-1.9s gaps at every line start were counted as underruns."""
+        self._tap_play_end = 0.0
+        self._line_open = False
+        self._line_ended = True
+        if not getattr(self, "_line_underran", False):  # clean line: shrink back slowly
+            self.jitter_extra_s = max(0.0, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) - 0.05)
+        self._line_underran = False
+
+    def _tap_pcm(self, pcm: bytes, rate: int) -> None:
+        """Underrun detector + optional WAV tap (NAVIGATOR_VOICE_WAV=/tmp/x.wav)."""
+        now = time.monotonic()
+        play_end = getattr(self, "_tap_play_end", 0.0)
+        if not play_end:
+            self.line_starts = getattr(self, "line_starts", 0) + 1
+        elif 0.0 < now - play_end < 2.0:
+            # Gemini chunk arrived after the previous audio already ran out.
+            self.arrival_gaps = getattr(self, "arrival_gaps", 0) + 1
+        self._tap_play_end = max(now, play_end) + len(pcm) / (2.0 * rate)
+        # Same estimate, but NOT reset at line end: when the meeting stops
+        # hearing everything sent so far (Q&A answers included).
+        self.out_play_end = max(now, getattr(self, "out_play_end", 0.0)) + len(pcm) / (2.0 * rate)
+        path = os.environ.get("NAVIGATOR_VOICE_WAV")
+        if not path:
+            return
+        import wave
+
+        w = getattr(self, "_tap_wav", None)
+        if w is None:
+            w = wave.open(path, "wb")
+            w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+            self._tap_wav = w
+        w.writeframes(pcm)
+
+    def _log_out(self, rate: int) -> None:
+        now = time.monotonic()
+        if now - self._last_out_log < 3.0:
+            return
+        self._last_out_log = now
+        print(
+            f"[voice-out] gemini pcm bytes={self.pcm_in_bytes} | sent to attendee "
+            f"chunks={self.chunks_sent} bytes={self.bytes_sent} sample_rate={rate} "
+            f"audio_s={self.audio_s_sent:.1f} errors={self.send_errors}",
+            flush=True,
+        )
 
     def clear_outbound(self) -> int:
         """Drop queued bot audio we have not sent yet. Returns how many chunks."""
@@ -98,6 +329,8 @@ class AudioBridge:
         browser has scheduled them into the future.
         """
         dropped = self.clear_outbound()
+        self._out_epoch += 1
+        self.out_play_end = time.monotonic()
         self._send_json({"trigger": "realtime_audio.bot_output_clear", "data": {}})
         print(f"[audio] bot output flushed (dropped {dropped} chunk(s))", flush=True)
 
@@ -109,44 +342,144 @@ class AudioBridge:
             with self._send_lock:
                 ws.send(json.dumps(payload))
             return True
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            self.send_errors = getattr(self, "send_errors", 0) + 1
+            if self.send_errors <= 3 or self.send_errors % 50 == 0:
+                print(f"[voice-out] ws send error #{self.send_errors}: {exc}", flush=True)
             return False
 
-    def _run_sender(self) -> None:
-        """Push bot audio as soon as it is queued.
-
-        Previously outbound was only flushed inside the inbound read loop, so
-        bot audio could not go out unless the meeting happened to be sending us
-        something — silence in, silence out.
-        """
+    def _send_pcm(self, pcm: bytes, rate: int) -> None:
+        if not pcm:
+            return
+        duration_s = _pcm_seconds(pcm, rate)
+        # 48 kHz with a proper interpolating resample when Attendee is patched
+        # (it then passes bytes through untouched); else native rate and let
+        # Attendee duplicate samples (crashes avoided, but slightly harsher).
+        if _attendee_48k_ok() and rate != _ATTENDEE_PLAYBACK_RATE:
+            out, out_rate = resample_pcm16(pcm, rate, _ATTENDEE_PLAYBACK_RATE), _ATTENDEE_PLAYBACK_RATE
+        else:
+            out, out_rate = pcm, rate
+        payload = {
+            "trigger": "realtime_audio.bot_output",
+            "data": {
+                "chunk": base64.b64encode(out).decode(),
+                "sample_rate": out_rate,
+            },
+        }
+        # Handshake can finish a tick before the handler assigns self._ws.
+        deadline = time.monotonic() + 45.0
         while not self._stop.is_set():
-            try:
-                pcm, rate = self._outbound.get(timeout=0.2)
-            except Empty:
-                continue
-            # Zoom ZAK join often connects the audio WS tens of seconds later.
-            # Hold until Attendee is on the socket (or the demo stops).
-            deadline = time.monotonic() + 45.0
-            while self._ws is None and not self._stop.is_set():
-                if time.monotonic() >= deadline:
-                    break
-                time.sleep(0.01)
-            if self._send_json(
-                {
-                    "trigger": "realtime_audio.bot_output",
-                    "data": {
-                        "chunk": base64.b64encode(pcm).decode(),
-                        "sample_rate": rate,
-                    },
-                }
-            ):
+            if self._send_json(payload):
                 self.chunks_sent += 1
-                # Counted on the send, not on the queue put: chunks a barge-in
-                # drops or a dead socket refuses are never heard, so callers
-                # must not wait them out.
-                self.audio_s_sent += _pcm_seconds(pcm, rate)
-            else:
-                print("[audio] dropped outbound chunk: Attendee WS not connected", flush=True)
+                self.bytes_sent += len(out)
+                self.audio_s_sent += duration_s
+                self._log_out(out_rate)
+                if self.chunks_sent == 1:
+                    print(
+                        "[voice-out] zoom bot mic state=unmuting — Attendee clicks "
+                        "'unmute my microphone' on first bot_output (it never did "
+                        "before: send_raw_audio crashed). If the tile stays muted the "
+                        "host has muted it / disallowed self-unmute: ask the host to "
+                        "unmute Navigator or enable 'Allow participants to unmute themselves'.",
+                        flush=True,
+                    )
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+        self.send_errors += 1
+        print(
+            "[voice-out] ws send error: dropped chunk, Attendee WS not connected",
+            flush=True,
+        )
+
+    def _wait_ws(self) -> None:
+        deadline = time.monotonic() + 45.0
+        while self._ws is None and not self._stop.is_set():
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.01)
+
+    def _run_sender(self) -> None:
+        """Push bot audio coalesced (~100ms), with an adaptive start-of-line hold."""
+        buf = bytearray()
+        buf_rate = 0
+        epoch = self._out_epoch
+        play_end = 0.0  # when the audio we already sent finishes playing
+        while not self._stop.is_set():
+            if self._out_epoch != epoch:
+                buf.clear()
+                buf_rate = 0
+                epoch = self._out_epoch
+                play_end = 0.0  # flushed audio never plays
+            try:
+                pcm, rate = self._outbound.get(timeout=0.02)
+                if buf_rate and rate != buf_rate:
+                    self._wait_ws()
+                    play_end = self._send_timed(bytes(buf), buf_rate, play_end)
+                    buf.clear()
+                buf_rate = rate
+                buf.extend(pcm)
+            except Empty:
+                pass
+            if not buf or not buf_rate:
+                continue
+            now = time.monotonic()
+            buffered = len(buf) / (2.0 * buf_rate)
+            # Real play-out end includes audio still held in the prebuffer: the
+            # push-time estimate ignored a 4.4s hold, so the flow clicked Login
+            # while 'this is the landing page' was still to be heard (17:38 run).
+            self.out_play_end = max(getattr(self, "out_play_end", 0.0), max(play_end, now) + buffered)
+            holding = getattr(self, "_line_holding", False)
+            if holding:
+                ended = getattr(self, "_line_ended", False) or not getattr(self, "_line_open", False)
+                ahead = max(0.0, play_end - now)
+                need = self._prebuffer_need(now)
+                if not getattr(self, "_hold_since", 0.0):
+                    self._hold_since = now
+                idle_rx = now - getattr(self, "_line_last_rx", now)
+                held = now - self._hold_since
+                if ended or buffered + ahead >= need or idle_rx > 0.4 or held > min(6.0, need + 1.0):
+                    if need > 0.6:  # 0.45 is the normal line-start prebuffer, not "slow"
+                        print(f"[voice-out] prebuffer {buffered * 1000:.0f}ms (need {need * 1000:.0f}ms, "
+                              f"slow generation) — starting", flush=True)
+                    self._line_holding = False
+                    self._hold_since = 0.0
+                else:
+                    continue
+            need_b = _coalesce_bytes(buf_rate)
+            self._wait_ws()
+            if self._out_epoch != epoch:
+                continue
+            while len(buf) >= need_b:
+                piece = bytes(buf[:need_b])
+                del buf[:need_b]
+                play_end = self._send_timed(piece, buf_rate, play_end)
+            if buf and self._outbound.empty():
+                play_end = self._send_timed(bytes(buf), buf_rate, play_end)
+                buf.clear()
+            if not buf:
+                buf_rate = 0
+                # Starving mid-line: re-arm the hold so the next burst is buffered.
+                if getattr(self, "_line_open", False) and play_end - time.monotonic() < 0.08:
+                    self._line_holding = True
+
+    def _send_timed(self, pcm: bytes, rate: int, play_end: float) -> float:
+        now = time.monotonic()
+        mid_line = getattr(self, "_line_sent_any", False) and getattr(self, "_line_open", False)
+        if play_end and now > play_end + 0.02 and mid_line:
+            self.underruns = getattr(self, "underruns", 0) + 1
+            self.underrun_ms = getattr(self, "underrun_ms", 0.0) + (now - play_end) * 1000
+            # Adaptive jitter buffer: grows only after real mid-line underruns.
+            self.jitter_extra_s = min(0.6, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) + 0.15)
+            self._line_underran = True
+            print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns} "
+                  f"jitter+={self.jitter_extra_s * 1000:.0f}ms", flush=True)
+        self._line_sent_any = True
+        self._send_pcm(pcm, rate)
+        end = max(now, play_end) + len(pcm) / (2.0 * rate)
+        self.out_play_end = max(getattr(self, "out_play_end", 0.0), end)
+        return end
 
     def frames(self, *, timeout_s: float | None = None) -> Iterator[bytes]:
         while not self._stop.is_set():
@@ -166,6 +499,15 @@ class AudioBridge:
 
         def handler(ws: Any) -> None:
             self.clients_connected += 1
+            old = self._ws
+            if old is not None and old is not ws:
+                self.concurrent_writers = getattr(self, "concurrent_writers", 0) + 1
+                print("[audio-arbiter] second Attendee audio client connected — closing the old one "
+                      f"(n={self.concurrent_writers})", flush=True)
+                try:
+                    old.close()
+                except Exception:  # noqa: BLE001
+                    pass
             self._ws = ws
             print(
                 f"[audio] Attendee websocket connected (clients={self.clients_connected})",
@@ -187,7 +529,6 @@ class AudioBridge:
                 self._server = server
                 self.port = int(server.socket.getsockname()[1])
                 self._ready.set()
-                # Critical: without serve_forever(), TCP listens but never accepts.
                 server.serve_forever()
         except Exception as exc:  # noqa: BLE001
             print(f"[audio] bridge failed: {exc}", flush=True)
@@ -207,8 +548,20 @@ class AudioBridge:
         if not chunk_b64:
             return
         try:
-            self.inbound.put(base64.b64decode(chunk_b64))
+            pcm_in = base64.b64decode(chunk_b64)
+            if msg.get("trigger") == "realtime_audio.per_participant":
+                self.echo_free = True
+            self.inbound.put(pcm_in)
             self.chunks_received += 1
+            self.pcm_recv_bytes = getattr(self, "pcm_recv_bytes", 0) + len(pcm_in)
+            now = time.monotonic()
+            if now - getattr(self, "_last_in_log", 0.0) >= 5.0:
+                self._last_in_log = now
+                print(
+                    f"[voice-in] pcm bytes={self.pcm_recv_bytes} chunks={self.chunks_received} "
+                    f"trigger={msg.get('trigger')!r} rate={data.get('sample_rate')}",
+                    flush=True,
+                )
             if self.chunks_received in (1, 50, 200):
                 print(
                     f"[audio] pcm chunks received={self.chunks_received} "

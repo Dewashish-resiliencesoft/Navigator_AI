@@ -27,6 +27,11 @@ export NAVIGATOR_ZOOM_CLIENT_ID="$SDK_ID"
 export NAVIGATOR_ZOOM_CLIENT_SECRET="$SDK_SECRET"
 export NAVIGATOR_ATTENDEE_PROJECT_NAME="${NAVIGATOR_ATTENDEE_PROJECT_NAME:-Navigator}"
 
+API_KEY_ENV=()
+if [[ -n "${NAVIGATOR_ATTENDEE_API_KEY:-}" ]]; then
+  API_KEY_ENV+=(NAVIGATOR_ATTENDEE_API_KEY="$NAVIGATOR_ATTENDEE_API_KEY")
+fi
+
 docker compose \
   -f "$ATTENDEE/dev.docker-compose.yaml" \
   -f "$ATTENDEE/local.docker-compose.yaml" \
@@ -34,6 +39,7 @@ docker compose \
   env NAVIGATOR_ZOOM_CLIENT_ID="$SDK_ID" \
       NAVIGATOR_ZOOM_CLIENT_SECRET="$SDK_SECRET" \
       NAVIGATOR_ATTENDEE_PROJECT_NAME="$NAVIGATOR_ATTENDEE_PROJECT_NAME" \
+      "${API_KEY_ENV[@]}" \
   python manage.py shell < "$ROOT/scripts/bootstrap_attendee_zoom.py"
 
 echo "[zoom] Attendee project credentials synced — retry live demo"

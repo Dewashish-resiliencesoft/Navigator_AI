@@ -8,7 +8,7 @@ from typing import Protocol
 class Speaker(Protocol):
     """What SPEAKING depends on. Swappable without touching the state machine."""
 
-    def say(self, text: str) -> None: ...
+    def say(self, text: str, *, language: str | None = None) -> None: ...
 
 
 class PrintSpeaker:
@@ -16,7 +16,9 @@ class PrintSpeaker:
 
     def __init__(self) -> None:
         self.said: list[str] = []
+        self.languages: list[str | None] = []
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, *, language: str | None = None) -> None:
         self.said.append(text)
+        self.languages.append(language)
         print(f"[speak] {text}")

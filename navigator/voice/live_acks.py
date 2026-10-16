@@ -15,16 +15,14 @@ SpokenLanguage = Literal["en", "hi"]
 
 _EN = (
     "One sec…",
-    "Checking that…",
-    "Alright…",
+    "Just a moment…",
 )
 _HI = (
     "Ek second…",
-    "Dekh rahi hoon…",
-    "Theek hai…",
+    "Bas ek pal…",
 )
 
-_NUDGE_GAP_S = 8.0
+_NUDGE_GAP_S = 20.0
 _lock = threading.Lock()
 _last_nudge_at = 0.0
 _en_cycle = itertools.cycle(_EN)
@@ -56,6 +54,9 @@ def maybe_nudge_live(live: object | None, *, language: SpokenLanguage = "en") ->
     # Don't talk over a line already in flight — "Yeah…" on top of narration
     # is the agent answering itself.
     if getattr(live, "speaking", False):
+        return False
+    can_start = getattr(live, "can_start_utterance", None)
+    if callable(can_start) and not can_start():
         return False
     global _last_nudge_at
     now = time.monotonic()

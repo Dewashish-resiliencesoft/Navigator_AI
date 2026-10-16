@@ -82,9 +82,33 @@ def _sync_attendee_override(compose_dir: Path) -> None:
     try:
         from navigator.meeting.attendee_ws_patch import patch as patch_audio_ws
 
+        from navigator.meeting.attendee_ws_patch import patch_upsample
+
         result = patch_audio_ws(compose_dir)
         print(f"[attendee] audio-ws: {result}", flush=True)
-        if result.startswith("patched "):
+        from navigator.meeting.attendee_ws_patch import patch_jitter
+
+        ups = patch_upsample(compose_dir)
+        print(f"[attendee] audio-upsample: {ups}", flush=True)
+        jit = patch_jitter(compose_dir)
+        print(f"[attendee] audio-jitter: {jit}", flush=True)
+        from navigator.meeting.attendee_ws_patch import patch_scheduler
+
+        sch = patch_scheduler(compose_dir)
+        print(f"[attendee] audio-scheduler: {sch}", flush=True)
+        from navigator.meeting.attendee_ws_patch import patch_drawloop
+
+        drw = patch_drawloop(compose_dir)
+        print(f"[attendee] share-drawloop: {drw}", flush=True)
+        from navigator.meeting.attendee_ws_patch import patch_audio_v2
+
+        av2 = patch_audio_v2(compose_dir)
+        print(f"[attendee] audio-v2: {av2}", flush=True)
+        from navigator.meeting.attendee_ws_patch import patch_video_v2
+
+        vv2 = patch_video_v2(compose_dir)
+        print(f"[attendee] video-v2: {vv2}", flush=True)
+        if any(r.startswith("patched ") for r in (result, ups, jit, sch, drw, av2, vv2)):
             _restart_attendee_worker(compose_dir)
     except OSError as exc:
         print(f"[attendee] WARN: audio-ws patch skipped: {exc}", flush=True)
@@ -233,8 +257,18 @@ def ensure_attendee_zoom_credentials(
     env["NAVIGATOR_ATTENDEE_PROJECT_NAME"] = (
         project_name or os.environ.get("NAVIGATOR_ATTENDEE_PROJECT_NAME") or "Navigator"
     ).strip()
+    api_key = (settings.attendee_api_key or "").strip()
+    if api_key:
+        env["NAVIGATOR_ATTENDEE_API_KEY"] = api_key
 
     try:
+        exec_env = [
+            f"NAVIGATOR_ZOOM_CLIENT_ID={client_id}",
+            f"NAVIGATOR_ZOOM_CLIENT_SECRET={client_secret}",
+            f"NAVIGATOR_ATTENDEE_PROJECT_NAME={env['NAVIGATOR_ATTENDEE_PROJECT_NAME']}",
+        ]
+        if api_key:
+            exec_env.append(f"NAVIGATOR_ATTENDEE_API_KEY={api_key}")
         proc = subprocess.run(
             [
                 "docker",
@@ -247,9 +281,7 @@ def ensure_attendee_zoom_credentials(
                 "-T",
                 "attendee-app-local",
                 "env",
-                f"NAVIGATOR_ZOOM_CLIENT_ID={client_id}",
-                f"NAVIGATOR_ZOOM_CLIENT_SECRET={client_secret}",
-                f"NAVIGATOR_ATTENDEE_PROJECT_NAME={env['NAVIGATOR_ATTENDEE_PROJECT_NAME']}",
+                *exec_env,
                 "python",
                 "manage.py",
                 "shell",
@@ -327,6 +359,16 @@ def ensure_attendee_stack(
     compose_dir = compose_dir or _compose_dir()
 
     if not autostart or _in_pytest() or not is_local_attendee_url(base_url):
+        # Even with AUTOSTART=0 (host-managed Attendee), keep the eager audio-WS
+        # patch applied — Zoom format=none never emits mixed chunks, so lazy
+        # connect leaves Navigator mute forever.
+        if compose_dir.is_dir() and not _in_pytest():
+            try:
+                from navigator.meeting.attendee_ws_patch import patch as patch_audio_ws
+
+                print(f"[attendee] audio-ws: {patch_audio_ws(compose_dir)}", flush=True)
+            except OSError as exc:
+                print(f"[attendee] WARN: audio-ws patch skipped: {exc}", flush=True)
         return attendee_reachable(base_url)
 
     if not compose_dir.is_dir():

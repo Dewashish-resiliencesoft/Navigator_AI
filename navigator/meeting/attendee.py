@@ -152,6 +152,14 @@ class AttendeeClient:
                     "sample_rate": audio_sample_rate,
                 }
             }
+            if zoom_sdk == "web" or "zoom.us" in (meeting_url or ""):
+                # Attendee's Zoom web adapter never calls sendMixedAudio, so the
+                # mixed "audio" stream stays empty (bot can't hear anyone).
+                # Per-participant audio IS emitted; same URL → one shared WS.
+                payload["websocket_settings"]["per_participant_audio"] = {
+                    "url": audio_websocket_url,
+                    "sample_rate": audio_sample_rate,
+                }
 
         if google_meet_use_login:
             payload["google_meet_settings"] = {

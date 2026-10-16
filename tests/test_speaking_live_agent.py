@@ -15,9 +15,12 @@ class FakeLive:
         self.idle_waits = 0
         self._interrupt_on = interrupt_on
 
-    def say(self, text: str, *, mode: str = "verbatim") -> None:
+    def say(self, text: str, *, mode: str = "verbatim", utterance_id: str | None = None) -> None:
         self.said.append((text, mode))
         self.interrupted = text == self._interrupt_on
+
+    def set_language(self, lang: str) -> None:
+        self.language = lang
 
     def add_context(self, text: str) -> None:
         self.context.append(text)

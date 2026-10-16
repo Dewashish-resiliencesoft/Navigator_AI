@@ -15,23 +15,26 @@
 
   const box = document.createElement("div");
   box.id = "nav-narrate";
+  box.setAttribute("data-navigator-chrome", "record-studio");
   box.innerHTML = `
     <style>
       #nav-narrate {
         position: fixed; top: 16px; right: 16px; z-index: 2147483647;
         background: rgba(11, 18, 32, 0.94); color: #e8eef7;
+        /* Keep native <select> menus dark even when the host page is light. */
+        color-scheme: dark;
         border-radius: 14px; border: 1px solid rgba(255,255,255,.14);
         padding: 10px 12px; font: 500 12px/1.35 system-ui, sans-serif;
-        min-width: 220px; max-width: 260px;
+        min-width: 240px; max-width: 280px;
         box-shadow: 0 10px 28px rgba(0,0,0,.38); user-select: none;
         transition: opacity .25s ease, transform .25s ease, min-width .2s ease;
       }
       #nav-narrate.compact {
-        opacity: 0.42; min-width: 0; padding: 8px 10px; transform: scale(0.92);
+        opacity: 0.22; min-width: 0; padding: 8px 10px; transform: scale(0.92);
         transform-origin: top right;
       }
       #nav-narrate.compact:hover, #nav-narrate.compact:focus-within {
-        opacity: 1; transform: scale(1); min-width: 220px;
+        opacity: 1; transform: scale(1); min-width: 240px;
       }
       #nav-narrate.compact .nav-narrate-body { display: none; }
       #nav-narrate.compact:hover .nav-narrate-body,
@@ -44,13 +47,28 @@
       #nav-narrate.compact:focus-within .nav-narrate-chip { display: none; }
       #nav-narrate label { display: block; font-size: 10px; opacity: .72; margin: 0 0 3px; }
       #nav-narrate select {
-        width: 100%; margin-bottom: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,.12);
-        background: rgba(255,255,255,.06); color: #e8eef7; padding: 5px 8px; font: inherit;
+        width: 100%; margin-bottom: 8px; border-radius: 8px; border: 1px solid rgba(255,255,255,.18);
+        background: #1a2332; color: #e8eef7; padding: 5px 8px; font: inherit;
+        color-scheme: dark;
       }
-      #nav-narrate .nav-row { display: flex; gap: 6px; margin-top: 4px; }
+      #nav-narrate select option,
+      #nav-narrate select optgroup {
+        background: #1a2332;
+        color: #e8eef7;
+      }
+      #nav-narrate .nav-row { display: flex; gap: 6px; margin-top: 4px; flex-wrap: wrap; }
+      #nav-narrate .nav-sec {
+        margin: 0 0 10px; padding-bottom: 10px;
+        border-bottom: 1px solid rgba(255,255,255,.1);
+      }
+      #nav-narrate .nav-sec:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+      #nav-narrate .nav-status {
+        font-size: 11px; opacity: .85; margin: 6px 0 0; line-height: 1.35;
+        max-height: 4.2em; overflow: hidden;
+      }
       #nav-narrate button {
         flex: 1; border: 0; border-radius: 8px; padding: 7px 8px; font: 600 11px inherit;
-        cursor: pointer; color: #0b1220; background: #6ee7b7;
+        cursor: pointer; color: #0b1220; background: #6ee7b7; min-width: 72px;
       }
       #nav-narrate button.secondary { background: rgba(255,255,255,.12); color: #e8eef7; }
       #nav-narrate button:disabled { opacity: .45; cursor: not-allowed; }
@@ -61,30 +79,51 @@
       #nav-narrate-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; flex-shrink: 0; }
       #nav-narrate-dot.live { background: #f87171; box-shadow: 0 0 0 3px rgba(248,113,113,.35); }
       #nav-narrate-dot.paused { background: #fbbf24; }
+      #nav-narrate.mic-off #nav-mic-sec { display: none; }
+      #nav-narrate-dot-chip { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
+      #nav-narrate-dot-chip.live { background: #f87171; }
+      #nav-narrate-dot-chip.paused { background: #fbbf24; }
     </style>
     <div class="nav-narrate-chip" id="nav-narrate-chip">
       <span id="nav-narrate-dot-chip"></span>
-      <span id="nav-narrate-chip-label">Narrate</span>
+      <span id="nav-narrate-chip-label">Studio</span>
     </div>
     <div class="nav-narrate-body">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
-        <span id="nav-narrate-dot"></span>
-        <strong style="font-size:13px">Narration</strong>
+      <div class="nav-sec" id="nav-studio-sec">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+          <span id="nav-narrate-dot"></span>
+          <strong style="font-size:13px">Record studio</strong>
+        </div>
+        <div class="nav-row">
+          <button type="button" id="nav-studio-capture">Start capturing this flow</button>
+          <button type="button" id="nav-studio-stop" class="secondary">Stop</button>
+        </div>
+        <div class="nav-status" id="nav-studio-status">
+          Setup — log in, then Start capturing. Sample vs ask vs variables: Demo Script in dashboard.
+        </div>
       </div>
-      <label for="nav-narrate-lang">Speak in</label>
-      <select id="nav-narrate-lang"></select>
-      <label for="nav-narrate-translate">Final script language</label>
-      <select id="nav-narrate-translate"></select>
-      <div class="nav-row">
-        <button type="button" id="nav-narrate-rec">Record</button>
-        <button type="button" id="nav-narrate-pause" class="secondary" disabled>Pause</button>
-        <button type="button" id="nav-narrate-play" class="secondary" disabled>Play</button>
+      <div class="nav-sec" id="nav-mic-sec">
+        <strong style="font-size:12px;display:block;margin-bottom:6px">Narration</strong>
+        <label for="nav-narrate-lang">Speak in</label>
+        <select id="nav-narrate-lang"></select>
+        <label for="nav-narrate-translate">Final script language</label>
+        <select id="nav-narrate-translate"></select>
+        <div class="nav-row">
+          <button type="button" id="nav-narrate-rec">Record</button>
+          <button type="button" id="nav-narrate-pause" class="secondary" disabled>Pause</button>
+          <button type="button" id="nav-narrate-play" class="secondary" disabled>Play</button>
+        </div>
+        <div id="nav-narrate-time">00:00</div>
+        <canvas id="nav-narrate-wave" width="220" height="22"></canvas>
       </div>
-      <div id="nav-narrate-time">00:00</div>
-      <canvas id="nav-narrate-wave" width="220" height="22"></canvas>
     </div>
   `;
   document.documentElement.appendChild(box);
+
+  const hasMic =
+    typeof window.navigatorNarrate === "function" ||
+    typeof window.navigatorNarrateConfig === "function";
+  if (!hasMic) box.classList.add("mic-off");
 
   const langSel = box.querySelector("#nav-narrate-lang");
   const transSel = box.querySelector("#nav-narrate-translate");
@@ -97,6 +136,9 @@
   const timeEl = box.querySelector("#nav-narrate-time");
   const canvas = box.querySelector("#nav-narrate-wave");
   const ctx = canvas.getContext("2d");
+  const statusEl = box.querySelector("#nav-studio-status");
+  const btnCapture = box.querySelector("#nav-studio-capture");
+  const btnStop = box.querySelector("#nav-studio-stop");
 
   for (const [val, label] of LANGS) {
     langSel.appendChild(new Option(label, val));
@@ -116,14 +158,48 @@
   let playbackUrl = null;
   let recording = false;
   let paused = false;
+  let capturing = false;
+  let micStarting = false;
+  let autoMicForCapture = false;
+  let t0 = 0;
 
   const fmt = (ms) => {
     const s = Math.floor(ms / 1000);
     return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
   };
 
+  const studioCmd = async (action, extra) => {
+    const payload = Object.assign({ action }, extra || {});
+    try {
+      document.documentElement.setAttribute(
+        "data-nav-studio-cmd",
+        JSON.stringify(payload),
+      );
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      if (typeof window.navigatorStudioCmd === "function") {
+        return await window.navigatorStudioCmd(payload);
+      }
+    } catch (e) {
+      console.warn("[navigator-studio] cmd failed", e);
+    }
+    await new Promise((r) => setTimeout(r, 400));
+    try {
+      if (typeof window.navigatorStudioStatus === "function") {
+        return await window.navigatorStudioStatus();
+      }
+      if (window.__navStudioStatus) return window.__navStudioStatus;
+    } catch (e) {
+      /* ignore */
+    }
+    return null;
+  };
+
   const pushConfig = () => {
     try {
+      if (typeof window.navigatorNarrateConfig !== "function") return;
       window.navigatorNarrateConfig({
         language: langSel.value || "auto",
         translate_to: transSel.value || "same",
@@ -137,203 +213,267 @@
     box.classList.toggle("compact", !!on);
   };
 
-  const syncDots = (state) => {
-    dot.className = "";
-    dotChip.className = "";
-    if (state === "live") {
-      dot.classList.add("live");
-      dotChip.classList.add("live");
-    } else if (state === "paused") {
-      dot.classList.add("paused");
-      dotChip.classList.add("paused");
+  const syncCompact = () => {
+    setCompact(capturing || recording);
+    if (capturing && !recording) chipLabel.textContent = "Capturing";
+    else if (recording) chipLabel.textContent = "Recording";
+    else chipLabel.textContent = "Studio";
+  };
+
+  const syncDots = (mode) => {
+    for (const el of [dot, dotChip]) {
+      if (!el) continue;
+      el.classList.remove("live", "paused");
+      if (mode === "live") el.classList.add("live");
+      else if (mode === "paused") el.classList.add("paused");
     }
   };
 
   const drawWave = () => {
-    if (!analyser) return;
+    if (!analyser || !ctx) return;
     const buf = new Uint8Array(analyser.frequencyBinCount);
     analyser.getByteTimeDomainData(buf);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.strokeStyle = paused ? "#fbbf24" : "#6ee7b7";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#6ee7b7";
     ctx.beginPath();
-    for (let i = 0; i < canvas.width; i++) {
-      const v = buf[Math.floor((i * buf.length) / canvas.width)] / 128.0;
-      const y = (v * canvas.height) / 2;
-      i ? ctx.lineTo(i, y) : ctx.moveTo(i, y);
+    const step = canvas.width / buf.length;
+    for (let i = 0; i < buf.length; i++) {
+      const y = (buf[i] / 255) * canvas.height;
+      if (i === 0) ctx.moveTo(0, y);
+      else ctx.lineTo(i * step, y);
     }
     ctx.stroke();
-    requestAnimationFrame(drawWave);
+    if (recording && !paused) requestAnimationFrame(drawWave);
   };
 
-  const revokePlayback = () => {
-    if (playback) {
-      playback.pause();
-      playback = null;
+  const stopMic = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
     }
-    if (playbackUrl) {
-      URL.revokeObjectURL(playbackUrl);
-      playbackUrl = null;
+    if (rec && rec.state !== "inactive") {
+      try {
+        rec.stop();
+      } catch (e) {
+        /* ignore */
+      }
     }
-  };
-
-  const rebuildPlayback = () => {
-    revokePlayback();
-    if (!recordParts.length) {
-      playBtn.disabled = true;
-      return;
+    rec = null;
+    if (stream) {
+      stream.getTracks().forEach((t) => t.stop());
+      stream = null;
     }
-    const mime = (rec && rec.mimeType) || "audio/webm";
-    playbackUrl = URL.createObjectURL(new Blob(recordParts, { type: mime }));
-    playback = new Audio(playbackUrl);
-    playback.onended = () => {
-      playBtn.textContent = "Play";
-    };
-    playBtn.disabled = false;
-  };
-
-  const sendChunk = async (blob) => {
-    if (!blob || !blob.size) return;
-    recordParts.push(blob);
-    const buf = await blob.arrayBuffer();
-    let bin = "";
-    const bytes = new Uint8Array(buf);
-    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-    try {
-      window.navigatorNarrate({
-        mime: (rec && rec.mimeType) || "audio/webm",
-        b64: btoa(bin),
-        language: langSel.value || "auto",
-        translate_to: transSel.value || "same",
-      });
-    } catch (e) {
-      console.warn("[navigator-narrate] send failed", e);
-    }
-  };
-
-  const stopTracks = () => {
-    if (stream) stream.getTracks().forEach((t) => t.stop());
-    stream = null;
     if (audioCtx) {
       audioCtx.close().catch(() => {});
       audioCtx = null;
     }
     analyser = null;
-    if (timer) clearInterval(timer);
-    timer = null;
-  };
-
-  const fullStop = () => {
-    if (rec && rec.state !== "inactive") {
-      try {
-        rec.stop();
-      } catch (e) {
-        /* already stopped */
-      }
-    }
-    rec = null;
     recording = false;
     paused = false;
-    stopTracks();
     recBtn.textContent = "Record";
     recBtn.classList.remove("recording", "paused");
     pauseBtn.disabled = true;
     pauseBtn.textContent = "Pause";
     syncDots("");
-    setCompact(false);
-    chipLabel.textContent = "Narrate";
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    rebuildPlayback();
+    syncCompact();
   };
 
-  const start = async () => {
-    revokePlayback();
-    recordParts = [];
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const startMic = async () => {
+    if (!hasMic || recording || micStarting) return;
+    micStarting = true;
+    pushConfig();
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (e) {
+      micStarting = false;
+      statusEl.textContent = "Mic permission denied.";
+      return;
+    }
+    try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new Ctx();
+    const src = audioCtx.createMediaStreamSource(stream);
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
-    audioCtx.createMediaStreamSource(stream).connect(analyser);
-    window.__navNarrateT0 = performance.now();
-    rec = new MediaRecorder(stream);
+    src.connect(analyser);
+    recordParts = [];
+    const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : "audio/webm";
+    rec = new MediaRecorder(stream, { mimeType: mime });
     rec.ondataavailable = (ev) => {
-      void sendChunk(ev.data);
+      if (!ev.data || !ev.data.size) return;
+      recordParts.push(ev.data);
+      const reader = new FileReader();
+      reader.onload = () => {
+        const b64 = String(reader.result || "").split(",")[1] || "";
+        try {
+          if (typeof window.navigatorNarrate === "function") {
+            window.navigatorNarrate({
+              b64,
+              mime,
+              language: langSel.value || "auto",
+              translate_to: transSel.value || "same",
+            });
+          }
+        } catch (e) {
+          /* ignore */
+        }
+      };
+      reader.readAsDataURL(ev.data);
     };
-    rec.onstop = () => {
-      rebuildPlayback();
-    };
+    t0 = performance.now();
+    if (!window.__navNarrateT0) window.__navNarrateT0 = t0;
     rec.start(3000);
     recording = true;
+    micStarting = false;
     paused = false;
-    recBtn.textContent = "Stop";
+    recBtn.textContent = "Stop mic";
     recBtn.classList.add("recording");
     pauseBtn.disabled = false;
-    playBtn.disabled = true;
     syncDots("live");
-    setCompact(true);
-    chipLabel.textContent = "Recording";
-    pushConfig();
+    syncCompact();
     timer = setInterval(() => {
-      timeEl.textContent = fmt(performance.now() - window.__navNarrateT0);
-    }, 500);
+      timeEl.textContent = fmt(performance.now() - t0);
+    }, 250);
     drawWave();
+    } catch (e) {
+      micStarting = false;
+      statusEl.textContent = "Mic failed to start.";
+      stopMic();
+    }
   };
 
-  recBtn.addEventListener(
-    "click",
-    async (ev) => {
-      ev.stopPropagation();
-      if (recording) {
-        fullStop();
+  recBtn.addEventListener("click", () => {
+    if (recording) stopMic();
+    else void startMic();
+  });
+
+  pauseBtn.addEventListener("click", () => {
+    if (!rec) return;
+    if (!paused) {
+      try {
+        rec.pause();
+      } catch (e) {
         return;
       }
-      try {
-        await start();
-      } catch (e) {
-        chipLabel.textContent = "Mic blocked";
-        console.warn(e);
-      }
-    },
-    true,
-  );
-
-  pauseBtn.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    if (!rec || rec.state === "inactive") return;
-    if (!paused && rec.state === "recording") {
-      rec.pause();
       paused = true;
-      recBtn.classList.add("paused");
-      syncDots("paused");
-      chipLabel.textContent = "Paused";
       pauseBtn.textContent = "Resume";
-    } else if (paused && rec.state === "paused") {
-      rec.resume();
+      pauseBtn.classList.add("paused");
+      syncDots("paused");
+    } else {
+      try {
+        rec.resume();
+      } catch (e) {
+        return;
+      }
       paused = false;
-      recBtn.classList.remove("paused");
-      syncDots("live");
-      chipLabel.textContent = "Recording";
       pauseBtn.textContent = "Pause";
+      pauseBtn.classList.remove("paused");
+      syncDots("live");
       drawWave();
     }
   });
 
-  playBtn.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    if (!playback) {
-      rebuildPlayback();
-    }
-    if (!playback) return;
-    if (!playback.paused) {
+  playBtn.addEventListener("click", () => {
+    if (!recordParts.length) return;
+    if (playback) {
       playback.pause();
+      playback = null;
+      if (playbackUrl) URL.revokeObjectURL(playbackUrl);
+      playbackUrl = null;
       playBtn.textContent = "Play";
       return;
     }
-    playback.play().catch(() => {});
-    playBtn.textContent = "Pause";
+    const blob = new Blob(recordParts, { type: recordParts[0].type || "audio/webm" });
+    playbackUrl = URL.createObjectURL(blob);
+    playback = new Audio(playbackUrl);
+    playback.onended = () => {
+      playBtn.textContent = "Play";
+      playback = null;
+    };
+    playback.play();
+    playBtn.textContent = "Stop play";
   });
 
   langSel.addEventListener("change", pushConfig);
   transSel.addEventListener("change", pushConfig);
+
+  btnCapture.addEventListener("click", async () => {
+    const res = await studioCmd("begin_capture");
+    capturing = !!(res && (res.phase === "capturing" || res.ok !== false));
+    if (capturing) {
+      statusEl.textContent =
+        "Capturing — click/fill the product. Sample vs ask: Demo Script after Stop.";
+      btnCapture.textContent = "Capturing…";
+      btnCapture.disabled = true;
+      syncCompact();
+      syncDots("live");
+      if (res && res.phase === "capturing" && hasMic && !recording && !micStarting) {
+        autoMicForCapture = true;
+        void startMic();
+      }
+    } else {
+      statusEl.textContent = String((res && res.error) || "Could not start capture.");
+    }
+  });
+
+  btnStop.addEventListener("click", async () => {
+    stopMic();
+    autoMicForCapture = false;
+    statusEl.textContent = "Stopping…";
+    await studioCmd("stop_merge");
+    capturing = false;
+    btnCapture.disabled = false;
+    btnCapture.textContent = "Start capturing this flow";
+    statusEl.textContent =
+      "Stopped. Open Script on the flow row to edit the spoken lines.";
+    syncCompact();
+    syncDots("");
+  });
+
+  const pollStatus = async () => {
+    try {
+      let st = null;
+      if (typeof window.navigatorStudioStatus === "function") {
+        st = await window.navigatorStudioStatus();
+      } else if (window.__navStudioStatus) {
+        st = window.__navStudioStatus;
+      }
+      if (!st || typeof st !== "object") return;
+      const phase = String(st.phase || "");
+      if (phase === "capturing") {
+        capturing = true;
+        btnCapture.disabled = true;
+        btnCapture.textContent = "Capturing…";
+        if (hasMic && !autoMicForCapture && !recording && !micStarting) {
+          autoMicForCapture = true;
+          void startMic();
+        }
+      } else if (phase === "setup") {
+        capturing = false;
+        btnCapture.disabled = false;
+        btnCapture.textContent = "Start capturing this flow";
+        if (recording) stopMic();
+        autoMicForCapture = false;
+      } else if (phase === "stopping" || phase === "done") {
+        if (recording) stopMic();
+        autoMicForCapture = false;
+      }
+      const n = Number(st.steps || 0);
+      if (capturing && n >= 0) {
+        statusEl.textContent =
+          "Capturing — " +
+          n +
+          " step" +
+          (n === 1 ? "" : "s") +
+          ". Demo Script sets sample vs ask vs variables.";
+      }
+      syncCompact();
+    } catch (e) {
+      /* ignore */
+    }
+  };
+  setInterval(pollStatus, 1200);
   pushConfig();
 })();

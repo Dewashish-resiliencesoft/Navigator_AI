@@ -1,0 +1,20 @@
+<!doctype html><html><body style="margin:0;font-family:sans-serif">
+<header style="position:fixed;top:0;left:0;right:0;height:70px;background:#333;color:#fff;z-index:9">Sticky header</header>
+<div style="height:2200px;padding-top:80px">Long page top</div>
+<button id="below" onclick="document.getElementById('out').textContent='Export panel opened with many options for you'">Export Report</button>
+<div id="out"></div>
+<div id="panel" style="height:150px;overflow-y:auto;border:1px solid #999;margin-top:20px">
+  <div style="height:900px">nested panel content</div>
+  <button onclick="document.getElementById('out2').textContent='Advanced settings now visible on screen here'">Advanced Settings</button>
+</div>
+<div id="out2"></div>
+<button disabled>Locked Feature</button>
+<button>Dead Button</button>
+<button onclick="setTimeout(openDlg,200)">Create Contact</button>
+<script>
+function openDlg(){var b=document.createElement('div');b.setAttribute('role','dialog');
+ var m=document.createElement('button');m.textContent='Manual Entry';
+ m.onclick=function(){b.insertAdjacentHTML('beforeend','<form><label>First name<input></label><label>Last name<input></label></form>');};
+ b.appendChild(m);document.body.appendChild(b);}
+</script>
+</body></html>

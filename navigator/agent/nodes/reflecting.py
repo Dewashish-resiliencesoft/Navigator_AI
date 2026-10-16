@@ -1,21 +1,17 @@
-"""REFLECTING: turn failures into corrective rules (pending human review)."""
+"""REFLECTING: failures used to draft pending correction rules.
+
+Pending-correction review was removed. This node is a no-op so the graph
+still has a reflecting phase without writing review queue rows.
+"""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
 
-from navigator.agent.providers import LLMProvider, get_provider
 from navigator.agent.state import CallDeps, CallState
-from navigator.knowledge.memory.pending import PendingCorrectionStore
 from navigator.core.schemas import ActionLogEntry
 from navigator.core.settings import settings
-
-REFLECT_SYSTEM = (
-    "You write one short corrective rule for a demo agent that drives a web app "
-    "via a site graph. Rule must be actionable and specific. No selectors unless "
-    "they are aliases already mentioned. Return ONLY the rule text."
-)
 
 CLASSIFY_MODEL = settings.brain_classify_model
 
@@ -37,52 +33,13 @@ _MAYBE_CORRECTION = re.compile(
 
 def reflecting(state: CallState, deps: CallDeps) -> CallState:
     failures = list(state.get("failures") or [])
-    if not failures:
-        return CallState()
-
-    provider = deps.reflect_provider
-    if provider is None:
-        try:
-            provider = get_provider()
-        except RuntimeError as exc:
-            print(f"[reflect] skipped (no provider): {exc}", flush=True)
-            return CallState()
-
-    store_path = deps.pending_db_path or settings.db_path
-    store = PendingCorrectionStore(store_path)
-    try:
-        for entry in failures:
-            rule = _reflect_one(provider, entry)
-            if not rule:
-                continue
-            store.add(
-                product_id=deps.product_id,
-                session_id=state["session_id"],
-                page=entry.page,
-                tool_call_type=entry.tool_call.tool,
-                rule=rule,
-                source_call_id=entry.call_id,
-            )
-            print(f"[reflect] pending rule: {rule!r}", flush=True)
-    finally:
-        store.close()
+    if failures:
+        print(
+            f"[reflect] skipped {len(failures)} failure(s) "
+            "(pending corrections removed)",
+            flush=True,
+        )
     return CallState()
-
-
-def _reflect_one(provider: LLMProvider, entry: ActionLogEntry) -> str:
-    user = (
-        f"page={entry.page}\n"
-        f"tool={entry.tool_call.tool}\n"
-        f"expected={entry.expected_postcondition.model_dump()}\n"
-        f"actual={entry.actual_result.model_dump()}\n"
-        f"verify={None if entry.verify is None else entry.verify.model_dump()}\n"
-        "Write one corrective rule."
-    )
-    try:
-        return provider.complete(REFLECT_SYSTEM, user).strip()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[reflect] provider failed: {exc}", flush=True)
-        return ""
 
 
 def classify_correction(

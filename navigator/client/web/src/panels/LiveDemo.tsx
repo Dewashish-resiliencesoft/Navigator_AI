@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Check, Copy, ExternalLink, PhoneOff, Play, Mic, TriangleAlert } from "lucide-react";
-import { api, ApiError, type AutonomyMode, type DemoReadiness, type RunEvent } from "../lib/api";
+import { api, ApiError, type MeetingTranscriptLine, type RunEvent } from "../lib/api";
+import { useDemoReadinessSession } from "../lib/demoReadinessSession";
 import { demoIsLive, useDemoSession } from "../lib/demoSession";
 import { useExploreSession } from "../lib/exploreSession";
 import { useProductData } from "../lib/productData";
@@ -20,12 +21,23 @@ import {
   Input,
   Select,
   StatusPill,
-  Switch,
   Textarea,
 } from "../components/ui";
+import {
+  readinessToChecklist,
+  StatusChecklist,
+} from "../components/StatusChecklist";
+import { LiveNarrationBanner } from "../components/LiveNarrationBanner";
 import { errText, useUi } from "../store";
 
 const LINK_PENDING = "Creating meeting link…";
+
+function transcriptRole(kind: string): string {
+  if (kind === "screen") return "Screen";
+  if (kind === "visitor") return "Visitor";
+  if (kind === "agent_reply") return "Agent reply";
+  return "Agent";
+}
 
 function legacyCopy(text: string): boolean {
   const ta = document.createElement("textarea");
@@ -62,26 +74,21 @@ export function LiveDemo() {
   const [domain, setDomain] = useState("");
   const [domainPlaceholder, setDomainPlaceholder] = useState(false);
   const [savingDomain, setSavingDomain] = useState(false);
-  const [autonomyMode, setAutonomyMode] = useState<AutonomyMode>("guided");
-  const [savingAutonomy, setSavingAutonomy] = useState(false);
-  const [readiness, setReadiness] = useState<DemoReadiness | null>(null);
-  const [loadingReadiness, setLoadingReadiness] = useState(false);
-  const [loginUrl, setLoginUrl] = useState("");
-  const [loginUser, setLoginUser] = useState("");
-  const [loginPass, setLoginPass] = useState("");
-  const [hasPassword, setHasPassword] = useState(false);
-  const [changingPass, setChangingPass] = useState(false);
-  const [includeLogin, setIncludeLogin] = useState(false);
-  const [savingLogin, setSavingLogin] = useState(false);
-  const [savingIncludeLogin, setSavingIncludeLogin] = useState(false);
+  const readiness = useDemoReadinessSession((s) => s.readiness);
+  const loadingReadiness = useDemoReadinessSession((s) => s.loading);
+  const startCoach = useUi((s) => s.startCoach);
   const [copied, setCopied] = useState(false);
+  const [logCopied, setLogCopied] = useState(false);
   const [events, setEvents] = useState<RunEvent[]>([]);
+  const [transcript, setTranscript] = useState<MeetingTranscriptLine[]>([]);
   const listRef = useRef<HTMLUListElement>(null);
+  const liveLogRef = useRef<HTMLDivElement>(null);
 
   const live = demoIsLive(demo);
   const done = !!demo && (demo.status === "finished" || demo.status === "failed");
   const demoId = demo?.demo_id ?? null;
   const sessionId = demo?.session_id ?? null;
+  const meetingLog = demo?.live_log ?? [];
   // Show the link as soon as the meeting exists. Gating on bot_in_meeting
   // deadlocks test demos: static Meet (and some Zoom joins) leave the bot in
   // the waiting room until a human opens the link and admits it.
@@ -90,9 +97,6 @@ export function LiveDemo() {
   const leaveGrace = demo?.leave_grace_remaining ?? null;
   const joinDisplay =
     live || starting ? (joinUrl ?? LINK_PENDING) : done ? "—" : (joinUrl ?? "—");
-  const transcriptLines = (demo?.said ?? []).filter(
-    (line) => !done || !/join link ready/i.test(line),
-  );
 
   useEffect(() => {
     void refreshActive();
@@ -109,35 +113,8 @@ export function LiveDemo() {
       } catch (e) {
         if (alive) err(errText(e));
       }
-      try {
-        const mode = await api.getAutonomyMode();
-        if (!alive) return;
-        setAutonomyMode(mode.mode);
-      } catch (e) {
-        if (alive) err(errText(e));
-      }
-      try {
-        setLoadingReadiness(true);
-        const ready = await api.getDemoReadiness("dashboard_test");
-        if (!alive) return;
-        setReadiness(ready);
-      } catch (e) {
-        if (alive) err(errText(e));
-      } finally {
-        if (alive) setLoadingReadiness(false);
-      }
-      try {
-        const login = await api.getProductLogin();
-        if (!alive) return;
-        setLoginUrl(login.login_url || "");
-        setLoginUser(login.username || "");
-        setHasPassword(!!login.has_password);
-        setIncludeLogin(!!login.include_login_in_default_flow);
-        setChangingPass(!login.has_password);
-        setLoginPass("");
-      } catch (e) {
-        if (alive) err(errText(e));
-      }
+      // Readiness lives in useDemoReadinessSession (shared with Overview).
+      void useDemoReadinessSession.getState().refresh();
     })();
     return () => {
       alive = false;
@@ -146,19 +123,48 @@ export function LiveDemo() {
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [transcriptLines.length]);
+  }, [transcript.length]);
+
+  useEffect(() => {
+    liveLogRef.current?.scrollTo({ top: liveLogRef.current.scrollHeight });
+  }, [meetingLog.length]);
+
+  const copyMeetingLog = async () => {
+    const text = meetingLog.join("\n").trim();
+    if (!text) {
+      err("No meeting log yet — start a demo first.");
+      return;
+    }
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else if (!legacyCopy(text)) {
+        throw new Error("copy rejected");
+      }
+      setLogCopied(true);
+      setTimeout(() => setLogCopied(false), 1300);
+      ok("Meeting log copied.");
+    } catch {
+      err("Copy failed — select the log manually.");
+    }
+  };
 
   useEffect(() => {
     if (!sessionId) {
       setEvents([]);
+      setTranscript([]);
       return;
     }
     let alive = true;
     const tick = async () => {
       try {
-        const rows = await api.runEvents(sessionId);
+        const [rows, lines] = await Promise.all([
+          api.runEvents(sessionId),
+          api.runTranscript(sessionId),
+        ]);
         if (!alive) return;
         setEvents(rows);
+        setTranscript(lines);
       } catch (e) {
         if (!alive) return;
         if (e instanceof ApiError && e.status === 404) return;
@@ -195,90 +201,11 @@ export function LiveDemo() {
     }
   };
 
-  const saveAutonomy = async (mode: AutonomyMode) => {
-    setSavingAutonomy(true);
-    try {
-      const d = await api.putAutonomyMode(mode);
-      setAutonomyMode(d.mode);
-      invalidate();
-      const ready = await api.getDemoReadiness("dashboard_test");
-      setReadiness(ready);
-      ok(`Autonomy: ${d.mode}.`);
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setSavingAutonomy(false);
-    }
-  };
-
   const visibleReadinessChecks = clientVisibleReadinessChecks(
     readiness?.checks ?? [],
   );
   const blockingChecks = visibleReadinessChecks.filter((c) => c.blocking && !c.ok);
   const startBlocked = blockingChecks.length > 0;
-
-  const saveIncludeLogin = async (enabled: boolean) => {
-    if (!loginUser.trim()) {
-      err("Save username first.");
-      return;
-    }
-    setSavingIncludeLogin(true);
-    try {
-      const saved = await api.putProductLogin({
-        login_url: loginUrl.trim(),
-        username: loginUser.trim(),
-        password: null,
-        include_login_in_default_flow: enabled,
-      });
-      setIncludeLogin(!!saved.include_login_in_default_flow);
-      invalidate();
-      ok(
-        saved.include_login_in_default_flow
-          ? "Default demo will include login."
-          : "Default demo skips login.",
-      );
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setSavingIncludeLogin(false);
-    }
-  };
-
-  const saveLogin = async () => {
-    setSavingLogin(true);
-    try {
-      const body: {
-        login_url: string;
-        username: string;
-        password?: string | null;
-        include_login_in_default_flow: boolean;
-      } = {
-        login_url: loginUrl.trim(),
-        username: loginUser.trim(),
-        include_login_in_default_flow: includeLogin,
-      };
-      if (changingPass) {
-        body.password = loginPass;
-      } else {
-        body.password = null;
-      }
-      const saved = await api.putProductLogin(body);
-      setLoginUrl(saved.login_url || "");
-      setLoginUser(saved.username || "");
-      setHasPassword(!!saved.has_password);
-      setIncludeLogin(!!saved.include_login_in_default_flow);
-      setChangingPass(!saved.has_password);
-      setLoginPass("");
-      invalidate();
-      void useExploreSession.getState().refresh();
-      void useExploreSession.getState().syncProductUrl();
-      ok("Product login saved.");
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setSavingLogin(false);
-    }
-  };
 
   const start = async () => {
     if (domainPlaceholder || !domain.trim() || /example\.com/i.test(domain)) {
@@ -351,7 +278,7 @@ export function LiveDemo() {
       animate="show"
       className="grid grid-cols-1 gap-4 lg:grid-cols-2"
     >
-      <Card span="lg:col-span-2">
+      <Card span="lg:col-span-2" dataCoach="demo-domain">
         <CardTitle hint="Origin the agent opens and screenshares during the live demo.">
           Product domain
         </CardTitle>
@@ -370,117 +297,17 @@ export function LiveDemo() {
         <Button onClick={saveDomain} disabled={savingDomain || !domain.trim()}>
           {savingDomain ? "Saving…" : "Save domain"}
         </Button>
-      </Card>
-
-      <Card span="lg:col-span-2">
-        <CardTitle hint="Playwright sign-in for demos. Credentials stay out of the site graph.">
-          Product Login
-        </CardTitle>
-        <div className="grid gap-x-3 sm:grid-cols-2">
-          <Field label="Login URL (optional — defaults to product URL)">
-            <Input
-              value={loginUrl}
-              onChange={setLoginUrl}
-              placeholder="https://your-product.com/login"
-            />
-          </Field>
-          <Field label="Username / email">
-            <Input
-              value={loginUser}
-              onChange={setLoginUser}
-              placeholder="demo@your-product.com"
-              autoComplete="username"
-            />
-          </Field>
-        </div>
-        <Field label="Password">
-          {hasPassword && !changingPass ? (
-            <div className="flex items-center gap-2">
-              <Input value="••••••••••••" onChange={() => {}} disabled />
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  setChangingPass(true);
-                  setLoginPass("");
-                }}
-              >
-                Change
-              </Button>
-            </div>
-          ) : (
-            <Input
-              value={loginPass}
-              onChange={setLoginPass}
-              placeholder={hasPassword ? "enter a new password" : "password"}
-              type="password"
-              autoComplete="new-password"
-            />
-          )}
-        </Field>
-
-        <div
-          className="mb-3 border-t pt-3"
-          style={{ borderColor: "var(--line)" }}
-        >
-          <Switch
-            label="Show login during demo"
-            description="On: run your recorded login/onboarding flow (or a live login if none). Off: silent auto sign-in — skip login/onboarding in the playlist."
-            checked={includeLogin}
-            disabled={savingIncludeLogin || !loginUser.trim()}
-            onChange={(v) => void saveIncludeLogin(v)}
-          />
-        </div>
-
-        <div
-          className="mb-3 border-t pt-3"
-          style={{ borderColor: "var(--line)" }}
-        >
-          <p className="mb-2 text-[0.78rem] font-medium">How should your agent handle unexpected questions?</p>
-          <div className="mb-3 grid gap-2 sm:grid-cols-3">
-            {(
-              [
-                ["guided", "Guided demo", "Published flows + knowledge only. Safest."],
-                ["adaptive", "Adaptive demo", "Safe live clicks when no flow matches."],
-                ["explorer", "Explorer demo", "Test only — navigates freely from screen."],
-              ] as const
-            ).map(([value, label, desc]) => (
-              <label
-                key={value}
-                className={`cursor-pointer rounded-lg border px-3 py-2 text-[0.76rem] ${
-                  autonomyMode === value ? "border-[var(--accent)] bg-[var(--accent)]/5" : ""
-                }`}
-                style={{ borderColor: autonomyMode === value ? undefined : "var(--line)" }}
-              >
-                <input
-                  type="radio"
-                  name="autonomy"
-                  className="mr-2"
-                  checked={autonomyMode === value}
-                  disabled={savingAutonomy}
-                  onChange={() => void saveAutonomy(value)}
-                />
-                <span className="font-medium">{label}</span>
-                <p className="mt-1 text-[var(--muted)]">{desc}</p>
-              </label>
-            ))}
-          </div>
-          {autonomyMode === "explorer" && (
-            <p className="mb-2 text-[0.74rem] text-amber-600 dark:text-amber-400">
-              Explorer is dashboard test demos only — not for your live website embed.
-            </p>
-          )}
-        </div>
-
-        <Button
-          onClick={saveLogin}
-          disabled={
-            savingLogin ||
-            !loginUser.trim() ||
-            (changingPass && !loginPass && !hasPassword)
-          }
-        >
-          {savingLogin ? "Saving…" : "Save product login"}
-        </Button>
+        <p className="mt-3 text-[0.74rem] text-[var(--muted)]">
+          Demo sign-in lives under{" "}
+          <button
+            type="button"
+            className="cursor-pointer font-medium text-[var(--accent)] underline-offset-2 hover:underline"
+            onClick={() => setTab("settings")}
+          >
+            Settings → Product Login
+          </button>
+          .
+        </p>
       </Card>
 
       <Card>
@@ -565,22 +392,10 @@ export function LiveDemo() {
           {loadingReadiness && !readiness ? (
             <p className="text-[0.74rem] text-[var(--muted)]">Checking…</p>
           ) : readiness ? (
-            <ul className="space-y-1 text-[0.72rem]">
-              {visibleReadinessChecks.map((c) => (
-                <li
-                  key={c.id}
-                  className={
-                    c.ok
-                      ? "text-emerald-700 dark:text-emerald-400"
-                      : c.blocking
-                        ? "text-red-700 dark:text-red-400"
-                        : "text-amber-700 dark:text-amber-400"
-                  }
-                >
-                  {c.ok ? "✓" : c.blocking ? "✕" : "!"} {c.message}
-                </li>
-              ))}
-            </ul>
+            <StatusChecklist
+              items={readinessToChecklist(visibleReadinessChecks)}
+              onFix={startCoach}
+            />
           ) : null}
           {startBlocked && (
             <p className="mt-2 flex items-center gap-1.5 text-[0.74rem] text-red-600 dark:text-red-400">
@@ -696,7 +511,60 @@ export function LiveDemo() {
         >
           <div className="mb-2 flex items-start justify-between gap-2">
             <div>
-              <p className="text-[0.78rem] font-medium tracking-tight">Live log</p>
+              <p className="text-[0.78rem] font-medium tracking-tight">
+                Meeting log
+              </p>
+              <p className="mt-0.5 text-[0.68rem] text-[var(--muted)]">
+                Zoom/Meet runner lines ([live], [audio], [tunnel], [speak]) — copy
+                and paste to share
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => void copyMeetingLog()}
+              disabled={!meetingLog.length}
+              title="Copy meeting log"
+              aria-label="Copy meeting log"
+              className="flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-[0.72rem] text-[var(--muted)] transition hover:bg-black/[0.04] hover:text-[var(--text)] disabled:opacity-40 dark:hover:bg-white/[0.06]"
+              style={{ borderColor: "var(--line)" }}
+            >
+              {logCopied ? <Check size={14} /> : <Copy size={14} />}
+              {logCopied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          {!meetingLog.length && (
+            <Empty>{live ? "Waiting for runner lines…" : "Nothing yet."}</Empty>
+          )}
+          {meetingLog.length > 0 && (
+            <div
+              ref={liveLogRef}
+              className="terminal-log max-h-64 overflow-y-auto rounded-lg bg-[#0d1117] p-4 font-mono text-[0.7rem] leading-relaxed text-slate-200 shadow-inner"
+            >
+              {live && (
+                <div className="mb-2 flex items-center gap-2 text-emerald-400">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                  </span>
+                  Streaming — {meetingLog.length} lines
+                </div>
+              )}
+              {meetingLog.map((line, i) => (
+                <div key={`${i}-${line.slice(0, 40)}`} className="whitespace-pre-wrap break-all py-0.5">
+                  {line}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div
+          className="mt-4 border-t pt-4"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <div className="mb-2 flex items-start justify-between gap-2">
+            <div>
+              <p className="text-[0.78rem] font-medium tracking-tight">Action log</p>
               <p className="mt-0.5 text-[0.68rem] text-[var(--muted)]">
                 Last ~20 ActionLog events (client only)
               </p>
@@ -775,27 +643,56 @@ export function LiveDemo() {
         </div>
       </Card>
 
+      {live && (
+        <Card span="lg:col-span-2">
+          <CardTitle hint="What Navigator will say next, in the prospect's language.">
+            Demo Script
+          </CardTitle>
+          <LiveNarrationBanner />
+        </Card>
+      )}
+
       <Card span="lg:col-span-2">
-        <CardTitle hint="What the agent has said so far, live.">Transcript</CardTitle>
-        {!transcriptLines.length && <Empty>Nothing yet.</Empty>}
+        <CardTitle hint="Screen changes, what the agent said, visitor questions, and replies — saved with this run.">
+          Meeting transcript
+        </CardTitle>
+        {!transcript.length && (
+          <Empty>{live ? "Waiting for meeting lines…" : "Nothing recorded."}</Empty>
+        )}
         <ul ref={listRef} className="max-h-72 space-y-1.5 overflow-y-auto pr-1">
           <AnimatePresence initial={false}>
-            {transcriptLines.map((line, i) => (
-              <motion.li
-                key={`${i}-${line.slice(0, 24)}`}
-                variants={rise}
-                initial="hidden"
-                animate="show"
-                className="rounded-lg border bg-black/[0.015] px-4 py-2.5 text-[0.81rem] leading-relaxed dark:bg-white/[0.02]"
-                style={{ borderColor: "var(--line)" }}
-              >
-                <div className="mb-1 flex items-center gap-2 text-[0.68rem] font-medium text-[var(--muted)]">
-                  <Mic size={11} className="text-[var(--accent)]" />
-                  <span>Agent</span>
-                </div>
-                <div className="pl-4">{line}</div>
-              </motion.li>
-            ))}
+            {transcript.map((line) => {
+              const time = line.created_at
+                ? new Date(line.created_at).toLocaleTimeString([], { hour12: false })
+                : "";
+              const role = transcriptRole(line.kind);
+              return (
+                <motion.li
+                  key={line.id}
+                  variants={rise}
+                  initial="hidden"
+                  animate="show"
+                  className="rounded-lg border bg-black/[0.015] px-4 py-2.5 text-[0.81rem] leading-relaxed dark:bg-white/[0.02]"
+                  style={{ borderColor: "var(--line)" }}
+                >
+                  <div className="mb-1 flex flex-wrap items-center gap-2 text-[0.68rem] font-medium text-[var(--muted)]">
+                    {line.kind === "visitor" ? (
+                      <Mic size={11} className="text-amber-500" />
+                    ) : line.kind === "screen" ? (
+                      <ExternalLink size={11} className="text-sky-500" />
+                    ) : (
+                      <Mic size={11} className="text-[var(--accent)]" />
+                    )}
+                    <span>{role}</span>
+                    {time && <span className="font-mono text-[var(--muted)]">{time}</span>}
+                    {line.page_id && (
+                      <span className="font-mono text-[var(--muted)]">{line.page_id}</span>
+                    )}
+                  </div>
+                  <div className="pl-4 break-words">{line.text}</div>
+                </motion.li>
+              );
+            })}
           </AnimatePresence>
         </ul>
       </Card>

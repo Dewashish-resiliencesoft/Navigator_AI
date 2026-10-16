@@ -19,7 +19,7 @@ from typing import Any, Callable, Sequence
 from navigator.automation.explore.session import element_key
 from navigator.automation.external_links import element_is_external
 
-MODEL = "llama-3.3-70b-versatile"
+MODEL = "openai/gpt-oss-120b"
 
 _PROMPT = """You are exploring a product's web UI to build a guided demo.
 

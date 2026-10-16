@@ -6,6 +6,16 @@ between steps. Narrated steps start speech and the cursor/click together so
 Meet sees the pointer on the control while the line names it.
 
 LangGraph speak-then-click walkthrough is the fallback when metadata is missing.
+
+--- Phase-9 migration note ---
+``step_timing``, ``step_clicks``, ``step_speech``, and ``step_mouse_paths``
+are PRESENTATION HINTS only. They influence cursor animation and TTS
+pre-fetch timing; they never gate whether the next step can begin.
+
+The authoritative gate is browser state verification via ``DemoStepExecutor``.
+New live demos use ``run_demo_flow_gated()`` (below) which enforces this
+invariant. The legacy timeline path remains for backward-compatible recorded
+playback until all flows are migrated.
 """
 
 from __future__ import annotations
@@ -16,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
-from navigator.agent.live_input import needs_live_input, resolve_live_fill
+from navigator.agent.live_input import needs_live_input, resolve_demo_fill
 from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
 from navigator.agent.playback_schedule import build_schedule, fmt_ms
 from navigator.agent.state import CallDeps
@@ -24,7 +34,7 @@ from navigator.automation.browser.tools import execute as run_tool
 from navigator.automation.login_match import VAULT_PASSWORD_SENTINEL
 from navigator.automation.narration import spoken_for_live_step
 from navigator.core.schemas import ActionLogEntry, ClickElement, FillField, ToolResult
-from navigator.knowledge.site_graph import SiteGraphError
+from navigator.knowledge.site_graph import SiteGraph, SiteGraphError
 from navigator.logs.store import utcnow
 from navigator.meeting.playback_handle import PlaybackHandle
 
@@ -71,6 +81,24 @@ def _demo_origin(deps: CallDeps) -> DemoOrigin:
 
 def _hard_stop_on_click_fail(deps: CallDeps, *, strict: bool) -> bool:
     return strict and _demo_origin(deps) == "public_embed"
+
+
+def _css_fallbacks(graph: SiteGraph, page_id: str, alias: str) -> list[str]:
+    """Unique CSS for `alias` across pages. Current page first.
+
+    Explore often heals onto `main` while live replay looks up `home`/`inbox`.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for pid in (page_id, *graph.pages):
+        try:
+            css = graph.selector(pid, alias)
+        except SiteGraphError:
+            continue
+        if css and css not in seen:
+            seen.add(css)
+            out.append(css)
+    return out
 
 
 def _wait_until(deps: CallDeps, deadline: float) -> None:
@@ -187,8 +215,30 @@ def _execute_call(
         call = call.model_copy(update={"value": pwd})
         from_vault = True
 
-    if isinstance(call, FillField) and needs_live_input(call) and not from_vault:
-        call, _detail = resolve_live_fill(deps, call)
+    if isinstance(call, FillField) and not from_vault:
+        if needs_live_input(call) or (call.value_ref or "").strip():
+            if deps.live_answers is None:
+                deps.live_answers = {}
+
+            def speak(line: str) -> None:
+                try:
+                    deps.speaker.say(line)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[live_input] TTS failed: {exc}", flush=True)
+
+            call, _detail = resolve_demo_fill(
+                call,
+                live_answers=deps.live_answers,
+                listen_once=deps.listen_once,
+                extract_entity=deps.extract_entity,
+                speak=speak,
+            )
+
+    # Confirm-before gate (live only): pause on a mutating step (submit/pay) and
+    # ask the End User to approve. On "change", re-collect this flow's ask fields,
+    # re-fill them on screen, then proceed to the confirmed step.
+    if getattr(call, "confirm_before", False) and deps.listen_once is not None:
+        _confirm_before_step(deps, page_id=page_id, flow_id=flow_id)
 
     ran_on = page_id
     on_frame = deps.push_frame
@@ -208,6 +258,85 @@ def _execute_call(
     if on_frame is not None:
         on_frame()
     return call, result, new_page
+
+
+def _confirm_before_step(
+    deps: CallDeps, *, page_id: str, flow_id: str | None
+) -> None:
+    """Ask the End User to confirm a mutating step; revise ask-fields on 'no'.
+
+    One revision pass (no infinite loop): if the visitor is not affirmative, we
+    re-ask every source=user / value_ref field in this flow, replace the stored
+    answers, re-fill them on screen, then return so the caller runs the step.
+    """
+    from navigator.agent.live_input import is_affirmative, resolve_demo_fill
+
+    def speak(line: str) -> None:
+        try:
+            deps.speaker.say(line)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live_input] TTS failed: {exc}", flush=True)
+
+    prompt = (
+        "Before I submit this, does everything look correct? "
+        "Say yes to go ahead, or tell me what to change."
+    )
+    try:
+        heard = (deps.listen_once(prompt) if deps.listen_once else "") or ""
+    except Exception as exc:  # noqa: BLE001
+        print(f"[live_input] confirm listen failed: {exc}", flush=True)
+        heard = ""
+    if is_affirmative(heard):
+        return
+    if not flow_id:
+        return
+
+    try:
+        calls = deps.graph.flow(page_id, flow_id)
+    except Exception:  # noqa: BLE001
+        return
+    if deps.live_answers is None:
+        deps.live_answers = {}
+
+    speak("Sure — let's update that. I'll go through the details again.")
+    revised = 0
+    for idx, c in enumerate(calls):
+        if not isinstance(c, FillField):
+            continue
+        alias = (c.input_name or c.selector or "").strip()
+        ref = (c.value_ref or "").strip()
+        if not (needs_live_input(c) or ref):
+            continue
+        # Force a fresh answer for this field.
+        key = ref or alias
+        if key and key in deps.live_answers:
+            deps.live_answers.pop(key, None)
+        filled, _detail = resolve_demo_fill(
+            c,
+            live_answers=deps.live_answers,
+            listen_once=deps.listen_once,
+            extract_entity=deps.extract_entity,
+            speak=speak,
+        )
+        try:
+            mouse_path = (
+                deps.graph.flow_step_mouse_paths(flow_id).get(idx)
+                if flow_id
+                else None
+            )
+            run_tool(
+                deps.page,
+                deps.graph,
+                page_id,
+                filled,
+                on_frame=deps.push_frame,
+                mouse_path=mouse_path,
+            )
+            revised += 1
+        except Exception as exc:  # noqa: BLE001
+            print(f"[live_input] revise re-fill failed: {exc}", flush=True)
+    if revised:
+        speak("Great, I've updated those. Submitting now.")
 
 
 def _scroll_retry(deps: CallDeps, call, *, page_id: str) -> None:
@@ -483,6 +612,8 @@ def _run_step(
 
     last: ActionLogEntry | None = None
     current_page = page_id
+    tried_css: set[str] = set()
+    fallbacks: list[str] | None = None
     for attempt in range(_TIMELINE_RETRIES):
         call, result, current_page = _execute_call(
             deps,
@@ -529,7 +660,30 @@ def _run_step(
                 f"[timeline] step retry ({result.detail or verdict.actual})",
                 flush=True,
             )
-            _scroll_retry(deps, call, page_id=current_page)
+            rebound = False
+            alias = getattr(call, "selector", None)
+            if isinstance(alias, str) and alias:
+                if fallbacks is None:
+                    fallbacks = _css_fallbacks(deps.graph, current_page, alias)
+                    try:
+                        tried_css.add(deps.graph.selector(current_page, alias))
+                    except SiteGraphError:
+                        pass
+                nxt = next((css for css in fallbacks if css not in tried_css), None)
+                if nxt:
+                    from navigator.agent.tier2_propose import bind_ephemeral_selector
+
+                    deps.graph = bind_ephemeral_selector(
+                        deps.graph, current_page, alias, nxt
+                    )
+                    tried_css.add(nxt)
+                    rebound = True
+                    print(
+                        f"[timeline] retry {alias!r} with graph CSS {nxt!r}",
+                        flush=True,
+                    )
+            if not rebound:
+                _scroll_retry(deps, call, page_id=current_page)
             time.sleep(0.5 + attempt * 0.4)
     assert last is not None
     return last, current_page
@@ -756,3 +910,194 @@ def playlist_timeline_ready(graph) -> bool:
     if not graph.demo_playlist:
         return False
     return any(graph.has_recorded_playback(item.flow_id) for item in graph.demo_playlist)
+
+
+# ---------------------------------------------------------------------------
+# Phase-6/9: Gated demo flow runner — browser state authoritative
+# ---------------------------------------------------------------------------
+
+def run_demo_flow_gated(
+    deps: "CallDeps",
+    *,
+    session_id,
+    flow_id: str,
+    demo_flow,  # DemoFlow from DemoGraph
+    speak: "Callable[[str], None] | None" = None,
+    emit: "Callable | None" = None,
+    world=None,
+    interaction_engine=None,
+    on_frame: "Callable[[], None] | None" = None,
+) -> dict:
+    """Run a DemoFlow using the new DemoStepExecutor (Phase-6/9).
+
+    No step advances until its browser state verification passes.
+    Timing metadata is used only as presentation hints (cursor, pause).
+
+    Returns: {"completed": int, "failed": int, "hard_fail": bool}
+    """
+    from navigator.agent_runtime.execution.demo_step_executor import execute_demo_step
+    from navigator.agent_runtime.models import (
+        AgentSession,
+        AgentWorldState,
+        BrowserSlice,
+        DemoSessionContext,
+        DemoStepStatus,
+        ExecutionSlice,
+    )
+    from navigator.agent_runtime.interaction import InteractionEngine
+
+    _speak = speak or (lambda t: None)
+    _emit = emit or (lambda *a, **kw: None)
+
+    # Build one world when invoked for a single flow. Playlist callers pass the
+    # same world and InteractionEngine to every flow so visitor values survive
+    # flow boundaries for the entire demo call.
+    page_id = getattr(demo_flow, "page_id", "dashboard") if hasattr(demo_flow, "page_id") else "dashboard"
+    if world is None:
+        session = AgentSession(
+            session_id=session_id,
+            product_id=deps.product_id,
+            origin=getattr(deps, "demo_origin", "dashboard_test"),
+        )
+        world = AgentWorldState(
+            session=session,
+            browser=BrowserSlice(
+                url=deps.page.url if deps.page else "",
+                page_id=page_id,
+            ),
+            execution=ExecutionSlice(flow_id=flow_id),
+            demo_session=DemoSessionContext(),
+        )
+    else:
+        world = world.model_copy(
+            update={"execution": world.execution.model_copy(update={"flow_id": flow_id})}
+        )
+
+    if interaction_engine is None:
+        interaction_engine = InteractionEngine(
+            speak=_speak,
+            wait_for_utterance=lambda _timeout: (
+                deps.listen_once("") if getattr(deps, "listen_once", None) else None
+            ),
+            emit=_emit,
+            session_context=world.demo_session,
+        )
+
+    completed = 0
+    failed = 0
+    hard_fail = False
+    errors = []
+
+    for step in demo_flow.steps:
+        if getattr(deps, "stop_event", None) and deps.stop_event.is_set():
+            break
+
+        status, world, error = execute_demo_step(
+            step,
+            world=world,
+            graph=deps.graph,
+            page=deps.page,
+            emit=_emit,
+            speak=_speak,
+            speak_error=_speak,
+            interaction_engine=interaction_engine,
+            on_frame=on_frame,
+        )
+
+        if status == DemoStepStatus.complete:
+            completed += 1
+        elif status == DemoStepStatus.failed:
+            failed += 1
+            if error is not None:
+                errors.append(error)
+            if step.recovery.on_failure.value == "fail":
+                hard_fail = True
+                break
+        elif status == DemoStepStatus.recovering:
+            failed += 1
+            # Replan: skip remaining steps in this flow
+            break
+
+        # Presentation pause hint (NOT execution control)
+        pause_ms = step.presentation.pause_after_ms
+        if pause_ms > 0:
+            import time as _time
+            _time.sleep(min(pause_ms / 1000.0, 2.0))
+
+    return {
+        "completed": completed,
+        "failed": failed,
+        "hard_fail": hard_fail,
+        "errors": errors,
+        "world": world,
+        "interaction_engine": interaction_engine,
+    }
+
+
+def run_demo_playlist_gated(
+    deps: "CallDeps",
+    *,
+    session_id: UUID,
+    demo_graph,
+    speak: "Callable[[str], None] | None" = None,
+    emit: "Callable | None" = None,
+    on_frame: "Callable[[], None] | None" = None,
+) -> dict:
+    """Run a DemoGraph playlist with one session context for every flow."""
+    from navigator.agent_runtime.interaction import InteractionEngine
+    from navigator.agent_runtime.models import AgentSession, AgentWorldState, BrowserSlice, ExecutionSlice
+
+    _speak = speak or (lambda _t: None)
+    _emit = emit or (lambda *a, **kw: None)
+    session = AgentSession(
+        session_id=session_id,
+        product_id=deps.product_id,
+        origin=getattr(deps, "demo_origin", "dashboard_test"),
+    )
+    world = AgentWorldState(
+        session=session,
+        browser=BrowserSlice(url=deps.page.url if deps.page else ""),
+        execution=ExecutionSlice(),
+    )
+    interaction_engine = InteractionEngine(
+        speak=_speak,
+        wait_for_utterance=lambda _timeout: (
+            deps.listen_once("") if getattr(deps, "listen_once", None) else None
+        ),
+        emit=_emit,
+        session_context=world.demo_session,
+    )
+    completed = failed = 0
+    hard_fail = False
+    errors = []
+
+    for flow_id in demo_graph.playlist.flows:
+        flow = demo_graph.flows.get(flow_id)
+        if flow is None or _stopped(deps):
+            continue
+        outcome = run_demo_flow_gated(
+            deps,
+            session_id=session_id,
+            flow_id=flow_id,
+            demo_flow=flow,
+            speak=_speak,
+            emit=_emit,
+            world=world,
+            interaction_engine=interaction_engine,
+            on_frame=on_frame,
+        )
+        world = outcome["world"]
+        completed += outcome["completed"]
+        failed += outcome["failed"]
+        errors.extend(outcome.get("errors") or [])
+        if outcome["hard_fail"]:
+            hard_fail = True
+            break
+
+    return {
+        "completed": completed,
+        "failed": failed,
+        "hard_fail": hard_fail,
+        "errors": errors,
+        "world": world,
+    }

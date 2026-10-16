@@ -85,6 +85,37 @@ def test_client_page_forbidden_on_public_host(tmp_path):
         _cleanup(bundle, prev)
 
 
+def test_client_page_ok_on_active_tunnel_host(tmp_path):
+    from navigator.core.settings import settings
+
+    bundle = _client(tmp_path, client_api_key="nav_test")
+    client, prev, registry, log, auth_store = bundle
+    old = settings.public_base_url
+    settings.public_base_url = "https://montana-outer-minimum-outlined.trycloudflare.com"
+    try:
+        ok = client.get(
+            "/client",
+            headers={"Host": "montana-outer-minimum-outlined.trycloudflare.com"},
+        )
+        assert ok.status_code == 200
+        blocked = client.get("/client", headers={"Host": "evil.trycloudflare.com"})
+        assert blocked.status_code == 403
+    finally:
+        settings.public_base_url = old
+        _cleanup(bundle, prev)
+
+
+def test_client_page_ok_on_private_lan_host(tmp_path):
+    bundle = _client(tmp_path, client_api_key="nav_test")
+    client, prev, *_ = bundle
+    try:
+        r = client.get("/client", headers={"Host": "192.168.1.88:8000"})
+        assert r.status_code == 200
+        assert '<div id="root">' in r.text or "Console not built" in r.text or "Navigator AI" in r.text
+    finally:
+        _cleanup(bundle, prev)
+
+
 def test_client_api_start_uses_server_key(tmp_path):
     bundle = _client(tmp_path, client_api_key="")
     client, prev, registry, log, auth_store = bundle
@@ -326,7 +357,7 @@ def test_client_runs_list_empty_and_scoped(tmp_path):
             host_name="box",
             browser="",
             meeting_label="meet:abc",
-            started_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
+            started_at=datetime.now(timezone.utc),
         )
         other = uuid4()
         log.upsert_run(
@@ -342,7 +373,7 @@ def test_client_runs_list_empty_and_scoped(tmp_path):
             host_name="box",
             browser="",
             meeting_label="zoom",
-            started_at=datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc),
+            started_at=datetime.now(timezone.utc),
         )
 
         listed = client.get("/client/api/runs?days=7", headers=headers)
@@ -365,7 +396,8 @@ def test_client_runs_list_empty_and_scoped(tmp_path):
         _cleanup(bundle, prev)
 
 
-def test_client_tier2_toggle_roundtrip(tmp_path):
+def test_client_tier2_always_off(tmp_path):
+    """Tier-2 product toggle is a no-op — always guided / disabled."""
     bundle = _client(tmp_path, client_api_key="")
     client, prev, registry, log, auth_store = bundle
     try:
@@ -386,11 +418,8 @@ def test_client_tier2_toggle_roundtrip(tmp_path):
 
         on = client.put("/client/api/tier2", json={"enabled": True}, headers=headers)
         assert on.status_code == 200, on.text
-        assert on.json()["enabled"] is True
-        assert registry.get(p["id"]).tier2_enabled is True
-
-        off = client.put("/client/api/tier2", json={"enabled": False}, headers=headers)
-        assert off.status_code == 200
-        assert off.json()["enabled"] is False
+        assert on.json()["enabled"] is False
+        assert registry.get(p["id"]).tier2_enabled is False
+        assert registry.get(p["id"]).autonomy_mode == "guided"
     finally:
         _cleanup(bundle, prev)

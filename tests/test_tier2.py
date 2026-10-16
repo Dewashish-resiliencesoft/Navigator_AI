@@ -10,7 +10,6 @@ from navigator.agent.state import CallDeps, initial_state
 from navigator.automation.explore.guardrail import GuardrailVerdict
 from navigator.core.schemas import ClickElement, Postcondition
 from navigator.knowledge.context import RetrievalResult
-from navigator.knowledge.memory.pending import PendingCorrectionStore
 from navigator.logs.decisions import DecisionTraceStore
 from navigator.voice.tts import PrintSpeaker
 
@@ -113,11 +112,9 @@ def test_tier2_refuses_mutating_target(site_graph, page, log, tmp_path):
     with DecisionTraceStore(tmp_path / "decisions.db") as store:
         rows = store.for_session(session, "acme")
     assert rows[-1].branch == "tier2_refused"
-    with PendingCorrectionStore(tmp_path / "pending.db") as pending:
-        assert pending.list_pending("acme") == []
 
 
-def test_tier2_safe_action_logs_pending_not_auto_promoted(
+def test_tier2_safe_action_runs_without_pending_queue(
     site_graph, page, log, tmp_path
 ):
     session = uuid4()
@@ -151,9 +148,3 @@ def test_tier2_safe_action_logs_pending_not_auto_promoted(
     with DecisionTraceStore(tmp_path / "decisions.db") as store:
         rows = store.for_session(session, "acme")
     assert rows[-1].branch == "tier2_attempted"
-
-    with PendingCorrectionStore(tmp_path / "pending.db") as pending:
-        pending_rows = pending.list_pending("acme")
-    assert len(pending_rows) == 1
-    assert "tier2" in pending_rows[0].rule.lower()
-    assert pending_rows[0].status == "pending"

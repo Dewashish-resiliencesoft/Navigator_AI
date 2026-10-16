@@ -1,0 +1,14 @@
+<!doctype html><html><body style="margin:0;font-family:sans-serif">
+<header style="position:sticky;top:0;height:60px;background:#333;color:#fff;z-index:5">Header</header>
+<div style="display:flex;height:calc(100vh - 60px)">
+ <ul id="chats" style="width:280px;overflow-y:auto;margin:0;padding:0;list-style:none">
+  <li class="chat" style="cursor:pointer;padding:12px" onclick="openChat('Asha Rao')">Asha Rao hello there</li>
+  <li class="chat" style="cursor:pointer;padding:12px" onclick="openChat('Ben Lee')">Ben Lee price question</li>
+  <li class="chat" style="cursor:pointer;padding:12px" onclick="openChat('Chen Wu')">Chen Wu order status</li>
+ </ul>
+ <section id="conv" style="flex:1;padding:12px">Select a chat</section>
+</div>
+<script>
+function openChat(n){ setTimeout(()=>{ document.getElementById('conv').innerHTML =
+ '<h2 role="heading">Conversation with '+n+'</h2><div class="msgs">'+'message '.repeat(20)+'</div>'; }, 300); }
+</script></body></html>

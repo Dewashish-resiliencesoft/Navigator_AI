@@ -119,8 +119,18 @@ def pcm16_to_wav_bytes(pcm: bytes, *, sample_rate: int = SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
-def transcribe(audio: bytes, api_key: str, *, model: str = "whisper-large-v3-turbo") -> str:
-    """Transcribe 16-bit mono PCM (or WAV bytes) via Groq Whisper."""
+def transcribe(
+    audio: bytes,
+    api_key: str,
+    *,
+    model: str = "whisper-large-v3-turbo",
+    language: str | None = None,
+) -> str:
+    """Transcribe 16-bit mono PCM (or WAV bytes) via Groq Whisper.
+
+    Do not pin ``language`` to English. Omit it so Whisper IDs the spoken
+    language; pass a BCP-47 code only when the caller already knows it.
+    """
     if not api_key:
         raise RuntimeError("Groq API key missing for STT")
     payload = audio
@@ -130,10 +140,14 @@ def transcribe(audio: bytes, api_key: str, *, model: str = "whisper-large-v3-tur
 
     from navigator.core.groq_client import transcribe_create
 
+    kwargs: dict = {}
+    if language:
+        kwargs["language"] = language
     transcript = transcribe_create(
         api_key,
         file=("utterance.wav", payload, "audio/wav"),
         model=model,
+        **kwargs,
     )
     text = getattr(transcript, "text", None) or str(transcript)
     return text.strip()

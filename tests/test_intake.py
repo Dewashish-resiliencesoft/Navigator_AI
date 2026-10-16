@@ -187,7 +187,7 @@ def test_prefilled_fields_are_not_asked_again():
 
     def listen(prompt: str) -> str:
         asked.append(prompt)
-        return "spoken"
+        return "a shared inbox for my sales team"
 
     intake, _lang = run_intake(
         persona=persona,
@@ -195,10 +195,11 @@ def test_prefilled_fields_are_not_asked_again():
         interactive=False,
         listen=listen,
         prefill={"name": "Dewa", "looking_for": ""},
+        fast_extract=True,
     )
     assert intake.name == "Dewa"
     assert intake.company == ""
-    assert intake.looking_for == "spoken"
+    assert "inbox" in intake.looking_for.lower()
     assert len(asked) == 1, f"only looking_for should be asked: {asked}"
     assert any("Nice to meet you, Dewa" in s for s in speaker.said)
 

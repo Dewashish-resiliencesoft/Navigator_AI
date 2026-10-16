@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowUpRight, ArrowDownRight, ArrowRight, CircleCheck, Radio, TriangleAlert, Zap } from "lucide-react";
-import { api, DASHBOARD_DAYS, type DemoRun, type Metrics, type PublishChecklist } from "../lib/api";
+import { api, DASHBOARD_DAYS, type DemoRun, type Metrics } from "../lib/api";
 import { formatRunDuration } from "../lib/elapsed";
+import { useDemoReadinessSession } from "../lib/demoReadinessSession";
 import { useProductData } from "../lib/productData";
 import {
   clientReadinessScore,
@@ -11,7 +12,13 @@ import {
 import { soft, stagger } from "../lib/motion";
 import { AreaChart, Sparkbars } from "../components/Chart";
 import { BarLoader, Card, CardTitle, Empty, StatusPill } from "../components/ui";
+import {
+  readinessToChecklist,
+  StatusChecklist,
+} from "../components/StatusChecklist";
+import { ProductExplorePanel } from "../components/ProductExplorePanel";
 import { errText, useUi } from "../store";
+import { useProductExploreSession } from "../lib/productExploreSession";
 
 const Kpi = ({
   icon: Icon,
@@ -76,22 +83,28 @@ export function Overview() {
   const epoch = useProductData((s) => s.epoch);
   const [m, setM] = useState<Metrics | null>(null);
   const [runs, setRuns] = useState<DemoRun[] | null>(null);
-  const [checklist, setChecklist] = useState<PublishChecklist | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const bootstrapExplore = useProductExploreSession((s) => s.bootstrap);
+  const readiness = useDemoReadinessSession((s) => s.readiness);
+  const readinessLoading = useDemoReadinessSession((s) => s.loading);
+  const readinessError = useDemoReadinessSession((s) => s.error);
+  const startCoach = useUi((s) => s.startCoach);
+
+  useEffect(() => {
+    bootstrapExplore();
+  }, [bootstrapExplore]);
 
   useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const [metrics, runList, pub] = await Promise.all([
+        const [metrics, runList] = await Promise.all([
           api.metrics(DASHBOARD_DAYS),
           api.listRuns(DASHBOARD_DAYS),
-          api.getPublishChecklist().catch(() => null),
         ]);
         if (!alive) return;
         setM(metrics);
         setRuns(runList);
-        setChecklist(pub);
         setLoadErr(null);
       } catch (e) {
         if (!alive) return;
@@ -138,6 +151,17 @@ export function Overview() {
   const windowDays = m.days ?? DASHBOARD_DAYS;
   const tableFailSum = runs ? sumFailCount(runs) : null;
 
+  // Same source as Live Demo; Overview only lists open rows (done ones exit/stack away).
+  const visiblePublishChecks = clientVisibleReadinessChecks(
+    readiness?.checks ?? [],
+  );
+  const openPublishChecks = visiblePublishChecks.filter((c) => !c.ok);
+  const publishScore = readiness
+    ? clientReadinessScore(readiness.checks)
+    : null;
+  const publishReady = readiness != null && openPublishChecks.length === 0;
+  const publishItems = readinessToChecklist(openPublishChecks);
+
   return (
     <motion.div
       variants={stagger()}
@@ -183,37 +207,6 @@ export function Overview() {
         onClick={() => setTab("logs")}
       />
 
-      {checklist && (
-        <Card span="sm:col-span-2 xl:col-span-4">
-          <CardTitle hint="Pre-publish gate for live visitors — flows, knowledge, eval.">
-            Publish checklist
-          </CardTitle>
-          <div className="mb-2 flex flex-wrap items-center gap-3 text-[0.78rem]">
-            <span>Readiness {clientReadinessScore(checklist.readiness.checks)}/100</span>
-            {checklist.eval_score_pct != null && (
-              <span>Eval {Math.round(checklist.eval_score_pct)}%</span>
-            )}
-            <span className="text-[var(--muted)]">{checklist.autonomy_recommendation}</span>
-          </div>
-          <ul className="grid gap-1 sm:grid-cols-2 text-[0.72rem]">
-            {clientVisibleReadinessChecks(checklist.readiness.checks).map((c) => (
-              <li
-                key={c.id}
-                className={
-                  c.ok
-                    ? "text-emerald-700 dark:text-emerald-400"
-                    : c.blocking
-                      ? "text-red-700 dark:text-red-400"
-                      : "text-amber-700 dark:text-amber-400"
-                }
-              >
-                {c.ok ? "✓" : c.blocking ? "✕" : "!"} {c.message}
-              </li>
-            ))}
-          </ul>
-        </Card>
-      )}
-
       <Card span="sm:col-span-2 xl:col-span-3">
         <CardTitle hint={`Last ${windowDays} days — actions, demo sessions, and step failures share one window and data source.`}>
           Activity
@@ -250,6 +243,45 @@ export function Overview() {
           </p>
         </div>
       </Card>
+
+      <div className="sm:col-span-2 xl:col-span-4 grid gap-4 lg:grid-cols-2 lg:items-stretch">
+        <Card interactive={false} className="flex h-full flex-col !p-4">
+          <CardTitle hint="Same checks as Live Demo. Passed items drop off; card stays when all clear.">
+            Publish checklist
+          </CardTitle>
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[0.72rem] text-[var(--muted)]">
+            {publishScore != null && (
+              <span>
+                Readiness{" "}
+                <strong className="text-[var(--text)]">{publishScore}/100</strong>
+              </span>
+            )}
+            {readiness && !publishReady && (
+              <span>{openPublishChecks.length} open</span>
+            )}
+            {readinessLoading && !readiness && <span>Checking…</span>}
+          </div>
+          {readinessError && !readiness ? (
+            <p className="text-[0.8rem] text-amber-700 dark:text-amber-400">
+              Could not load checklist ({readinessError}). Refresh or re-login.
+            </p>
+          ) : publishReady ? (
+            <p className="text-[0.8rem] text-emerald-700 dark:text-emerald-400">
+              All publish checks passed ({publishScore}/100).
+            </p>
+          ) : readiness ? (
+            <div className="min-h-0 flex-1">
+              <StatusChecklist items={publishItems} onFix={startCoach} />
+            </div>
+          ) : readinessLoading ? (
+            <BarLoader label="Checking readiness…" />
+          ) : null}
+        </Card>
+        <ProductExplorePanel
+          showOpenKnowledge
+          className="flex h-full flex-col !p-4"
+        />
+      </div>
 
       <Card span="sm:col-span-2 xl:col-span-4">
         <CardTitle hint={`Last ${windowDays} days — step failures column sums to ${m.failures} (table total ${tableFailSum ?? "…"}). Click a row for Logs.`}>

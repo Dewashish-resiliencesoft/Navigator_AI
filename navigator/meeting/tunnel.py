@@ -176,6 +176,14 @@ def _start_tunnel_once(
             if match:
                 public = match.group(0)
                 print(f"[tunnel] URL {public} — waiting for edge registration…", flush=True)
+        if "429" in text or "error code: 1015" in text.lower() or "quick tunnel provisioning failed" in text.lower():
+            proc.kill()
+            raise RuntimeError(
+                "cloudflared quick tunnel rate-limited (Cloudflare 429/1015). "
+                "Set NAVIGATOR_PUBLIC_BASE_URL to a stable host tunnel "
+                "(e.g. ./.tools/cloudflared tunnel --url http://127.0.0.1:8080) "
+                "so demos reuse one origin via /v1/live-http and /v1/live-ws."
+            )
         if public is not None and _REGISTERED_RE.search(text):
             registered = True
             break
@@ -253,7 +261,29 @@ def verify_attendee_docker_dns(hostname: str) -> None:
     if not containers:
         return
     script = f"import socket\nsocket.getaddrinfo({hostname!r}, 443)\n"
+    checked = 0
     for container in containers:
+        # Skip crash-looping containers (docker exec fails for unrelated reasons).
+        try:
+            st = subprocess.run(
+                ["docker", "inspect", "-f", "{{.State.Running}}", container],
+                check=True,
+                timeout=5,
+                capture_output=True,
+                text=True,
+            )
+            if st.stdout.strip().lower() != "true":
+                print(
+                    f"[tunnel] skip DNS check — {container} not running",
+                    flush=True,
+                )
+                continue
+        except Exception:  # noqa: BLE001
+            print(
+                f"[tunnel] skip DNS check — cannot inspect {container}",
+                flush=True,
+            )
+            continue
         try:
             subprocess.run(
                 ["docker", "exec", container, "python", "-c", script],
@@ -261,6 +291,7 @@ def verify_attendee_docker_dns(hostname: str) -> None:
                 timeout=15,
                 capture_output=True,
             )
+            checked += 1
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 f"Attendee container {container!r} cannot resolve {hostname!r} — "
@@ -273,6 +304,11 @@ def verify_attendee_docker_dns(hostname: str) -> None:
                 "--profile webpage-streamer up -d --force-recreate "
                 "attendee-worker-local attendee-webpage-streamer-local"
             ) from exc
+    if checked == 0:
+        print(
+            f"[tunnel] DNS check skipped — no healthy Attendee containers for {hostname!r}",
+            flush=True,
+        )
 
 
 def _socket_resolve(host: str) -> list[str]:

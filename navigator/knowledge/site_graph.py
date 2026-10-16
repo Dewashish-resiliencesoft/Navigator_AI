@@ -19,6 +19,7 @@ from navigator.core.schemas import (
     Navigate,
     Persona,
     Postcondition,
+    ScrollPage,
     ToolCall,
     tool_selector,
 )
@@ -295,6 +296,8 @@ class SiteGraph(BaseModel):
     def selector(self, page_id: str, alias: str) -> str:
         """Resolve a selector alias to CSS. Raises rather than guessing."""
         page = self.page(page_id)
+        if alias not in page.selectors and alias.strip().lower().startswith("text="):
+            return alias.strip()  # authored click-by-text step: Playwright text engine
         try:
             return page.selectors[alias]
         except KeyError:
@@ -419,6 +422,13 @@ def _check_call(
             f"{where}: {call.tool} targets unknown selector {alias!r} "
             f"on page {page_id!r}"
         )
+
+    if isinstance(call, ScrollPage) and call.selector:
+        if call.selector not in page.selectors:
+            raise SiteGraphError(
+                f"{where}: scroll_page targets unknown selector {call.selector!r} "
+                f"on page {page_id!r}"
+            )
 
     if isinstance(call, Navigate):
         if call.page_id not in graph.pages:

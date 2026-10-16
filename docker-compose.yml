@@ -20,7 +20,6 @@ services:
       NAVIGATOR_REGISTRY_DB: /data/registry.db
       NAVIGATOR_CHROMA_PATH: /data/chroma
       NAVIGATOR_CREDENTIAL_DB_PATH: /data/credentials.db
-      NAVIGATOR_PIPER_DATA_DIR: /data/voices
       NAVIGATOR_EXPLORE_EPISODES_PATH: /data/explore_episodes
     volumes:
       - navigator-data:/data

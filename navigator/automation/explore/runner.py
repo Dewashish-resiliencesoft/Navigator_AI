@@ -592,6 +592,7 @@ def _persist(
     from navigator.client.content import (
         existing_flow_step_count,
         merge_recorded_flow,
+        resolve_flow_page_id,
         _slug_flow,
     )
 
@@ -649,9 +650,12 @@ def _persist(
             )
         if not update and session.new_flow_name and i > 0:
             flow_id = f"{flow_id}_{i + 1}"
+        persist_page = EXPLORE_PAGE_ID
+        if update:
+            persist_page = resolve_flow_page_id(new_yaml, flow_id) or EXPLORE_PAGE_ID
         # Read the pre-append count so appended _meta indices line up.
         prior_steps = (
-            existing_flow_step_count(new_yaml, EXPLORE_PAGE_ID, flow_id)
+            existing_flow_step_count(new_yaml, persist_page, flow_id)
             if update
             else 0
         )
@@ -659,7 +663,7 @@ def _persist(
             new_yaml,
             flow_name=flow_name,
             flow_id=flow_id,
-            page_id=EXPLORE_PAGE_ID,
+            page_id=persist_page,
             steps=list(seg.steps),
             product_name=product_name,
             base_url=session.base_url,
@@ -723,6 +727,12 @@ def _persist(
                 f"{len(flow_ids)} flow(s) ({', '.join(flow_ids)}) — "
                 f"{len(session.steps)} demo step(s), "
                 f"{session.actions_taken} actions explored"
+                + (
+                    f" — {session.repairs_used} selector repair(s) in this "
+                    "unpublished draft; Publish before live visitors use them"
+                    if session.repairs_used
+                    else " — unpublished draft, Publish when ready for visitors"
+                )
             ),
         }
     )

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      {
+        "command": ".cursor/hooks/sync-vps.sh",
+        "timeout": 60
+      }
+    ],
+    "stop": [
+      {
+        "command": ".cursor/hooks/sync-vps.sh",
+        "timeout": 90
+      }
+    ]
+  }
+}

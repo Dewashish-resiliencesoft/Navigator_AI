@@ -4,28 +4,14 @@ import {
   ArrowDown,
   ArrowUp,
   Circle,
-  Clock,
-  Compass,
-  Loader2,
   Plus,
   Save,
-  ShieldAlert,
   Square,
   Trash2,
 } from "lucide-react";
-import { api, type ExploreFlagged, type Flow, type RecorderStatus } from "../lib/api";
-import {
-  exploreDraftProgressPct,
-  exploreIsLive,
-  exploreIsPersisting,
-  exploreIsTerminal,
-  formatExploreElapsed,
-  useExploreElapsed,
-  useExploreSession,
-} from "../lib/exploreSession";
+import { type NarrationStatus, api, type AiDraftStatus, type DemoScriptBeat, type Flow, type RecorderStatus, type ScriptSplitRow, type ScriptExtra, type StepKind, type FlowAlignRow, type FlowExpandRow } from "../lib/api";
 import { useProductData } from "../lib/productData";
 import { soft, stagger } from "../lib/motion";
-import { ExploreWatch } from "../components/ExploreWatch";
 import {
   BarLoader,
   Button,
@@ -37,27 +23,13 @@ import {
   Select,
   StatusPill,
   Switch,
+  Textarea,
   ConfirmDialog,
 } from "../components/ui";
 import { errText, useUi } from "../store";
 
 const isRecording = (s: RecorderStatus) =>
   !!(s.recording || s.active || s.status === "recording");
-
-function FlowDraftLoader({ pct, label }: { pct: number; label?: string }) {
-  const n = Math.min(100, Math.max(0, Math.round(pct)));
-  return (
-    <div
-      className="flex min-w-[4.5rem] flex-col items-end gap-0.5 px-1"
-      title={label}
-    >
-      <Loader2 size={16} className="animate-spin text-[var(--accent)]" />
-      <span className="font-mono text-[0.68rem] tabular-nums text-[var(--muted)]">
-        {n}%
-      </span>
-    </div>
-  );
-}
 
 function FlowFieldCell({
   label,
@@ -73,6 +45,600 @@ function FlowFieldCell({
       </span>
       {children}
     </label>
+  );
+}
+
+/** Generated fallback copy (not the Client's voice) — shown as a hint, never as their words. */
+function isAutoLine(b: DemoScriptBeat): boolean {
+  return b.spoken_source === "generated" || b.spoken_source === "semantics";
+}
+
+function flowScriptLines(beats: DemoScriptBeat[], flowId: string) {
+  return beats.filter(
+    (b) => b.flow_id === flowId && (b.kind === "flow_step" || b.kind === "live_input"),
+  );
+}
+
+function FlowScriptEditor({
+  flowId,
+  beats,
+  onChange,
+  onSave,
+  dirty,
+  busy,
+  status,
+  onRetranscribe,
+  retranscribing,
+  onReload,
+}: {
+  onReload?: () => void;
+  status?: NarrationStatus;
+  onRetranscribe?: () => void;
+  retranscribing?: boolean;
+  flowId: string;
+  beats: DemoScriptBeat[];
+  onChange: (id: string, spoken: string) => void;
+  onSave: () => void;
+  dirty: boolean;
+  busy: boolean;
+}) {
+  const lines = flowScriptLines(beats, flowId);
+  return (
+    <div className="space-y-2 border-t px-3 py-3" style={{ borderColor: "var(--line)" }}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[0.72rem] text-[var(--muted)]">
+          Spoken script from the recording. Edit a line, then save. Draft only — publish the site graph to make it live.
+        </p>
+        <div className="flex items-center gap-2">
+          <SyncScreensButton flowId={flowId} onDone={onReload} />
+          <ExpandNarrationButton flowId={flowId} onDone={onReload} />
+          <RevisionBadge />
+          <Button onClick={onSave} disabled={!dirty || busy || !lines.length}>
+            <Save size={13} /> {busy ? "Saving…" : "Save script"}
+          </Button>
+        </div>
+      </div>
+      {status && !status.captured && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-[0.72rem] text-amber-700 dark:text-amber-300">
+          <span>
+            No voice captured: {status.reason || "no speech matched any step"}.
+            {status.audio_bytes > 0 ? ` (${Math.round(status.audio_bytes / 1024)} KB of audio saved)` : ""}
+          </span>
+          {status.audio_bytes > 0 && onRetranscribe && (
+            <Button variant="secondary" disabled={retranscribing} onClick={onRetranscribe}>
+              {retranscribing ? "Transcribing…" : "Re-transcribe"}
+            </Button>
+          )}
+        </div>
+      )}
+      {status?.captured && onRetranscribe && (
+        <div className="flex justify-end">
+          <Button variant="ghost" disabled={retranscribing} onClick={onRetranscribe} className="text-[0.68rem]">
+            {retranscribing ? "Transcribing…" : "Re-transcribe from saved audio"}
+          </Button>
+        </div>
+      )}
+      {lines.length > 0 && (() => {
+        const spoken = lines
+          .filter((b) => !isAutoLine(b))
+          .map((b) => (b.spoken ?? "").trim())
+          .filter(Boolean);
+        return (
+          <FullScriptEditor
+            flowId={flowId}
+            lines={lines}
+            spokenCount={spoken.length}
+            initial={spoken.join("\n\n")}
+            onSaved={onReload}
+          />
+        );
+      })()}
+      {false && lines.length > 0 && (() => {
+        const spoken: string[] = [];
+        return (
+          <div className="rounded-lg border px-3 py-2" style={{ borderColor: "var(--line)" }}>
+            <p className="mb-1 text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+              Full script · {spoken.length} of {lines.length} steps narrated
+            </p>
+            {spoken.length ? (
+              <p className="whitespace-pre-wrap text-[0.78rem] leading-relaxed">{spoken.join(" ")}</p>
+            ) : (
+              <p className="text-[0.72rem] text-[var(--muted)]">
+                No narration captured for this flow yet. Type the lines below, or record again with the
+                mic on (Start recording in the capture page toolbar).
+              </p>
+            )}
+          </div>
+        );
+      })()}
+      {!lines.length && (
+        <p className="text-[0.72rem] text-[var(--muted)]">
+          No narrated steps yet. Record this flow with narration, then the script shows here.
+        </p>
+      )}
+      {lines.map((b, i) => (
+        <div key={b.id} className="block">
+          <span className="mb-0.5 flex items-center gap-2 text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+            Step {(b.step_index ?? 0) + 1}
+            <StepNameInput flowId={flowId} beat={b} />
+            <StepControls flowId={flowId} index={b.step_index ?? 0} isFirst={i === 0} isLast={i === lines.length - 1} onDone={onReload} />
+          </span>
+          <Textarea
+            rows={2}
+            value={isAutoLine(b) ? "" : b.spoken ?? ""}
+            placeholder={
+              isAutoLine(b) && b.spoken
+                ? `Not narrated — demo would fall back to: “${b.spoken}”`
+                : "What the demo says on this step"
+            }
+            onChange={(v) => onChange(b.id, v)}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StepNameInput({ flowId, beat }: { flowId: string; beat: DemoScriptBeat }) {
+  const { ok, err } = useUi();
+  const [val, setVal] = useState(beat.step_name ?? "");
+  const [saved, setSaved] = useState(beat.step_name ?? "");
+  useEffect(() => {
+    setVal(beat.step_name ?? "");
+    setSaved(beat.step_name ?? "");
+  }, [beat.step_name]);
+  const commit = async () => {
+    if (val.trim() === saved.trim()) return;
+    try {
+      await api.setStepName(flowId, beat.step_index ?? 0, val.trim());
+      setSaved(val.trim());
+      ok("Step name saved to draft");
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+  return (
+    <input
+      className="min-w-0 flex-1 rounded border border-transparent bg-transparent px-1 py-0.5 text-[0.7rem] normal-case tracking-normal text-[var(--fg)] hover:border-[var(--line)] focus:border-[var(--line)] focus:outline-none"
+      value={val}
+      placeholder={beat.on_screen || beat.tool || "Name this step"}
+      title="Click to rename this step (selector and action stay the same)"
+      onChange={(e) => setVal(e.target.value)}
+      onBlur={() => void commit()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
+
+function FullScriptEditor({
+  flowId,
+  lines,
+  spokenCount,
+  initial,
+  onSaved,
+}: {
+  flowId: string;
+  lines: DemoScriptBeat[];
+  spokenCount: number;
+  initial: string;
+  onSaved?: () => void;
+}) {
+  const { ok, err } = useUi();
+  const [text, setText] = useState(initial);
+  const [preview, setPreview] = useState<ScriptSplitRow[] | null>(null);
+  const [method, setMethod] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [keepOld, setKeepOld] = useState<Record<number, boolean>>({});
+  const [extras, setExtras] = useState<ScriptExtra[]>([]);
+  const [makeExtras, setMakeExtras] = useState(true);
+  useEffect(() => setText(initial), [initial]);
+  const runPreview = async () => {
+    setBusy(true);
+    try {
+      const r = await api.distributeScript(flowId, text, false);
+      setPreview(r.preview);
+      setMethod(r.method);
+      setExtras(r.extras ?? []);
+      setMakeExtras(true);
+      setKeepOld(Object.fromEntries(r.preview.map((p) => [p.step_index, !p.new_name || p.new_name === p.old_name])));
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirm = async () => {
+    if (!preview) return;
+    setBusy(true);
+    try {
+      const names: Record<number, string> = {};
+      for (const p of preview) if (!keepOld[p.step_index] && p.new_name) names[p.step_index] = p.new_name;
+      await api.distributeScript(flowId, text, true, preview.map((p) => p.new), {
+        names,
+        create_extras: makeExtras && extras.length > 0,
+        extras,
+      });
+      ok(makeExtras && extras.length ? `Saved to draft (+${extras.length} narration-only steps)` : "Script split across steps and saved to draft");
+      setPreview(null);
+      onSaved?.();
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const methodLabel: Record<string, string> = {
+    markers: "matched step markers",
+    paragraphs: "one paragraph per step",
+    llm: "AI-aligned to steps",
+    proportional: "split by sentence order",
+    segments: "one segment per step",
+    empty: "empty script",
+  };
+  return (
+    <div className="rounded-lg border px-3 py-2" style={{ borderColor: "var(--line)" }}>
+      <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+          Full script · {spokenCount} of {lines.length} steps narrated
+        </p>
+        <Button variant="secondary" disabled={busy || text.trim() === initial.trim()} onClick={() => void runPreview()}>
+          {busy && !preview ? "Splitting…" : "Preview split"}
+        </Button>
+      </div>
+      <Textarea
+        rows={Math.min(14, Math.max(4, Math.ceil(text.length / 90)))}
+        value={text}
+        placeholder="Write the whole demo script. Tip: start lines with 'Step 2:' or a step name, or use one paragraph per step."
+        onChange={(v) => {
+          setText(v);
+          setPreview(null);
+        }}
+      />
+      {preview && (
+        <div className="mt-2 space-y-1.5">
+          <p className="text-[0.68rem] text-[var(--muted)]">
+            Preview ({methodLabel[method] ?? method}). Nothing is saved until you confirm.
+          </p>
+          {preview.map((p) => (
+            <div key={p.beat_id} className="rounded border px-2 py-1 text-[0.72rem]" style={{ borderColor: "var(--line)" }}>
+              <div className="flex flex-wrap items-center gap-2 font-medium">
+                <span>Step {p.step_index + 1}</span>
+                {p.new_name && p.new_name !== p.old_name ? (
+                  <>
+                    <span className={keepOld[p.step_index] ? "" : "line-through opacity-60"}>{p.old_name || p.label || "unnamed"}</span>
+                    <span>→</span>
+                    <input
+                      className={`rounded border px-1 text-[0.72rem] ${keepOld[p.step_index] ? "opacity-50" : "text-green-700 dark:text-green-400"}`}
+                      style={{ borderColor: "var(--line)" }}
+                      value={p.new_name}
+                      disabled={keepOld[p.step_index]}
+                      onChange={(e) => setPreview(preview.map((q) => (q.beat_id === p.beat_id ? { ...q, new_name: e.target.value } : q)))}
+                    />
+                    <label className="flex items-center gap-1 text-[0.66rem] font-normal text-[var(--muted)]">
+                      <input
+                        type="checkbox"
+                        checked={!!keepOld[p.step_index]}
+                        onChange={(e) => setKeepOld({ ...keepOld, [p.step_index]: e.target.checked })}
+                      />
+                      keep old name
+                    </label>
+                  </>
+                ) : (
+                  <span>{p.old_name || p.label ? `· ${p.old_name || p.label}` : ""}</span>
+                )}
+              </div>
+              {p.old && p.old !== p.new && (
+                <div className="text-red-600 line-through opacity-70 dark:text-red-400">{p.old}</div>
+              )}
+              <div className={p.new ? "text-green-700 dark:text-green-400" : "italic text-[var(--muted)]"}>
+                {p.new || "(no narration for this step)"}
+              </div>
+            </div>
+          ))}
+          {extras.length > 0 && (
+            <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[0.72rem]">
+              <label className="flex items-center gap-2 font-medium">
+                <input type="checkbox" checked={makeExtras} onChange={(e) => setMakeExtras(e.target.checked)} />
+                Script has {extras.length} more segment{extras.length > 1 ? "s" : ""} than steps — add as narration-only steps at the end
+              </label>
+              {!makeExtras && <p className="text-[var(--muted)]">Unchecked: this text will be dropped.</p>}
+              {extras.map((x, i) => (
+                <div key={i} className={`mt-1 ${makeExtras ? "" : "line-through opacity-60"}`}>
+                  <span className="font-medium">+ {x.name || "Narration"}:</span> {x.text}
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" disabled={busy} onClick={() => setPreview(null)}>Cancel</Button>
+            <Button disabled={busy} onClick={() => void confirm()}>
+              <Save size={13} /> {busy ? "Saving…" : "Confirm & save draft"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const STEP_KINDS: { id: StepKind; label: string; hint: string }[] = [
+  { id: "narration", label: "Narration only", hint: "" },
+  { id: "click", label: "Click element (text)", hint: "Visible text, e.g. Inbox" },
+  { id: "navigate", label: "Navigate to URL", hint: "https://… or /path" },
+  { id: "wait", label: "Wait for text", hint: "Text to wait for (empty = short pause)" },
+];
+
+function StepControls({
+  flowId,
+  index,
+  isFirst,
+  isLast,
+  onDone,
+}: {
+  flowId: string;
+  index: number;
+  isFirst: boolean;
+  isLast: boolean;
+  onDone?: () => void;
+}) {
+  const { ok, err } = useUi();
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [kind, setKind] = useState<StepKind>("narration");
+  const [value, setValue] = useState("");
+  const [narration, setNarration] = useState("");
+  const [name, setName] = useState("");
+  const run = async (op: "insert" | "delete" | "up" | "down") => {
+    if (op === "delete" && !window.confirm(`Delete step ${index + 1}? (saved to draft only)`)) return;
+    setBusy(true);
+    try {
+      await api.editStep({ flow_id: flowId, op, index, ...(op === "insert" ? { kind, value, narration, name } : {}) });
+      ok(op === "insert" ? "Step added to draft" : op === "delete" ? "Step deleted from draft" : "Step moved (draft)");
+      setAdding(false);
+      setValue("");
+      setNarration("");
+      setName("");
+      onDone?.();
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const btn = "rounded px-1 text-[0.72rem] normal-case text-[var(--muted)] hover:bg-[var(--line)] disabled:opacity-30";
+  const hint = STEP_KINDS.find((k) => k.id === kind)?.hint ?? "";
+  return (
+    <span className="relative flex items-center gap-0.5">
+      <button type="button" className={btn} title="Move up" disabled={busy || isFirst} onClick={() => void run("up")}>↑</button>
+      <button type="button" className={btn} title="Move down" disabled={busy || isLast} onClick={() => void run("down")}>↓</button>
+      <button type="button" className={btn} title="Add step after this one" disabled={busy} onClick={() => setAdding((v) => !v)}>+ Add</button>
+      <button type="button" className={`${btn} hover:text-red-600`} title="Delete step" disabled={busy} onClick={() => void run("delete")}>Delete</button>
+      {adding && (
+        <div
+          className="absolute right-0 top-6 z-20 w-80 space-y-1.5 rounded-lg border bg-[var(--bg)] p-2 normal-case tracking-normal shadow-lg"
+          style={{ borderColor: "var(--line)" }}
+        >
+          <p className="text-[0.68rem] font-medium text-[var(--fg)]">New step after step {index + 1}</p>
+          <select
+            className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+            style={{ borderColor: "var(--line)" }}
+            value={kind}
+            onChange={(e) => setKind(e.target.value as StepKind)}
+          >
+            {STEP_KINDS.map((k) => (
+              <option key={k.id} value={k.id}>{k.label}</option>
+            ))}
+          </select>
+          {kind !== "narration" && (
+            <input
+              className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+              style={{ borderColor: "var(--line)" }}
+              placeholder={hint}
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+            />
+          )}
+          <input
+            className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+            style={{ borderColor: "var(--line)" }}
+            placeholder="Step name (optional)"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+          />
+          <textarea
+            className="w-full rounded border bg-transparent px-1 py-0.5 text-[0.72rem] text-[var(--fg)]"
+            style={{ borderColor: "var(--line)" }}
+            rows={3}
+            placeholder="What the demo says on this step"
+            value={narration}
+            onChange={(e) => setNarration(e.target.value)}
+          />
+          <div className="flex justify-end gap-1">
+            <Button variant="ghost" disabled={busy} onClick={() => setAdding(false)}>Cancel</Button>
+            <Button
+              disabled={busy || (kind === "narration" ? !narration.trim() : kind !== "wait" && !value.trim())}
+              onClick={() => void run("insert")}
+            >
+              {busy ? "Adding…" : "Add step"}
+            </Button>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+/** Point every step at the screen its narration talks about (draft only). */
+function SyncScreensButton({ flowId, onDone }: { flowId: string; onDone?: () => void }) {
+  const { ok, err } = useUi();
+  const [rows, setRows] = useState<FlowAlignRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (apply: boolean, recrawl = false) => {
+    setBusy(true);
+    try {
+      const r = await api.alignFlow(flowId, apply, recrawl);
+      if (apply) {
+        ok(`Screens synced to the script — saved as draft revision ${r.revision ?? ""} (not published)`);
+        setRows(null);
+        onDone?.();
+      } else setRows(r.report);
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="relative">
+      <Button variant="secondary" disabled={busy} onClick={() => void run(false)}>
+        {busy ? "Matching screens…" : "Sync screens to script"}
+      </Button>
+      {rows && (
+        <div className="absolute right-0 z-20 mt-1 w-[34rem] rounded-lg border bg-[var(--bg)] p-2 text-[0.68rem] shadow-lg" style={{ borderColor: "var(--line)" }}>
+          <table className="w-full">
+            <thead><tr className="text-left text-[var(--muted)]"><th>#</th><th>Narration</th><th>Screen</th><th>Highlight</th><th>Change</th></tr></thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.step} className="align-top">
+                  <td>{r.step + 1}</td>
+                  <td className="pr-2">{r.narration.slice(0, 60)}</td>
+                  <td>{r.target || "—"}</td>
+                  <td>{r.highlight || "—"}</td>
+                  <td className={r.action.startsWith("navigate") ? "text-amber-600" : "text-[var(--muted)]"}>{r.action}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setRows(null)}>Cancel</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void run(false, true)}>Re-read product menu</Button>
+            <Button disabled={busy} onClick={() => void run(true)}>Apply to draft</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RevisionBadge() {
+  const [rv, setRv] = useState<{ revision: number; published_revision: number | null } | null>(null);
+  useEffect(() => {
+    api.getSiteGraph().then((g) => setRv({ revision: g.revision, published_revision: g.published_revision })).catch(() => setRv(null));
+  }, []);
+  if (!rv) return null;
+  const draft = rv.published_revision !== rv.revision;
+  return (
+    <span className="self-center rounded border px-2 py-0.5 text-[0.62rem] text-[var(--muted)]" style={{ borderColor: "var(--line)" }}>
+      Test demo runs {draft ? "draft" : "published"} rev {rv.revision}
+      {draft ? ` · live link runs published rev ${rv.published_revision ?? "—"}` : ""}
+    </span>
+  );
+}
+
+function ExpandNarrationButton({ flowId, onDone }: { flowId: string; onDone?: () => void }) {
+  const { ok, err } = useUi();
+  const [rows, setRows] = useState<FlowExpandRow[] | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async (apply: boolean, recrawl = false) => {
+    setBusy(true);
+    try {
+      const r = await api.expandNarration(flowId, apply, recrawl);
+      if (apply) {
+        ok(`Narration expanded — saved as draft revision ${r.revision ?? ""} (not published). Edit any line below.`);
+        setRows(null);
+        onDone?.();
+      } else setRows(r.report ?? []);
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const changed = (rows ?? []).filter((r) => r.changed);
+  return (
+    <div className="relative">
+      <Button variant="secondary" disabled={busy} onClick={() => void run(false)}>
+        {busy ? "Reading screens…" : "Expand narration"}
+      </Button>
+      {rows && (
+        <div className="absolute right-0 z-20 mt-1 max-h-[28rem] w-[38rem] overflow-auto rounded-lg border bg-[var(--bg)] p-2 text-[0.68rem] shadow-lg" style={{ borderColor: "var(--line)" }}>
+          <p className="mb-1 text-[var(--muted)]">{changed.length} of {rows.length} lines get extra detail from what is on screen. Your lines stay as written; additions are appended.</p>
+          {changed.map((r) => (
+            <div key={r.step} className="mb-2">
+              <div className="font-medium">Step {r.step + 1}</div>
+              <div className="text-[var(--muted)]">{r.before}</div>
+              <div className="text-emerald-700 dark:text-emerald-400">+ {r.after.slice(r.before.length).trim()}</div>
+            </div>
+          ))}
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setRows(null)}>Cancel</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void run(false, true)}>Re-read screens</Button>
+            <Button disabled={busy || !changed.length} onClick={() => void run(true)}>Save as draft</Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AiDraftButton({ onDone }: { onDone: () => void }) {
+  const { ok, err } = useUi();
+  const [st, setSt] = useState<AiDraftStatus | null>(null);
+  const poll = useRef<number | null>(null);
+  const stop = () => {
+    if (poll.current) window.clearInterval(poll.current);
+    poll.current = null;
+  };
+  useEffect(() => stop, []);
+  const tick = async () => {
+    try {
+      const s = await api.getAiDraft();
+      setSt(s);
+      if (s.state !== "running") {
+        stop();
+        if (s.state === "done") {
+          ok(`AI draft flow created (${s.result.steps ?? 0} steps) — review, then publish`);
+          onDone();
+        } else if (s.state === "error") err(s.error || "AI draft failed");
+      }
+    } catch (e) {
+      stop();
+      err(errText(e));
+    }
+  };
+  const start = async () => {
+    try {
+      setSt(await api.startAiDraft());
+      stop();
+      poll.current = window.setInterval(() => void tick(), 2000);
+    } catch (e) {
+      err(errText(e));
+    }
+  };
+  const running = st?.state === "running";
+  return (
+    <div className="relative">
+      <Button variant="secondary" disabled={running} onClick={() => void start()}>
+        {running ? "Generating…" : "Generate with AI"}
+      </Button>
+      {st && st.state !== "idle" && st.progress.length > 0 && (
+        <div className="absolute right-0 z-20 mt-1 w-80 rounded-lg border bg-[var(--bg)] p-2 text-[0.68rem] shadow-lg" style={{ borderColor: "var(--line)" }}>
+          {running && <BarLoader />}
+          <ul className="mt-1 max-h-48 space-y-0.5 overflow-auto">
+            {st.progress.map((m, i) => (
+              <li key={i} className="text-[var(--muted)]">{m}</li>
+            ))}
+          </ul>
+          {!running && (
+            <div className="mt-1 flex justify-end">
+              <Button variant="ghost" onClick={() => setSt(null)}>Close</Button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -93,39 +659,34 @@ export function Flows() {
   const [recTargetFlowId, setRecTargetFlowId] = useState("");
   const [recNarrating, setRecNarrating] = useState(false);
   const [narrationChunks, setNarrationChunks] = useState(0);
+  const [liveLines, setLiveLines] = useState<Array<{ at_ms: number; text: string }>>([]);
+  const [liveSteps, setLiveSteps] = useState<Array<{ index: number; label: string; tool: string; at_ms: number }>>([]);
+  const [livePaused, setLivePaused] = useState(false);
+  const [liveError, setLiveError] = useState("");
+  const recFlowRef = useRef<string>("");
   const [stepCount, setStepCount] = useState<Record<string, number>>({});
   const [confirmDelete, setConfirmDelete] = useState<number | null>(null);
   const [confirmClearAll, setConfirmClearAll] = useState(false);
+  const [confirmSaveStop, setConfirmSaveStop] = useState(false);
+  const [scriptBeats, setScriptBeats] = useState<DemoScriptBeat[] | null>(null);
+  const [scriptOpen, setScriptOpen] = useState<string | null>(null);
+  const [scriptDirty, setScriptDirty] = useState(false);
+  const [scriptBusy, setScriptBusy] = useState(false);
+  const [scriptReload, setScriptReload] = useState(0);
+  const [narrationStatus, setNarrationStatus] = useState<Record<string, NarrationStatus>>({});
+  const [retranscribing, setRetranscribing] = useState<string | null>(null);
   const timer = useRef<number | null>(null);
+  const mergingRef = useRef(false);
 
-  const exploreStatus = useExploreSession((s) => s.status);
-  const exploreSaveMode = useExploreSession((s) => s.saveMode);
-  const exploreTargetFlowId = useExploreSession((s) => s.targetFlowId);
-  const exploreTargetFlowName = useExploreSession((s) => s.targetFlowName);
-  const exploreShowMeter = useExploreSession((s) => s.showMeter);
-  const exploreDraftPct = exploreDraftProgressPct(exploreStatus);
-  const exploreDrafting =
-    exploreStatus.active ||
-    exploreIsPersisting(exploreStatus) ||
-    (exploreShowMeter && !exploreIsTerminal(exploreStatus.phase) && !exploreStatus.flow_id);
-  const exploreUpdatingFlowId =
-    exploreDrafting && exploreSaveMode === "update" ? exploreTargetFlowId.trim() : "";
-  const pendingNewFlowName =
-    exploreStatus.target_flow_name?.trim() ||
-    exploreTargetFlowName.trim() ||
-    "New explored flow";
-  const showPendingNewRow =
-    exploreDrafting &&
-    exploreSaveMode === "new" &&
-    !(
-      exploreStatus.flow_id &&
-      rows?.some((r) => r.flow_id === exploreStatus.flow_id)
-    );
   const recordFlows = (rows ?? []).filter((f) => !!f.flow_id?.trim());
 
   const load = useCallback(async () => {
     try {
-      const [d, g] = await Promise.all([api.getFlows(), api.getSiteGraph()]);
+      const [d, g, domain] = await Promise.all([
+        api.getFlows(),
+        api.getSiteGraph(),
+        api.getProductDomain().catch(() => ({ base_url: "", placeholder: true })),
+      ]);
       const playlist = d.playlist ?? [];
       setRows(playlist);
       // ponytail: setPlaylist only — applyPlaylist would re-bump epoch and loop load
@@ -145,6 +706,21 @@ export function Flows() {
         }
       }
       setStepCount(counts);
+
+      // Prefill Start URL from product domain (or site-graph base_url) once.
+      let start = "";
+      if (domain.base_url?.trim() && !domain.placeholder) {
+        start = domain.base_url.trim();
+      } else {
+        const bm = g.yaml.match(/^base_url:\s*["']?(\S+?)["']?\s*$/m);
+        const raw = (bm?.[1] || "").replace(/['"]/g, "").trim();
+        if (raw && !/example\.com/i.test(raw) && /^https?:\/\//i.test(raw)) {
+          start = raw;
+        }
+      }
+      if (start) {
+        setRecUrl((prev) => (prev.trim() ? prev : start));
+      }
     } catch (e) {
       err(errText(e));
     }
@@ -154,6 +730,25 @@ export function Flows() {
     void load();
   }, [load, epoch]);
 
+  useEffect(() => {
+    if (scriptDirty) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const d = await api.getDemoScript();
+        if (!cancelled) {
+          setScriptBeats(d.beats ?? []);
+          setNarrationStatus(d.narration_status ?? {});
+        }
+      } catch {
+        if (!cancelled) setScriptBeats([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [epoch, scriptReload, scriptDirty]);
+
   const stopPolling = () => {
     if (timer.current !== null) {
       clearInterval(timer.current);
@@ -162,6 +757,80 @@ export function Flows() {
   };
 
   useEffect(() => stopPolling, []);
+
+  const stopRecord = useCallback(async () => {
+    setRecPhase("stopping");
+    try {
+      const r = await api.recordStop();
+      setRecording(false);
+      setRecPhase("");
+      stopPolling();
+      const playlist = r.playlist ?? [];
+      if (playlist.length) {
+        setRows(playlist);
+        // setPlaylist only — avoid epoch bump loop from applyPlaylist
+        setPlaylist(playlist);
+      }
+      await load();
+      const flagged = r.flagged?.length ?? 0;
+      const narrated = r.narrated_steps ?? 0;
+      const steps = r.steps ?? 0;
+      if (r.ok === false || steps === 0) {
+        err(
+          (r.error || "").trim() ||
+            "No steps saved — click Start capturing, use the product in the Chrome window, then Stop again.",
+        );
+        return;
+      }
+      const name = r.flow_name || r.flow_id || recName || "flow";
+      if (r.flow_id) setScriptOpen(r.flow_id);
+      setScriptReload((n) => n + 1);
+      const extra =
+        (flagged > 0
+          ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"}.`
+          : "") +
+        (narrated > 0
+          ? ` Narration on ${narrated} step${narrated === 1 ? "" : "s"}.`
+          : "");
+      ok(`Saved “${name}” (${steps} steps). Script is on that flow — edit it there.${extra}`);
+    } catch (e) {
+      const msg = errText(e);
+      setRecording(false);
+      setRecPhase("");
+      stopPolling();
+      try {
+        await load();
+      } catch {
+        /* ignore */
+      }
+      if (/no active recording/i.test(msg)) {
+        ok("Recording already stopped — flow saved.");
+        await load();
+      } else {
+        err(msg);
+      }
+    }
+  }, [err, load, ok, recName, setPlaylist]);
+
+  const discardRecord = useCallback(async () => {
+    try {
+      const r = await api.recordDiscard();
+      stopPolling();
+      setRecording(false);
+      setRecPhase("");
+      setCapturedSteps(0);
+      setSetupDiscarded(0);
+      setNarrationChunks(0);
+      setLiveLines([]);
+      setLiveSteps([]);
+      setLivePaused(false);
+      setLiveError("");
+      recFlowRef.current = "";
+      ok(`Recording discarded${r.steps_dropped ? ` (${r.steps_dropped} steps dropped)` : ""}. Nothing was saved — start again when ready.`);
+    } catch (e) {
+      err(errText(e));
+    }
+  }, [err, ok]);
 
   const poll = useCallback(async () => {
     try {
@@ -173,15 +842,64 @@ export function Flows() {
       setCapturedSteps(s.steps ?? 0);
       setRecNarrating(!!s.narrate);
       setNarrationChunks(s.narration_chunks ?? 0);
+      setLiveLines(s.live_transcript ?? []);
+      setLiveSteps(s.live_steps ?? []);
+      setLivePaused(!!s.paused);
+      setLiveError(s.live_error ?? "");
+      if (s.flow_id) recFlowRef.current = s.flow_id;
+      if (s.needs_merge && !mergingRef.current) {
+        mergingRef.current = true;
+        ok("Studio stopped — saving flow…");
+        try {
+          await stopRecord();
+        } finally {
+          mergingRef.current = false;
+        }
+        return;
+      }
       if (!active) {
         if (s.error?.trim()) err(s.error.trim());
+        setRecording(false);
+        setRecPhase("");
         stopPolling();
-        load();
+        void load();
+        // Stopped from the capture-page toolbar: show the saved script now.
+        setScriptDirty(false);
+        if (recFlowRef.current) setScriptOpen(recFlowRef.current);
+        setScriptReload((n) => n + 1);
+        if (s.done && (s.steps ?? 0) > 0) ok(`Recording saved as draft (${s.steps} steps). Script is open below.`);
       }
     } catch (e) {
       err(errText(e));
     }
-  }, [err, load]);
+  }, [err, load, ok, stopRecord]);
+
+  // Resume poll if a session is already running (refresh / tab switch).
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = await api.recordStatus();
+        if (cancelled || !isRecording(s)) return;
+        setRecording(true);
+        setRecPhase(s.phase || "");
+        setSetupDiscarded(s.setup_discarded ?? 0);
+        setCapturedSteps(s.steps ?? 0);
+        setRecNarrating(!!s.narrate);
+        setNarrationChunks(s.narration_chunks ?? 0);
+        if (timer.current === null) {
+          timer.current = window.setInterval(() => {
+            void poll();
+          }, 1000);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [poll]);
 
   const startRecord = async () => {
     if (!recUrl.trim()) return err("Enter your product start URL.");
@@ -192,6 +910,8 @@ export function Flows() {
     const target = recordFlows.find((f) => f.flow_id === recTargetFlowId);
     const flowName =
       recSaveMode === "update" ? target?.name || recTargetFlowId : recName.trim();
+    // Open before the await so the browser treats this as a user click.
+    const popup = window.open("about:blank", "navigator-record");
     try {
       const r = await api.recordStart(recUrl.trim(), flowName, {
         narrate: recNarrate,
@@ -199,6 +919,13 @@ export function Flows() {
         target_flow_id: recSaveMode === "update" ? recTargetFlowId : undefined,
         target_flow_name: recSaveMode === "update" ? flowName : undefined,
       });
+      if (r.open_url && popup) {
+        popup.location.href = new URL(r.open_url, window.location.origin).href;
+      } else if (r.open_url && !popup) {
+        err("Browser blocked the product window. Allow popups, click Stop, then Start setup again.");
+      } else {
+        popup?.close();
+      }
       setRecording(true);
       setRecPhase("setup");
       setSetupDiscarded(0);
@@ -206,17 +933,22 @@ export function Flows() {
       setRecNarrating(!!r.narrate);
       setNarrationChunks(0);
       stopPolling();
-      timer.current = window.setInterval(poll, 1500);
-      ok(
+      timer.current = window.setInterval(() => {
+        void poll();
+      }, 1000);
+      const base =
         recSaveMode === "update"
-          ? recNarrate
-            ? `Setup — replacing ${flowName}. Click Narrate (top-right in browser) when ready.`
-            : `Setup — replacing ${flowName}. Log in, then Start capturing.`
-          : recNarrate
-            ? "Setup — log in, then Start capturing. Click Narrate (top-right in browser) to speak while you click."
-            : "Setup — log in and navigate to where the flow should begin, then Start capturing.",
+          ? `Setup — replacing ${flowName}. Log in in the product window, then Start capturing.`
+          : "Setup — log in in the product window, then Start capturing. Stop saves the flow.";
+      ok(
+        r.browser === "local"
+          ? `${base} Chrome opens on this computer.`
+          : r.browser === "client"
+            ? `${base} The product window is in this browser.`
+            : base,
       );
     } catch (e) {
+      popup?.close();
       err(errText(e));
     }
   };
@@ -224,37 +956,12 @@ export function Flows() {
   const startCapture = async () => {
     try {
       const r = await api.recordCapture();
-      setRecPhase(r.phase);
+      setRecPhase(r.phase || "capturing");
       setSetupDiscarded(r.setup_discarded);
       setCapturedSteps(r.steps);
       ok(
-        `Capturing — ${r.setup_discarded} setup action${r.setup_discarded === 1 ? "" : "s"} ignored.`,
+        `Capturing live — ${r.setup_discarded} setup action${r.setup_discarded === 1 ? "" : "s"} ignored. Same as Chrome studio button.`,
       );
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const stopRecord = async () => {
-    try {
-      const r = await api.recordStop();
-      setRecording(false);
-      setRecPhase("");
-      stopPolling();
-      await load();
-      const flagged = r.flagged?.length ?? 0;
-      const narrated = r.narrated_steps ?? 0;
-      const base = r.error
-        ? `Stopped with error: ${r.error}`
-        : `Recorded ${r.steps} steps.`;
-      const extra =
-        (flagged > 0
-          ? ` Dropped ${flagged} login step${flagged === 1 ? "" : "s"} (re-record after login if unexpected).`
-          : "") +
-        (narrated > 0
-          ? ` Narration aligned to ${narrated} step${narrated === 1 ? "" : "s"}.`
-          : "");
-      ok(base + extra);
     } catch (e) {
       err(errText(e));
     }
@@ -273,6 +980,45 @@ export function Flows() {
 
   const patch = (i: number, key: keyof Flow, value: string) =>
     setRows((prev) => prev?.map((f, n) => (n === i ? { ...f, [key]: value } : f)) ?? prev);
+
+  const editScriptLine = (id: string, spoken: string) => {
+    setScriptBeats(
+      (prev) =>
+        prev?.map((b) =>
+          b.id === id ? { ...b, spoken, spoken_source: "manual" } : b,
+        ) ?? prev,
+    );
+    setScriptDirty(true);
+  };
+
+  const retranscribe = async (flowId: string) => {
+    setRetranscribing(flowId);
+    try {
+      const r = await api.recordRetranscribe(flowId);
+      setScriptDirty(false);
+      setScriptReload((n) => n + 1);
+      ok(`Re-transcribed into draft — ${r.narrated_steps} step${r.narrated_steps === 1 ? "" : "s"} narrated.`);
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setRetranscribing(null);
+    }
+  };
+
+  const saveScript = async () => {
+    if (!scriptBeats) return;
+    setScriptBusy(true);
+    try {
+      const d = await api.patchDemoScript(scriptBeats);
+      setScriptBeats(d.beats ?? scriptBeats);
+      setScriptDirty(false);
+      ok("Flow script saved to draft.");
+    } catch (e) {
+      err(errText(e));
+    } finally {
+      setScriptBusy(false);
+    }
+  };
 
   const save = async () => {
     if (!rows) return;
@@ -295,10 +1041,7 @@ export function Flows() {
       setRows(playlist);
       applyPlaylist(playlist);
       setStepCount({});
-      const explore = useExploreSession.getState();
-      explore.setTargetFlowId("");
-      explore.setTargetFlowName("");
-      ok("Site graph and demo script cleared — run Auto-Explore to build a new walkthrough.");
+      ok("Site graph and demo script cleared — record a new flow to rebuild.");
     } catch (e) {
       err(errText(e));
     }
@@ -327,11 +1070,6 @@ export function Flows() {
       const playlist = d.playlist ?? [];
       setRows(playlist);
       applyPlaylist(playlist);
-      const explore = useExploreSession.getState();
-      if (explore.targetFlowId === row.flow_id.trim()) {
-        explore.setTargetFlowId("");
-        explore.setTargetFlowName("");
-      }
       ok(`Deleted “${row.name || row.flow_id}” from the draft site graph.`);
     } catch (e) {
       err(errText(e));
@@ -340,11 +1078,17 @@ export function Flows() {
 
   return (
     <motion.div variants={stagger()} initial="hidden" animate="show" className="grid gap-4">
-      <Card>
+      <Card dataCoach="flows-playlist">
         <CardTitle
           hint="Playlist order for guided demos. Top row runs first; demo continues down the list."
           right={
             <div className="flex gap-2">
+              <AiDraftButton
+                onDone={() => {
+                  void load();
+                  setScriptReload((n) => n + 1);
+                }}
+              />
               <Button
                 variant="secondary"
                 onClick={() => setConfirmClearAll(true)}
@@ -369,22 +1113,17 @@ export function Flows() {
 
         <div className="space-y-1.5">
           <AnimatePresence initial={false}>
-            {rows?.map((f, i) => {
-              const flowId = f.flow_id?.trim() ?? "";
-              const isUpdating = !!exploreUpdatingFlowId && flowId === exploreUpdatingFlowId;
-              const rowDisabled = isUpdating;
-              return (
+            {rows?.map((f, i) => (
               <motion.div
                 key={`${f.flow_id || "row"}-${i}`}
                 layout
                 layoutId={`flow-${f.flow_id || i}`}
                 transition={soft}
                 exit={{ opacity: 0, x: -10 }}
-                className={`grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border px-2 py-1.5 ${
-                  rowDisabled ? "opacity-45 pointer-events-none" : ""
-                }`}
+                className="rounded-lg border"
                 style={{ borderColor: "var(--line)" }}
               >
+              <div className="grid grid-cols-[28px_auto_1fr_1fr_1fr_1fr_auto] items-start gap-2 px-2 py-1.5">
                 <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] flex flex-col justify-center">
                   <span>#{i + 1}</span>
                   {f.flow_id && stepCount[f.flow_id] !== undefined && (
@@ -392,10 +1131,10 @@ export function Flows() {
                   )}
                 </span>
                 <span className="flex flex-col pt-5">
-                  <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0 || rowDisabled} className="h-5 px-1 py-0">
+                  <Button variant="ghost" onClick={() => move(i, -1)} disabled={i === 0} className="h-5 px-1 py-0">
                     <ArrowUp size={11} />
                   </Button>
-                  <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === rows.length - 1 || rowDisabled} className="h-5 px-1 py-0">
+                  <Button variant="ghost" onClick={() => move(i, 1)} disabled={i === rows.length - 1} className="h-5 px-1 py-0">
                     <ArrowDown size={11} />
                   </Button>
                 </span>
@@ -404,7 +1143,6 @@ export function Flows() {
                     value={f.name ?? ""}
                     onChange={(v) => patch(i, "name", v)}
                     placeholder="e.g. Login tour"
-                    disabled={rowDisabled}
                   />
                 </FlowFieldCell>
                 <FlowFieldCell label="Page ID">
@@ -412,7 +1150,6 @@ export function Flows() {
                     value={f.page_id ?? ""}
                     onChange={(v) => patch(i, "page_id", v)}
                     placeholder="e.g. home"
-                    disabled={rowDisabled}
                   />
                 </FlowFieldCell>
                 <FlowFieldCell label="Flow ID">
@@ -420,32 +1157,48 @@ export function Flows() {
                     value={f.flow_id ?? ""}
                     onChange={(v) => patch(i, "flow_id", v)}
                     placeholder="e.g. login_flow"
-                    disabled={rowDisabled}
                   />
                 </FlowFieldCell>
-                {isUpdating ? (
-                  <div className="flex items-center self-center pt-4">
-                  <FlowDraftLoader
-                    pct={exploreDraftPct}
-                    label={
-                      exploreIsPersisting(exploreStatus)
-                        ? "Saving explored steps…"
-                        : "Exploring…"
-                    }
-                  />
+                <FlowFieldCell label="Interaction">
+                  <div className="flex items-center gap-1.5">
+                    {(f.asks_visitor_count ?? 0) > 0 && (
+                      <span className="rounded bg-violet-500/15 px-2 py-0.5 text-[0.6rem] font-medium text-violet-700 dark:text-violet-300">
+                        👤 Asks visitor ×{f.asks_visitor_count}
+                      </span>
+                    )}
+                    {(f.reuses_variable_count ?? 0) > 0 && (
+                      <span className="rounded bg-sky-500/15 px-2 py-0.5 text-[0.6rem] font-medium text-sky-700 dark:text-sky-300">
+                        ↩️ Reuses ×{f.reuses_variable_count}
+                      </span>
+                    )}
+                    {(f.asks_visitor_count ?? 0) === 0 && (f.reuses_variable_count ?? 0) === 0 && (
+                      <span className="text-[0.6rem] text-[var(--muted)]">—</span>
+                    )}
                   </div>
-                ) : (
-                <div className="flex items-center self-center pt-4">
+                </FlowFieldCell>
+                <div className="flex flex-col items-center self-center gap-1 pt-4">
+                {!!f.flow_id?.trim() && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      setScriptOpen((cur) => (cur === f.flow_id ? null : f.flow_id));
+                      if (!scriptDirty) setScriptReload((n) => n + 1);
+                    }}
+                    className={`px-1.5 text-[0.68rem] ${
+                      scriptOpen === f.flow_id ? "text-[var(--text)]" : ""
+                    }`}
+                  >
+                    Script
+                  </Button>
+                )}
                 <Button
                   variant="ghost"
                   onClick={() => setConfirmDelete(i)}
                   className="px-1.5 hover:text-red-500"
-                  disabled={rowDisabled}
                 >
                   <Trash2 size={13} />
                 </Button>
                 </div>
-                )}
                 {(f.verdict || f.purpose || (f.tags && f.tags.length > 0)) && (
                   <div className="col-span-6 flex flex-wrap items-center gap-2 px-1 pb-1 text-[0.68rem]">
                     {f.verdict && (
@@ -477,57 +1230,23 @@ export function Flows() {
                     ))}
                   </div>
                 )}
-              </motion.div>
-            );
-            })}
-            {showPendingNewRow && (
-              <motion.div
-                key="explore-pending-new-flow"
-                layout
-                initial={{ opacity: 0, y: 6 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="grid grid-cols-[28px_auto_1fr_1fr_1fr_auto] items-start gap-2 rounded-lg border border-dashed px-2 py-1.5 opacity-45"
-                style={{ borderColor: "var(--line)" }}
-              >
-                <span className="text-center font-mono text-[0.72rem] text-[var(--muted)] pt-5">
-                  …
-                </span>
-                <span />
-                <FlowFieldCell label="Name">
-                  <Input
-                    value={pendingNewFlowName}
-                    onChange={() => {}}
-                    placeholder="e.g. Login tour"
-                    disabled
-                  />
-                </FlowFieldCell>
-                <FlowFieldCell label="Page ID">
-                  <Input value="main" onChange={() => {}} placeholder="e.g. home" disabled />
-                </FlowFieldCell>
-                <FlowFieldCell label="Flow ID">
-                  <Input
-                    value={
-                      exploreIsPersisting(exploreStatus)
-                        ? "assigning…"
-                        : "exploring…"
-                    }
-                    onChange={() => {}}
-                    placeholder="e.g. login_flow"
-                    disabled
-                  />
-                </FlowFieldCell>
-                <div className="flex items-center self-center pt-4">
-                <FlowDraftLoader
-                  pct={exploreDraftPct}
-                  label={
-                    exploreIsPersisting(exploreStatus)
-                      ? "Creating flow draft…"
-                      : "Exploring product…"
-                  }
+              </div>
+              {scriptOpen === f.flow_id && !!f.flow_id?.trim() && (
+                <FlowScriptEditor
+                  flowId={f.flow_id}
+                  beats={scriptBeats ?? []}
+                  onChange={editScriptLine}
+                  onSave={() => void saveScript()}
+                  dirty={scriptDirty}
+                  busy={scriptBusy}
+                  status={narrationStatus[f.flow_id]}
+                  retranscribing={retranscribing === f.flow_id}
+                  onRetranscribe={() => void retranscribe(f.flow_id)}
+                  onReload={() => setScriptReload((n) => n + 1)}
                 />
-                </div>
+              )}
               </motion.div>
-            )}
+            ))}
           </AnimatePresence>
         </div>
       </Card>
@@ -546,7 +1265,7 @@ export function Flows() {
       {confirmClearAll && (
         <ConfirmDialog
           title="Clear all flows?"
-          message="Resets the draft site graph to a minimal empty shell and clears the demo script. Persona and product URL stay. Run Auto-Explore to build a new walkthrough."
+          message="Resets the draft site graph to a minimal empty shell and clears the demo script. Persona and product URL stay. Record a new flow to rebuild."
           confirmLabel="Clear all"
           danger
           onConfirm={() => {
@@ -555,8 +1274,27 @@ export function Flows() {
           onCancel={() => setConfirmClearAll(false)}
         />
       )}
+      {confirmSaveStop && (
+        <ConfirmDialog
+          title="Save recorded flow?"
+          message={`Stop recording and save to Demo flows${
+            capturedSteps > 0 ? ` (${capturedSteps} step${capturedSteps === 1 ? "" : "s"} so far)` : ""
+          }? The flow name will appear in the list above.`}
+          confirmLabel="Save flow"
+          onConfirm={() => {
+            setConfirmSaveStop(false);
+            void stopRecord();
+          }}
+          onCancel={() => setConfirmSaveStop(false)}
+          extraLabel="Discard"
+          onExtra={() => {
+            setConfirmSaveStop(false);
+            void discardRecord();
+          }}
+        />
+      )}
 
-      <Card>
+      <Card dataCoach="flows-record">
         <CardTitle
           hint="Opens a browser, records clicks, and saves a new flow or replaces an existing one in place."
           right={<StatusPill status={recording ? "recording" : "idle"} />}
@@ -643,7 +1381,7 @@ export function Flows() {
           onChange={setRecNarrate}
           disabled={recording}
           label="Narrate while recording"
-          description="Mic widget in browser (top-right): language, translate, record/pause/play. Script is cleaned and grammar-fixed when you stop."
+          description="Mic starts with capture. After Stop, open Script on the flow row to edit the spoken lines."
         />
         <div className="flex flex-wrap gap-2">
           <Button onClick={startRecord} disabled={recording}>
@@ -651,11 +1389,15 @@ export function Flows() {
           </Button>
           <Button
             onClick={startCapture}
-            disabled={!recording || recPhase === "capturing"}
+            disabled={!recording || recPhase === "capturing" || recPhase === "stopping"}
           >
             Start capturing this flow
           </Button>
-          <Button variant="danger" onClick={stopRecord} disabled={!recording}>
+          <Button
+            variant="danger"
+            onClick={() => setConfirmSaveStop(true)}
+            disabled={!recording}
+          >
             <Square size={13} /> Stop
           </Button>
         </div>
@@ -667,7 +1409,7 @@ export function Flows() {
                 Setup
               </div>
               <div className="h-[2px] flex-1 mx-3 bg-black/10 dark:bg-white/10" />
-              <div className={`flex items-center gap-2 ${recPhase === "capturing" ? "text-emerald-500" : "text-[var(--muted)]"}`}>
+              <div className={`flex items-center gap-2 ${recPhase === "capturing" || recPhase === "stopping" ? "text-emerald-500" : "text-[var(--muted)]"}`}>
                 <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-current">2</div>
                 Capturing
               </div>
@@ -675,24 +1417,56 @@ export function Flows() {
             <div className="space-y-2">
               <BarLoader
                 label={
-                  recPhase === "capturing"
-                    ? `Recording — ${capturedSteps} step${capturedSteps === 1 ? "" : "s"} captured`
-                    : `Setup — ${setupDiscarded} action${setupDiscarded === 1 ? "" : "s"} ignored`
+                  recPhase === "stopping"
+                    ? "Stopping — saving flow…"
+                    : recPhase === "capturing"
+                      ? `Capturing live — ${capturedSteps} step${capturedSteps === 1 ? "" : "s"}`
+                      : `Setup — ${setupDiscarded} action${setupDiscarded === 1 ? "" : "s"} ignored (not saved yet)`
                 }
               />
               <p className="text-[0.72rem] text-[var(--muted)] leading-relaxed">
-                {recPhase === "capturing"
-                  ? recNarrating
-                    ? "Only actions from this point are saved. Click Narrate in the browser (top-right) to record your voice."
-                    : recSaveMode === "update"
-                      ? "New recording replaces the selected flow from this point."
-                      : "Only actions from this point are saved as the flow."
-                  : recNarrating
-                    ? "Log in and get to the starting screen. Use the Narrate widget in the browser when you begin capturing."
-                    : recSaveMode === "update"
-                      ? "Log in and navigate to where the new walkthrough should begin. Old steps are discarded on stop."
-                      : "Log in and get to the flow’s starting screen. Nothing is saved yet."}
+                {recPhase === "stopping"
+                  ? "Saving into your draft site graph. You can close the product window."
+                  : recPhase === "capturing"
+                    ? "Capturing is live in the product window in this browser. Stop when the flow is done."
+                    : "Product window is in this browser. Log in, then Start capturing. Live demos still use the server Chrome."}
               </p>
+              {recording && (
+                <div className="mt-2 rounded-lg border px-3 py-2" style={{ borderColor: "var(--line)" }}>
+                  <p className="mb-1 flex items-center gap-2 text-[0.62rem] font-medium uppercase tracking-[0.04em] text-[var(--muted)]">
+                    <span
+                      className={`inline-block h-2 w-2 rounded-full ${livePaused ? "bg-amber-500" : "animate-pulse bg-rose-500"}`}
+                    />
+                    Live script {livePaused ? "· paused" : ""} · {liveSteps.length} step{liveSteps.length === 1 ? "" : "s"}
+                  </p>
+                  {liveSteps.length === 0 && liveLines.length === 0 ? (
+                    <p className="text-[0.72rem] text-[var(--muted)]">
+                      Waiting for clicks and narration on the capture page…
+                    </p>
+                  ) : (
+                    <ol className="max-h-56 space-y-1 overflow-auto text-[0.75rem]">
+                      {[
+                        ...liveSteps.map((st) => ({ at: st.at_ms, key: `s${st.index}`, step: st, text: "" })),
+                        ...liveLines.map((l, i) => ({ at: l.at_ms, key: `l${i}`, step: null, text: l.text })),
+                      ]
+                        .sort((a, b) => a.at - b.at)
+                        .map((row) =>
+                          row.step ? (
+                            <li key={row.key} className="font-medium">
+                              Step {row.step.index + 1} · {row.step.label || row.step.tool}
+                            </li>
+                          ) : (
+                            <li key={row.key} className="pl-3 italic text-[var(--muted)]">“{row.text}”</li>
+                          ),
+                        )}
+                    </ol>
+                  )}
+                  {liveError && <p className="mt-1 text-[0.68rem] text-amber-600">{liveError}</p>}
+                  <p className="mt-1 text-[0.62rem] text-[var(--muted)]">
+                    Preview — after Stop the saved script opens below for editing.
+                  </p>
+                </div>
+              )}
               {recNarrating && narrationChunks > 0 && (
                 <p className="text-[0.72rem] text-emerald-600 dark:text-emerald-400">
                   Voice captured — {narrationChunks} audio chunk{narrationChunks === 1 ? "" : "s"}.
@@ -702,898 +1476,6 @@ export function Flows() {
           </div>
         )}
       </Card>
-
-      <AutoExplore onFinished={load} />
     </motion.div>
-  );
-}
-
-/** The second flow-creation path. Same review gate, no human walkthrough. */
-function ExploreMeter({
-  running,
-  elapsedS,
-  progressPct,
-  steps,
-  pages,
-  maxPages,
-}: {
-  running: boolean;
-  elapsedS: number;
-  progressPct: number;
-  steps: number;
-  maxSteps?: number;
-  pages: number;
-  maxPages: number;
-}) {
-  const pct = Math.min(100, Math.max(0, Math.round(progressPct)));
-  const radius = 34;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - pct / 100);
-
-  return (
-    <div
-      className="mt-4 grid gap-3 rounded-xl border p-4 sm:grid-cols-[auto_1fr]"
-      style={{
-        borderColor: "var(--line)",
-        background:
-          "linear-gradient(135deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%)",
-      }}
-    >
-      <div className="relative mx-auto flex h-[88px] w-[88px] items-center justify-center">
-        <svg width="88" height="88" viewBox="0 0 88 88" className="-rotate-90">
-          <circle
-            cx="44"
-            cy="44"
-            r={radius}
-            fill="none"
-            stroke="var(--line)"
-            strokeWidth="7"
-          />
-          <motion.circle
-            cx="44"
-            cy="44"
-            r={radius}
-            fill="none"
-            stroke="var(--accent)"
-            strokeWidth="7"
-            strokeLinecap="round"
-            strokeDasharray={circumference}
-            animate={{ strokeDashoffset: offset }}
-            transition={{ type: "spring", stiffness: 90, damping: 18 }}
-          />
-        </svg>
-        <div className="absolute inset-0 flex flex-col items-center justify-center">
-          <span className="text-[1.15rem] font-semibold tracking-tight tabular-nums">
-            {pct}%
-          </span>
-          <span className="text-[0.62rem] uppercase tracking-[0.08em] text-[var(--muted)]">
-            explored
-          </span>
-        </div>
-      </div>
-
-      <div className="flex min-w-0 flex-col justify-center gap-3">
-        <div className="flex flex-wrap items-end justify-between gap-2">
-          <div>
-            <p className="flex items-center gap-1.5 text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
-              <Clock size={12} />
-              Time elapsed
-            </p>
-            <p className="mt-0.5 font-mono text-[1.35rem] font-semibold tracking-tight tabular-nums">
-              {formatExploreElapsed(elapsedS)}
-              {running && (
-                <span className="ml-2 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--accent)] align-middle" />
-              )}
-            </p>
-          </div>
-          <p className="text-[0.7rem] text-[var(--muted)]">
-            {running ? "Live budget progress" : "Final coverage"}
-          </p>
-        </div>
-
-        <div>
-          <div className="mb-1 flex justify-between text-[0.68rem] text-[var(--muted)]">
-            <span>
-              {pages}/{maxPages} pages in demo
-            </span>
-            <span>
-              {steps} demo step{steps === 1 ? "" : "s"}
-            </span>
-          </div>
-          <div
-            className="h-2 overflow-hidden rounded-full"
-            style={{ background: "color-mix(in oklab, var(--line) 80%, transparent)" }}
-          >
-            <motion.div
-              className="h-full rounded-full bg-[var(--accent)]"
-              initial={false}
-              animate={{ width: `${pct}%` }}
-              transition={{ type: "spring", stiffness: 90, damping: 18 }}
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ExplorePlanBanner({
-  saveMode,
-  flowName,
-  flowId,
-  baseUrl,
-  hasCredentials,
-  phase,
-}: {
-  saveMode: "new" | "update";
-  flowName: string;
-  flowId: string;
-  baseUrl: string;
-  hasCredentials?: boolean;
-  phase?: string;
-}) {
-  const modeLabel =
-    saveMode === "update"
-      ? `Update existing · ${flowName || flowId || "selected flow"}`
-      : "Create new flow · unpublished draft";
-
-  return (
-    <div
-      className="mb-3 rounded-lg border px-3 py-2.5"
-      style={{
-        borderColor: "var(--line)",
-        background: "color-mix(in oklab, var(--accent) 6%, transparent)",
-      }}
-    >
-      <p className="text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
-        Explore options
-      </p>
-      <ul className="mt-1.5 space-y-1 text-[0.78rem] leading-snug">
-        <li>
-          <span className="text-[var(--muted)]">Save as · </span>
-          <span className="font-medium">{modeLabel}</span>
-          {saveMode === "update" && flowId && (
-            <span className="ml-1 font-mono text-[0.68rem] text-[var(--muted)]">
-              ({flowId})
-            </span>
-          )}
-        </li>
-        <li>
-          <span className="text-[var(--muted)]">URL · </span>
-          <span className="break-all font-mono text-[0.72rem]">
-            {baseUrl.trim() || "Product Login URL (default)"}
-          </span>
-        </li>
-        <li>
-          <span className="text-[var(--muted)]">Login · </span>
-          {hasCredentials ? "stored Product Login" : "signed-out pages only"}
-        </li>
-        {phase && (
-          <li>
-            <span className="text-[var(--muted)]">Phase · </span>
-            <span className="font-medium">{phase}</span>
-          </li>
-        )}
-      </ul>
-    </div>
-  );
-}
-
-function AutoExplore({ onFinished }: { onFinished: () => void }) {
-  const { ok, err } = useUi();
-  const status = useExploreSession((s) => s.status);
-  const events = useExploreSession((s) => s.events);
-  const question = useExploreSession((s) => s.question);
-  const answer = useExploreSession((s) => s.answer);
-  const baseUrl = useExploreSession((s) => s.baseUrl);
-  const saveMode = useExploreSession((s) => s.saveMode);
-  const targetFlowId = useExploreSession((s) => s.targetFlowId);
-  const targetFlowName = useExploreSession((s) => s.targetFlowName);
-  const exploreElapsed = useExploreElapsed();
-  const showMeter = useExploreSession((s) => s.showMeter);
-  const setBaseUrl = useExploreSession((s) => s.setBaseUrl);
-  const setAnswer = useExploreSession((s) => s.setAnswer);
-  const setSaveMode = useExploreSession((s) => s.setSaveMode);
-  const setTargetFlowId = useExploreSession((s) => s.setTargetFlowId);
-  const setTargetFlowName = useExploreSession((s) => s.setTargetFlowName);
-  const newFlowName = useExploreSession((s) => s.newFlowName);
-  const focusHint = useExploreSession((s) => s.focusHint);
-  const setNewFlowName = useExploreSession((s) => s.setNewFlowName);
-  const setFocusHint = useExploreSession((s) => s.setFocusHint);
-  const setOnFlowDrafted = useExploreSession((s) => s.setOnFlowDrafted);
-  const hydrate = useExploreSession((s) => s.hydrate);
-  const syncProductUrl = useExploreSession((s) => s.syncProductUrl);
-  const startExplore = useExploreSession((s) => s.start);
-  const stopExplore = useExploreSession((s) => s.stop);
-  const replyExplore = useExploreSession((s) => s.reply);
-  const dismissResult = useExploreSession((s) => s.dismissResult);
-  const logEnd = useRef<HTMLDivElement | null>(null);
-  const logScrollRef = useRef<HTMLDivElement | null>(null);
-  const pinnedToBottom = useRef(true);
-  const flows = useProductData((s) => s.playlist).filter((f) => !!f.flow_id?.trim());
-  const epoch = useProductData((s) => s.epoch);
-
-  useEffect(() => {
-    setOnFlowDrafted(onFinished);
-    return () => setOnFlowDrafted(null);
-  }, [onFinished, setOnFlowDrafted]);
-
-  useEffect(() => {
-    void hydrate();
-  }, [hydrate]);
-
-  useEffect(() => {
-    void syncProductUrl();
-  }, [epoch, syncProductUrl]);
-
-  useEffect(() => {
-    if (!targetFlowId) return;
-    if (flows.some((f) => f.flow_id === targetFlowId)) return;
-    setTargetFlowId("");
-    setTargetFlowName("");
-  }, [flows, targetFlowId, setTargetFlowId, setTargetFlowName]);
-
-  useEffect(() => {
-    if (!pinnedToBottom.current) return;
-    const el = logScrollRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [events.length]);
-
-  const onLogScroll = () => {
-    const el = logScrollRef.current;
-    if (!el) return;
-    pinnedToBottom.current =
-      el.scrollHeight - el.scrollTop - el.clientHeight <= 24;
-  };
-
-  const start = async () => {
-    try {
-      pinnedToBottom.current = true;
-      const picked = flows.find((f) => f.flow_id === targetFlowId);
-      await startExplore({ targetFlowName: picked?.name });
-      ok(
-        saveMode === "update"
-          ? "Exploring — will overwrite the selected flow draft when done."
-          : "Exploring — will create a new flow draft when done.",
-      );
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const stop = async () => {
-    try {
-      await stopExplore();
-      ok("Stopping — the steps found so far are saved as a draft.");
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const reply = async (skip: boolean) => {
-    try {
-      await replyExplore(skip);
-    } catch (e) {
-      err(errText(e));
-    }
-  };
-
-  const running = exploreIsLive({ status, showMeter });
-  const finished = exploreIsTerminal(status.phase);
-  const flagged = status.flagged ?? [];
-  const visitedPaths = status.visited_paths ?? [];
-  const fieldDecisions = status.field_decisions ?? [];
-  const liveInputFields = fieldDecisions.filter(
-    (d) => d.classification === "business_specific",
-  );
-  const progressPct = exploreDraftProgressPct(status);
-  const maxPages = status.budget?.max_pages ?? 25;
-  const planMode = (status.save_mode === "update" ? "update" : saveMode) as
-    | "new"
-    | "update";
-  const planFlowId = status.target_flow_id || targetFlowId;
-  const planFlowName =
-    status.target_flow_name ||
-    status.new_flow_name ||
-    targetFlowName ||
-    (planMode === "new" ? newFlowName : "") ||
-    planFlowId;
-  const resultFlowId = status.flow_id || (planMode === "update" ? planFlowId : "");
-  const resultFlowName =
-    status.target_flow_name ||
-    status.new_flow_name ||
-    newFlowName ||
-    targetFlowName ||
-    flows.find((f) => f.flow_id === resultFlowId)?.name ||
-    resultFlowId;
-  const logLines = events.filter(
-    (e) =>
-      e.type === "log" ||
-      e.type === "flagged" ||
-      e.type === "field" ||
-      e.type === "explored" ||
-      e.type === "repair",
-  );
-  const exploreErrors = (() => {
-    const msgs: string[] = [];
-    if (status.error?.trim()) msgs.push(status.error.trim());
-    for (const e of events) {
-      if (e.type === "error" && e.msg) msgs.push(String(e.msg).trim());
-    }
-    return [...new Set(msgs.filter(Boolean))];
-  })();
-  const exploreWarnings = (() => {
-    const benign =
-      /repairs exhausted|no answer for .* within|skipping field|off-surface URL/i;
-    const msgs: string[] = [];
-    for (const e of events) {
-      if (e.type === "log" && e.level === "warn" && e.msg) {
-        const m = String(e.msg).trim();
-        if (m && !benign.test(m)) msgs.push(m);
-      }
-    }
-    const softBenign = events
-      .filter(
-        (e) =>
-          e.type === "log" &&
-          e.level === "warn" &&
-          e.msg &&
-          benign.test(String(e.msg)),
-      )
-      .map((e) => String(e.msg).trim());
-    if (softBenign.length > 0 && exploreErrors.length === 0) {
-      msgs.push(
-        `${softBenign.length} step(s) needed extra retries (normal on complex UIs)`,
-      );
-    }
-    return [...new Set(msgs.filter(Boolean))];
-  })();
-  const hasResult =
-    finished &&
-    (showMeter ||
-      (status.steps ?? 0) > 0 ||
-      !!status.flow_id ||
-      logLines.length > 0 ||
-      visitedPaths.length > 0 ||
-      exploreErrors.length > 0 ||
-      exploreWarnings.length > 0);
-
-  const pillStatus = running
-    ? question
-      ? "starting"
-      : "running"
-    : finished
-      ? status.phase === "failed"
-        ? "failed"
-        : "finished"
-      : "idle";
-  const pillLabel = running
-    ? question
-      ? "Waiting on you"
-      : undefined
-    : finished
-      ? status.phase === "stopped"
-        ? "Stopped"
-        : status.phase === "failed"
-          ? "Failed"
-          : "Completed"
-      : undefined;
-
-  return (
-    <Card>
-      <CardTitle
-        hint="Explores your product, maps pages, then drafts a clean demo walkthrough (one step per new page — no backtrack noise). Nothing is activated until you review it."
-        right={
-          <StatusPill status={pillStatus} label={pillLabel} />
-        }
-      >
-        Auto-Explore &amp; Generate Flow
-      </CardTitle>
-
-      <div className="grid gap-x-3 sm:grid-cols-2">
-        <Field label="Product URL">
-          <Input
-            value={baseUrl}
-            onChange={setBaseUrl}
-            placeholder="Filled from Product Login / Domain — editable"
-          />
-        </Field>
-        <Field label="Credentials">
-          <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
-            {status.has_credentials
-              ? "Using your saved Product Login. No credentials are entered here."
-              : "No Product Login saved — only your signed-out pages will be explored."}
-          </p>
-        </Field>
-      </div>
-
-      <div className="mt-1 grid gap-3 sm:grid-cols-2">
-        <Field label="Save result as">
-          <div
-            className="flex rounded-lg border p-0.5"
-            style={{ borderColor: "var(--line)" }}
-          >
-            <button
-              type="button"
-              disabled={running}
-              onClick={() => setSaveMode("new")}
-              className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
-                saveMode === "new"
-                  ? "bg-[var(--text)] text-[var(--bg)]"
-                  : "text-[var(--muted)] hover:text-[var(--text)]"
-              }`}
-            >
-              Create new flow
-            </button>
-            <button
-              type="button"
-              disabled={running}
-              onClick={() => setSaveMode("update")}
-              className={`flex-1 rounded-md px-2.5 py-1.5 text-[0.75rem] font-medium transition ${
-                saveMode === "update"
-                  ? "bg-[var(--text)] text-[var(--bg)]"
-                  : "text-[var(--muted)] hover:text-[var(--text)]"
-              }`}
-            >
-              Update existing
-            </button>
-          </div>
-        </Field>
-        {saveMode === "update" ? (
-          <Field label="Flow to overwrite">
-            <Select
-              disabled={running || flows.length === 0}
-              value={targetFlowId}
-              onChange={(id) => {
-                setTargetFlowId(id);
-                const hit = flows.find((f) => f.flow_id === id);
-                setTargetFlowName(hit?.name || "");
-              }}
-              options={[
-                { value: "", label: "Select a flow…" },
-                ...flows.map((f) => ({
-                  value: f.flow_id,
-                  label: f.name || f.flow_id,
-                })),
-              ]}
-            />
-            {flows.length === 0 && (
-              <p className="mt-1 text-[0.68rem] text-[var(--muted)]">
-                No flows yet — create new first.
-              </p>
-            )}
-          </Field>
-        ) : (
-          <Field label="New flow name">
-            <Input
-              value={newFlowName}
-              onChange={setNewFlowName}
-              disabled={running}
-              placeholder="e.g. Inbox walkthrough, Billing demo"
-            />
-          </Field>
-        )}
-      </div>
-
-      <div className="mt-1 grid gap-3 sm:grid-cols-2">
-        <Field label="Focus area (optional)">
-          <Input
-            value={focusHint}
-            onChange={setFocusHint}
-            disabled={running}
-            placeholder="Tab or feature name — e.g. Meta accounts, Campaigns"
-          />
-        </Field>
-        <Field label="Demo draft rules">
-          <p className="text-[0.72rem] leading-relaxed text-[var(--muted)] py-1.5">
-            Only first visit per page becomes a demo step. Extra clicks still map
-            the site but stay out of the walkthrough. Business-specific form fields
-            are saved as live-input beats (demo asks your visitor).
-          </p>
-        </Field>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        <Button onClick={start} disabled={running}>
-          <Compass size={13} /> Start exploring
-        </Button>
-        <Button variant="danger" onClick={stop} disabled={!running}>
-          <Square size={13} /> Stop exploring
-        </Button>
-      </div>
-
-      {running && (
-        <>
-          <div className="mt-4">
-            <ExplorePlanBanner
-              saveMode={planMode}
-              flowName={planFlowName}
-              flowId={planFlowId}
-              baseUrl={baseUrl}
-              hasCredentials={status.has_credentials}
-              phase={status.phase}
-            />
-          </div>
-          <ExploreMeter
-            running={running}
-            elapsedS={exploreElapsed}
-            progressPct={progressPct}
-            steps={status.steps ?? 0}
-            pages={status.visited ?? 0}
-            maxPages={maxPages}
-          />
-
-          {question && (
-            <div
-              className="mt-4 rounded-xl border-2 border-amber-500/60 p-4"
-              style={{ background: "rgb(245 158 11 / 0.06)" }}
-            >
-              <p className="text-[0.78rem] font-medium tracking-tight">Waiting on your input</p>
-              <p className="mt-1 text-[0.8rem]">{question.prompt}</p>
-              <p className="mt-0.5 text-[0.7rem] text-[var(--muted)]">
-                Field <code>{question.alias}</code>
-                {question.context?.url ? ` on ${question.context.url}` : ""}
-              </p>
-              <div className="mt-3 flex flex-wrap items-center gap-2">
-                <Input value={answer} onChange={setAnswer} placeholder="Your answer" />
-                <Button onClick={() => reply(false)} disabled={!answer.trim()}>
-                  Answer &amp; resume
-                </Button>
-                <Button variant="secondary" onClick={() => reply(true)}>
-                  Skip this field
-                </Button>
-              </div>
-            </div>
-          )}
-
-          <ExploreWatch live={running} />
-
-          <div
-            className="mt-4 rounded-xl border p-4 bg-black/[0.015] dark:bg-white/[0.015]"
-            style={{ borderColor: "var(--line)" }}
-          >
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <p className="text-[0.78rem] font-medium tracking-tight">Exploration log</p>
-              <Button variant="danger" onClick={stop}>
-                <Square size={12} /> Stop
-              </Button>
-            </div>
-            <BarLoader
-              label={`${status.phase ?? "exploring"} — ${
-                planMode === "update"
-                  ? `updating “${planFlowName || planFlowId}”`
-                  : "creating new flow"
-              }`}
-            />
-            {visitedPaths.length > 0 && (
-              <div className="mt-3">
-                <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages explored</p>
-                <ul className="mt-1 space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
-                  {visitedPaths.map((p) => (
-                    <li key={p}>• {p}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            <div
-              ref={logScrollRef}
-              onScroll={onLogScroll}
-              className="mt-3 max-h-72 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] leading-relaxed"
-            >
-              {logLines.length === 0 && (
-                <div className="text-[var(--muted)]">Waiting for explorer events…</div>
-              )}
-              {logLines.map((e, i) => (
-                <div
-                  key={i}
-                  className={
-                    e.type === "flagged"
-                      ? "text-amber-600 dark:text-amber-400"
-                      : e.type === "repair"
-                        ? e.ok
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : "text-violet-600 dark:text-violet-400"
-                        : e.type === "explored"
-                          ? "text-sky-600 dark:text-sky-400"
-                          : e.level === "warn"
-                            ? "text-red-500"
-                            : "text-[var(--muted)]"
-                  }
-                >
-                  {e.type === "flagged"
-                    ? `skipped "${e.label}" — ${e.reason}`
-                    : e.type === "field"
-                      ? `filled ${e.alias} (${e.classification})`
-                      : e.type === "repair"
-                        ? e.ok
-                          ? `repaired ${String(e.alias ?? "")} via ${
-                              Array.isArray(e.tactics) ? e.tactics.join(" → ") : "ladder"
-                            }`
-                          : `repairing ${String(e.alias ?? "")} (${String(e.kind ?? "?")})`
-                        : e.type === "explored"
-                          ? `page ${String(e.path ?? e.url ?? "")} (${e.elements ?? "?"} controls)`
-                          : String(e.msg ?? "")}
-                </div>
-              ))}
-              <div ref={logEnd} />
-            </div>
-          </div>
-
-          {flagged.length > 0 && (
-            <div className="mt-4">
-              <p className="flex items-center gap-1.5 text-[0.78rem] font-medium tracking-tight">
-                <ShieldAlert size={14} className="text-amber-500" />
-                Skipped — needs your review ({flagged.length})
-              </p>
-              <p className="mt-1 text-[0.7rem] text-[var(--muted)]">
-                Safety gate blocked these. <strong>Allow</strong> lets the bot click
-                on this explore; <strong>Dismiss</strong> hides without clicking.
-              </p>
-              <div className="mt-2 space-y-2">
-                {flagged.map((f, i) => (
-                  <FlaggedReviewRow
-                    key={`${f.selector}-${f.label}-${i}`}
-                    item={f}
-                    live={running}
-                    onDone={() => void useExploreSession.getState().refresh()}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
-        </>
-      )}
-
-      {hasResult && !running && (
-        <div
-          className="mt-4 rounded-xl border p-4"
-          style={{
-            borderColor: "var(--line)",
-            background:
-              "linear-gradient(135deg, color-mix(in oklab, var(--accent) 8%, transparent), transparent 70%)",
-          }}
-        >
-          <div className="flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <p className="text-[0.7rem] font-medium uppercase tracking-[0.06em] text-[var(--muted)]">
-                {status.phase === "failed"
-                  ? "Explore failed"
-                  : status.phase === "stopped"
-                    ? "Explore stopped"
-                    : "Explore completed"}
-              </p>
-              <p className="mt-1 text-[0.95rem] font-semibold tracking-tight">
-                {resultFlowId
-                  ? `Draft flow · ${resultFlowName || resultFlowId}`
-                  : (status.steps ?? 0) > 0
-                    ? "Saving draft…"
-                    : "No demo steps captured"}
-              </p>
-            </div>
-            <Button variant="secondary" onClick={() => dismissResult()}>
-              Clear
-            </Button>
-          </div>
-          <ul className="mt-3 space-y-1 text-[0.78rem] leading-snug">
-            {resultFlowId && (
-              <li>
-                <span className="text-[var(--muted)]">Flow id · </span>
-                <span className="font-mono text-[0.72rem]">{resultFlowId}</span>
-                {status.revision != null && (
-                  <span className="text-[var(--muted)]">
-                    {" "}
-                    · draft revision {status.revision}
-                  </span>
-                )}
-              </li>
-            )}
-            <li>
-              <span className="text-[var(--muted)]">Demo steps · </span>
-              <span className="font-medium">{status.steps ?? 0}</span>
-              <span className="text-[var(--muted)]">
-                {" "}
-                · {status.visited ?? visitedPaths.length} pages ·{" "}
-                {formatExploreElapsed(exploreElapsed)} elapsed
-              </span>
-            </li>
-            <li>
-              <span className="text-[var(--muted)]">Save mode · </span>
-              {planMode === "update"
-                ? `updated existing “${planFlowName || planFlowId}”`
-                : "new unpublished draft"}
-            </li>
-            {status.stop_reason && (
-              <li>
-                <span className="text-[var(--muted)]">Ended · </span>
-                <span className="font-medium">
-                  {status.stop_reason.replace(
-                    /^dead end at blank$/i,
-                    "finished mapping — nothing new to try (recovered from blank page)",
-                  )}
-                </span>
-              </li>
-            )}
-            {flagged.length > 0 && (
-              <li className="text-amber-700 dark:text-amber-400">
-                {flagged.length} control
-                {flagged.length === 1 ? "" : "s"} skipped by safety gate (not in
-                demo)
-              </li>
-            )}
-            {liveInputFields.length > 0 && (
-              <li>
-                <span className="text-[var(--muted)]">Live input fields · </span>
-                <span className="font-medium">{liveInputFields.length}</span>
-                <span className="text-[var(--muted)]">
-                  {" "}
-                  — demo will ask your visitor on these
-                </span>
-              </li>
-            )}
-          </ul>
-          {liveInputFields.length > 0 && (
-            <div
-              className="mt-3 rounded-lg border px-3 py-2.5"
-              style={{ borderColor: "var(--line)", background: "var(--bg)" }}
-            >
-              <p className="text-[0.72rem] font-medium tracking-tight">
-                Fields marked for live visitor input
-              </p>
-              <ul className="mt-2 space-y-1 text-[0.72rem] text-[var(--muted)]">
-                {liveInputFields.map((f) => (
-                  <li key={`${f.alias}-${f.label}`}>
-                    <span className="font-medium text-[var(--text)]">{f.label}</span>
-                    {f.answered_by === "client" && f.value ? (
-                      <span> — example during explore: {f.value}</span>
-                    ) : f.answered_by?.startsWith("skipped") ? (
-                      <span> — skipped during explore (not in demo)</span>
-                    ) : null}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {exploreWarnings.length > 0 && exploreErrors.length === 0 && (
-            <div
-              className="mt-3 rounded-lg border border-amber-500/40 px-3 py-2.5"
-              style={{ background: "rgb(245 158 11 / 0.06)" }}
-            >
-              <p className="text-[0.72rem] font-medium text-amber-800 dark:text-amber-300">
-                Notes from explore
-              </p>
-              <ul className="mt-1.5 max-h-36 space-y-1 overflow-y-auto text-[0.72rem] leading-snug text-amber-900 dark:text-amber-200">
-                {exploreWarnings.map((msg) => (
-                  <li key={msg}>• {msg}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {exploreErrors.length > 0 && (
-            <div
-              className="mt-3 rounded-lg border border-red-500/40 px-3 py-2.5"
-              style={{ background: "rgb(239 68 68 / 0.06)" }}
-            >
-              <p className="text-[0.72rem] font-medium text-red-600 dark:text-red-400">
-                Errors during explore ({exploreErrors.length})
-              </p>
-              <ul className="mt-1.5 max-h-36 space-y-1 overflow-y-auto text-[0.72rem] leading-snug text-red-700 dark:text-red-300">
-                {exploreErrors.map((msg) => (
-                  <li key={msg}>• {msg}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {visitedPaths.length > 0 && (
-            <div className="mt-3">
-              <p className="text-[0.7rem] font-medium text-[var(--muted)]">Pages covered</p>
-              <ul className="mt-1 max-h-28 overflow-y-auto space-y-0.5 font-mono text-[0.68rem] text-[var(--muted)]">
-                {visitedPaths.map((p) => (
-                  <li key={p}>• {p}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          <p className="mt-3 text-[0.7rem] text-[var(--muted)]">
-            Unpublished draft — review in the playlist above, then publish the site
-            graph when ready for visitors.
-          </p>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function humanizeFlagReason(reason: string, source: string): string {
-  const r = (reason || "").trim();
-  const m = /^keyword:(.+)$/i.exec(r);
-  if (m) {
-    return `Label/text contains “${m[1]}” — clicking may send, change, or delete real data.`;
-  }
-  if (source === "llm" || /destructive|mutat/i.test(r)) {
-    return r || "Model judged this control may mutate real data.";
-  }
-  if (source === "fail_closed") {
-    return r || "Blocked because safety could not confirm this is read-only.";
-  }
-  return r || "Blocked as potentially unsafe.";
-}
-
-function FlaggedReviewRow({
-  item,
-  live,
-  onDone,
-}: {
-  item: ExploreFlagged;
-  live: boolean;
-  onDone: () => void;
-}) {
-  const { ok, err } = useUi();
-  const [busy, setBusy] = useState(false);
-
-  const act = async (action: "allow" | "dismiss") => {
-    setBusy(true);
-    try {
-      await api.exploreFlagged({
-        action,
-        selector: item.selector,
-        label: item.label,
-        element_key: item.element_key,
-      });
-      ok(
-        action === "allow"
-          ? `Allowed “${item.label}” — bot may click it on this explore.`
-          : `Dismissed “${item.label}”.`,
-      );
-      onDone();
-    } catch (e) {
-      err(errText(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div
-      className="rounded-lg border px-3 py-2.5 text-[0.72rem]"
-      style={{ borderColor: "var(--line)" }}
-    >
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <p className="font-medium tracking-tight">{item.label || item.selector}</p>
-          <p className="mt-0.5 text-[var(--muted)]">
-            {humanizeFlagReason(item.reason, item.source)}
-          </p>
-          {(item.url || item.selector) && (
-            <p className="mt-1 font-mono text-[0.65rem] text-[var(--muted)] truncate">
-              {item.url ? `${item.url}` : ""}
-              {item.url && item.selector ? " · " : ""}
-              {item.selector || ""}
-            </p>
-          )}
-        </div>
-          <div className="flex shrink-0 flex-wrap gap-1.5">
-          <Button
-            variant="secondary"
-            disabled={busy || !live}
-            onClick={() => void act("allow")}
-          >
-            Allow
-          </Button>
-          <Button
-            variant="ghost"
-            disabled={busy}
-            onClick={() => void act("dismiss")}
-          >
-            Dismiss
-          </Button>
-        </div>
-      </div>
-      {!live && (
-        <p className="mt-1.5 text-[0.65rem] text-[var(--muted)]">
-          Allow needs an active explore — start again to let the bot click this.
-        </p>
-      )}
-    </div>
   );
 }

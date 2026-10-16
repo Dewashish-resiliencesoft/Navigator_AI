@@ -11,20 +11,30 @@ Run:
 
 from __future__ import annotations
 
+import hashlib
 import os
 
-from bots.models import Credentials, Project
+from bots.models import ApiKey, Credentials, Project
 
 PROJECT_NAME = (os.environ.get("NAVIGATOR_ATTENDEE_PROJECT_NAME") or "Navigator").strip()
 CLIENT_ID = (os.environ.get("NAVIGATOR_ZOOM_CLIENT_ID") or "").strip()
 CLIENT_SECRET = (os.environ.get("NAVIGATOR_ZOOM_CLIENT_SECRET") or "").strip()
+API_KEY = (os.environ.get("NAVIGATOR_ATTENDEE_API_KEY") or "").strip()
 
 if not CLIENT_ID or not CLIENT_SECRET:
     raise SystemExit(
         "missing NAVIGATOR_ZOOM_CLIENT_ID / NAVIGATOR_ZOOM_CLIENT_SECRET in env"
     )
 
-project = Project.objects.filter(name=PROJECT_NAME).first()
+project = None
+if API_KEY:
+    key_hash = hashlib.sha256(API_KEY.encode()).hexdigest()
+    ak = ApiKey.objects.select_related("project").filter(key_hash=key_hash).first()
+    if ak is not None:
+        project = ak.project
+
+if project is None:
+    project = Project.objects.filter(name=PROJECT_NAME).first()
 if project is None:
     raise SystemExit(
         f"Attendee project {PROJECT_NAME!r} not found — run bootstrap_local.py first"

@@ -16,7 +16,18 @@ class PlaybackHandle:
     error: str | None = None
 
     def wait(self, timeout: float | None = None) -> None:
-        self._done.wait(timeout)
+        # Keep servicing Live screen-tool jobs while the demo thread waits.
+        import time as _t
+
+        from navigator.meeting import ui_jobs
+
+        end = None if timeout is None else _t.monotonic() + timeout
+        while not self._done.wait(0.05):
+            ui = ui_jobs.CURRENT
+            if ui is not None:
+                ui.pump()
+            if end is not None and _t.monotonic() >= end:
+                return
 
     def cancel(self) -> None:
         self._cancel.set()

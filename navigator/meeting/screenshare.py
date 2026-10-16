@@ -44,7 +44,7 @@ def arm_screenshare(
             wait(public_view, timeout_s=timeout_s)
             print(f"[live] tunnel_ready=ok url={public_view}", flush=True)
             host = urlparse(public_view).hostname or ""
-            if host:
+            if host and not host.replace(".", "").isdigit():
                 verify_attendee_docker_dns(host)
             break
         except Exception as exc:

@@ -19,7 +19,7 @@ from navigator.automation.login_match import (
     looks_like_permission_denied,
 )
 from navigator.logs.store import utcnow
-from navigator.core.schemas import ActionLogEntry, FillField, VerifyResult
+from navigator.core.schemas import ActionLogEntry, FillField, Navigate, VerifyResult
 
 SESSION_STALL_LINE = "One moment."
 STRICT_STALL = "One moment — let me try that again."
@@ -33,7 +33,25 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
     # page_id after the call: a navigate's postcondition belongs to where it landed.
     verified_on = state["page_id"]
 
-    if result.ok:
+    from navigator.agent.nodes.executing import _already_authenticated, _is_login_call
+
+    if result.ok and (
+        str(result.detail or "").startswith("skipped")
+        or (_is_login_call(call) and _already_authenticated(deps.page))
+    ):
+        # Executing deliberately skipped this step (already signed in / not on
+        # screen). Its postcondition (e.g. #email) can't hold — not a failure.
+        verdict = VerifyResult(passed=True, actual=str(result.detail))
+    elif (
+        result.ok
+        and getattr(call, "tool", "") == "click_element"
+        and getattr(call.expects, "check", "") == "hidden"
+        and getattr(call.expects, "selector", "") == getattr(call, "selector", "")
+    ):
+        # Recorder asserted the clicked control disappears; persistent nav
+        # links (Phonebook, Inbox) never do. The click itself succeeded.
+        verdict = VerifyResult(passed=True, actual="clicked persistent control")
+    elif result.ok:
         verdict = check(deps.page, deps.graph, verified_on, call.expects)
         if verdict.ambiguous:
             try:
@@ -69,6 +87,25 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
     )
     deps.log.append(entry)
 
+    if not entry.failed and isinstance(call, Navigate):
+        try:
+            from navigator.logs.transcript_emit import emit_transcript
+
+            url = ""
+            try:
+                url = deps.page.url or ""
+            except Exception:  # noqa: BLE001
+                url = ""
+            emit_transcript(
+                product_id=deps.product_id,
+                session_id=state["session_id"],
+                kind="screen",
+                page_id=str(state.get("page_id") or ""),
+                text=url or str(state.get("page_id") or "navigated"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[transcript] screen emit failed: {exc}", flush=True)
+
     strict = getattr(deps, "strict_playlist", False)
     if entry.failed and strict:
         stall = STRICT_STALL if not result.ok else (
@@ -88,7 +125,7 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
             last_result=None,
         )
 
-    line = _narrate(entry, verdict)  # wait_for fails stay silent — see _narrate
+    line = _narrate(entry, verdict, deps)  # wait_for fails stay silent — see _narrate
     narration = [line] if line.strip() else []
     transcript = [f"agent: {line}"] if line.strip() else []
     if (
@@ -103,12 +140,17 @@ def verifying(state: CallState, deps: CallDeps) -> CallState:
             transcript=transcript,
             walkthrough_step=int(state["planned_next_step"]),
         )
-    return CallState(
+    out = CallState(
         entries=[entry],
         failures=[entry] if entry.failed else [],
         narration=narration,
         transcript=transcript,
     )
+    if state.get("planned_next_step") is not None and not strict:
+        # Always move on: holding the step on a soft-fail re-planned the same
+        # step and re-spoke its line (narration looped 2x in the live log).
+        out["walkthrough_step"] = int(state["planned_next_step"])
+    return out
 
 
 def _try_session_recovery(state: CallState, deps: CallDeps, call) -> bool:
@@ -143,7 +185,7 @@ def _try_session_recovery(state: CallState, deps: CallDeps, call) -> bool:
         return False
 
 
-def _narrate(entry: ActionLogEntry, verdict: VerifyResult) -> str:
+def _narrate(entry: ActionLogEntry, verdict: VerifyResult, deps=None) -> str:
     """Prospect-facing line. Technical detail stays in the ActionLog only."""
     call = entry.tool_call
     if verdict.passed:
@@ -154,14 +196,8 @@ def _narrate(entry: ActionLogEntry, verdict: VerifyResult) -> str:
         f"detail={verdict.actual!r}",
         flush=True,
     )
-    # wait_for is a pacing/stub step. Speaking a glitch after every timeout
-    # makes the agent sound broken; the screenshare already moved on.
-    if getattr(call, "tool", "") == "wait_for":
-        return ""
-    return (
-        "Oh — something glitched on our side there, not yours. "
-        "It's nothing you did. We're sorting it; I'll keep going."
-    )
+    # Never apologise out loud for a soft-fail: log only, keep the demo moving.
+    return ""
 
 
 def _success_line(call) -> str:
@@ -172,7 +208,10 @@ def _success_line(call) -> str:
     """
     match call.tool:
         case "navigate":
-            return f"Okay, we're on the {call.page_id} page now."
+            # Silent: every scripted step already speaks its own narration, and
+            # the page_id slug ("page_automation_integrations") was being read
+            # aloud as a duplicate filler line.
+            return ""
         case "fill_field" | "click_element" | "wait_for":
             return ""
         case _:

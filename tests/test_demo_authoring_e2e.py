@@ -71,7 +71,7 @@ def _graph_with_pending() -> str:
     ).strip()
 
 
-def test_explore_start_accepts_scope_filters(tmp_path):
+def test_explore_start_retired_returns_410(tmp_path):
     bundle = _client(tmp_path, client_api_key="nav_test")
     client, prev, registry, log, auth_store = bundle
     try:
@@ -88,12 +88,11 @@ def test_explore_start_accepts_scope_filters(tmp_path):
             },
             headers=headers,
         )
-        # May 409 if explore already running globally — body still validates auth + schema.
-        assert r.status_code in (200, 202, 409), r.text
-        if r.status_code in (200, 202):
-            body = r.json()
-            assert body.get("save_mode") == "new"
-            client.post("/client/api/explore/stop", headers=headers)
+        # Phase 2: demo Auto-Explore write routes retired (Product Explore is Phase 3).
+        assert r.status_code == 410, r.text
+        assert "auto-explore" in r.json()["detail"].lower()
+        stop = client.post("/client/api/explore/stop", headers=headers)
+        assert stop.status_code == 410, stop.text
     finally:
         _cleanup(bundle, prev)
 

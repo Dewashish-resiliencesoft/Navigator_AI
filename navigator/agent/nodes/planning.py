@@ -15,6 +15,8 @@ Every live turn writes one DecisionTrace row -- including the boring ones.
 
 from __future__ import annotations
 
+import re
+
 from navigator.agent.call_memory import CallMemory
 from navigator.agent.end_policy import (
     ANYTHING_ELSE,
@@ -69,6 +71,11 @@ def _memory(deps: CallDeps) -> CallMemory:
     return mem
 
 
+def _narration_lang(deps: CallDeps) -> str:
+    snap = getattr(deps, "conversation_language", None)
+    return str(getattr(snap, "narration_language", None) or deps.spoken_language or "en")
+
+
 def _trace(deps: CallDeps, state: CallState, **kw) -> None:
     """Record one turn's decision. Never let logging break a live call."""
     from navigator.logs.decisions import DecisionTraceStore
@@ -90,8 +97,15 @@ def _set_spoken_language(deps: CallDeps, lang: SpokenLanguage) -> None:
     speaker = deps.speaker
     local = getattr(speaker, "local", None)
     from navigator.voice.language import apply_to_speakers
+    from navigator.voice.conversation_language import ConversationLanguage
 
     apply_to_speakers(lang, speaker, local, deps.live_agent)
+    deps.conversation_language = ConversationLanguage(
+        user_language=lang,
+        narration_language=lang,
+        confidence=1.0,
+        source="switch",
+    )
 
 
 def _maybe_language_switch_ack(
@@ -111,6 +125,8 @@ def _maybe_language_switch_ack(
     )
     if not ack:
         return None
+    snap = getattr(deps, "conversation_language", None)
+    lang = snap.as_state() if snap is not None and hasattr(snap, "as_state") else {}
     return CallState(
         plan=Plan(spoken_response=ack, tool_calls=[]),
         pending_calls=[],
@@ -118,6 +134,7 @@ def _maybe_language_switch_ack(
         transcript=[f"agent: {ack}"],
         phase=phase,
         walkthrough_step=state.get("walkthrough_step"),
+        **lang,
     )
 
 
@@ -142,7 +159,7 @@ def _say(
             pacing=pacing,
             persona_name=deps.graph.effective_persona().product_name,
             product_brief=deps.product_brief or "",
-            spoken_language=deps.spoken_language,
+            spoken_language=_narration_lang(deps),
             agent_gender=deps.agent_gender,
             fallback=fallback,
             api_key=api_key or None,
@@ -265,6 +282,9 @@ def planning(state: CallState, deps: CallDeps) -> CallState:
         deps.set_status("tailoring", "Tailoring…")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("thinking")
+    from navigator.voice.conversation_language import publish_speech
+
+    publish_speech(deps, status="thinking")
     if getattr(deps.speaker, "bot_ended", False):
         return CallState(
             plan=Plan(spoken_response="", tool_calls=[]),
@@ -422,7 +442,14 @@ def _plan_anything_else(
         chunks = []
     spoken = (chunks[0] or "").strip()[:280] if chunks else ""
     if not spoken:
-        spoken = OFF_TOPIC
+        if re.match(r"^\W*(hi|hello|hey|hii+|good (morning|afternoon|evening))\b", utterance or "", re.I):
+            spoken = "Hi! I'm still here. Do you have any questions about what we just saw?"
+        else:
+            spoken = OFF_TOPIC
+            # Never the same refusal twice in a row (13:54 Q&A).
+            last_agent = next((t for t in reversed(transcript) if str(t).startswith("agent:")), "")
+            if OFF_TOPIC in str(last_agent):
+                spoken = "I'll check on that and follow up after the call. Is there anything else in the product you'd like to see?"
     return CallState(
         phase="anything_else",
         silence_rounds=0,
@@ -510,9 +537,8 @@ def _try_tier2(
     if not getattr(deps, "tier2_enabled", False):
         return None
 
-    from navigator.agent.tier2 import pending_rule_for, run_tier2
+    from navigator.agent.tier2 import run_tier2
     from navigator.agent.tier2_propose import bind_ephemeral_selector, propose_from_page
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
 
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     page_id = _guide_page_id(state)
@@ -567,20 +593,6 @@ def _try_tier2(
     css = str(el.get("_tier2_css") or "")
     if alias and css:
         deps.graph = bind_ephemeral_selector(deps.graph, page_id, alias, css)
-
-    store_path = deps.pending_db_path or settings.db_path
-    store = PendingCorrectionStore(store_path)
-    try:
-        store.add(
-            product_id=deps.product_id,
-            session_id=state.get("session_id", ""),
-            page=page_id,
-            tool_call_type=outcome.call.tool,
-            rule=pending_rule_for(outcome, utterance),
-            source_call_id=state.get("session_id", ""),
-        )
-    finally:
-        store.close()
 
     return CallState(
         phase="detour",
@@ -754,9 +766,29 @@ def _decide_live_turn(
     *,
     utterance: str,
 ) -> CallState | None:
-    """Retrieve + confidence bands. None → caller may try turn-brain / handoff."""
+    """Retrieve + confidence bands. None → caller may try turn-brain / handoff.
+
+    Pre-pass: classify via the realtime router first.
+    - BACKCHANNEL → return None immediately (Live already handled it)
+    - ANSWER      → proceed; Live may reply from context (no browser needed)
+    - TASK_HANDOFF → proceed; orchestrator owns execution
+    """
     if getattr(deps, "playlist_only", False):
         return None
+
+    # Realtime pre-classification: skip slow path for pure backchannels
+    try:
+        from navigator.agent_runtime.planning.router import classify_utterance
+        from navigator.agent_runtime.realtime_state import RealtimeController
+
+        rt_ctl = getattr(deps, "_rt_controller", None)
+        is_working = rt_ctl.is_working if isinstance(rt_ctl, RealtimeController) else False
+        rt_decision = classify_utterance(utterance, agent_working=is_working)
+        if rt_decision.route == "backchannel":
+            # Pure filler — Live handles or stays silent; no brain needed
+            return None
+    except Exception:  # noqa: BLE001
+        pass
 
     from navigator.agent.brain_router import route_turn
 
@@ -1032,11 +1064,19 @@ def _walkthrough_spoken(
     flow_id: str,
     nxt: object,
 ) -> str:
-    """Spoken line before a walkthrough step — short for TTS, clicks follow fast."""
+    """Spoken line for a walkthrough step: the author's full line (speech overlaps the action)."""
     from navigator.automation.narration import spoken_for_live_step
 
-    fallback = spoken_for_live_step(yaml_hint, max_len=200) or "Let me show you the next step."
-    # ponytail: recorded line / YAML only. Vision PNG is interrupt/stuck, not every step.
+    # Full authored line: max_len=200 cut every detailed step to its first
+    # sentence ("Now the Phonebook.") — the 16:19 demo dropped the user's script.
+    fallback = spoken_for_live_step(yaml_hint) or "Let me show you the next step."
+    if (getattr(deps, "spoken_language", "en") or "en") != "en":
+        return _say(
+            deps,
+            intent="flow_intro",
+            fallback=fallback,
+            context=yaml_hint,
+        )
     return fallback
 
 
@@ -1104,7 +1144,7 @@ def _try_turn_brain(
                 product_brief=deps.product_brief or "",
                 intake_summary=intake_summary,
                 nav_labels=nav_labels,
-                spoken_language=deps.spoken_language,
+                spoken_language=_narration_lang(deps),
                 agent_gender=deps.agent_gender,
             )
     except Exception as exc:  # noqa: BLE001
@@ -1617,15 +1657,25 @@ def _plan_walkthrough_next(state: CallState, deps: CallDeps) -> CallState:
         deps, page_id=page_id, flow_id=flow_id, step=step, call=nxt
     )
     yaml_hint = format_with_intake(yaml_hint, deps.intake)
-    if step == 0 and deps.intake and deps.intake.name:
-        need = deps.intake.looking_for or "what you asked about"
-        yaml_hint = f"Alright {deps.intake.name}, focusing on {need}. {yaml_hint}"
+    _iname = (getattr(deps.intake, "name", "") or "").strip() if deps.intake else ""
+    _ineed = (getattr(deps.intake, "looking_for", "") or "").strip() if deps.intake else ""
+    from navigator.meeting.intake_copy import meaningful_need as _mneed
+
+    _ineed = _mneed(_ineed)
+    if (
+        step == 0
+        and _iname
+        and _iname.lower() not in {"there", "friend", "everyone", "you"}
+        and _ineed
+    ):
+        # Only when intake really captured a name AND a need; never a filler.
+        yaml_hint = f"Alright {_iname}, focusing on {_ineed}. {yaml_hint}"
 
     if resume_step is not None:
         yaml_hint = _say(
             deps,
             intent="resume",
-            fallback=f"Back to where we were. {yaml_hint}",
+            fallback=yaml_hint,  # resume line already spoken; no duplicate filler
             context=yaml_hint,
             pacing=pacing,
         )
@@ -1748,26 +1798,11 @@ def _resolve_flow_choice(
 
 
 def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
-    """Log prospect correction; retry last step when possible."""
-    from navigator.knowledge.memory.pending import PendingCorrectionStore
-
+    """Retry last step when visitor corrects the agent mid-demo."""
     query = _query_from_transcript(list(state.get("transcript") or []))
     entries = list(state.get("entries") or [])
     last = entries[-1] if entries else None
-    store_path = deps.pending_db_path or settings.db_path
-    store = PendingCorrectionStore(store_path)
-    try:
-        store.add(
-            product_id=deps.product_id,
-            session_id=state["session_id"],
-            page=(last.page if last else state.get("page_id") or ""),
-            tool_call_type=(last.tool_call.tool if last else "unknown"),
-            rule=query or "user correction",
-            source_call_id=(last.call_id if last else state["session_id"]),
-        )
-    finally:
-        store.close()
-    print(f"[correction] pending from user: {query!r}", flush=True)
+    print(f"[correction] user note (not queued): {query!r}", flush=True)
     if last is not None and last.tool_call is not None:
         spoken = "Got it — let me try that again with your correction in mind."
         plan = Plan(spoken_response=spoken, tool_calls=[last.tool_call])
@@ -1780,8 +1815,7 @@ def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
             phase=state.get("phase") or "walkthrough",
         )
     spoken = (
-        "Thanks — I've noted that correction. A human will review it before it "
-        "changes how I demo."
+        "Thanks — I've noted that. Let's keep going with the demo."
     )
     plan = Plan(spoken_response=spoken, tool_calls=[])
     return CallState(

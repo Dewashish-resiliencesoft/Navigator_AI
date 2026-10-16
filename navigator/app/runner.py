@@ -78,9 +78,24 @@ class DemoHandle:
     """True only after Attendee reports joined — safe to share join link."""
     leave_grace_remaining: int | None = None
     """Seconds before auto-ending after the human leaves the meeting."""
+    language: str = "en"
+    language_code: str = "en"
+    language_confidence: float = 1.0
+    current_narration: str = ""
+    speech_status: str = "idle"
+    live_log: list[str] = field(default_factory=list)
+    """Runner/meeting diagnostics for the dashboard (copyable)."""
 
     _thread: threading.Thread | None = field(default=None, repr=False)
     _stop: threading.Event = field(default_factory=threading.Event, repr=False)
+
+    def append_live_log(self, line: str) -> None:
+        msg = (line or "").strip()
+        if not msg:
+            return
+        self.live_log.append(msg[:800])
+        if len(self.live_log) > 300:
+            del self.live_log[:-300]
 
     def public(self) -> dict:
         """Serialisable view. Excludes the thread and the stop event."""
@@ -98,9 +113,34 @@ class _RecordingSpeaker:
         self._inner = inner
         self._handle = handle
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, *, language: str | None = None, **kwargs) -> None:
+        from navigator.agent.speech_safety import humanize_ids
+
+        text = humanize_ids(text)
         self._handle.said.append(text)
-        self._inner.say(text)
+        self._handle.current_narration = text
+        self._handle.speech_status = "speaking"
+        if language:
+            self._handle.language_code = language
+        try:
+            from navigator.logs.transcript_emit import classify_agent_kind, emit_transcript
+
+            kind = classify_agent_kind(
+                self._handle.session_id, self._handle.product_id
+            )
+            emit_transcript(
+                product_id=self._handle.product_id,
+                session_id=self._handle.session_id,
+                kind=kind,
+                page_id=getattr(self._handle, "page_id", "") or "",
+                text=text,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[transcript] speaker emit failed: {exc}", flush=True)
+        try:
+            self._inner.say(text, language=language, **kwargs)
+        except TypeError:
+            self._inner.say(text)
 
 
 class DemoRunner:
@@ -241,6 +281,14 @@ class DemoRunner:
     def _finalize_live_demo(handle: DemoHandle, *, operator_stopped: bool = False) -> None:
         """Clear meeting flag and append a terminal transcript line once."""
         handle.bot_in_meeting = False
+        # Return the warm parked browser to the product landing page so the
+        # product is on screen and ready before the next demo.
+        try:
+            from navigator.meeting.warm_pool import park_browser_after_demo
+
+            park_browser_after_demo()
+        except Exception:  # noqa: BLE001
+            pass
         tail = [s.lower() for s in handle.said[-3:]]
         if any(
             t.startswith(("demo ended", "demo completed", "demo failed")) for t in tail
@@ -322,9 +370,12 @@ class DemoRunner:
         from navigator.meeting.attendee import AttendeeClient
         from navigator.core.settings import settings
 
-        AttendeeClient(settings.attendee_base_url, settings.attendee_api_key).leave(
-            bot_id
-        )
+        try:
+            AttendeeClient(
+                settings.attendee_base_url, settings.attendee_api_key
+            ).leave_if_active(bot_id)
+        except Exception as exc:  # noqa: BLE001 — bot already gone (400) is harmless
+            print(f"[runner] leave skipped: {str(exc).splitlines()[0][:120]}", flush=True)
 
     def wait(self, demo_id: UUID, timeout: float = 60.0) -> DemoHandle | None:
         """Block until a demo finishes. For tests and synchronous callers."""
@@ -412,6 +463,49 @@ class DemoRunner:
         def on_leave_grace(remaining: int | None) -> None:
             handle.leave_grace_remaining = remaining
 
+        def on_speech(payload: dict) -> None:
+            handle.language = str(payload.get("language") or handle.language)
+            handle.language_code = str(payload.get("language_code") or handle.language_code)
+            try:
+                handle.language_confidence = float(payload.get("language_confidence") or 0)
+            except (TypeError, ValueError):
+                pass
+            narr = payload.get("current_narration")
+            if isinstance(narr, str) and narr.strip():
+                handle.current_narration = narr
+            handle.speech_status = str(payload.get("speech_status") or handle.speech_status)
+
+        import builtins
+
+        _orig_print = builtins.print
+        _log_prefixes = (
+            "[live]",
+            "[speak]",
+            "[audio]",
+            "[tunnel]",
+            "[attendee]",
+            "[runner]",
+            "[utterance]",
+            "[playwright]",
+            "[zoom]",
+            "[warm]",
+            "[exec]",
+            "[flow]",
+            "[latency]",
+            "[voice-out]",
+            "[verify]",
+            "[ui-tool]",
+        )
+
+        def _tee_print(*args: object, **kwargs: object) -> None:
+            msg = " ".join(str(a) for a in args)
+            if any(msg.startswith(p) for p in _log_prefixes):
+                from datetime import datetime as _dt
+
+                # Dashboard live log gets the same HH:MM:SS.mmm stamp as stdout (logtime).
+                handle.append_live_log(f"{_dt.now().strftime('%H:%M:%S.%f')[:-3]} {msg}")
+            _orig_print(*args, **kwargs)
+
         try:
             if run is None:
                 from navigator.meeting.live_demo import run_live_meet_demo
@@ -425,6 +519,7 @@ class DemoRunner:
             live_kw = self._product_live_kwargs(handle.product_id)
             for key, val in live_kw.items():
                 kwargs.setdefault(key, val)
+            builtins.print = _tee_print  # type: ignore[assignment]
             run(
                 meeting_url=handle.meeting_url,
                 graph_cfg=graph,
@@ -441,6 +536,7 @@ class DemoRunner:
                 on_bot_joined=on_bot_joined,
                 on_meeting_ready=on_meeting_ready,
                 on_leave_grace=on_leave_grace,
+                on_speech=on_speech,
             )
             handle.status = "finished"
         except Exception as exc:
@@ -454,7 +550,9 @@ class DemoRunner:
                 handle.status = "failed"
                 handle.error = traceback.format_exc(limit=3)
                 print(f"[runner] live demo failed:\n{handle.error}", flush=True)
+                handle.append_live_log(f"[runner] live demo failed:\n{handle.error}")
         finally:
+            builtins.print = _orig_print
             handle.finished_at = datetime.now(timezone.utc)
             handle.leave_grace_remaining = None
             with ActionLog(self.db_path) as log:
@@ -476,19 +574,30 @@ class DemoRunner:
         from navigator.app.registry import ProductNotFound, Registry
         from navigator.core.settings import settings
 
+        from navigator.core.role_models import resolved_runtime_models
+
         try:
             with Registry(settings.db_path) as reg:
                 p = reg.get(product_id)
+                agent_settings = reg.get_agent_settings(product_id)
+                models = resolved_runtime_models(agent_settings)
                 cfg = BrainConfig.from_settings(
-                    autonomy_mode=getattr(p, "autonomy_mode", None) or "guided",
-                    tier2_legacy=bool(p.tier2_enabled),
+                    autonomy_mode="guided",
+                    tier2_legacy=False,
+                    planning_model=models["brain_planning_model"] or None,
+                    phrasing_model=models["brain_phrasing_model"] or None,
+                    classify_model=models["brain_classify_model"] or None,
+                    stt_model=models["brain_stt_model"] or None,
+                    vision_text_model=models["brain_vision_text_model"] or None,
+                    vision_image_model=models["brain_vision_image_model"] or None,
+                    reasoning_model=models["brain_reasoning_model"] or None,
                 )
                 return {
                     "tier2_enabled": cfg.tier2_enabled,
                     "brain_config": cfg,
                     "use_turn_brain": cfg.use_turn_brain,
                     "handoff_webhook_url": getattr(p, "handoff_webhook_url", "") or "",
-                    "agent_settings": reg.get_agent_settings(product_id),
+                    "agent_settings": agent_settings,
                 }
         except Exception:  # noqa: BLE001
             cfg = BrainConfig.from_settings()

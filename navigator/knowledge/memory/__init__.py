@@ -1,1 +1,1 @@
-"""Chroma-backed retrieval and pending corrections."""
+"""Chroma-backed retrieval for product knowledge and corrections."""

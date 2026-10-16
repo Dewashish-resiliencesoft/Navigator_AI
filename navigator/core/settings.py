@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     gemini_api_key_backup: str = ""
     #: Comma-separated Gemini keys (vision, Live TTS, reflection).
     gemini_api_keys: str = ""
+    #: Optional Live-only key(s). Tried before gemini_api_key for Gemini Live mouth.
+    gemini_live_api_key: str = ""
+    gemini_live_api_keys: str = ""
     openai_api_key: str = ""
     chroma_path: Path = Path("chroma")
     #: Self-hosted Attendee. Not 8000 (Navigator's own API) and not 8001
@@ -110,16 +113,28 @@ class Settings(BaseSettings):
     #: a business landing page later; share the link via email instead.
     open_meet_in_browser: bool = False
     tunnel_bin: str = "cloudflared"
+    #: Keep infra warm so a live demo starts fast: attendee/docker health, a
+    #: standing Cloudflare public base URL, and a parked headed Chromium sitting
+    #: on the product landing page. Off in tests.
+    warm_pool: bool = True
+    #: Seconds between warm-pool health passes.
+    warm_pool_interval_s: float = 45.0
+    #: Emit per-stage live-demo startup timings when enabled.
+    live_timing_enabled: bool = False
     meet_live: bool = False
     live_walkthrough_flow: str = "default_walkthrough"
     live_max_turns: int = 50
     #: Brain model pins (override provider defaults).
-    brain_planning_model: str = "llama-3.3-70b-versatile"
-    brain_phrasing_model: str = "llama-3.1-8b-instant"
-    brain_classify_model: str = "llama-3.1-8b-instant"
+    brain_planning_model: str = "openai/gpt-oss-120b"
+    brain_phrasing_model: str = "openai/gpt-oss-20b"
+    brain_classify_model: str = "openai/gpt-oss-20b"
     brain_stt_model: str = "whisper-large-v3-turbo"
-    brain_vision_text_model: str = "gemini-2.0-flash"
-    brain_vision_image_model: str = "gemini-2.0-flash"
+    brain_vision_text_model: str = "gemini-3.6-flash"
+    brain_vision_image_model: str = "gemini-3.6-flash"
+    #: Deep reasoning for agent runtime (Flash).
+    brain_reasoning_model: str = "gemini-3.6-flash"
+    #: Interactive agent runtime: Live → Orchestrator → Flash → Playwright.
+    agent_runtime_enabled: bool = True
     brain_listen_timeout_s: float = 8.0
     brain_resume_silence_s: float = 6.0
     #: Bot joins Meet first; link shared only after Navigator is inside.
@@ -127,9 +142,10 @@ class Settings(BaseSettings):
     #: Seconds after human join before first spoken greet.
     #: Keep low — 3s felt like the bot was stuck before saying hello.
     live_human_settle_s: float = 0.35
-    #: VAD end-of-utterance silence for live Meet STT (ms). Lower = snappier.
-    #: ~200ms is aggressive; mid-sentence pauses can cut a turn early.
-    live_stt_min_silence_ms: int = 200
+    #: VAD end-of-utterance silence for live Meet STT (ms).
+    #: 800ms matches Gemini Live's own VAD — prevents false barge-ins from
+    #: mid-sentence pauses being misread as turn-end.
+    live_stt_min_silence_ms: int = 800
     #: Max wait for Attendee audio websocket before starting demo anyway. Zoom
     #: can delay this until the host grants recording permission.
     live_audio_ws_wait_s: float = 120.0
@@ -141,12 +157,19 @@ class Settings(BaseSettings):
     redis_url: str = ""
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
-    #: Screenshare relay target frame rate (16 ms ≈ 60 fps).
-    target_fps: int = 60
-    #: JPEG quality for Meet screenshare frames (1–100). Meet re-encodes the
-    #: share anyway, and the encode runs in the same process as the audio
-    #: bridge — a lower number buys real headroom for smooth voice.
-    screenshot_quality: int = 70
+    #: Screenshare /view JPEG poll rate through the public tunnel.
+    #: 20fps balances motion smoothness vs Cloudflare bandwidth; keep ≤24.
+    target_fps: int = 20
+    #: JPEG quality for Meet/Zoom screenshare frames (1–100).
+    screenshot_quality: int = 80
+    #: Cap CDP screencast width (height scales). 960 cuts tunnel bytes ~40%
+    #: vs 1280 while staying sharp enough for product demos.
+    screenshot_max_width: int = 1280
+    #: CDP everyNthFrame. 0 = derive from target_fps; 1 = every repaint (smoothest).
+    screencast_every_nth: int = 3
+    #: Serve /view via MJPEG push (/stream) — latest frame only, no per-frame
+    #: HTTP round trip through the tunnel. Falls back to polling on error.
+    screencast_mjpeg: bool = True
 
 
 settings = Settings()

@@ -67,7 +67,8 @@ Rules:
 - If screenshot shows 404 / Not Found: apologize briefly and navigate_page to a safe home page_id (if allowed) or speak recovery — never pretend success.
 - End phrases (goodbye, end the meeting, stop the demo) → intent end.
 - Navigation ("take me to X", "show me Y") is NOT a correction — navigate or click_nav.
-- Speak naturally; use the prospect's cleaned name if given; short sentences for voice.
+- Speak naturally in the user's language (see Language below). Do not automatically
+  translate into English. Preserve product/UI terms when natural.
 - Stay consistent with the product brief; do not name unrelated products.
 """
 
@@ -97,6 +98,7 @@ def decide_turn(
     user = "\n".join(
         [
             f"Utterance: {utterance}",
+            f"User language: {spoken_language}. Narration language: {spoken_language}.",
             f"Language: {lang_rule}",
             f"Allowed page_ids: {', '.join(sorted(allowed_pages))}",
             f"Known nav labels: {', '.join(labels) if labels else '(none)'}",

@@ -1,4 +1,6 @@
 import { create } from "zustand";
+import { coachForCheck, type CoachGuide } from "./lib/coachTargets";
+import { initialTab, rememberTab } from "./lib/tabPersistence";
 
 type Toast = { kind: "ok" | "err"; text: string } | null;
 
@@ -6,19 +8,33 @@ type State = {
   tab: string;
   toast: Toast;
   logsSessionId: string | null;
+  coach: CoachGuide | null;
   setTab: (t: string) => void;
   setLogsSessionId: (id: string | null) => void;
+  startCoach: (checkId: string) => void;
+  clearCoach: () => void;
   ok: (text: string) => void;
   err: (text: string) => void;
   clear: () => void;
 };
 
 export const useUi = create<State>((set) => ({
-  tab: "overview",
+  tab: initialTab(),
   toast: null,
   logsSessionId: null,
-  setTab: (tab) => set({ tab }),
+  coach: null,
+  setTab: (tab) => {
+    rememberTab(tab);
+    set({ tab });
+  },
   setLogsSessionId: (logsSessionId) => set({ logsSessionId }),
+  startCoach: (checkId) => {
+    const guide = coachForCheck(checkId);
+    if (!guide) return;
+    rememberTab(guide.tab);
+    set({ tab: guide.tab, coach: guide });
+  },
+  clearCoach: () => set({ coach: null }),
   ok: (text) => set({ toast: { kind: "ok", text } }),
   err: (text) => set({ toast: { kind: "err", text } }),
   clear: () => set({ toast: null }),

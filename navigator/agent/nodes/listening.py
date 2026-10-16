@@ -19,7 +19,7 @@ from navigator.agent.nodes.reflecting import classify_correction
 from navigator.agent.state import CallDeps, CallState
 from navigator.core.settings import settings
 from navigator.voice.stt import VoiceSegmenter, transcribe
-from navigator.voice.language import sync_call_language
+from navigator.voice.conversation_language import sync_heard_language
 
 SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"
 
@@ -82,6 +82,9 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
         deps.set_status("listening", "Listening…")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("listening")
+    from navigator.voice.conversation_language import publish_speech
+
+    publish_speech(deps, status="listening")
     # Prefer utterance captured during barge-in over a fresh listen wait.
     pending = deps.pending_barge_in
     if pending:
@@ -92,7 +95,7 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
                     print(f"[listen] ignore stale barge-in: {utterance!r}", flush=True)
                 continue
             print(f"[listen] barge-in utterance: {utterance!r}", flush=True)
-            sync_call_language(deps, utterance)
+            lang = sync_heard_language(deps, utterance)
             last = _last_entry(state, deps)
             is_correction = False
             if last is not None and _want_classify(deps):
@@ -109,17 +112,30 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
             return CallState(
                 transcript=[f"user: {utterance}"],
                 user_correction=is_correction,
+                **lang,
             )
 
     utterance = _capture_utterance(state, deps)
+    lang = sync_heard_language(deps, utterance) if utterance else {}
     if utterance:
-        sync_call_language(deps, utterance)
         print(f"[listen] heard: {utterance!r}", flush=True)
     if utterance and deps.on_user_utterance is not None:
         try:
             deps.on_user_utterance(utterance)
         except Exception as exc:  # noqa: BLE001
             print(f"[listen] on_user_utterance skipped: {exc}", flush=True)
+    if utterance:
+        from navigator.agent_runtime.bridge import on_live_heard
+        from navigator.agent_runtime.planning.router import ROUTE_TASK_HANDOFF
+
+        _heard_decision = on_live_heard(deps, utterance)
+        if _heard_decision is not None and _heard_decision.route == ROUTE_TASK_HANDOFF:
+            return CallState(
+                transcript=[f"user: {utterance}"],
+                user_correction=False,
+                phase=state.get("phase") or "walkthrough",
+                **lang,
+            )
     last = _last_entry(state, deps)
     is_correction = False
     if last is not None and _want_classify(deps):
@@ -134,9 +150,13 @@ def listening(state: CallState, deps: CallDeps) -> CallState:
         except Exception as exc:  # noqa: BLE001
             print(f"[listen] classify_correction skipped: {exc}", flush=True)
 
+    from navigator.voice.conversation_language import publish_speech
+
+    publish_speech(deps, status="listening")
     return CallState(
         transcript=[f"user: {utterance}"],
         user_correction=is_correction,
+        **lang,
     )
 
 
@@ -147,23 +167,20 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
     awaiting_resume = phase == "awaiting_resume"
 
     if walkthrough and getattr(deps, "auto_advance_walkthrough", False):
-        from navigator.voice.language import (
-            detect_language_switch,
-            poll_barge_in_language_switch,
-            sync_call_language,
-        )
+        from navigator.voice.conversation_language import sync_heard_language
+        from navigator.voice.language import detect_language_switch, poll_barge_in_language_switch
 
         if deps.live_agent is not None:
             text = _from_live(deps, silence_timeout=0.4)
             if text:
-                sync_call_language(deps, text)
+                sync_heard_language(deps, text)
                 return text
             return ""
         poll_barge_in_language_switch(deps)
         if deps.audio_frames is not None:
             text = _from_audio(deps, silence_timeout=2.5)
             if text:
-                sync_call_language(deps, text)
+                sync_heard_language(deps, text)
                 if detect_language_switch(text) is not None:
                     return text
         return ""

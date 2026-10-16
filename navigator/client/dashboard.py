@@ -1,12 +1,21 @@
-"""Local operator console — loopback-only SPA + API proxy.
+"""Local / LAN operator console — SPA + API proxy.
 
 The UI is a Vite/React app in `web/`; this module only guards access and serves
-the build. Run `npm run build` in web/ to refresh what's served here.
+the build. `scripts/dev-watch.sh` rebuilds that app on save and reloads open
+tabs. A one-off refresh is `npm run build` in web/.
+
+Access: loopback, RFC1918 private LAN Hosts, and the hostname of
+``settings.public_base_url`` (the quick tunnel this process opened). Any other
+public Host stays blocked.
 """
 
 from __future__ import annotations
 
+import ipaddress
+import os
+from email.utils import formatdate
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, Request
 
@@ -32,21 +41,91 @@ p{color:#a1a1aa}
 """
 
 
+_DEV_RELOAD_SNIPPET = """<script>
+(function(){
+  var seen = "";
+  setInterval(function(){
+    fetch("/client", {method:"HEAD", cache:"no-store"}).then(function(r){
+      var m = r.headers.get("last-modified") || "";
+      if (seen && m && m !== seen) location.reload();
+      if (m) seen = m;
+    }).catch(function(){});
+  }, 1500);
+})();
+</script>
+"""
+
+
 def client_index_html() -> str:
     index = WEB_DIST / "index.html"
     try:
-        return index.read_text(encoding="utf-8")
+        html = index.read_text(encoding="utf-8")
     except OSError:
         return _MISSING_BUILD_HTML
+    if os.environ.get("NAVIGATOR_DEV_WATCH") == "1" and "</body>" in html:
+        html = html.replace("</body>", _DEV_RELOAD_SNIPPET + "</body>", 1)
+    return html
+
+
+def client_index_headers() -> dict[str, str]:
+    """Let an open dashboard tab notice a fresh Vite build."""
+    headers = {"Cache-Control": "no-cache"}
+    index = WEB_DIST / "index.html"
+    try:
+        mtime = index.stat().st_mtime
+    except OSError:
+        return headers
+    headers["Last-Modified"] = formatdate(mtime, usegmt=True)
+    return headers
+
+
+def _is_private_lan_host(host: str) -> bool:
+    """True for RFC1918 / link-local / ULA — LAN VPS Host headers."""
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+    )
+
+
+def _active_tunnel_host() -> str:
+    """Hostname of the public origin this process is serving, if any."""
+    from navigator.core.settings import settings
+
+    base = (settings.public_base_url or "").strip()
+    if not base:
+        return ""
+    return (urlparse(base).hostname or "").strip().lower()
 
 
 def is_local_ops_host(request: Request) -> bool:
-    """Allow only localhost Host — blocks public tunnel Hostnames."""
+    """Allow localhost, private LAN, the active tunnel host, or a loopback peer.
+
+    Peer-loopback covers same-machine opens via hostname (e.g.
+    ``http://resiliencesoft:8000/client``) that would 403 on Host-only checks.
+    A quick-tunnel Host is allowed only when it is this process's
+    ``public_base_url``. Other public Hosts stay blocked.
+    """
     raw = (request.headers.get("host") or "").strip().lower()
     host = raw.split("%", 1)[0].split(":", 1)[0]
-    return host in _LOCAL_HOSTS
+    if host in _LOCAL_HOSTS:
+        return True
+    if _is_private_lan_host(host):
+        return True
+    if host and host == _active_tunnel_host():
+        return True
+    peer = (request.client.host if request.client else "") or ""
+    return peer in {"127.0.0.1", "::1"}
 
 
 def require_local_ops(request: Request) -> None:
     if not is_local_ops_host(request):
-        raise HTTPException(403, "client dashboard is local-only (open via localhost)")
+        raise HTTPException(
+            403,
+            "client dashboard is local/LAN-only "
+            "(open via localhost or a private LAN IP, not a public tunnel)",
+        )

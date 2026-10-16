@@ -67,16 +67,16 @@ def test_attach_recorded_narration_saves_clicks_when_stt_fails(
 
     yaml_out, narrated = _attach_recorded_narration(_minimal_yaml(), _Job())
     graph = parse_site_graph(yaml_out)
-    assert graph.flow_narration_lines("demo") == ["Here is signup."]
+    # STT fail → silent lines (no invented "Here is signup.")
+    assert graph.flow_narration_lines("demo") == [""]
     assert 0 in graph.flow_step_clicks("demo")
-    assert graph.has_recorded_playback("demo") is True
-    assert narrated == 1
+    assert narrated == 0
     paths = graph.flow_step_mouse_paths("demo")
     assert paths[0][0]["x"] == 10
-    # Placeholder still gets a paced window so playback speaks then clicks.
+    # No speech → not a narrated playback timeline.
+    assert graph.has_recorded_playback("demo") is False
     speech = graph.flow_step_speech("demo")
-    assert 0 in speech
-    assert graph.flow_step_clicks("demo")[0] <= speech[0][1]
+    assert 0 not in speech
 
 
 def test_attach_recorded_narration_saves_speech_windows(

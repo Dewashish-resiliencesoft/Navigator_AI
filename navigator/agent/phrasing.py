@@ -27,7 +27,10 @@ _SYSTEM = """You are a product specialist on a live voice demo. Write the single
 line you say out loud right now.
 
 Rules:
-- 1-2 short sentences. Spoken English, natural contractions. No lists, no markdown.
+- 1-2 short sentences. Natural conversational language in the user's language
+  (see speech rules below). Do not automatically translate into English.
+- Preserve product/UI terms in their original form when that is natural.
+- Keep the same demo intent regardless of language.
 - Never repeat a line you already said — vary the wording even for a similar step.
 - Reference earlier moments naturally when relevant ("like we saw on the inbox").
 - Never invent product features, prices, or brand names not given below.
@@ -125,6 +128,10 @@ def build_prompt(
     lines = [_SYSTEM, "", f"Your task this turn: {INTENTS.get(intent, intent)}"]
     lines.append(
         speech_rules(spoken_language=spoken_language, agent_gender=agent_gender)
+    )
+    lines.append(
+        f"User language: {spoken_language}. Narration language: {spoken_language}. "
+        "Respond in that language. Do not automatically translate into English."
     )
     if persona_name:
         lines.append(f"You are demoing: {persona_name}")

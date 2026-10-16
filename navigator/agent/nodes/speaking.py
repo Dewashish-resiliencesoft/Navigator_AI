@@ -11,6 +11,7 @@ import time
 
 from navigator.agent.speech_safety import prospect_safe_line
 from navigator.agent.state import CLEAR, CallDeps, CallState
+from navigator.agent.utterance import item_id, item_text, stamp_narration
 
 _FRAME_RETRY_S = 0.12
 
@@ -33,6 +34,26 @@ def _authored_lines(graph: object) -> set[str]:
     return out
 
 
+def _norm_words(t: str) -> str:
+    import re
+
+    return " ".join(re.findall(r"[a-z0-9']+", (t or "").lower()))
+
+
+def _is_user_echo(state: CallState, line: str) -> bool:
+    from difflib import SequenceMatcher
+
+    a = _norm_words(line)
+    if len(a) < 6:
+        return False
+    users = [str(t)[5:] for t in list(state.get("transcript") or [])[-8:] if str(t).startswith("user:")]
+    for u in users[-3:]:
+        b = _norm_words(u)
+        if b and (a == b or SequenceMatcher(None, a, b).ratio() >= 0.85):
+            return True
+    return False
+
+
 def _last_user_text(state: CallState) -> str:
     for line in reversed(state.get("transcript") or []):
         if isinstance(line, str) and line.startswith("user:"):
@@ -40,16 +61,18 @@ def _last_user_text(state: CallState) -> str:
     return ""
 
 
-def _say_mode(deps: CallDeps, line: str) -> str:
-    """Client-authored copy is spoken verbatim; anything we generated may flex.
+def _say_mode(deps: CallDeps, line: str) -> str:  # noqa: ARG001
+    """Demo narration always uses natural mode.
 
-    Narration written into the site graph is the Client's own wording and often
-    contractual, so it goes out word for word. Lines PLANNING phrased at runtime
-    are already ours, so letting Live deliver them naturally costs nothing.
+    Gemini Live's "word for word" verbatim instruction overrides the model's
+    prosody and produces robotic, choppy, monotone delivery. Natural mode lets
+    the model phrase the authored text with correct intonation, pauses, and
+    rhythm while still delivering the same content.
+
+    Intake Q&A uses "verbatim" separately (intake._say) to prevent the model
+    from rephrasing intake questions into answers — that path is unaffected.
     """
-    if deps.graph is None:
-        return "verbatim"
-    return "verbatim" if (line or "").strip() in _authored_lines(deps.graph) else "natural"
+    return "natural"
 
 
 def _ensure_frame_fresh(deps: CallDeps, last_hits: int | None) -> int | None:
@@ -74,6 +97,10 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
         deps.set_status("speaking", "Speaking…")
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("speaking")
+    from navigator.voice.conversation_language import publish_speech
+
+    preview = prospect_safe_line(item_text((state.get("narration") or [""])[0]))
+    publish_speech(deps, status="speaking", narration=preview)
     # Keep lead-in narration queued until EXECUTING starts cursor/action.
     if state.get("pending_calls"):
         return CallState()
@@ -81,27 +108,59 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
     if prior is not None and hasattr(prior, "wait"):
         prior.wait(timeout=120.0)
     live = deps.live_agent
+    from navigator.voice.language import SWITCH_ACK
+
+    queued_items = stamp_narration(state, state.get("narration") or [], kind="speak")
+    queued_text = [prospect_safe_line(item_text(x)) for x in queued_items]
+    # Never read the prospect's own words back to them (16:22: the planner
+    # queued "No, no. Still you are in the wrong page." and the bot said it).
+    echo_pairs = [(it, tx) for it, tx in zip(queued_items, queued_text) if not _is_user_echo(state, tx)]
+    if len(echo_pairs) != len(queued_items):
+        print(f"[speak] dropped {len(queued_items) - len(echo_pairs)} line(s) echoing the user's words", flush=True)
+        queued_items = [it for it, _ in echo_pairs]
+        queued_text = [tx for _, tx in echo_pairs]
+        if not queued_items:
+            return CallState(narration=CLEAR)
     # Live already answered conversational Q&A out loud. Re-saying the
     # planner's reply is a second voice on the same question. Walkthrough
     # lines still go out — those arrive with pending_calls or authored copy.
+    # Language-switch acks are director-owned (Live must not also ack).
+    switch_acks = set(SWITCH_ACK.values())
     if (
         live is not None
         and _last_user_text(state)
         and not state.get("pending_calls")
+        and not any((x or "").strip() in switch_acks for x in queued_text if x)
     ):
         authored = _authored_lines(deps.graph) if deps.graph is not None else set()
-        queued = [prospect_safe_line(x) for x in (state.get("narration") or [])]
-        if not any((x or "").strip() in authored for x in queued if x):
-            print("[speak] skip replay — Live already answered", flush=True)
-            return CallState(narration=CLEAR)
+        if not any((x or "").strip() in authored for x in queued_text if x):
+            ids = [item_id(x) for x in queued_items if item_id(x)]
+            print(
+                f"[speak] skip replay — Live already answered ids={ids} "
+                f"queue={len(queued_items)}",
+                flush=True,
+            )
+            return CallState(narration=CLEAR, spoken_utterance_ids=ids)
 
     interrupted = False
     last_hits: int | None = None
-    for line in state.get("narration") or []:
+    already = set(state.get("spoken_utterance_ids") or [])
+    consumed: list[str] = []
+    for item in queued_items:
         if interrupted:
             break
         if getattr(deps.speaker, "bot_ended", False):
-            return CallState(narration=CLEAR, finished=True, phase="ending")
+            return CallState(
+                narration=CLEAR,
+                finished=True,
+                phase="ending",
+                spoken_utterance_ids=consumed,
+            )
+        uid = item_id(item)
+        line = item_text(item)
+        if uid and uid in already:
+            print(f"[utterance] id={uid} skip replay queue={len(queued_items)}", flush=True)
+            continue
         last_hits = _ensure_frame_fresh(deps, last_hits)
         if deps.push_frame is not None:
             deps.push_frame()
@@ -110,26 +169,68 @@ def speaking(state: CallState, deps: CallDeps) -> CallState:
             continue
         if safe != line:
             print(f"[speak] scrubbed technical narration: {line!r}", flush=True)
+        print(
+            f"[utterance] id={uid} tts_start queue={len(queued_items)}",
+            flush=True,
+        )
+        snap = getattr(deps, "conversation_language", None)
+        lang = getattr(snap, "narration_language", None) or getattr(
+            deps, "spoken_language", None
+        )
+        try:
+            from navigator.logs.transcript_emit import classify_agent_kind, emit_transcript
+
+            # Live.say bypasses deps.speaker — emit here. Non-live goes through
+            # _RecordingSpeaker which already persists agent/agent_reply lines.
+            if live is not None:
+                kind = classify_agent_kind(state["session_id"], deps.product_id)
+                emit_transcript(
+                    product_id=deps.product_id,
+                    session_id=state["session_id"],
+                    kind=kind,
+                    page_id=str(state.get("page_id") or ""),
+                    text=safe,
+                )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[transcript] speak emit failed: {exc}", flush=True)
         if live is not None:
-            live.say(safe, mode=_say_mode(deps, line))
+            if lang in ("en", "hi") and hasattr(live, "set_language"):
+                live.set_language(lang)
+            live.say(safe, mode=_say_mode(deps, line), utterance_id=uid or None)
             if getattr(live, "interrupted", False):
-                # The prospect talked over us and Live is answering them. Let
-                # that exchange finish; the walkthrough step does not advance,
-                # so the next pass repeats from here.
                 from navigator.core.settings import settings
 
                 live.wait_until_idle(silence_s=settings.live_resume_silence_s)
                 interrupted = True
         else:
-            deps.speaker.say(safe)
+            try:
+                deps.speaker.say(safe, language=lang)
+            except TypeError:
+                deps.speaker.say(safe)
             if getattr(deps.speaker, "interrupted", False):
                 interrupted = True
+        print(
+            f"[utterance] id={uid} tts_end interrupted={interrupted}",
+            flush=True,
+        )
+        if uid:
+            consumed.append(uid)
+            already.add(uid)
         if deps.push_frame is not None:
             deps.push_frame()
         if deps.get_frame_hits is not None:
             last_hits = deps.get_frame_hits()
     if getattr(deps.speaker, "bot_ended", False):
-        return CallState(narration=CLEAR, finished=True, phase="ending")
+        return CallState(
+            narration=CLEAR,
+            finished=True,
+            phase="ending",
+            spoken_utterance_ids=consumed,
+        )
     if deps.set_avatar_state is not None:
         deps.set_avatar_state("idle")
-    return CallState(narration=CLEAR, pre_action_speech=None)
+    return CallState(
+        narration=CLEAR,
+        pre_action_speech=None,
+        spoken_utterance_ids=consumed,
+    )

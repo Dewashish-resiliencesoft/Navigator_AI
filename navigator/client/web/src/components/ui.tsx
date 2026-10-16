@@ -11,12 +11,15 @@ export function Card({
   span,
   interactive = true,
   onClick,
+  dataCoach,
 }: {
   children: ReactNode;
   className?: string;
   span?: string;
   interactive?: boolean;
   onClick?: () => void;
+  /** Spotlight coach target id (`data-coach`). */
+  dataCoach?: string;
 }) {
   const mx = useMotionValue(-200);
   const my = useMotionValue(-200);
@@ -27,6 +30,7 @@ export function Card({
       variants={rise}
       {...(interactive ? cardHover : {})}
       onClick={onClick}
+      data-coach={dataCoach}
       onPointerMove={(e) => {
         const r = e.currentTarget.getBoundingClientRect();
         mx.set(e.clientX - r.left);
@@ -253,6 +257,7 @@ export function Textarea({
   rows = 4,
   mono,
   className,
+  readOnly,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -260,12 +265,14 @@ export function Textarea({
   rows?: number;
   mono?: boolean;
   className?: string;
+  readOnly?: boolean;
 }) {
   return (
     <textarea
       value={value}
       rows={rows}
       placeholder={placeholder}
+      readOnly={readOnly}
       onChange={(e) => onChange(e.target.value)}
       className={cn(fieldBase, "resize-y", mono && "font-mono text-[0.78rem]", className)}
       style={{ borderColor: "var(--line)" }}
@@ -415,6 +422,8 @@ export function ConfirmDialog({
   onCancel,
   confirmLabel,
   danger,
+  extraLabel,
+  onExtra,
 }: {
   title: string;
   message: string;
@@ -422,6 +431,9 @@ export function ConfirmDialog({
   onCancel: () => void;
   confirmLabel?: string;
   danger?: boolean;
+  /** Optional third action (e.g. Discard), rendered left of Cancel in danger style. */
+  extraLabel?: string;
+  onExtra?: () => void;
 }) {
   // Portal to body: Card uses overflow-hidden + backdrop-blur, which makes
   // position:fixed resolve inside the card and clips the dialog.
@@ -462,6 +474,11 @@ export function ConfirmDialog({
           className="flex justify-end gap-2 border-t bg-black/[0.02] p-4 dark:bg-white/[0.02]"
           style={{ borderColor: "var(--line)" }}
         >
+          {extraLabel && onExtra && (
+            <Button variant="danger" className="mr-auto" onClick={onExtra}>
+              {extraLabel}
+            </Button>
+          )}
           <Button variant="ghost" onClick={onCancel}>
             Cancel
           </Button>

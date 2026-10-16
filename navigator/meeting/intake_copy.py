@@ -17,36 +17,85 @@ def _product_name(persona: Persona) -> str:
     return prospect_facing_persona(persona).product_name
 
 
+
+_HINGLISH = {
+    "bol", "rahi", "raha", "rahe", "ho", "hai", "hain", "kya", "nahi", "na", "haan",
+    "ji", "acha", "accha", "theek", "thik", "matlab", "yaar", "toh", "to", "ki", "ka",
+    "ke", "ko", "se", "mein", "main", "aap", "tum", "like", "um", "uh", "hmm", "okay",
+    "ok", "so", "the", "a", "an", "and", "is", "it", "i", "you", "me", "my", "just",
+}
+
+
+def clean_positioning(text: str, max_chars: int = 140) -> str:
+    """One clean spoken sentence from a one-liner that may be a raw page dump."""
+    import re
+
+    t = text or ""
+    t = re.sub(r"https?://\S+", " ", t)
+    t = re.sub(r"(?im)^\s*(url|title)\s*:.*$", " ", t)
+    t = re.sub(r"[#*_`>|\[\]]+", " ", t)
+    t = re.sub(r"\s+", " ", t).strip(" -:|")
+    m = re.search(r"(.+?[.!?])(\s|$)", t)
+    if m and len(m.group(1)) >= 20:
+        t = m.group(1)
+    if len(t) > max_chars:
+        t = t[:max_chars].rsplit(" ", 1)[0]
+    t = t.rstrip(" ,;:-.")
+    words = t.split()
+    # Nav-list dumps: mostly Capitalised single words, no verbs -> reject.
+    caps = sum(1 for w in words if w[:1].isupper())
+    if len(words) < 3 or (len(words) >= 5 and caps / len(words) > 0.7):
+        return ""
+    return t
+
+
+def short_need(text: str, max_words: int = 6) -> str:
+    """'I want to grow my business so can I use…' -> 'grow my business'."""
+    import re
+
+    t = (summarize_need(text or "") or text or "").strip().rstrip("?.! ")
+    t = re.sub(r"(?i)^(so\s+|well\s+|um+\s+)?(i|we)\s+(want|would like|'d like|need|wanna)\s+(to\s+)?", "", t)
+    t = re.split(r"(?i)\s+(so|and|but|because|can i|could i)\s+|[,?;]", t)[0].strip()
+    words = t.split()
+    if not words or len(words) > max_words:
+        return ""
+    return t
+
+
+def meaningful_need(text: str) -> str:
+    """Return the need only if it reads like a real ask (not Hinglish/noise)."""
+    import re
+
+    t = short_need(text or "")
+    toks = re.findall(r"[A-Za-z]+", t.lower())
+    if len(t) < 4 or not toks:
+        return ""
+    filler = sum(1 for w in toks if w in _HINGLISH)
+    content = [w for w in toks if w not in _HINGLISH and len(w) > 2]
+    if not content or filler / len(toks) >= 0.4:
+        return ""
+    return t
+
 def solution_blurb(persona: Persona, looking_for: str) -> str:
-    """Map prospect need → product angle (short, spoken)."""
+    """Map prospect need → product angle (short, spoken). Tenant-neutral."""
     persona = prospect_facing_persona(persona)
-    need = (looking_for or "").lower()
+    need = meaningful_need(looking_for)
     product = persona.product_name
-    if any(k in need for k in ("inbox", "chat", "message", "reply", "conversation")):
+    positioning = clean_positioning(persona.one_liner or "")
+    if positioning and need:
         return (
-            f"{product} gives your team a shared WhatsApp inbox so nothing slips "
-            f"between phones — exactly for that conversation problem."
+            f"{product} is {positioning} — we'll focus the walkthrough on what "
+            f"you asked about: {summarize_need(need) or need}."
         )
-    if any(k in need for k in ("contact", "lead", "crm", "customer", "pipeline")):
+    if positioning:
+        return f"{product} is {positioning} — I'll tailor the walkthrough to you."
+    if need:
+        short = summarize_need(need) or need
         return (
-            f"{product} keeps every WhatsApp lead and customer in one contacts "
-            f"view so the team shares one source of truth."
+            f"I'll show how {product} helps with {short} — "
+            f"we will walk the parts that matter for you."
         )
-    if any(
-        k in need
-        for k in ("automat", "flow", "bot", "qualify", "24", "scale", "chatbot")
-    ):
-        return (
-            f"{product} runs chat flows that greet, qualify, and route people "
-            f"on WhatsApp without someone typing every reply."
-        )
-    if any(k in need for k in ("analytic", "report", "metric", "convert", "funnel")):
-        return (
-            f"{product} surfaces conversation analytics — volume, response time, "
-            f"what converts — so you can see the funnel clearly."
-        )
-    positioning = persona.one_liner or "WhatsApp CRM and automation for sales teams"
-    return f"{product} is {positioning} — we'll focus the walkthrough on what you asked for."
+    return f"I'll walk you through {product} live, step by step."
 
 
 def demo_kickoff_line(*, lang: SpokenLanguage = "en") -> str:
@@ -66,22 +115,28 @@ def greet_line(
 
     persona = prospect_facing_persona(persona)
     who = prospect_name.strip()
+    # Only use a name we already collected (form prefill). Unknown → short
+    # self-intro; "What is your name?" follows — never "Hi there" + later ack.
     if lang == "hi":
         if who:
-            open_ = f"नमस्ते {who}, मैं {persona.agent_name} हूँ।"
-        else:
-            open_ = f"नमस्ते, मैं {persona.agent_name} हूँ।"
-        tail_f = (
-            f"जुड़ने के लिए धन्यवाद — अभी {persona.product_name} live दिखाती हूँ।"
+            return (
+                f"नमस्ते {who}, मैं {persona.agent_name} हूँ। "
+                f"जुड़ने के लिए धन्यवाद — अभी {persona.product_name} live दिखा"
+                f"{'ता' if agent_gender == 'male' else 'ती'} हूँ।"
+            )
+        return (
+            f"नमस्ते, मैं {persona.agent_name} हूँ। "
+            f"आज {persona.product_name} live दिखा"
+            f"{'ऊंगा' if agent_gender == 'male' else 'ऊँगी'}।"
         )
-        tail_m = (
-            f"जुड़ने के लिए धन्यवाद — अभी {persona.product_name} live दिखाता हूँ।"
+    if who:
+        return (
+            f"Hi {who}, I'm {persona.agent_name}. Thanks for joining — "
+            f"I'll show you {persona.product_name} live in just a moment."
         )
-        return open_ + " " + (tail_m if agent_gender == "male" else tail_f)
-    who_en = who or "there"
     return (
-        f"Hi {who_en}, I'm {persona.agent_name}. Thanks for joining — "
-        f"I'll show you {persona.product_name} live in just a moment."
+        f"Hi, I'm {persona.agent_name}. Thanks for joining — "
+        f"I'll show you {persona.product_name} live today."
     )
 
 
@@ -124,7 +179,7 @@ def pitch_line(
     will_share_screen: bool = True,
 ) -> str:
     name = intake.name or ("वहाँ" if lang == "hi" else "there")
-    need = summarize_need(intake.looking_for) if intake.looking_for else ""
+    need = meaningful_need(intake.looking_for) if intake.looking_for else ""
     solve = (
         solution_blurb(persona, intake.looking_for)
         if need

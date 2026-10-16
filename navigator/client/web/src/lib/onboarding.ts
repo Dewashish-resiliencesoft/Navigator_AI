@@ -56,43 +56,69 @@ export function isOnboardingCardHidden(): boolean {
   return _userPrefs?.hide_get_started_card ?? false;
 }
 
-export async function loadUserPreferences(): Promise<UserPreferences> {
-  try {
-    _userPrefs = await api.getUserPreferences();
-  } catch {
-    _userPrefs = {
-      hide_get_started_card: false,
-      onboarding_wizard_dismissed: false,
-      onboarding_wizard_completed: false,
-    };
-  }
-  return _userPrefs;
+function emptyPrefs(): UserPreferences {
+  return {
+    hide_get_started_card: false,
+    onboarding_wizard_dismissed: false,
+    onboarding_wizard_completed: false,
+    email: "",
+    product_name: "",
+    product_id: "",
+  };
+}
+
+function mergePrefs(
+  prev: UserPreferences | null,
+  next: UserPreferences,
+): UserPreferences {
+  return {
+    hide_get_started_card: !!next.hide_get_started_card,
+    onboarding_wizard_dismissed: !!next.onboarding_wizard_dismissed,
+    onboarding_wizard_completed: !!next.onboarding_wizard_completed,
+    email: String(next.email || prev?.email || "").trim(),
+    product_name: String(next.product_name || prev?.product_name || "").trim(),
+    product_id: String(next.product_id || prev?.product_id || "").trim(),
+  };
+}
+
+export async function hideOnboardingCard(): Promise<void> {
+  const next = await api.putUserPreferences({ hide_get_started_card: true });
+  _userPrefs = mergePrefs(_userPrefs, next);
+}
+
+export async function showOnboardingCard(): Promise<void> {
+  const next = await api.putUserPreferences({ hide_get_started_card: false });
+  _userPrefs = mergePrefs(_userPrefs, next);
+}
+
+export async function dismissOnboardingWizard(): Promise<void> {
+  const next = await api.putUserPreferences({
+    onboarding_wizard_dismissed: true,
+    hide_get_started_card: true,
+  });
+  _userPrefs = mergePrefs(_userPrefs, next);
+}
+
+export async function completeOnboardingWizard(): Promise<void> {
+  const next = await api.putUserPreferences({
+    onboarding_wizard_completed: true,
+    hide_get_started_card: true,
+  });
+  _userPrefs = mergePrefs(_userPrefs, next);
 }
 
 export function cachedUserPreferences(): UserPreferences | null {
   return _userPrefs;
 }
 
-export async function hideOnboardingCard(): Promise<void> {
-  _userPrefs = await api.putUserPreferences({ hide_get_started_card: true });
-}
-
-export async function showOnboardingCard(): Promise<void> {
-  _userPrefs = await api.putUserPreferences({ hide_get_started_card: false });
-}
-
-export async function dismissOnboardingWizard(): Promise<void> {
-  _userPrefs = await api.putUserPreferences({
-    onboarding_wizard_dismissed: true,
-    hide_get_started_card: true,
-  });
-}
-
-export async function completeOnboardingWizard(): Promise<void> {
-  _userPrefs = await api.putUserPreferences({
-    onboarding_wizard_completed: true,
-    hide_get_started_card: true,
-  });
+export async function loadUserPreferences(): Promise<UserPreferences> {
+  try {
+    const raw = await api.getUserPreferences();
+    _userPrefs = mergePrefs(null, raw);
+  } catch {
+    _userPrefs = emptyPrefs();
+  }
+  return _userPrefs;
 }
 
 export function shouldAutoOpenWizard(): boolean {

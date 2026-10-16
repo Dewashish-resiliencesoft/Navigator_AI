@@ -4,6 +4,15 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .env
+.env.*
+!.env.example
+.env.bak*
+atlas-credentials.env
+cloudinary.env
+navigator-cloud.env
+atlas-credentials.env
+cloudinary.env
+navigator-cloud.env
 navigator.db
 archives/
 voices/

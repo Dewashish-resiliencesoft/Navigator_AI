@@ -149,17 +149,7 @@ def assess_demo_readiness(
             autonomy_mode=autonomy_mode,
         )
 
-    autonomy_mode = getattr(product, "autonomy_mode", None) or autonomy_mode
-
-    if origin == "public_embed" and autonomy_mode == "explorer":
-        checks.append(
-            ReadinessCheck(
-                id="explorer_embed",
-                ok=False,
-                message="Explorer mode is not allowed on the public embed.",
-                blocking=True,
-            )
-        )
+    autonomy_mode = "guided"
 
     published_rev: int | None = None
     try:
@@ -284,6 +274,38 @@ def assess_demo_readiness(
         )
     )
 
+    # Guided stubs with zero binds: demo would only show the home page.
+    try:
+        from navigator.automation.guided_task.apply import playlist_unbound_guided
+        import yaml as _yaml
+
+        if origin == "dashboard_test":
+            rev = registry.latest_revision(product_id)
+            raw = _yaml.safe_load(rev.yaml)
+            if isinstance(raw, dict) and playlist_unbound_guided(raw):
+                checks.append(
+                    ReadinessCheck(
+                        id="guided_stubs",
+                        ok=False,
+                        message=(
+                            "Guided plan exists but no selectors are bound yet — "
+                            "record the flow (Update existing) before starting a test demo."
+                        ),
+                        blocking=True,
+                    )
+                )
+            else:
+                checks.append(
+                    ReadinessCheck(
+                        id="guided_stubs",
+                        ok=True,
+                        message="Guided stubs bound or no unbound guided plan.",
+                        blocking=False,
+                    )
+                )
+    except Exception:  # noqa: BLE001
+        pass
+
     k_count = _knowledge_count(product_id, chroma_path)
     sem_ok = _flow_has_semantics_or_triggers(graph)
     knowledge_ok = k_count > 0 or sem_ok
@@ -296,7 +318,7 @@ def assess_demo_readiness(
                 if knowledge_ok
                 else "Add product knowledge or flow triggers so questions get answered."
             ),
-            blocking=autonomy_mode == "adaptive",
+            blocking=False,
         )
     )
 

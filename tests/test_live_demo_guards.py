@@ -188,15 +188,27 @@ def test_missing_attendee_key_is_still_refused(monkeypatch):
         _require_live_settings("https://meet.google.com/x")
 
 
-def test_live_demo_prefills_name_from_meeting_display():
+def test_live_demo_asks_name_not_meet_display_prefill():
+    """Meet display is often the Client host — always ask the visitor's name."""
     import inspect
 
     from navigator.meeting.live_demo import run_live_meet_demo
 
     src = inspect.getsource(run_live_meet_demo)
     assert "usable_meeting_display_name" in src
-    assert 'merged_prefill["name"]' in src
+    assert 'merged_prefill["name"]' not in src
+    assert "still asking name" in src
 
+
+def test_intake_summary_has_no_speakable_address_instruction():
+    from navigator.meeting.intake import ProspectIntake
+    from navigator.meeting.live_demo import _intake_summary
+
+    s = _intake_summary(ProspectIntake(name="Dewashish Hatekar", looking_for="inbox"))
+    assert "Dewashish Hatekar" in s
+    assert "Address this person" not in s
+    assert "Say the name" not in s
+    assert "anglicise" not in s
 
 def test_live_box_initialized_before_join_try():
     """Join fail hits finally; live_box must exist before wait_until_joined."""

@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "watch": "vite build --watch",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
     "clsx": "^2.1.1",
-    "lottie-react": "^2.4.1",
+    "lottie-react": "^2.4.2",
     "lucide-react": "^0.469.0",
     "motion": "^11.15.0",
     "react": "^19.0.0",

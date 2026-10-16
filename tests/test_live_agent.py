@@ -111,12 +111,26 @@ def test_interrupted_flushes_downstream_audio():
     bridge = FakeBridge()
     events: list = []
     agent = _agent(bridge, events)
+    agent.director_only = False
     agent.speaking = True
+    agent._barge_confirm_s = 0.0
     agent._handle_server_message(_msg(interrupted=True))
+    assert bridge.flushes == 0
+    assert agent.interrupted is False
+    agent._handle_server_message(_msg(interrupted=True))
+    assert bridge.flushes == 0  # VAD alone (noise) never confirms
+    noise = SimpleNamespace(interrupted=False, model_turn=None, turn_complete=False,
+                            output_transcription=None, input_transcription=SimpleNamespace(text="e"))
+    agent._handle_server_message(SimpleNamespace(server_content=noise, data=None))
+    assert bridge.flushes == 0  # 'e' is STT noise
+    real = SimpleNamespace(interrupted=False, model_turn=None, turn_complete=False,
+                           output_transcription=None,
+                           input_transcription=SimpleNamespace(text="wait, can you show billing"))
+    agent._handle_server_message(SimpleNamespace(server_content=real, data=None))
     assert bridge.flushes == 1
     assert agent.interrupted is True
     assert agent.speaking is False
-    assert [e.kind for e in events] == ["interrupted"]
+    assert [e.kind for e in events][0] == "interrupted"
 
 
 def test_interrupted_does_not_also_queue_that_turns_audio():
@@ -320,6 +334,7 @@ def test_barge_in_skips_the_drain_wait(monkeypatch):
     """The queue was flushed — that audio will never play, so do not wait."""
     agent = _agent(FakeBridge())
     agent.interrupted = True
+    agent._barge_state = "confirmed"
     assert _drain_wait(agent, monkeypatch, sent_s=3.0, elapsed_s=0.0) == 0.0
 
 

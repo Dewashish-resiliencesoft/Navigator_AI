@@ -31,9 +31,11 @@ class GeminiProvider:
     """Free tier vision/text; models overridable via settings."""
 
     def __init__(self, api_key: str) -> None:
+        from navigator.core.gemini_keys import normalize_gemini_model
+
         self.api_key = api_key
-        self.text_model = settings.brain_vision_text_model
-        self.vision_model = settings.brain_vision_image_model
+        self.text_model = normalize_gemini_model(settings.brain_vision_text_model)
+        self.vision_model = normalize_gemini_model(settings.brain_vision_image_model)
 
     def complete(self, system: str, user: str) -> str:
         from navigator.core.gemini_keys import gemini_key_candidates, is_gemini_quota_error

@@ -62,8 +62,11 @@ def test_outbound_pcm_sends_without_any_inbound_traffic():
         asyncio.run(client())
         assert got, "no bot_output frame received"
         assert got[0]["trigger"] == "realtime_audio.bot_output"
+        # Native 24 kHz: Attendee upsamples itself (pre-upsampled 48k crashed it).
         assert got[0]["data"]["sample_rate"] == 24000
-        assert base64.b64decode(got[0]["data"]["chunk"])[:2] == b"\x02\x03"
+        decoded = base64.b64decode(got[0]["data"]["chunk"])
+        assert len(decoded) == 80  # native rate, not upsampled
+        assert decoded[:4] == b"\x02\x03\x02\x03"
     finally:
         bridge.stop()
 
@@ -111,10 +114,16 @@ def test_audio_s_sent_counts_playback_seconds():
             ) as ws:
                 # 24000 samples of 16-bit mono at 24 kHz = exactly 1.0s.
                 bridge.push_outbound_pcm(b"\x00\x01" * 24000, sample_rate=24000)
-                await asyncio.wait_for(ws.recv(), timeout=5)
+                # Coalesce sends ~100ms frames — keep socket open until all arrive.
+                deadline = asyncio.get_event_loop().time() + 5
+                while bridge.audio_s_sent < 0.99 and asyncio.get_event_loop().time() < deadline:
+                    try:
+                        await asyncio.wait_for(ws.recv(), timeout=0.5)
+                    except TimeoutError:
+                        pass
 
         asyncio.run(client())
-        assert bridge.audio_s_sent == 1.0
+        assert abs(bridge.audio_s_sent - 1.0) < 0.05
     finally:
         bridge.stop()
 
@@ -151,6 +160,18 @@ def test_outbound_holds_until_attendee_ws_connects():
         asyncio.run(run())
         assert got, "late Attendee WS never received queued bot audio"
         assert got[0]["trigger"] == "realtime_audio.bot_output"
+        assert got[0]["data"]["sample_rate"] == 16000
         assert base64.b64decode(got[0]["data"]["chunk"])[:2] == b"\x04\x05"
     finally:
         bridge.stop()
+
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _native_rate(monkeypatch):
+    # Unpatched-Attendee path: bridge sends native rate.
+    import navigator.meeting.audio_bridge as ab
+
+    monkeypatch.setattr(ab, "_PATCH_OK", False)

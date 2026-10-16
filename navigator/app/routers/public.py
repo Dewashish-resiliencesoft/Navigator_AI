@@ -1,0 +1,65 @@
+"""Public HTML / health surfaces (not /client/api)."""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.staticfiles import StaticFiles
+
+from navigator.client.dashboard import (
+    WEB_ASSETS,
+    client_index_headers,
+    client_index_html,
+    require_local_ops,
+)
+from navigator.client.record_proxy import proxy_record_document
+
+router = APIRouter()
+
+@router.get("/")
+def root() -> RedirectResponse:
+    """Landing URL when the API starts — Client dashboard, not OpenAPI docs."""
+    return RedirectResponse(url="/client", status_code=307)
+
+@router.get("/healthz")
+def healthz() -> dict[str, str]:
+    return {"status": "ok"}
+
+@router.get("/client", response_class=HTMLResponse)
+def client_console(request: Request) -> HTMLResponse:
+    require_local_ops(request)
+    return HTMLResponse(client_index_html(), headers=client_index_headers())
+
+@router.get("/ops")
+def legacy_ops_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/client", status_code=307)
+
+
+@router.api_route(
+    "/client/record-surf/{token}",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+@router.api_route(
+    "/client/record-surf/{token}/{path:path}",
+    methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+)
+async def client_record_surf(
+    token: str, request: Request, path: str = ""
+) -> Response:
+    """Product page for manual record, shown in the dashboard user's browser."""
+    require_local_ops(request)
+    body = await request.body()
+    # proxy_record_document is blocking (httpx sync). Calling it directly in
+    # this async route froze the event loop, so every asset of the product
+    # loaded one after another (18s landing vs 1.8s direct) and clicks did
+    # nothing until the JS bundles finally hydrated.
+    from starlette.concurrency import run_in_threadpool
+
+    return await run_in_threadpool(proxy_record_document, token, path, request, body)
+
+
+def mount_client_assets(app: FastAPI) -> None:
+    """Mount Vite-built client assets when the directory exists."""
+    if WEB_ASSETS.is_dir():
+        # Vite emits content-hashed filenames, so these are safe to cache hard.
+        app.mount("/client/assets", StaticFiles(directory=WEB_ASSETS), name="client-assets")

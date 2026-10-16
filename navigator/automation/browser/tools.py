@@ -1,6 +1,6 @@
 """The agent's entire vocabulary for touching the browser.
 
-Four tools, no free-form DOM access. Callers pass a selector *alias*; the alias is
+Five tools, no free-form DOM access. Callers pass a selector *alias*; the alias is
 resolved through the site graph here, so no caller -- including a Phase 2 LLM --
 can invent a selector.
 
@@ -22,6 +22,7 @@ from navigator.core.schemas import (
     ClickElement,
     FillField,
     Navigate,
+    ScrollPage,
     ToolCall,
     ToolResult,
     WaitFor,
@@ -217,9 +218,44 @@ def wait_for(
     return f"{call.selector} appeared", page_id
 
 
+def scroll_page(
+    page: Page,
+    graph: SiteGraph,
+    page_id: str,
+    call: ScrollPage,
+    *,
+    on_frame: Callable[[], None] | None = None,
+    mouse_path: list[dict[str, int]] | None = None,
+) -> tuple[str, str]:
+    x = int(call.x or 0)
+    y = int(call.y or 0)
+    alias = (call.selector or "").strip()
+    if alias and alias.lower() != "body":
+        css = graph.selector(page_id, alias)
+        page.locator(css).first.evaluate(
+            "(el, pos) => { el.scrollTo({left: pos.x, top: pos.y, behavior: 'smooth'}); }",
+            {"x": x, "y": y},
+        )
+    else:
+        page.evaluate(
+            "(pos) => { window.scrollTo({left: pos.x, top: pos.y, behavior: 'smooth'}); }",
+            {"x": x, "y": y},
+        )
+    try:
+        from navigator.automation.browser.cursor import _paced_wait
+
+        _paced_wait(page, 350, on_frame)
+    except Exception:  # noqa: BLE001
+        if on_frame is not None:
+            on_frame()
+    where = alias or "window"
+    return f"scrolled {where} to ({x},{y})", page_id
+
+
 _HANDLERS: dict[str, Callable[..., tuple[str, str]]] = {
     "click_element": click_element,
     "fill_field": fill_field,
     "navigate": navigate,
     "wait_for": wait_for,
+    "scroll_page": scroll_page,
 }

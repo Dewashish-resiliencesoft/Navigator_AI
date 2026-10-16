@@ -4,6 +4,15 @@ export type UserPreferences = {
   hide_get_started_card: boolean;
   onboarding_wizard_dismissed: boolean;
   onboarding_wizard_completed: boolean;
+  email: string;
+  product_name: string;
+  product_id?: string;
+};
+
+export type AccountInfo = {
+  email: string;
+  product_name: string;
+  product_id: string;
 };
 
 export type DemoOrigin = "dashboard_test" | "public_embed";
@@ -13,6 +22,12 @@ export type AutonomyMode = "guided" | "adaptive" | "explorer";
 export type SpokenLanguage = "en" | "hi";
 export type AgentGender = "female" | "male";
 
+export type ProviderModel = {
+  id: string;
+  label: string;
+  tags: string[];
+};
+
 export type AgentSettings = {
   default_language: SpokenLanguage;
   extra_languages: SpokenLanguage[];
@@ -20,8 +35,31 @@ export type AgentSettings = {
   agent_name: string;
   tone: string;
   gemini_voice: string;
+  live_conversational_model: string;
+  brain_reasoning_model: string;
+  brain_planning_model: string;
+  brain_phrasing_model: string;
+  brain_classify_model: string;
+  brain_stt_model: string;
+  brain_vision_text_model: string;
+  brain_vision_image_model: string;
+  role_brain_provider: string;
+  role_brain_model: string;
+  role_listening_provider: string;
+  role_listening_model: string;
+  role_speaking_provider: string;
+  role_speaking_model: string;
+  role_hands_provider: string;
+  role_hands_model: string;
   has_gemini_api_key: boolean;
   has_groq_api_key: boolean;
+  has_openai_api_key: boolean;
+  has_anthropic_api_key: boolean;
+  has_openrouter_api_key: boolean;
+  has_huggingface_api_key: boolean;
+  ollama_base_url: string;
+  vllm_base_url: string;
+  llamacpp_base_url: string;
   updated_at: string | null;
 };
 
@@ -57,6 +95,14 @@ export type DecisionTrace = {
   created_at: string;
 };
 
+export type MeetingTranscriptLine = {
+  id: string;
+  kind: "screen" | "agent" | "visitor" | "agent_reply" | string;
+  page_id: string;
+  text: string;
+  created_at: string;
+};
+
 export type Demo = {
   demo_id: string;
   product_id: string;
@@ -73,6 +119,12 @@ export type Demo = {
   platform: string | null;
   bot_in_meeting: boolean;
   leave_grace_remaining: number | null;
+  language?: string;
+  language_code?: string;
+  language_confidence?: number;
+  current_narration?: string;
+  speech_status?: string;
+  live_log?: string[];
 };
 
 export type BioField = { key: string; label: string; value: string };
@@ -135,6 +187,8 @@ export type SystemMetrics = {
   } | null;
 };
 export type DemoScriptBeat = {
+  /** Client-edited display name for the step (draft `_meta.step_names`). */
+  step_name?: string;
   id: string;
   kind: string;
   spoken?: string;
@@ -148,6 +202,13 @@ export type DemoScriptBeat = {
   phase?: string;
   field?: string;
   field_alias?: string;
+  tool?: string;
+  fill_mode?: "sample" | "ask" | "ref";
+  input_type?: string;
+  /** Dropdown options for SELECTION input type */
+  input_options?: string[];
+  confirm_before?: boolean;
+  value_ref?: string | null;
   live_question?: string;
   example_value?: string;
   knowledge_refs?: string[];
@@ -161,11 +222,43 @@ export type DemoScriptBeat = {
   approval_reason?: string;
 };
 
+export type DemoVariable = {
+  alias: string;
+  label?: string;
+  live_question?: string;
+  example_value?: string;
+  input_type?: string;
+  flow_id?: string;
+  step_index?: number;
+};
+
+export const INPUT_TYPES = [
+  "text",
+  "name",
+  "email",
+  "phone",
+  "company",
+  "number",
+  "date",
+  "selection",
+  "confirmation",
+] as const;
+
+export type NarrationStatus = {
+  captured: boolean;
+  narrated_steps: number;
+  steps: number;
+  reason: string;
+  audio_bytes: number;
+};
+
 export type DemoScriptResponse = {
+  narration_status?: Record<string, NarrationStatus>;
   revision: number;
   published_revision: number | null;
   playlist: Flow[];
   beats: DemoScriptBeat[];
+  demo_variables?: DemoVariable[];
   context?: string;
   sources_used?: string[];
   /** Recorded length of each flow in ms, keyed by flow_id. */
@@ -188,6 +281,10 @@ export type Flow = {
   verdict?: "ready" | "needs_review" | "broken" | string;
   risk_score?: number;
   pass_rate?: number;
+  /** Number of steps that ask the visitor for input */
+  asks_visitor_count?: number;
+  /** Number of steps that reuse a visitor variable */
+  reuses_variable_count?: number;
 };
 
 export type RecorderStatus = {
@@ -197,12 +294,20 @@ export type RecorderStatus = {
   steps?: number;
   flow_name?: string | null;
   error?: string | null;
-  phase?: "setup" | "capturing" | "done" | string;
+  phase?: "setup" | "capturing" | "stopping" | "done" | string;
   setup_discarded?: number;
   flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
   narrate?: boolean;
   narration_chunks?: number;
+  flow_id?: string | null;
+  done?: boolean;
+  paused?: boolean;
+  live_transcript?: Array<{ at_ms: number; text: string }>;
+  live_error?: string;
+  live_steps?: Array<{ index: number; label: string; tool: string; at_ms: number }>;
   save_mode?: "new" | "update" | string;
+  /** Studio Stop — dashboard must POST /record/stop to merge/save. */
+  needs_merge?: boolean;
 };
 
 export type ExploreQuestion = {
@@ -256,8 +361,71 @@ export type ExploreStatus = {
   error?: string;
   flow_id?: string;
   revision?: number | null;
+  repairs_used?: number;
   stop_reason?: string;
   pending_question?: ExploreQuestion | null;
+};
+
+export type GuidedTaskProgress = {
+  flows_total: number;
+  flows_bound: number;
+  steps_total: number;
+  steps_bound: number;
+};
+
+export type GuidedTaskStatus = {
+  has_plan: boolean;
+  task_id?: string;
+  prompt?: string;
+  flows?: {
+    name: string;
+    flow_id: string;
+    steps: number;
+    step_list?: { kind: string; label: string; alias: string }[];
+  }[];
+  progress?: GuidedTaskProgress;
+  percent_bound?: number;
+  hands?: GuidedHandsStatus;
+};
+
+export type GuidedTaskPlanResult = {
+  ok: boolean;
+  task_id: string;
+  flows_created: number;
+  steps_total: number;
+  playlist: Flow[];
+  revision: number;
+  guided: GuidedTaskStatus;
+};
+
+export type GuidedHandsQuestion = {
+  qid: string;
+  alias: string;
+  prompt: string;
+  kind?: string;
+  context?: Record<string, string>;
+  candidates?: { index: number; label: string; tag: string }[];
+};
+
+export type GuidedHandsStatus = {
+  active: boolean;
+  phase?: string;
+  progress?: {
+    flows_total: number;
+    flows_done: number;
+    steps_total: number;
+    steps_done: number;
+    flow_index: number;
+    step_index: number;
+  };
+  current_flow?: string | null;
+  current_flow_id?: string | null;
+  current_step?: string | null;
+  current_step_kind?: string | null;
+  question?: GuidedHandsQuestion;
+  log?: string[];
+  client_paused?: boolean;
+  barged?: boolean;
 };
 
 /** One frame off the exploration WebSocket. `type` discriminates the payload. */
@@ -512,8 +680,12 @@ export const api = {
   },
 
   getUserPreferences: () => get<UserPreferences>("/client/api/user/preferences"),
-  putUserPreferences: (patch: Partial<UserPreferences>) =>
-    send<UserPreferences>("/client/api/user/preferences", "PUT", patch),
+  getAccount: () => get<AccountInfo>("/client/api/account"),
+  putUserPreferences: (patch: {
+    hide_get_started_card?: boolean;
+    onboarding_wizard_dismissed?: boolean;
+    onboarding_wizard_completed?: boolean;
+  }) => send<UserPreferences>("/client/api/user/preferences", "PUT", patch),
   bootstrap: () =>
     request<{ ok: boolean; product_id: string; api_key: string | null; message: string }>(
       "/client/api/bootstrap",
@@ -544,30 +716,115 @@ export const api = {
   getRun: (sessionId: string) => get<DemoRun>(`/client/api/runs/${sessionId}`),
   runEvents: (sessionId: string) =>
     get<RunEvent[]>(`/client/api/runs/${sessionId}/events`),
+  runTranscript: (sessionId: string) =>
+    get<MeetingTranscriptLine[]>(`/client/api/runs/${sessionId}/transcript`),
 
   getBio: () => get<{ fields: BioField[] }>("/client/api/bio"),
   putBio: (fields: BioField[]) => send<unknown>("/client/api/bio", "PUT", { fields }),
 
-  getKnowledge: () => get<{ markdown: string }>("/client/api/knowledge"),
+  getKnowledge: () =>
+    get<{
+      markdown: string;
+      user_markdown?: string;
+      explore_markdown?: string;
+      merged_at?: string | null;
+    }>("/client/api/knowledge"),
   putKnowledge: (markdown: string) =>
-    send<unknown>("/client/api/knowledge", "PUT", { markdown }),
+    send<{
+      markdown: string;
+      chroma_id?: string | null;
+      site_graph_revision?: number;
+      promoted_pages?: number;
+    }>("/client/api/knowledge", "PUT", { markdown }),
+  putKnowledgeUser: (markdown: string) =>
+    send<{
+      ok: boolean;
+      markdown: string;
+      user_markdown: string;
+      explore_markdown: string;
+      merged_at?: string | null;
+    }>("/client/api/knowledge/user", "PUT", { markdown }),
+
+  getProductExplore: () =>
+    get<{
+      active: boolean;
+      phase?: string;
+      pages_seen?: number;
+      max_pages?: number;
+      progress_pct?: number;
+      current_url?: string;
+      current_title?: string;
+      looking_at?: string;
+      error?: string | null;
+      done?: boolean;
+      start_url?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore"),
+  startProductExplore: (start_url?: string) =>
+    send<{
+      active: boolean;
+      phase?: string;
+      pages_seen?: number;
+      max_pages?: number;
+      progress_pct?: number;
+      current_url?: string;
+      current_title?: string;
+      looking_at?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>(
+      "/client/api/product-explore/start",
+      "POST",
+      { start_url: start_url || "" },
+    ),
+  stopProductExplore: () =>
+    send<{
+      active: boolean;
+      progress_pct?: number;
+      looking_at?: string;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore/stop", "POST"),
+  ackProductExplore: () =>
+    send<{
+      active: boolean;
+      phase?: string;
+      done?: boolean;
+      artifacts?: {
+        id: string;
+        label: string;
+        detail?: string;
+        status: "pending" | "running" | "ok" | "warn" | "fail";
+      }[];
+    }>("/client/api/product-explore/ack", "POST"),
+  getProductTopology: () =>
+    get<{ yaml: string; updated_at: string | null; page_count: number }>(
+      "/client/api/product-explore/topology",
+    ),
+  promoteProductExplore: () =>
+    send<{
+      ok: boolean;
+      revision: number;
+      page_count: number;
+      yaml: string;
+      message?: string;
+    }>("/client/api/product-explore/promote", "POST"),
 
   getProductDomain: () => get<{ base_url: string; placeholder: boolean }>("/client/api/product-domain"),
   putProductDomain: (base_url: string) => send<{ ok: boolean; base_url: string; revision: number; placeholder: boolean }>("/client/api/product-domain", "PUT", { base_url }),
-  getTier2: () => get<{ enabled: boolean }>("/client/api/tier2"),
-  putTier2: (enabled: boolean) =>
-    send<{ ok: boolean; enabled: boolean }>("/client/api/tier2", "PUT", { enabled }),
-
-  getAutonomyMode: () =>
-    get<{ mode: AutonomyMode; tier2_enabled: boolean; handoff_webhook_url: string }>(
-      "/client/api/autonomy-mode",
-    ),
-  putAutonomyMode: (mode: AutonomyMode) =>
-    send<{ ok: boolean; mode: AutonomyMode; tier2_enabled: boolean }>(
-      "/client/api/autonomy-mode",
-      "PUT",
-      { mode },
-    ),
 
   getDemoReadiness: (origin: DemoOrigin = "dashboard_test") =>
     get<DemoReadiness>(`/client/api/demo-readiness?origin=${origin}`),
@@ -608,13 +865,55 @@ export const api = {
   putAgentProviderKeys: (body: {
     gemini_api_key?: string | null;
     groq_api_key?: string | null;
+    openai_api_key?: string | null;
+    anthropic_api_key?: string | null;
+    openrouter_api_key?: string | null;
+    huggingface_api_key?: string | null;
   }) =>
     send<{
       ok: boolean;
       has_gemini_api_key: boolean;
       has_groq_api_key: boolean;
+      has_openai_api_key: boolean;
+      has_anthropic_api_key: boolean;
+      has_openrouter_api_key: boolean;
+      has_huggingface_api_key: boolean;
       updated_at: string | null;
     }>("/client/api/agent-provider-keys", "PUT", body),
+  getAgentProviderModels: (
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface"
+  ) =>
+    get<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      `/client/api/agent-provider-models?provider=${provider}`,
+    ),
+  previewAgentProviderModels: (body: {
+    provider:
+      | "gemini"
+      | "groq"
+      | "openai"
+      | "anthropic"
+      | "ollama"
+      | "vllm"
+      | "llamacpp"
+      | "openrouter"
+      | "huggingface";
+    api_key?: string;
+    base_url?: string;
+  }) =>
+    send<{ ok: boolean; provider: string; models: ProviderModel[] }>(
+      "/client/api/agent-provider-models",
+      "POST",
+      body,
+    ),
 
   getSiteGraph: () =>
     get<{
@@ -656,6 +955,27 @@ export const api = {
         : "/client/api/site-graph/demo-script/regenerate",
       "POST",
     ),
+
+  setStepName: (flow_id: string, step_index: number, name: string) =>
+    send<{ ok: boolean; revision: number }>("/client/api/flows/step-name", "POST", { flow_id, step_index, name }),
+  distributeScript: (
+    flow_id: string,
+    text: string,
+    apply: boolean,
+    lines?: string[],
+    opts?: { names?: Record<number, string>; create_extras?: boolean; extras?: ScriptExtra[] },
+  ) =>
+    send<ScriptSplitResponse>("/client/api/flows/script/distribute", "POST", { flow_id, text, apply, lines, ...(opts ?? {}) }),
+  editStep: (body: { flow_id: string; op: "insert" | "update" | "delete" | "up" | "down"; index: number; kind?: StepKind; value?: string; narration?: string; name?: string }) =>
+    send<{ ok: boolean; revision: number; focus: number }>("/client/api/flows/steps/edit", "POST", body),
+  getFlowSteps: (flow_id: string) =>
+    get<{ flow_id: string; page_id: string; steps: FlowStepRow[] }>(`/client/api/flows/steps?flow_id=${encodeURIComponent(flow_id)}`),
+  alignFlow: (flow_id: string, apply: boolean, recrawl = false) =>
+    send<{ ok: boolean; applied: boolean; revision?: number; report: FlowAlignRow[] }>("/client/api/flows/align", "POST", { flow_id, apply, recrawl }),
+  expandNarration: (flow_id: string, apply: boolean, recrawl = false) =>
+    send<{ ok: boolean; applied: boolean; revision?: number; report: FlowExpandRow[] | null }>("/client/api/flows/expand", "POST", { flow_id, apply, recrawl }),
+  startAiDraft: () => send<AiDraftStatus>("/client/api/flows/ai-draft/start", "POST"),
+  getAiDraft: () => get<AiDraftStatus>("/client/api/flows/ai-draft"),
 
   getFlows: () => get<{ playlist: Flow[]; site: string }>("/client/api/flows"),
   putFlows: (playlist: Flow[]) =>
@@ -702,7 +1022,14 @@ export const api = {
       target_flow_name?: string;
     },
   ) =>
-    send<{ narrate?: boolean; save_mode?: string; flow_id?: string }>(
+    send<{
+      narrate?: boolean;
+      save_mode?: string;
+      flow_id?: string;
+      browser?: "local" | "server" | "client";
+      phase?: string;
+      open_url?: string;
+    }>(
       "/client/api/record/start",
       "POST",
       {
@@ -719,14 +1046,40 @@ export const api = {
       "/client/api/record/capture",
       "POST",
     ),
+  recordRetranscribe: (flowId: string) =>
+    send<{ ok: boolean; revision: number; narrated_steps: number }>(
+      `/client/api/record/retranscribe?flow_id=${encodeURIComponent(flowId)}`,
+      "POST",
+    ),
+  recordDiscard: () =>
+    send<{ ok: boolean; discarded: boolean; steps_dropped: number }>(
+      "/client/api/record/discard",
+      "POST",
+    ),
   recordStop: () =>
     send<{
+      ok?: boolean;
       steps: number;
       error: string | null;
       flagged?: Array<{ tool?: string; selector?: string; reason?: string }>;
       setup_discarded?: number;
       narrated_steps?: number;
+      playlist?: Flow[];
+      flow_id?: string;
+      flow_name?: string;
     }>("/client/api/record/stop", "POST"),
+  recordBindValueRef: (step_index: number, value_ref: string) =>
+    send<{ ok: boolean; revision: number; playlist: Flow[] }>(
+      "/client/api/record/bind-value-ref",
+      "POST",
+      { step_index, value_ref },
+    ),
+  recordReplayRecordedValue: (step_index: number) =>
+    send<{ ok: boolean; revision: number; playlist: Flow[] }>(
+      "/client/api/record/replay-recorded-value",
+      "POST",
+      { step_index },
+    ),
 
   exploreStatus: () => get<ExploreStatus>("/client/api/explore"),
   exploreFrame: () =>
@@ -756,6 +1109,44 @@ export const api = {
   }) => send<ExploreStatus>("/client/api/explore/flagged", "POST", body),
   exploreTicket: () =>
     send<{ ticket: string; expires_in_s: number }>("/client/api/explore/ticket", "POST"),
+
+  guidedTaskStatus: () => get<GuidedTaskStatus>("/client/api/guided-task/status"),
+  guidedTaskPlan: (task: string, page_id = "dashboard") =>
+    send<GuidedTaskPlanResult>("/client/api/guided-task/plan", "POST", { task, page_id }),
+  guidedHandsStart: (flow_index = 0) =>
+    send<GuidedHandsStatus>("/client/api/guided-task/hands/start", "POST", { flow_index }),
+  guidedHandsTick: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/tick", "POST"),
+  guidedHandsStop: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/stop", "POST"),
+  guidedHandsPause: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/pause", "POST"),
+  guidedHandsResume: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/resume", "POST"),
+  guidedHandsBarge: () => send<GuidedHandsStatus>("/client/api/guided-task/hands/barge", "POST"),
+  guidedHandsAnswer: (qid: string, candidate_index?: number, value?: string, skip = false) =>
+    send<GuidedHandsStatus>("/client/api/guided-task/hands/answer", "POST", {
+      qid,
+      candidate_index,
+      value,
+      skip,
+    }),
+  guidedTaskPatch: (body: {
+    steps?: {
+      kind: string;
+      label: string;
+      alias?: string;
+      live_question?: string;
+      spoken?: string;
+      action_hint?: string;
+    }[];
+    insert_at?: number;
+    new_step?: {
+      kind: string;
+      label: string;
+      alias?: string;
+      live_question?: string;
+      spoken?: string;
+      action_hint?: string;
+    };
+    flow_name?: string;
+  }) => send<{ ok: boolean; guided: GuidedTaskStatus; revision: number }>("/client/api/guided-task/plan", "PATCH", body),
 };
 
 /** WebSocket URL for the live exploration log. Ticket is single-use. */
@@ -771,3 +1162,23 @@ export const slugKey = (label: string): string =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "_")
     .replace(/^_|_$/g, "") || "field";
+
+
+export type ScriptSplitRow = {
+  beat_id: string; step_index: number; label: string; old: string; new: string; old_name?: string; new_name?: string;
+};
+export type ScriptExtra = { name: string; text: string };
+export type ScriptSplitResponse = {
+  ok: boolean; applied: boolean; method: string; preview: ScriptSplitRow[]; extras?: ScriptExtra[]; revision?: number;
+};
+export type StepKind = "navigate" | "click" | "wait" | "narration";
+export type FlowAlignRow = { step: number; narration: string; target: string; href: string; highlight: string; action: string };
+export type FlowExpandRow = { step: number; before: string; after: string; changed: boolean; screen: string };
+export type FlowStepRow = { index: number; kind: string; value: string; tool: string; narration: string; name: string };
+export type AiDraftStatus = {
+  state: "idle" | "running" | "done" | "error";
+  progress: string[];
+  result: { flow_id?: string; steps?: number; revision?: number };
+  error: string;
+  elapsed_s?: number;
+};

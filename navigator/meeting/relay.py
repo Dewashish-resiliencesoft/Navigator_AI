@@ -6,9 +6,9 @@
 `/frame.jpg` — latest Playwright JPEG.
 
 ponytail: frames come from CDP Page.screencast (see start_screencast) — Chromium
-pushes a JPEG whenever the page repaints, so in-page CSS animation reaches Meet
-at ~60fps and an idle page costs nothing. push_frame stays for seeding the first
-paint and for demos with no screencast attached.
+pushes a JPEG on repaint. /view polls frame.jpg at NAVIGATOR_TARGET_FPS (default
+15): 60fps through the Cloudflare live-http tunnel saturates bandwidth and
+starves Gemini Live audio. push_frame seeds first paint / non-screencast demos.
 """
 
 from __future__ import annotations
@@ -16,16 +16,59 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from playwright.sync_api import Page
 
-#: Meet `/view` JPEG poll cadence. 16ms ≈ 60fps. CPU hog (Attendee ffmpeg
-#: recorder) is off, so this is viable again.
-VIEW_FRAME_MS = 16
-#: CDP screencast every repaint (60fps source) — cursor motion stays fluid.
-SCREENCAST_EVERY_NTH_FRAME = 1
+
+def view_frame_ms(target_fps: int | None = None) -> int:
+    """Poll interval for /view → frame.jpg (ms)."""
+    if target_fps is None:
+        from navigator.core.settings import settings
+
+        target_fps = int(settings.target_fps or 20)
+    fps = max(8, min(24, int(target_fps)))
+    return max(42, int(round(1000.0 / fps)))
+
+
+def screencast_every_nth(target_fps: int | None = None) -> int:
+    """Drop CDP frames when target fps is low (less JPEG encode CPU)."""
+    if target_fps is None:
+        from navigator.core.settings import settings
+
+        forced = int(getattr(settings, "screencast_every_nth", 0) or 0)
+        if forced > 0:
+            return forced
+
+        target_fps = int(settings.target_fps or 20)
+    fps = max(8, min(24, int(target_fps)))
+    # Chromium ~60fps source; everyNth≈60/fps.
+    return max(1, int(round(60.0 / fps)))
+
+
+def _mjpeg_on() -> bool:
+    from navigator.core.settings import settings
+
+    return bool(getattr(settings, "screencast_mjpeg", True))
+
+
+def screencast_max_size() -> tuple[int, int]:
+    from navigator.core.settings import settings
+
+    # getattr: older container images may lack screenshot_max_width after partial docker cp.
+    w = max(640, min(1920, int(getattr(settings, "screenshot_max_width", None) or 1280)))
+    # 16:9
+    h = int(round(w * 9 / 16))
+    h -= h % 2
+    return w, h
+
+
+#: Defaults used by tests / callers that import constants (resolved at import
+#: from settings — prefer view_frame_ms() / screencast_every_nth() at runtime).
+VIEW_FRAME_MS = view_frame_ms()
+SCREENCAST_EVERY_NTH_FRAME = screencast_every_nth()
 
 
 _AGENT_HTML = """<!doctype html>
@@ -46,9 +89,14 @@ img{width:1280px;height:720px;object-fit:fill;display:block;image-rendering:auto
 <body>
 <img id=f alt=frame width=1280 height=720>
 <script>
-async function tickFrame(){
+/* Interval poll with in-flight skip: never backlog stale JPEGs when the
+   Cloudflare hop is slow (serial await stretched the old cadence). */
+let inFlight = false;
+async function pullFrame(){
+  if (inFlight) return;
+  inFlight = true;
   try {
-    const r = await fetch('/frame.jpg?ts='+Date.now(), {cache:'no-store'});
+    const r = await fetch('frame.jpg?ts='+Date.now(), {cache:'no-store'});
     if (r.ok) {
       const b = await r.blob();
       const url = URL.createObjectURL(b);
@@ -58,9 +106,19 @@ async function tickFrame(){
       if (old && old.startsWith('blob:')) URL.revokeObjectURL(old);
     }
   } catch (e) {}
-  setTimeout(tickFrame, 16);
+  inFlight = false;
 }
-tickFrame();
+let polling = null;
+function startPolling(){ if (!polling) { polling = setInterval(pullFrame, __VIEW_FRAME_MS__); pullFrame(); } }
+if (__MJPEG__) {
+  /* MJPEG push: server sends only the newest frame when it changes. */
+  const img = document.getElementById('f');
+  let got = false;
+  img.onload = () => { got = true; };
+  img.onerror = () => startPolling();
+  img.src = 'stream?ts=' + Date.now();
+  setTimeout(() => { if (!got) { img.src = ''; startPolling(); } }, 4000);
+} else { startPolling(); }
 </script></body></html>
 """
 
@@ -79,6 +137,21 @@ class RelayHandle:
     status_mode: str = "demo"
     status_label: str = "Demo"
     avatar_state: str = "idle"
+    last_frame_at: float = 0.0
+    _seq: int = 0
+    _cond: threading.Condition = field(default_factory=threading.Condition)
+    _closed: bool = False
+    stream_clients: int = 0
+    frames_streamed: int = 0
+
+    def set_frame(self, data: bytes) -> None:
+        """Replace the latest frame and wake MJPEG streams (no queue)."""
+        with self._lock:
+            self._frame = data
+            self.last_frame_at = time.time()
+        with self._cond:
+            self._seq += 1
+            self._cond.notify_all()
 
     @property
     def view_url(self) -> str:
@@ -97,6 +170,9 @@ class RelayHandle:
         self.avatar_state = (state or "idle").strip().lower() or "idle"
 
     def stop(self) -> None:
+        self._closed = True
+        with self._cond:
+            self._cond.notify_all()
         self._httpd.shutdown()
         self._thread.join(timeout=5)
 
@@ -122,7 +198,12 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
                 return
             if path.startswith("/view"):
                 handle.view_hits += 1
-                body = _VIEW_HTML.encode()
+                ms = view_frame_ms()
+                body = (
+                    _VIEW_HTML.replace("__VIEW_FRAME_MS__", str(ms))
+                    .replace("__MJPEG__", "true" if _mjpeg_on() else "false")
+                    .encode("utf-8")
+                )
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -139,6 +220,36 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
+                return
+            if path.startswith("/stream"):
+                handle.stream_clients += 1
+                self.send_response(200)
+                self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=navframe")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.end_headers()
+                seen = -1
+                try:
+                    while not handle._closed:
+                        with handle._cond:
+                            # Latest frame only: wait for a newer seq, skip stale ones.
+                            if handle._seq == seen:
+                                handle._cond.wait(timeout=2.0)
+                            data, seq = handle._frame, handle._seq
+                        if not data or seq == seen:
+                            continue
+                        seen = seq
+                        self.wfile.write(
+                            b"--navframe\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                            + str(len(data)).encode() + b"\r\n\r\n" + data + b"\r\n"
+                        )
+                        self.wfile.flush()
+                        handle.frames_streamed += 1
+                        handle.frame_hits += 1  # MJPEG counts as a pull too
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+                finally:
+                    handle.stream_clients -= 1
                 return
             if path.startswith("/frame"):
                 handle.frame_hits += 1
@@ -170,7 +281,28 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
     handle = RelayHandle(host=host, port=real_port, _httpd=httpd, _thread=thread)
     holder["h"] = handle
     thread.start()
+    global LAST_HANDLE
+    LAST_HANDLE = handle
     return handle
+
+
+LAST_HANDLE: "RelayHandle | None" = None
+
+
+def wait_frame_sent(timeout_s: float = 0.7) -> bool:
+    """Block until the viewer has been sent a frame newer than now.
+
+    Narration waits on this so words never run ahead of the screen."""
+    h = LAST_HANDLE
+    if h is None or h._closed or h.stream_clients <= 0:
+        return False
+    start = h.frames_streamed
+    end = time.time() + timeout_s
+    while time.time() < end:
+        if h.frames_streamed > start:
+            return True
+        time.sleep(0.02)
+    return False
 
 
 def start_screencast(handle: RelayHandle, page: Page):
@@ -179,7 +311,8 @@ def start_screencast(handle: RelayHandle, page: Page):
     A `page.screenshot()` costs ~30ms of the Playwright thread — the same thread
     that has to keep 24kHz PCM flowing — so the old per-hop push capped motion at
     ~12fps and overran its own timing by ~1.5x. Chromium pushes screencast frames
-    on repaint for free, so an in-page CSS animation arrives at ~60fps.
+    on repaint; we subsample via everyNthFrame to match NAVIGATOR_TARGET_FPS so
+    the Cloudflare /view poll stays ahead of the encoder.
 
     Returns the CDP session, or None if screencast is unavailable (the caller
     then keeps using push_frame).
@@ -187,6 +320,8 @@ def start_screencast(handle: RelayHandle, page: Page):
     from navigator.core.settings import settings
 
     quality = max(1, min(100, int(settings.screenshot_quality or 70)))
+    nth = screencast_every_nth()
+    max_w, max_h = screencast_max_size()
     try:
         cdp = page.context.new_cdp_session(page)
     except Exception as exc:  # noqa: BLE001
@@ -196,8 +331,7 @@ def start_screencast(handle: RelayHandle, page: Page):
     def _on_frame(event: dict) -> None:
         data = event.get("data")
         if data:
-            with handle._lock:
-                handle._frame = base64.b64decode(data)
+            handle.set_frame(base64.b64decode(data))
         # Chromium stops sending until the frame is acked.
         try:
             cdp.send("Page.screencastFrameAck", {"sessionId": event["sessionId"]})
@@ -211,15 +345,19 @@ def start_screencast(handle: RelayHandle, page: Page):
             {
                 "format": "jpeg",
                 "quality": quality,
-                "maxWidth": 1280,
-                "maxHeight": 720,
-                "everyNthFrame": SCREENCAST_EVERY_NTH_FRAME,
+                "maxWidth": max_w,
+                "maxHeight": max_h,
+                "everyNthFrame": nth,
             },
         )
     except Exception as exc:  # noqa: BLE001
         print(f"[live] startScreencast failed, using screenshots: {exc}", flush=True)
         return None
-    print(f"[live] screencast=on quality={quality}", flush=True)
+    print(
+        f"[live] screencast=on quality={quality} everyNth={nth} "
+        f"size={max_w}x{max_h} view_ms={view_frame_ms()}",
+        flush=True,
+    )
     handle.screencast = True
     return cdp
 
@@ -255,5 +393,4 @@ def push_frame(handle: RelayHandle, page: Page) -> None:
         )
     except Exception:
         data = page.screenshot(type="jpeg", quality=quality)
-    with handle._lock:
-        handle._frame = data
+    handle.set_frame(data)

@@ -2,8 +2,7 @@
 
 Default OFF per product (`CallDeps.tier2_enabled`). When on, a single propose →
 guardrail → act cycle may run. Destructive targets are refused always — the
-guardrail is a hard rule, not a confidence threshold. Successful safe actions
-are logged to PendingCorrectionStore for human review and never auto-promoted.
+guardrail is a hard rule, not a confidence threshold.
 """
 
 from __future__ import annotations
@@ -83,21 +82,4 @@ def run_tier2(
         detail=f"safe action via {verdict.source}: {verdict.reason}",
         call=call,
         element=element,
-    )
-
-
-def pending_rule_for(outcome: Tier2Outcome, utterance: str) -> str:
-    """Human-review candidate — never written to the trained flow library here."""
-    label = ""
-    if outcome.element:
-        label = str(
-            outcome.element.get("label")
-            or outcome.element.get("text")
-            or outcome.element.get("name")
-            or ""
-        )
-    tool = outcome.call.tool if outcome.call is not None else "unknown"
-    return (
-        f"tier2 candidate: after {utterance!r}, proposed {tool} on {label!r}. "
-        f"{outcome.detail}"
     )

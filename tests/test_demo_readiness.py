@@ -103,14 +103,18 @@ pages:
     assert "publish draft revision" in pub_by_id["playlist"].message
 
 
-def test_explorer_blocks_public_embed(tmp_path: Path):
+def test_autonomy_mode_locked_to_guided(tmp_path: Path):
+    """Adaptive/explorer product modes are retired — always guided at read time."""
     db = tmp_path / "nav.db"
     with Registry(db) as reg:
         reg.register(NewProduct(product_id="acme", name="Acme", api_key="nav_test_key"))
         reg.set_autonomy_mode("acme", "explorer")
+        product = reg.get("acme")
+        assert product.autonomy_mode == "guided"
+        assert product.tier2_enabled is False
         report = assess_demo_readiness(reg, "acme", origin="public_embed")
-    blocked = [c for c in report.checks if c.id == "explorer_embed"]
-    assert blocked and not blocked[0].ok and blocked[0].blocking
+    assert not any(c.id == "explorer_embed" for c in report.checks)
+    assert report.autonomy_mode == "guided"
 
 
 def test_readiness_does_not_import_live_demo():

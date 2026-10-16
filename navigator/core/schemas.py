@@ -82,6 +82,12 @@ class _ToolCallBase(BaseModel):
 class ClickElement(_ToolCallBase):
     tool: Literal["click_element"] = "click_element"
     selector: str
+    confirm_before: bool = False
+    """Live demo: ask the End User to confirm before running this (submit/pay).
+
+    On "no / change", the agent re-asks the flow's source=user fields, replaces
+    the stored answers, then resumes here. Recorded/test demos ignore it.
+    """
 
 
 class FillField(_ToolCallBase):
@@ -97,8 +103,23 @@ class FillField(_ToolCallBase):
     """
     live_question: str | None = None
     """Spoken when source=user. None → a generic question from the selector alias."""
+    value_ref: str | None = None
+    """Alias of an earlier source=user variable — reuse the visitor's answer."""
 
 
+    input_name: str | None = None
+    """Demo-session key used by the interaction engine (for example ``phone``)."""
+    prompt: str | None = None
+    """Author-authored question asked before an interactive fill."""
+    input_type: str = "text"
+    """Expected visitor input shape: phone, email, text, number, and so on."""
+    input_options: list[str] = Field(default_factory=list)
+    """Dropdown options for SELECTION input type."""
+    fallback_value: str | None = None
+    """Recorded sample used only when the visitor cannot provide a value."""
+    confirm_before: bool = False
+    """Live demo: confirm with the End User before this fill (e.g. a final field
+    before submit). See ClickElement.confirm_before."""
 class Navigate(_ToolCallBase):
     tool: Literal["navigate"] = "navigate"
     page_id: str
@@ -111,8 +132,18 @@ class WaitFor(_ToolCallBase):
     timeout_ms: int = Field(default=15000, gt=0)
 
 
+class ScrollPage(_ToolCallBase):
+    """Scroll the document (or a scrollable container) to an absolute position."""
+
+    tool: Literal["scroll_page"] = "scroll_page"
+    x: int = 0
+    y: int = 0
+    #: Optional CSS alias of a scrollable container; None → window/document.
+    selector: str | None = None
+
+
 ToolCall = Annotated[
-    ClickElement | FillField | Navigate | WaitFor,
+    ClickElement | FillField | Navigate | WaitFor | ScrollPage,
     Field(discriminator="tool"),
 ]
 

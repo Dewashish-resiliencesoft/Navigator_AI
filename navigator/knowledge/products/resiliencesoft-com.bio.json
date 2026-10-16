@@ -1,0 +1,94 @@
+{
+  "fields": [
+    {
+      "key": "company_name",
+      "label": "Company name",
+      "value": "ResilioHub | WhatsApp Business API & AI CRM"
+    },
+    {
+      "key": "owner",
+      "label": "Owner / leadership",
+      "value": ""
+    },
+    {
+      "key": "founded",
+      "label": "Founded year",
+      "value": ""
+    },
+    {
+      "key": "headquarters",
+      "label": "Headquarters",
+      "value": ""
+    },
+    {
+      "key": "team_size",
+      "label": "Team size",
+      "value": ""
+    },
+    {
+      "key": "website",
+      "label": "Website",
+      "value": "https://resiliohub.com/"
+    },
+    {
+      "key": "industry",
+      "label": "Industry",
+      "value": ""
+    },
+    {
+      "key": "products",
+      "label": "Products",
+      "value": "resiliohub_whatsapp_business_api_ai_crm, resiliohub_whatsapp_business_api_ai_crm_2, resiliohub_whatsapp_business_api_ai_crm_3, resiliohub_whatsapp_business_api_ai_crm_4, resiliohub_whatsapp_business_api_ai_crm_5, resiliohub_whatsapp_business_api_ai_crm_6, resiliohub_whatsapp_business_api_ai_crm_7, about_resiliohub_resiliohub"
+    },
+    {
+      "key": "about",
+      "label": "What the company is about",
+      "value": "## ResilioHub | WhatsApp Business API & AI CRM\nURL: https://resiliohub.com/dashboard/\n\nResilioHub\nCRM CONSOLE\nOverview\nDashboard\nInbox\nHistory\nKanban\nPhonebook\nWA META CONNECT\nFACEBOOK LEADS\nWORDPRESS\nSHOPIFY\nINSTAGRAM\nMETA REST API\nBROADCASTING\nAUTOMATION & BOTS\nMORE OPTIONS\nUS\nuser@user.com\nToggle Sidebar\nDashboard\nUS\nVerify your account \u2014 email and phone are not verified yet.\nVerify email\nVerify phone\nDashboard\n\nSnapshot of your WhatsApp operations.\n\nCustomize\nLogin on phone\n\n## ResilioHub | "
+    },
+    {
+      "key": "target_market",
+      "label": "Target market",
+      "value": ""
+    },
+    {
+      "key": "key_features",
+      "label": "Key features",
+      "value": ""
+    },
+    {
+      "key": "pricing_model",
+      "label": "Pricing model",
+      "value": ""
+    },
+    {
+      "key": "usp",
+      "label": "Unique selling proposition",
+      "value": ""
+    },
+    {
+      "key": "support_email",
+      "label": "Support contact",
+      "value": ""
+    },
+    {
+      "key": "social_links",
+      "label": "Social media links",
+      "value": ""
+    },
+    {
+      "key": "linkedin",
+      "label": "LinkedIn",
+      "value": ""
+    },
+    {
+      "key": "twitter",
+      "label": "Twitter / X",
+      "value": ""
+    },
+    {
+      "key": "referral_source",
+      "label": "How you heard about us",
+      "value": "Friend"
+    }
+  ]
+}

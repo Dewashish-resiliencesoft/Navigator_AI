@@ -73,6 +73,76 @@ Rules:
 """
 
 
+_VIEW_SYSTEM = """You are a product specialist on a live screen-share demo.
+You do not have a screenshot. You have the viewport section that is on screen
+and the nearby off-screen sections. That is the whole map. Do not describe
+the rest of the site.
+Answer in JSON only (no markdown) with this schema:
+{"intent":"navigate_page"|"click_nav"|"speak"|"end"|"clarify",
+ "page_id":"<id or null>","nav_label":"<sidebar label or null>",
+ "spoken_response":"1-2 short spoken sentences",
+ "clean_intake":null}
+Rules:
+- Prefer page_id from the allowed list when the user asks to go somewhere known.
+- Narrate only the section currently on screen.
+- End phrases (goodbye, end the meeting, stop the demo) → intent end.
+- Stay consistent with the product brief; do not name unrelated products.
+"""
+
+
+def decide_from_viewport(
+    *,
+    utterance: str,
+    screen_text: str,
+    allowed_pages: set[str],
+    screenshot_png: bytes = b"",
+    product_brief: str = "",
+    intake_summary: str = "",
+    nav_labels: Sequence[str] | None = None,
+    spoken_language: str = "en",
+    agent_gender: str = "female",
+    complete_with_image: CompleteWithImage | None = None,
+    complete_text: Callable[[str, str], str] | None = None,
+) -> TurnDecision:
+    """Plan from the viewport block. A screenshot is used only when one was taken."""
+    if screenshot_png:
+        return decide_turn(
+            utterance=utterance,
+            screenshot_png=screenshot_png,
+            screen_text=screen_text,
+            allowed_pages=allowed_pages,
+            product_brief=product_brief,
+            intake_summary=intake_summary,
+            nav_labels=nav_labels,
+            spoken_language=spoken_language,
+            agent_gender=agent_gender,
+            complete_with_image=complete_with_image,
+        )
+    if complete_text is None:
+        from navigator.agent.providers import get_provider
+
+        complete_text = get_provider().complete
+    labels = list(nav_labels or [])
+    lang_rule = speech_rules(spoken_language=spoken_language, agent_gender=agent_gender)
+    user = "\n".join(
+        [
+            f"Utterance: {utterance}",
+            f"User language: {spoken_language}. Narration language: {spoken_language}.",
+            f"Language: {lang_rule}",
+            f"Allowed page_ids: {', '.join(sorted(allowed_pages))}",
+            f"On-screen labels: {', '.join(labels) if labels else '(see screen text)'}",
+            f"Intake: {intake_summary or '(none)'}",
+            "Product brief (trim):",
+            (product_brief or "")[:2500],
+            "Viewport:",
+            (screen_text or "")[:1500],
+            "Return JSON TurnDecision only.",
+        ]
+    )
+    raw = complete_text(_VIEW_SYSTEM, user)
+    return parse_turn_decision(raw, allowed_pages=allowed_pages)
+
+
 def decide_turn(
     *,
     utterance: str,

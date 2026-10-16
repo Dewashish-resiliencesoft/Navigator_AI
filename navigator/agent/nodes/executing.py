@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
 from navigator.agent.live_input import needs_live_input, resolve_demo_fill
 from navigator.agent.state import CLEAR, CallDeps, CallState
-from navigator.automation.browser.tools import execute as run_tool
+from navigator.automation.browser.tools import NAV_TIMEOUT_CAP_MS, execute as run_tool
 from navigator.automation.external_links import (
     EXTERNAL_LINK_SPOKEN,
     is_external_url,
@@ -119,12 +119,21 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
         name = deps.graph.page(page_id).name
     except Exception:  # noqa: BLE001
         return
+    shown = name
+    try:
+        from navigator.automation.browser.viewport_awareness import measure_viewport
+
+        awareness = measure_viewport(deps.page, graph=deps.graph, page_id=page_id)
+        if awareness.current_section:
+            shown = awareness.current_section
+    except Exception:  # noqa: BLE001
+        shown = name
     try:
         from urllib.parse import urlparse
 
-        live.screen_hint = f"{name} ({urlparse(deps.page.url or '').path})"
+        live.screen_hint = f"{shown} ({urlparse(deps.page.url or '').path})"
     except Exception:  # noqa: BLE001
-        live.screen_hint = name
+        live.screen_hint = shown
     try:
         from navigator.automation.browser.page_snapshot import measure_page
 
@@ -140,230 +149,241 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
 
 
 def executing(state: CallState, deps: CallDeps) -> CallState:
+    from navigator.automation.browser.viewport_awareness import begin_viewport_step, end_viewport_step
+
+    begin_viewport_step()
     try:
-        from navigator.meeting.ui_jobs import service_before_step
-
-        service_before_step(deps)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[flow] Q&A service failed: {exc}", flush=True)
-    label = state.get("nav_click_label")
-    if label:
-        from navigator.automation.browser.nav_click import click_nav_label
-        from navigator.core.schemas import ToolResult
-
-        _nudge_working(deps)
         try:
-            click_nav_label(deps.page, label)
-            _end_nudge(deps)
-            detail = f"clicked nav {label!r}"
-            ok = True
+            from navigator.meeting.ui_jobs import service_before_step
+
+            service_before_step(deps)
         except Exception as exc:  # noqa: BLE001
-            detail = str(exc).splitlines()[0] if str(exc) else "nav click failed"
-            ok = False
-        if deps.push_frame is not None:
-            deps.push_frame()
-        return CallState(
-            nav_click_label=None,
-            pending_calls=list(state.get("pending_calls") or []),
-            last_call=None,
-            last_result=ToolResult(
-                ok=ok, tool="click_element", detail=detail, duration_ms=0
-            ),
-            last_page_id=state.get("page_id") or "",
-        )
-
-    pending = list(state["pending_calls"])
-    if not pending:
-        return CallState(last_call=None, last_result=None)
-
-    call, rest = pending[0], pending[1:]
-    from_vault = False
-    if isinstance(call, FillField) and call.value == VAULT_PASSWORD_SENTINEL:
-        pwd = deps.resolve_password() if deps.resolve_password else None
-        if not pwd:
+            print(f"[flow] Q&A service failed: {exc}", flush=True)
+        label = state.get("nav_click_label")
+        if label:
+            from navigator.automation.browser.nav_click import click_nav_label
             from navigator.core.schemas import ToolResult
 
+            _nudge_working(deps)
+            try:
+                click_nav_label(deps.page, label)
+                _end_nudge(deps)
+                detail = f"clicked nav {label!r}"
+                ok = True
+            except Exception as exc:  # noqa: BLE001
+                detail = str(exc).splitlines()[0] if str(exc) else "nav click failed"
+                ok = False
+            if deps.push_frame is not None:
+                deps.push_frame()
             return CallState(
-                pending_calls=rest,
-                last_call=call,
+                nav_click_label=None,
+                pending_calls=list(state.get("pending_calls") or []),
+                last_call=None,
                 last_result=ToolResult(
-                    ok=False,
-                    tool="fill_field",
-                    detail="vault password unavailable",
-                    duration_ms=0,
+                    ok=ok, tool="click_element", detail=detail, duration_ms=0
                 ),
-                last_page_id=state["page_id"],
-                page_id=state["page_id"],
+                last_page_id=state.get("page_id") or "",
             )
-        call = call.model_copy(update={"value": pwd})
-        from_vault = True
 
-    if isinstance(call, FillField) and not from_vault:
-        if needs_live_input(call) or (call.value_ref or "").strip():
-            call, live_detail = _resolve_user_fill(deps, call)
-            _trace_live_input(deps, state, call, live_detail)
+        pending = list(state["pending_calls"])
+        if not pending:
+            return CallState(last_call=None, last_result=None)
 
-    # Strict sync: never act while the previous line is still playing (a
-    # multi-call step left its line running while the next call navigated).
-    prior = state.get("pre_action_speech")
-    if prior is not None and hasattr(prior, "wait"):
-        prior.wait(timeout=120.0)
-        _step_log(state, deps, "completed(prev)")
-    _step_log(state, deps, "pending", tool=getattr(call, "tool", ""),
-              intended=expected_path(getattr(deps, "graph", None), call) or getattr(call, "selector", ""))
-    _return_from_detour(deps, call)
-    _restore_step_screen(deps, call)
-    ran_on = state["page_id"]
-    # Speak-then-act: the part of the line about the page we are LEAVING
-    # ("this is the landing page, let's click Login") is spoken before the click.
-    pre_text, post_items = _split_speak_then_act(state, deps, call)
-    if pre_text:
-        _speak_blocking(deps, pre_text)
-        state = dict(state)
-        state["narration"] = post_items
-    # Narration starts with the cursor, not after the relay's next JPEG.
-    # The next step waits on this handle, and VERIFYING runs before that
-    # step, so the following line does not begin until this page has settled.
-    speech_handle, narration_started_ns = None, None
-    action_started_ns = None
-    narration_prepared = False
-    # Frames pushed *during* the action, not just after it: the screenshare is a
-    # JPEG poll, so cursor motion is only visible if we push through the move.
-    _nudge_working(deps)
-    skip_narration = False
-    _step_log(state, deps, "executing")
-    if _is_login_call(call) and LOGIN_CREDS and not isinstance(call, FillField) \
-            and _visible_password(deps.page):
-        # The flow walks the real login: sign in visibly (password masked).
-        result, next_page_id = _visible_login(deps, call, ran_on)
-    elif (
-        _is_login_call(call)
-        and _already_authenticated(deps.page)
-    ):
-        skip_narration = True
-        # Signed in already: any login/sign-in step is pointless (sign_in burned
-        # 30s on the dashboard in the last run).
-        from navigator.core.schemas import ToolResult
+        call, rest = pending[0], pending[1:]
+        from_vault = False
+        if isinstance(call, FillField) and call.value == VAULT_PASSWORD_SENTINEL:
+            pwd = deps.resolve_password() if deps.resolve_password else None
+            if not pwd:
+                from navigator.core.schemas import ToolResult
 
-        print(f"[exec] skip login step {getattr(call, 'selector', '')!r}: already signed in ({deps.page.url})", flush=True)
-        result, next_page_id = (
-            ToolResult(ok=True, tool=getattr(call, "tool", "click_element"),
-                       detail="skipped: already signed in", duration_ms=0),
-            ran_on,
-        )
-    elif _missing_fast(deps, ran_on, call):
-        result, next_page_id = _recover_failed_step(
-            deps, ran_on, call, RuntimeError("element not on page (3s check)")
-        )
-    else:
-        _scroll_call_target(deps, ran_on, call)
-        state = _drop_unseen_mentions(state, deps)
-        if not _is_login_call(call):
-            state = _run_narrated_actions(state, deps, call)
-        narration_prepared = True
-        speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
-        action_started_ns = time.monotonic_ns()
-        if narration_started_ns is not None:
-            emit_sync_trace(
-                deps.trace,
-                session_id=state.get("session_id", ""),
-                product_id=deps.product_id,
-                engine="gemini_live" if deps.live_agent is not None else "langgraph",
-                flow_id=state.get("walkthrough_flow_id", "") or "",
-                step=int(state.get("executing_step") or state.get("walkthrough_step") or 0),
-                narration_started_ns=narration_started_ns,
-                action_started_ns=action_started_ns,
+                return CallState(
+                    pending_calls=rest,
+                    last_call=call,
+                    last_result=ToolResult(
+                        ok=False,
+                        tool="fill_field",
+                        detail="vault password unavailable",
+                        duration_ms=0,
+                    ),
+                    last_page_id=state["page_id"],
+                    page_id=state["page_id"],
+                )
+            call = call.model_copy(update={"value": pwd})
+            from_vault = True
+
+        if isinstance(call, FillField) and not from_vault:
+            if needs_live_input(call) or (call.value_ref or "").strip():
+                call, live_detail = _resolve_user_fill(deps, call)
+                _trace_live_input(deps, state, call, live_detail)
+
+        # Strict sync: never act while the previous line is still playing (a
+        # multi-call step left its line running while the next call navigated).
+        prior = state.get("pre_action_speech")
+        if prior is not None and hasattr(prior, "wait"):
+            prior.wait(timeout=120.0)
+            _step_log(state, deps, "completed(prev)")
+        _step_log(state, deps, "pending", tool=getattr(call, "tool", ""),
+                  intended=expected_path(getattr(deps, "graph", None), call) or getattr(call, "selector", ""))
+        _return_from_detour(deps, call)
+        _restore_step_screen(deps, call)
+        ran_on = state["page_id"]
+        # Speak-then-act: the part of the line about the page we are LEAVING
+        # ("this is the landing page, let's click Login") is spoken before the click.
+        pre_text, post_items = _split_speak_then_act(state, deps, call)
+        if pre_text:
+            _speak_blocking(deps, pre_text)
+            state = dict(state)
+            state["narration"] = post_items
+        # Narration starts with the cursor, not after the relay's next JPEG.
+        # The next step waits on this handle, and VERIFYING runs before that
+        # step, so the following line does not begin until this page has settled.
+        speech_handle, narration_started_ns = None, None
+        action_started_ns = None
+        narration_prepared = False
+        # Frames pushed *during* the action, not just after it: the screenshare is a
+        # JPEG poll, so cursor motion is only visible if we push through the move.
+        _nudge_working(deps)
+        skip_narration = False
+        _step_log(state, deps, "executing")
+        if _is_login_call(call) and LOGIN_CREDS and not isinstance(call, FillField) \
+                and _visible_password(deps.page):
+            # The flow walks the real login: sign in visibly (password masked).
+            result, next_page_id = _visible_login(deps, call, ran_on)
+        elif (
+            _is_login_call(call)
+            and _already_authenticated(deps.page)
+        ):
+            skip_narration = True
+            # Signed in already: any login/sign-in step is pointless (sign_in burned
+            # 30s on the dashboard in the last run).
+            from navigator.core.schemas import ToolResult
+
+            print(f"[exec] skip login step {getattr(call, 'selector', '')!r}: already signed in ({deps.page.url})", flush=True)
+            result, next_page_id = (
+                ToolResult(ok=True, tool=getattr(call, "tool", "click_element"),
+                           detail="skipped: already signed in", duration_ms=0),
+                ran_on,
             )
-        try:
-            _st0 = time.monotonic()
-            result, next_page_id = run_tool(
-                deps.page, deps.graph, ran_on, call, on_frame=deps.push_frame
+        elif _missing_fast(deps, ran_on, call):
+            _look(deps, "element_not_found")
+            result, next_page_id = _recover_failed_step(
+                deps, ran_on, call, RuntimeError("element not on page (3s check)")
             )
-            from navigator.core import logtime as _lt
+        else:
+            _scroll_call_target(deps, ran_on, call)
+            state = _drop_unseen_mentions(state, deps)
+            if not _is_login_call(call):
+                state = _run_narrated_actions(state, deps, call)
+            narration_prepared = True
+            speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
+            action_started_ns = time.monotonic_ns()
+            if narration_started_ns is not None:
+                emit_sync_trace(
+                    deps.trace,
+                    session_id=state.get("session_id", ""),
+                    product_id=deps.product_id,
+                    engine="gemini_live" if deps.live_agent is not None else "langgraph",
+                    flow_id=state.get("walkthrough_flow_id", "") or "",
+                    step=int(state.get("executing_step") or state.get("walkthrough_step") or 0),
+                    narration_started_ns=narration_started_ns,
+                    action_started_ns=action_started_ns,
+                )
+            try:
+                _st0 = time.monotonic()
+                result, next_page_id = run_tool(
+                    deps.page, deps.graph, ran_on, call, on_frame=deps.push_frame
+                )
+                from navigator.core import logtime as _lt
 
-            _lt.record("step_action", (time.monotonic() - _st0) * 1000, str(getattr(call, "selector", "")))
-        except Exception as exc:  # noqa: BLE001 — a missing element must never kill the demo
-            result, next_page_id = _recover_failed_step(deps, ran_on, call, exc)
-    _end_nudge(deps)
-    if is_external_url(deps.page.url, deps.graph.base_url):
-        revert_external_navigation(deps.page, product_base=deps.graph.base_url)
-        try:
-            say_async = getattr(deps.speaker, "say_async", None)
-            if say_async is not None:
-                say_async(EXTERNAL_LINK_SPOKEN)
-            else:
-                deps.speaker.say(EXTERNAL_LINK_SPOKEN)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[demo] external link disclaimer failed: {exc}", flush=True)
-        result = result.model_copy(
-            update={
-                "ok": False,
-                "detail": "external link skipped — not part of demo",
-            }
-        )
-        next_page_id = ran_on
-    if from_vault:
-        result = result.model_copy(
-            update={"detail": f"filled {call.selector} from vault"}
-        )
-    screen_ok = _verify_step_screen(deps, call)
-    _step_log(state, deps, "verified" if (result.ok and screen_ok is not False) else "failed",
-              detail="" if result.ok else str(result.detail)[:120])
-    _sync_screen_to_narration(state, deps, call)
-    if (
-        not result.ok
-        and getattr(call, "tool", "") in {"click_element", "fill_field"}
-        and not str(result.detail or "").startswith("skipped")
-    ):
-        # The action timed out or failed after its retry. Say so — a silent
-        # ok=False used to leave the visitor watching a frozen cursor.
-        if speech_handle is not None and hasattr(speech_handle, "wait"):
-            speech_handle.wait(timeout=8)
-        _speak_recovery(deps)
-        speech_handle = None
-    if deps.push_frame is not None:
-        deps.push_frame()
-    if skip_narration:
-        # A login step we did not perform must not be narrated ("enter email and
-        # password" over the dashboard was spoken twice in the 17:30 run).
-        print("[exec] login step skipped — its narration is skipped too", flush=True)
-        speech_handle = None
-    elif speech_handle is None and not narration_prepared:
-        if result.ok and not _is_login_call(call):
-            state = _run_narrated_actions(state, deps, call)
-        state = _drop_unseen_mentions(state, deps)
-        _step_log(state, deps, "narrating")
-        speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
-        if narration_started_ns is not None and action_started_ns is not None:
-            emit_sync_trace(
-                deps.trace,
-                session_id=state.get("session_id", ""),
-                product_id=deps.product_id,
-                engine="gemini_live" if deps.live_agent is not None else "langgraph",
-                flow_id=state.get("walkthrough_flow_id", "") or "",
-                step=int(state.get("executing_step") or state.get("walkthrough_step") or 0),
-                narration_started_ns=narration_started_ns,
-                action_started_ns=action_started_ns,
+                _lt.record("step_action", (time.monotonic() - _st0) * 1000, str(getattr(call, "selector", "")))
+                if not result.ok and not str(result.detail).startswith("skipped"):
+                    reason = "stuck" if str(result.detail).startswith("watchdog") else "action_failed"
+                    _look(deps, reason)
+            except Exception as exc:  # noqa: BLE001 — a missing element must never kill the demo
+                _look(deps, "action_failed")
+                result, next_page_id = _recover_failed_step(deps, ran_on, call, exc)
+        _end_nudge(deps)
+        if is_external_url(deps.page.url, deps.graph.base_url):
+            revert_external_navigation(deps.page, product_base=deps.graph.base_url)
+            try:
+                say_async = getattr(deps.speaker, "say_async", None)
+                if say_async is not None:
+                    say_async(EXTERNAL_LINK_SPOKEN)
+                else:
+                    deps.speaker.say(EXTERNAL_LINK_SPOKEN)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[demo] external link disclaimer failed: {exc}", flush=True)
+            result = result.model_copy(
+                update={
+                    "ok": False,
+                    "detail": "external link skipped — not part of demo",
+                }
             )
-        _component_tour(state, deps, call, speech_handle)
-    else:
-        _step_log(state, deps, "narrating")
-        _component_tour(state, deps, call, speech_handle)
+            next_page_id = ran_on
+        if from_vault:
+            result = result.model_copy(
+                update={"detail": f"filled {call.selector} from vault"}
+            )
+        screen_ok = _verify_step_screen(deps, call)
+        _step_log(state, deps, "verified" if (result.ok and screen_ok is not False) else "failed",
+                  detail="" if result.ok else str(result.detail)[:120])
+        _sync_screen_to_narration(state, deps, call)
+        if (
+            not result.ok
+            and getattr(call, "tool", "") in {"click_element", "fill_field"}
+            and not str(result.detail or "").startswith("skipped")
+        ):
+            # The action timed out or failed after its retry. Say so — a silent
+            # ok=False used to leave the visitor watching a frozen cursor.
+            if speech_handle is not None and hasattr(speech_handle, "wait"):
+                speech_handle.wait(timeout=8)
+            _speak_recovery(deps)
+            speech_handle = None
+        if deps.push_frame is not None:
+            deps.push_frame()
+        if skip_narration:
+            # A login step we did not perform must not be narrated ("enter email and
+            # password" over the dashboard was spoken twice in the 17:30 run).
+            print("[exec] login step skipped — its narration is skipped too", flush=True)
+            speech_handle = None
+        elif speech_handle is None and not narration_prepared:
+            if result.ok and not _is_login_call(call):
+                state = _run_narrated_actions(state, deps, call)
+            state = _drop_unseen_mentions(state, deps)
+            _step_log(state, deps, "narrating")
+            speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
+            if narration_started_ns is not None and action_started_ns is not None:
+                emit_sync_trace(
+                    deps.trace,
+                    session_id=state.get("session_id", ""),
+                    product_id=deps.product_id,
+                    engine="gemini_live" if deps.live_agent is not None else "langgraph",
+                    flow_id=state.get("walkthrough_flow_id", "") or "",
+                    step=int(state.get("executing_step") or state.get("walkthrough_step") or 0),
+                    narration_started_ns=narration_started_ns,
+                    action_started_ns=action_started_ns,
+                )
+            _component_tour(state, deps, call, speech_handle)
+        else:
+            _step_log(state, deps, "narrating")
+            _component_tour(state, deps, call, speech_handle)
 
-    _tell_live_where_we_are(deps, next_page_id, result)
-    _note_step_screen(deps)
+        _tell_live_where_we_are(deps, next_page_id, result)
+        _note_step_screen(deps)
 
-    return CallState(
-        narration=CLEAR,
-        pre_action_speech=speech_handle,
-        pending_calls=rest,
-        last_call=call.model_copy(update={"value": VAULT_PASSWORD_SENTINEL})
-        if from_vault and isinstance(call, FillField)
-        else call,
-        last_result=result,
-        last_page_id=ran_on,
-        page_id=next_page_id,
-    )
+        return CallState(
+            narration=CLEAR,
+            pre_action_speech=speech_handle,
+            pending_calls=rest,
+            last_call=call.model_copy(update={"value": VAULT_PASSWORD_SENTINEL})
+            if from_vault and isinstance(call, FillField)
+            else call,
+            last_result=result,
+            last_page_id=ran_on,
+            page_id=next_page_id,
+        )
+    finally:
+        end_viewport_step()
 
 
 def _resolve_user_fill(deps: CallDeps, call: FillField) -> tuple[FillField, str]:
@@ -519,6 +539,37 @@ def _text_of(selector: str) -> str:
     return sel if sel and not any(c in sel for c in "#.[]>=:/") else ""
 
 
+def _look(deps, reason: str) -> None:
+    """One screenshot when a step is lost. Never raises into the demo."""
+    try:
+        from navigator.agent.on_demand_vision import look_once
+
+        look_once(
+            getattr(deps, "page", None),
+            reason=reason,
+            session_id=str(getattr(deps, "session_id", "") or ""),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[vision] look skipped ({reason}): {exc}", flush=True)
+
+
+def _resolved_selector(deps, page_id: str, alias: str) -> str:
+    """CSS for a site-graph alias.
+
+    Tool calls store the alias (``send_button``). ``PageSpec`` keeps the CSS
+    on ``selectors``, not ``elements``. Using the alias as a Playwright
+    selector waits out the 30s default timeout.
+    """
+    graph = getattr(deps, "graph", None)
+    resolve = getattr(graph, "selector", None)
+    if callable(resolve) and page_id and alias:
+        try:
+            return str(resolve(page_id, alias))
+        except Exception:  # noqa: BLE001 — already-CSS, or unknown alias
+            pass
+    return alias
+
+
 def _recover_failed_step(deps, ran_on, call, exc):
     """Missing/hidden element: try text variants + scroll; else skip, never raise."""
     from navigator.core.schemas import ToolResult
@@ -530,13 +581,9 @@ def _recover_failed_step(deps, ran_on, call, exc):
         print("[exec] login step skipped: already signed in", flush=True)
         return ToolResult(ok=True, tool=tool, detail="skipped: already signed in", duration_ms=0), ran_on
     page = deps.page
-    raw = str(getattr(call, "selector", "") or "")
-    try:
-        el = (deps.graph.pages.get(ran_on).elements or {}).get(raw)  # alias → real selector
-        raw = str(getattr(el, "selector", "") or el or raw) if el else raw
-    except Exception:  # noqa: BLE001
-        pass
-    text = _text_of(raw) or _text_of(str(getattr(call, "selector", "")).replace("_", " "))
+    alias = str(getattr(call, "selector", "") or "")
+    raw = _resolved_selector(deps, ran_on, alias) if alias else alias
+    text = _text_of(alias) or _text_of(alias.replace("_", " "))
     candidates = []
     if raw and not raw.startswith("text="):
         candidates.append(lambda: page.locator(raw))
@@ -572,7 +619,7 @@ def _recover_failed_step(deps, ran_on, call, exc):
         (say_async or deps.speaker.say)(bridge)
     except Exception:  # noqa: BLE001
         pass
-    return ToolResult(ok=True, tool=tool, detail=f"skipped: {first}", duration_ms=0), ran_on
+    return ToolResult(ok=False, tool=tool, detail=f"skipped: {first}", duration_ms=0), ran_on
 
 
 RECOVERY_LINE = "One moment — that didn't land, I'll move on."
@@ -598,11 +645,7 @@ def _scroll_call_target(deps, page_id, call) -> None:
     if not raw:
         return
     try:
-        pages = getattr(getattr(deps, "graph", None), "pages", None)
-        page_spec = pages.get(page_id) if hasattr(pages, "get") else None
-        elements = getattr(page_spec, "elements", None) if page_spec is not None else None
-        el = elements.get(raw) if isinstance(elements, dict) else None
-        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        sel = _resolved_selector(deps, page_id, raw)
         from navigator.automation.browser.page_snapshot import scroll_locator_into_view
 
         scroll_locator_into_view(page, page.locator(sel).first)
@@ -614,8 +657,7 @@ def _target_visible(deps, page_id, call) -> bool:
     """True when the step's element is actually on screen (then never skip it)."""
     raw = str(getattr(call, "selector", "") or "")
     try:
-        el = (deps.graph.pages.get(page_id).elements or {}).get(raw)
-        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        sel = _resolved_selector(deps, page_id, raw)
         loc = deps.page.locator(sel)
         for i in range(min(loc.count(), 3)):
             if loc.nth(i).is_visible():
@@ -637,8 +679,7 @@ def _missing_fast(deps, page_id, call, wait_ms: int = 3000) -> bool:
     if not raw:
         return False
     try:
-        el = (deps.graph.pages.get(page_id).elements or {}).get(raw)
-        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        sel = _resolved_selector(deps, page_id, raw)
         loc = deps.page.locator(sel)
         deadline = time.monotonic() + wait_ms / 1000.0
         scrolled = False
@@ -731,7 +772,7 @@ def _return_from_detour(deps: CallDeps, call) -> None:
             try:
                 dlg = page.locator("[role=dialog],[aria-modal=true],dialog[open]")
                 if dlg.count() and dlg.last.is_visible():
-                    page.reload(wait_until="domcontentloaded", timeout=15000)
+                    page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
                     print("[exec] detour left a dialog open — reloaded before the scripted step", flush=True)
             except Exception:  # noqa: BLE001
                 pass
@@ -739,7 +780,7 @@ def _return_from_detour(deps: CallDeps, call) -> None:
         if not back:
             return
         if (page.url or "") != back:
-            page.goto(back, wait_until="domcontentloaded", timeout=15000)
+            page.goto(back, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
             page.wait_for_timeout(500)
         print(f"[exec] resumed scripted flow at {back}", flush=True)
     except Exception as exc:  # noqa: BLE001
@@ -773,6 +814,32 @@ def _tour_for_step(state: CallState, deps: CallDeps, call) -> list[dict]:
         return []
 
 
+def _narration_offscreen(deps: CallDeps, page_id: str, item: dict) -> bool:
+    """Skip a tour label that is still above or below after one informed scroll."""
+    label = str(item.get("label") or "").strip()
+    if not label or deps.page is None:
+        return False
+    try:
+        from navigator.automation.browser.viewport_awareness import (
+            label_still_offscreen,
+            relation_for_label,
+            measure_viewport,
+            scroll_toward_label,
+        )
+
+        awareness = measure_viewport(deps.page, graph=deps.graph, page_id=page_id)
+        rel = relation_for_label(awareness, label)
+        if rel is None or rel in {"visible", "partial"}:
+            return False
+        scroll_toward_label(deps.page, deps.graph, page_id, label)
+        if label_still_offscreen(deps.page, deps.graph, page_id, label):
+            print(f"[viewport] skip narration for offscreen {label!r}", flush=True)
+            return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[viewport] narration check skipped: {exc}", flush=True)
+    return False
+
+
 def _component_tour(state: CallState, deps: CallDeps, call, handle) -> None:
     """Outline each screen component as the line names it (hover/outline only,
     never a click). Targets are precomputed in ``_meta.step_tour``; timing
@@ -782,6 +849,10 @@ def _component_tour(state: CallState, deps: CallDeps, call, handle) -> None:
     if page is None or handle is None:
         return
     tour = _tour_for_step(state, deps, call)
+    if not tour:
+        return
+    page_id = str(state.get("page_id") or "")
+    tour = [item for item in tour if not _narration_offscreen(deps, page_id, item)]
     if not tour:
         return
     from navigator.meeting.ui_jobs import highlight_text
@@ -927,7 +998,7 @@ def _restore_step_screen(deps, call) -> None:
         cur = page.url or ""
         if cur.split("#")[0].rstrip("/") != STEP_URL.split("#")[0].rstrip("/"):
             print(f"[sync] screen drifted to {cur} — restoring {STEP_URL}", flush=True)
-            page.goto(STEP_URL, wait_until="domcontentloaded", timeout=15000)
+            page.goto(STEP_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
             page.wait_for_timeout(400)
     except Exception as exc:  # noqa: BLE001
         print(f"[sync] restore skipped: {exc}", flush=True)
@@ -967,7 +1038,7 @@ def _verify_step_screen(deps, call) -> None:
             return True
         print(f"[sync] step screen mismatch: on {cur}, expected {want} — re-navigating", flush=True)
         try:
-            page.goto(urljoin(deps.graph.base_url, want if want == "/" else want + "/"), wait_until="domcontentloaded", timeout=15000)
+            page.goto(urljoin(deps.graph.base_url, want if want == "/" else want + "/"), wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
             page.wait_for_timeout(500)
         except Exception as exc:  # noqa: BLE001
             print(f"[sync] re-navigate failed: {exc}", flush=True)
@@ -1033,7 +1104,7 @@ def _close_leftover_dialog(page) -> None:
         page.keyboard.press("Escape")
         page.wait_for_timeout(250)
         if dlg.count() and dlg.last.is_visible():
-            page.reload(wait_until="domcontentloaded", timeout=15000)
+            page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
         print("[exec] closed a dialog left open before the scripted step", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[exec] dialog cleanup skipped: {exc}", flush=True)

@@ -130,7 +130,12 @@ class AgentOrchestrator:
     # ── public API ─────────────────────────────────────────────────────────
 
     def refresh_browser_state(self) -> None:
-        dom = build_dom_state(self.page, page_id=self.store.state.browser.page_id, detailed=True)
+        dom = build_dom_state(
+            self.page,
+            page_id=self.store.state.browser.page_id,
+            detailed=True,
+            graph=self.graph,
+        )
         self.store.update(
             lambda s: s.model_copy(
                 update={
@@ -152,6 +157,7 @@ class AgentOrchestrator:
             task_goal=self.store.state.task.goal if self.store.state.task else "",
             browser_ready=True,
             snapshot=str(dom.get("snapshot") or ""),
+            on_screen=str(dom.get("currently_on_screen") or ""),
         )
 
     def handle_utterance(self, text: str) -> RouteDecision:

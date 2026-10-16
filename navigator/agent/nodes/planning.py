@@ -150,6 +150,7 @@ def _say(
     """One spoken line via the phrasing layer, falling back to a template."""
     phrase = deps.phrase or phrase_turn
     api_key = deps.groq_api_key if deps.groq_api_key is not None else settings.groq_api_key
+    context = _with_visible_section(deps, context)
     try:
         line = phrase(
             intent=intent,
@@ -170,6 +171,26 @@ def _say(
     line = (line or fallback).strip() or fallback
     _memory(deps).note_spoken(line)
     return line
+
+
+def _with_visible_section(deps: CallDeps, context: str) -> str:
+    """Tell phrasing which section is on screen so it does not narrate the rest."""
+    if getattr(deps, "page", None) is None:
+        return context
+    try:
+        from navigator.automation.browser.screen_context import planner_screen
+
+        viewed = planner_screen(deps.page, graph=deps.graph, page_id="")
+    except Exception:  # noqa: BLE001
+        return context
+    if "currently on screen:" not in viewed:
+        return context
+    note = (
+        viewed
+        + "\nNarrate only the section currently on screen. "
+        "Mention a nearby offscreen section only as the next scroll, with its direction."
+    )
+    return f"{note}\n{context}" if context else note
 
 
 def _guide_page_id(state: CallState) -> str:
@@ -278,102 +299,108 @@ def _step_narration_hint(
 
 
 def planning(state: CallState, deps: CallDeps) -> CallState:
-    if deps.set_status is not None:
-        deps.set_status("tailoring", "Tailoring…")
-    if deps.set_avatar_state is not None:
-        deps.set_avatar_state("thinking")
-    from navigator.voice.conversation_language import publish_speech
+    from navigator.automation.browser.viewport_awareness import begin_viewport_step, end_viewport_step
 
-    publish_speech(deps, status="thinking")
-    if getattr(deps.speaker, "bot_ended", False):
-        return CallState(
-            plan=Plan(spoken_response="", tool_calls=[]),
-            pending_calls=[],
-            finished=True,
-            phase="ending",
+    begin_viewport_step()
+    try:
+        if deps.set_status is not None:
+            deps.set_status("tailoring", "Tailoring…")
+        if deps.set_avatar_state is not None:
+            deps.set_avatar_state("thinking")
+        from navigator.voice.conversation_language import publish_speech
+
+        publish_speech(deps, status="thinking")
+        if getattr(deps.speaker, "bot_ended", False):
+            return CallState(
+                plan=Plan(spoken_response="", tool_calls=[]),
+                pending_calls=[],
+                finished=True,
+                phase="ending",
+            )
+        if deps.scripted_flow is not None:
+            page_id, flow_id = deps.scripted_flow
+            if _flow_offerable(deps, page_id, flow_id):
+                return _plan_from_flow(
+                    deps,
+                    page_id,
+                    flow_id,
+                    spoken=_describe(deps.graph.page(page_id).name, flow_id),
+                )
+
+        if state.get("user_correction"):
+            query = _query_from_transcript(list(state.get("transcript") or []))
+            if query:
+                brain = _try_turn_brain(state, deps, utterance=query)
+                if brain is not None:
+                    return brain
+            return _plan_user_correction(state, deps)
+
+        phase = state.get("phase") or "walkthrough"
+        transcript = list(state.get("transcript") or [])
+        utterance = _query_from_transcript(transcript)
+
+        switched = _maybe_language_switch_ack(
+            state, deps, utterance=utterance, phase=phase
         )
-    if deps.scripted_flow is not None:
-        page_id, flow_id = deps.scripted_flow
-        if _flow_offerable(deps, page_id, flow_id):
-            return _plan_from_flow(
-                deps,
-                page_id,
-                flow_id,
-                spoken=_describe(deps.graph.page(page_id).name, flow_id),
+        if switched is not None:
+            return switched
+
+        if utterance and is_goodbye(utterance):
+            return CallState(
+                phase="ending",
+                plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
+                pending_calls=[],
+                narration=[WRAP_UP],
+                transcript=[f"agent: {WRAP_UP}"],
             )
 
-    if state.get("user_correction"):
-        query = _query_from_transcript(list(state.get("transcript") or []))
-        if query:
-            brain = _try_turn_brain(state, deps, utterance=query)
-            if brain is not None:
-                return brain
-        return _plan_user_correction(state, deps)
+        if utterance and is_exfil_request(utterance):
+            return CallState(
+                plan=Plan(spoken_response=REFUSE_SPOKEN, tool_calls=[]),
+                pending_calls=[],
+                narration=[REFUSE_SPOKEN],
+                transcript=[f"agent: {REFUSE_SPOKEN}"],
+                phase=phase,
+                walkthrough_step=state.get("walkthrough_step"),
+            )
 
-    phase = state.get("phase") or "walkthrough"
-    transcript = list(state.get("transcript") or [])
-    utterance = _query_from_transcript(transcript)
+        if phase == "ending":
+            return CallState(
+                plan=Plan(spoken_response="", tool_calls=[]),
+                pending_calls=[],
+                finished=True,
+            )
 
-    switched = _maybe_language_switch_ack(
-        state, deps, utterance=utterance, phase=phase
-    )
-    if switched is not None:
-        return switched
+        if phase == "anything_else":
+            return _plan_anything_else(state, deps, utterance=utterance, transcript=transcript)
 
-    if utterance and is_goodbye(utterance):
-        return CallState(
-            phase="ending",
-            plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
-            pending_calls=[],
-            narration=[WRAP_UP],
-            transcript=[f"agent: {WRAP_UP}"],
-        )
+        if phase == "awaiting_resume":
+            return _plan_awaiting_resume(
+                state, deps, utterance=utterance, transcript=transcript
+            )
 
-    if utterance and is_exfil_request(utterance):
-        return CallState(
-            plan=Plan(spoken_response=REFUSE_SPOKEN, tool_calls=[]),
-            pending_calls=[],
-            narration=[REFUSE_SPOKEN],
-            transcript=[f"agent: {REFUSE_SPOKEN}"],
-            phase=phase,
-            walkthrough_step=state.get("walkthrough_step"),
-        )
+        if phase == "detour":
+            if utterance and not _is_continue(utterance):
+                return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
+            return _plan_detour_next(state, deps)
 
-    if phase == "ending":
-        return CallState(
-            plan=Plan(spoken_response="", tool_calls=[]),
-            pending_calls=[],
-            finished=True,
-        )
-
-    if phase == "anything_else":
-        return _plan_anything_else(state, deps, utterance=utterance, transcript=transcript)
-
-    if phase == "awaiting_resume":
-        return _plan_awaiting_resume(
-            state, deps, utterance=utterance, transcript=transcript
-        )
-
-    if phase == "detour":
-        if utterance and not _is_continue(utterance):
+        # Clarifying-question follow-up must see "yes"/"ok" — those are also continue tokens.
+        if (state.get("awaiting_confirm_flow_id") or "").strip() and utterance:
             return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
-        return _plan_detour_next(state, deps)
 
-    # Clarifying-question follow-up must see "yes"/"ok" — those are also continue tokens.
-    if (state.get("awaiting_confirm_flow_id") or "").strip() and utterance:
-        return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
+        if utterance and not _is_continue(utterance):
+            if (
+                getattr(deps, "playlist_only", False)
+                and phase == "walkthrough"
+                and deps.live_agent is None
+            ):
+                if not is_goodbye(utterance):
+                    return _plan_walkthrough_next(state, deps)
+            return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
 
-    if utterance and not _is_continue(utterance):
-        if (
-            getattr(deps, "playlist_only", False)
-            and phase == "walkthrough"
-            and deps.live_agent is None
-        ):
-            if not is_goodbye(utterance):
-                return _plan_walkthrough_next(state, deps)
-        return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
-
-    return _plan_walkthrough_next(state, deps)
+        return _plan_walkthrough_next(state, deps)
+    finally:
+        end_viewport_step()
 
 
 def _is_continue(utterance: str) -> bool:
@@ -805,17 +832,6 @@ def _decide_live_turn(
         deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
     )
 
-    enriched = utterance
-    if deps.screen_context is not None:
-        try:
-            from navigator.automation.browser.page_snapshot import attach_snapshot
-
-            screen = attach_snapshot(deps.page, deps.screen_context() or "", limit=400)
-            if screen.strip():
-                enriched = f"{utterance} {screen}"
-        except Exception:  # noqa: BLE001
-            pass
-
     try:
         ruled = route_turn(
             utterance=utterance,
@@ -826,7 +842,7 @@ def _decide_live_turn(
             flow_texts=flow_texts,
             chroma_path=chroma_path,
             retrieve=lambda q, *a, **kw: retrieve(
-                enriched if q == utterance else q,
+                q,
                 deps.product_id,
                 flow_texts=flow_texts,
                 available_flow_ids=list(flow_texts),
@@ -879,7 +895,7 @@ def _decide_live_turn(
 
     try:
         result = retrieve(
-            enriched,
+            utterance,
             deps.product_id,
             flow_texts=flow_texts,
             available_flow_ids=list(flow_texts),
@@ -1092,6 +1108,75 @@ def _use_turn_brain(deps: CallDeps) -> bool:
     return bool(settings.gemini_api_key)
 
 
+def _viewport_screen(deps: CallDeps, page_id: str, *, limit: int | None = None) -> str:
+    """On-screen section and nearby off-screen items for the planner. No model call."""
+    text = ""
+    if deps.screen_context is not None:
+        try:
+            text = deps.screen_context() or ""
+        except Exception as exc:  # noqa: BLE001
+            print(f"[plan] screen_context skipped: {exc}", flush=True)
+    if "currently on screen:" not in text and getattr(deps, "page", None) is not None:
+        try:
+            from navigator.automation.browser.screen_context import planner_screen
+
+            viewed = planner_screen(deps.page, graph=deps.graph, page_id=page_id)
+            if "currently on screen:" in viewed:
+                text = viewed
+        except Exception as exc:  # noqa: BLE001
+            print(f"[plan] viewport screen skipped: {exc}", flush=True)
+    if limit is not None:
+        text = text[:limit]
+    from navigator.agent.on_demand_vision import last_look
+
+    noted = last_look(str(getattr(deps, "session_id", "") or ""))
+    if noted and noted not in text:
+        text = f"{text}\nWhat the last look showed: {noted}".strip()
+    return text
+
+
+_LABEL_DISTANCE = re.compile(r"\s*\((?:above|below),\s*\d+px\)\s*$", re.I)
+_LABEL_SKIP = {"", "(none)", "(unknown)"}
+
+
+def _label_name(bit: str) -> str:
+    name = _LABEL_DISTANCE.sub("", (bit or "").strip()).strip(" -")
+    if name.lower() in _LABEL_SKIP:
+        return ""
+    return name
+
+
+def _on_screen_labels(screen: str) -> list[str]:
+    """Names from the viewport block, without distances. Never the site map."""
+    if "currently on screen:" not in (screen or ""):
+        return []
+    labels: list[str] = []
+
+    def add(bit: str) -> None:
+        name = _label_name(bit)
+        if name and name not in labels:
+            labels.append(name)
+
+    for line in screen.splitlines():
+        low = line.strip().lower()
+        if low.startswith("currently on screen:"):
+            add(line.split(":", 1)[1])
+        elif (
+            low.startswith("nearby offscreen:")
+            or low.startswith("partly visible:")
+            or low.startswith("visible:")
+        ):
+            rest = line.split(":", 1)[1]
+            parts = [rest] if low.startswith("visible:") else rest.split(";")
+            for part in parts:
+                bits = part.split(",") if low.startswith("visible:") else [part]
+                for bit in bits:
+                    add(bit)
+        elif low.startswith("- "):
+            add(line.strip()[2:])
+    return labels[:8]
+
+
 def _try_turn_brain(
     state: CallState, deps: CallDeps, *, utterance: str
 ) -> CallState | None:
@@ -1099,24 +1184,32 @@ def _try_turn_brain(
         return None
     if not _use_turn_brain(deps):
         return None
-    from navigator.agent.turn_brain import TurnDecision, capture_screenshot_png, decide_turn
+    from navigator.agent.on_demand_vision import asks_where, last_look, look_once
+    from navigator.agent.turn_brain import TurnDecision, decide_from_viewport
     from navigator.core.schemas import Navigate, Postcondition
 
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     allowed = set(deps.graph.pages.keys())
-    screen = ""
-    if deps.screen_context is not None:
-        try:
-            from navigator.automation.browser.page_snapshot import attach_snapshot
-
-            screen = attach_snapshot(deps.page, deps.screen_context() or "")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[plan] screen_context skipped: {exc}", flush=True)
+    screen = _viewport_screen(deps, _guide_page_id(state))
     try:
-        png = capture_screenshot_png(deps.page)
+        from navigator.automation.browser.page_snapshot import attach_snapshot
+
+        screen = attach_snapshot(deps.page, screen)
     except Exception as exc:  # noqa: BLE001
-        print(f"[plan] screenshot skipped: {exc}", flush=True)
-        return None
+        print(f"[plan] screen_context skipped: {exc}", flush=True)
+    session_id = str(getattr(deps, "session_id", "") or "")
+    noted = last_look(session_id)
+    if noted and noted not in screen:
+        screen = f"{screen}\nWhat the last look showed: {noted}".strip()
+    png = b""
+    if asks_where(utterance):
+        png_note = look_once(
+            getattr(deps, "page", None),
+            reason="where_we_are",
+            session_id=session_id,
+        )
+        if png_note:
+            screen = f"{screen}\nWhat the screenshot shows: {png_note}".strip()
 
     intake = deps.intake
     intake_summary = ""
@@ -1125,7 +1218,8 @@ def _try_turn_brain(
             f"{intake.name} at {intake.company}, "
             f"{intake.business_type}, need={intake.looking_for}"
         )
-    nav_labels = [p.name for p in deps.graph.pages.values()]
+    # Page ids stay as the allow-list. Names of every other page are not a map.
+    nav_labels = _on_screen_labels(screen)
     try:
         if deps.decide_turn is not None:
             decision = deps.decide_turn(
@@ -1140,7 +1234,7 @@ def _try_turn_brain(
             if not isinstance(decision, TurnDecision):
                 decision = TurnDecision.model_validate(decision)
         else:
-            decision = decide_turn(
+            decision = decide_from_viewport(
                 utterance=utterance,
                 screenshot_png=png,
                 screen_text=screen,
@@ -1765,14 +1859,13 @@ def _resolve_flow_choice(
         deps.product_id, query, path=chroma_path
     )
     persona = deps.graph.effective_persona()
-    screen = ""
-    if deps.screen_context is not None:
-        try:
-            from navigator.automation.browser.page_snapshot import attach_snapshot
+    screen = _viewport_screen(deps, page_id)
+    try:
+        from navigator.automation.browser.page_snapshot import attach_snapshot
 
-            screen = attach_snapshot(deps.page, deps.screen_context() or "")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[plan] screen_context skipped: {exc}", flush=True)
+        screen = attach_snapshot(deps.page, screen)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] screen_context skipped: {exc}", flush=True)
     chooser_kwargs = dict(
         page_id=page_id,
         flow_ids=flow_ids,

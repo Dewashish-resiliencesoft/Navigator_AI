@@ -37,6 +37,9 @@ Rules:
 - Prefer relevant values in demo_session over asking the visitor again or inventing placeholders.
 - DOM may include viewport, scroll, cursor, and below_fold. Scroll to a target
   that is below the fold before clicking it. Narrate what is visible.
+- DOM.currently_on_screen is the section the visitor can see. nearby_offscreen lists
+  direction and distance_px. Narrate and act on what is on screen. Scroll toward a
+  nearby item in that direction instead of assuming the whole page is visible.
 """
 
 

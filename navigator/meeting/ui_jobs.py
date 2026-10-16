@@ -414,7 +414,7 @@ def show_feature(page, target: str, push_frame: Callable[[], None] | None = None
         href = _hidden_link_href(page, target)
         if href:
             try:
-                page.goto(href, wait_until="domcontentloaded", timeout=15000)
+                page.goto(href, wait_until="domcontentloaded", timeout=8000)
                 page.wait_for_timeout(600)
                 if push_frame is not None:
                     try:
@@ -450,7 +450,7 @@ def show_feature(page, target: str, push_frame: Callable[[], None] | None = None
                 href = _hidden_link_href(page, target)
                 if not href:
                     raise
-                page.goto(href, wait_until="domcontentloaded", timeout=15000)
+                page.goto(href, wait_until="domcontentloaded", timeout=8000)
                 action = "opened from the menu"
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=3000)

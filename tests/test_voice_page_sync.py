@@ -229,15 +229,51 @@ def test_snapshot_summary_has_viewport_cursor_and_below_fold():
 
 def test_scroll_uses_instant_scroll_not_smooth_animation():
     seen: list[str] = []
+    timeouts: list[int] = []
 
     class Loc:
-        def evaluate(self, js):
+        def evaluate(self, js, timeout=None):
             seen.append(js)
+            timeouts.append(timeout)
             return {"ok": True, "scrolled": True, "delta": 420, "vw": 1920, "vh": 1080}
 
     assert scroll_locator_into_view(None, Loc()) is True
     assert "scrollBy" in seen[0]
     assert "smooth" not in seen[0]
+    assert timeouts == [1000]
+
+
+def test_scroll_before_click_uses_site_graph_css_not_the_alias():
+    """A step alias is not CSS. locator('send_button') waits out Playwright's 30s default."""
+    from types import SimpleNamespace
+
+    from navigator.agent.nodes.executing import _scroll_call_target
+
+    seen: list[str] = []
+
+    class Loc:
+        def evaluate(self, js, timeout=None):
+            assert timeout == 1000
+            return {"ok": True, "scrolled": False}
+
+    class Page:
+        def locator(self, sel):
+            seen.append(sel)
+            loc = Loc()
+            loc.first = loc
+            return loc
+
+    graph = SimpleNamespace(
+        selector=lambda page_id, alias: {"send_button": "#send-btn", "message_input": "#message-input"}[alias]
+    )
+    deps = SimpleNamespace(page=Page(), graph=graph)
+    _scroll_call_target(
+        deps, "inbox", SimpleNamespace(tool="click_element", selector="send_button")
+    )
+    _scroll_call_target(
+        deps, "inbox", SimpleNamespace(tool="fill_field", selector="message_input")
+    )
+    assert seen == ["#send-btn", "#message-input"]
 
 
 def test_action_timeout_keeps_short_tests_and_caps_the_15s_default():

@@ -164,7 +164,13 @@ def test_orchestrator_no_recursive_task_on_interrupt():
 
     orch.planner.plan.side_effect = slow_plan  # type: ignore[attr-defined]
 
-    # Start a task
+    # There must still be only ONE worker this call started. A worker left
+    # behind by an earlier test does not count.
+    existing = {
+        t.ident
+        for t in threading.enumerate()
+        if t.name == "agent-runtime-worker"
+    }
     orch.handle_utterance("Navigate to the dashboard settings")
     # Wait for worker to grab the lock
     deadline = time.time() + 1.0
@@ -176,8 +182,11 @@ def test_orchestrator_no_recursive_task_on_interrupt():
     # Second utterance while worker is busy
     orch.handle_utterance("Actually show me the pricing page instead")
 
-    # There must still be only ONE worker thread (the running one)
-    rt_threads = [t for t in threading.enumerate() if t.name == "agent-runtime-worker"]
+    rt_threads = [
+        t
+        for t in threading.enumerate()
+        if t.name == "agent-runtime-worker" and t.ident not in existing
+    ]
     assert len(rt_threads) <= 1, f"Expected ≤1 worker thread, got {len(rt_threads)}"
 
     # Pending goal should be set

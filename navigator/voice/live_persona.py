@@ -103,8 +103,10 @@ def build_live_instruction(
         parts.append(f"What you know about {name}:\n{brief}")
     if pages:
         parts.append(
-            "Screens you can show, and the only ones you may refer to by name: "
+            "Screens you can open later, and the only ones you may refer to by name: "
             + ", ".join(pages)
+            + ". Only describe the section that is currently on screen. "
+            "Do not talk through the others until they are visible."
         )
     if (intake_summary or "").strip():
         parts.append(

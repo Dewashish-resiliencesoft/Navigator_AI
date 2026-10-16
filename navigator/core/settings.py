@@ -103,7 +103,25 @@ class Settings(BaseSettings):
     #: is localhost and nothing answers yet. Off for cloud Attendee or pytest.
     attendee_autostart: bool = True
     #: Attendee clone (separate repo). Override with NAVIGATOR_ATTENDEE_COMPOSE_DIR.
+    #: The webpage-streamer preflight also follows ATTENDEE_COMPOSE_DIR (the
+    #: variable the Attendee helper scripts already use) when this is unset.
     attendee_compose_dir: Path = Path.home() / "projects" / "attendee"
+    #: Docker network whose gateway the local screenshare relay tries to bind.
+    #: Stock ``docker compose`` project ``attendee`` creates
+    #: ``attendee_attendee_network``. A checkout under another directory is
+    #: often ``attendee-fork_attendee_network``.
+    attendee_docker_network: str = "attendee_attendee_network"
+    #: Explicit bind address for the local screenshare relay. Empty: the
+    #: Attendee network gateway, then ``0.0.0.0`` if that address is not on
+    #: this host (rootless Docker, ``EADDRNOTAVAIL`` / errno 99).
+    relay_bind_host: str = ""
+    #: Host written into the screenshare URL handed to Attendee containers.
+    #: Empty: the bind address, when that address is a specific IP. Required
+    #: when the relay falls back to ``0.0.0.0`` — a container cannot dial the
+    #: bridge gateway on rootless Docker. ``host.docker.internal`` needs
+    #: ``extra_hosts: ["host.docker.internal:host-gateway"]`` on the
+    #: webpage-streamer service. slirp4netns can use ``10.0.2.2``.
+    relay_public_host: str = ""
 
     # Phase 3: Meet + email notify + product login
     #: Fallback only: the CLI path (`python -m navigator.meeting.live_demo`) uses

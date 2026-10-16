@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from navigator.core.settings import settings
 from navigator.meeting import attendee_stack
 
 
@@ -64,6 +65,42 @@ def test_ensure_skips_in_pytest(monkeypatch):
 
     assert attendee_stack.ensure_attendee_stack(autostart=True) is False
     docker.assert_not_called()
+
+
+def _force_stock_compose_dir(monkeypatch):
+    monkeypatch.delenv("NAVIGATOR_ATTENDEE_COMPOSE_DIR", raising=False)
+    monkeypatch.setattr(settings, "attendee_compose_dir", attendee_stack._stock_attendee_dir())
+
+
+def test_compose_dir_follows_attendee_compose_dir(monkeypatch, tmp_path):
+    _force_stock_compose_dir(monkeypatch)
+    monkeypatch.setenv("ATTENDEE_COMPOSE_DIR", str(tmp_path))
+    assert attendee_stack._compose_dir() == tmp_path
+
+
+def test_navigator_compose_dir_wins_over_attendee_compose_dir(monkeypatch, tmp_path):
+    other = tmp_path / "other"
+    other.mkdir()
+    monkeypatch.setenv("NAVIGATOR_ATTENDEE_COMPOSE_DIR", str(tmp_path))
+    monkeypatch.setenv("ATTENDEE_COMPOSE_DIR", str(other))
+    assert attendee_stack._compose_dir() == tmp_path
+
+
+def test_webpage_streamer_cwd_follows_attendee_compose_dir(monkeypatch, tmp_path):
+    _force_stock_compose_dir(monkeypatch)
+    monkeypatch.setenv("ATTENDEE_COMPOSE_DIR", str(tmp_path))
+    monkeypatch.setattr(attendee_stack, "_in_pytest", lambda: False)
+    seen: dict = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cwd"] = kwargs.get("cwd")
+        seen["cmd"] = cmd
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(attendee_stack.subprocess, "run", fake_run)
+    assert attendee_stack.ensure_webpage_streamer() is True
+    assert seen["cwd"] == tmp_path
+    assert "attendee-webpage-streamer-local" in seen["cmd"]
 
 
 def test_compose_up_requires_files(tmp_path):

@@ -48,10 +48,10 @@ from navigator.meeting.meet_speaker import MeetSpeaker
 from navigator.meeting.public_mount import publish_http_or_tunnel, publish_ws_or_tunnel
 from navigator.meeting.relay import (
     push_frame,
-    start_relay,
     start_screencast,
     stop_screencast,
 )
+from navigator.meeting.relay_host import local_screenshare_url, open_screenshare_relay
 from navigator.meeting.screenshare import arm_screenshare, wait_until_screenshare_live
 from navigator.meeting.tunnel import verify_attendee_docker_dns
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
@@ -69,19 +69,12 @@ class _LocalAudioReady(Exception):
 def _attendee_docker_gateway() -> str | None:
     """Gateway IP of the Attendee docker network (host-only, not LAN)."""
     import os
-    import subprocess
 
     if os.environ.get("NAVIGATOR_SCREENSHARE_LOCAL", "1") == "0":
         return None
-    try:
-        out = subprocess.run(
-            ["docker", "network", "inspect", "attendee_attendee_network",
-             "-f", "{{(index .IPAM.Config 0).Gateway}}"],
-            capture_output=True, text=True, timeout=5,
-        ).stdout.strip()
-        return out or None
-    except Exception:
-        return None
+    from navigator.meeting.relay_host import attendee_network_name, docker_network_gateway
+
+    return docker_network_gateway(attendee_network_name())
 
 
 def _is_likely_echo(heard: str, bot_text: str) -> bool:
@@ -939,11 +932,14 @@ def run_live_meet_demo(
     if (agent_settings.tone or "").strip():
         persona = persona.model_copy(update={"tone": agent_settings.tone.strip()})
 
+    import os
+
+    _local_share = os.environ.get("NAVIGATOR_SCREENSHARE_LOCAL", "1") != "0"
     _docker_gw = _attendee_docker_gateway()
-    relay = (
-        start_relay(host=_docker_gw, meeting_url=meeting_url)
-        if _docker_gw
-        else start_relay(meeting_url=meeting_url)
+    relay, _share_host = open_screenshare_relay(
+        meeting_url=meeting_url,
+        gateway=_docker_gw,
+        local_enabled=_local_share,
     )
     tunnel = None
     audio_bridge = None
@@ -1117,19 +1113,24 @@ def run_live_meet_demo(
         # Screenshare tunnel after bot join (Meet + Zoom web SDK).
         public_agent: str | None = None
         print("[live] starting screenshare tunnel…", flush=True)
+        # 0.0.0.0 is a bind address, not a dial address. The tunnel runs on
+        # this host, so it reaches a wildcard relay via loopback.
+        _tunnel_host = "127.0.0.1" if relay.host in ("0.0.0.0", "::") else relay.host
         tunnel = _timed_live_stage(
             "screenshare_tunnel_start",
             lambda: publish_http_or_tunnel(
-                relay.host,
+                _tunnel_host,
                 relay.port,
                 binary=settings.tunnel_bin,
                 ready_path="/view",
             ),
         )
         public_view = f"{tunnel.public_url}/view"
-        if _docker_gw and relay.host == _docker_gw:
+        if _share_host:
             # Attendee runs on the same host: skip the tunnel hop for video.
-            public_view = f"http://{_docker_gw}:{relay.port}/view"
+            # ``_share_host`` is the address containers can dial (gateway IP,
+            # or NAVIGATOR_RELAY_PUBLIC_HOST after a 0.0.0.0 bind).
+            public_view = local_screenshare_url(_share_host, relay.port)
         public_agent = f"{tunnel.public_url}/agent"
         print(f"[live] screenshare URL ready: {public_view}", flush=True)
         if tunnel._proc.poll() is not None:

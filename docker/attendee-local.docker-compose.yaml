@@ -31,6 +31,11 @@ services:
   attendee-webpage-streamer-local:
     # It self-exits after 900s without a keepalive (i.e. between demos), and a
     # dead streamer means screenshare silently never appears in the meeting.
+    # Rootless Docker: the streamer cannot reach a host relay via the bridge
+    # gateway. Set NAVIGATOR_RELAY_PUBLIC_HOST=host.docker.internal and uncomment:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    # slirp4netns can use NAVIGATOR_RELAY_PUBLIC_HOST=10.0.2.2 instead.
     restart: unless-stopped
     dns:
       - 127.0.0.11

@@ -286,6 +286,8 @@ Point Navigator at the clone if it is not `~/projects/attendee`:
 
 ```bash
 NAVIGATOR_ATTENDEE_COMPOSE_DIR=/absolute/path/to/attendee
+# or, same variable the helper scripts already read:
+ATTENDEE_COMPOSE_DIR=/absolute/path/to/attendee
 NAVIGATOR_ATTENDEE_BASE_URL=http://localhost:8002/api/v1
 NAVIGATOR_ATTENDEE_AUTOSTART=1
 ```
@@ -512,6 +514,39 @@ Navigator.
 
 Navigator may autostart this stack when
 `NAVIGATOR_ATTENDEE_BASE_URL` is localhost and `NAVIGATOR_ATTENDEE_AUTOSTART=1`.
+The webpage-streamer preflight uses `NAVIGATOR_ATTENDEE_COMPOSE_DIR`, then
+`ATTENDEE_COMPOSE_DIR`, then `~/projects/attendee`.
+
+### Rootless Docker (local screenshare)
+
+On rootful Docker the relay binds the Attendee network gateway
+(`attendee_attendee_network`, or `NAVIGATOR_ATTENDEE_DOCKER_NETWORK` when the
+compose project is something else such as `attendee-fork_attendee_network`)
+and hands Attendee `http://<gateway>:<port>/view`.
+
+Rootless Docker (slirp4netns or pasta) does not put that gateway on the host.
+Binding it raises `OSError 99` (`Cannot assign requested address`) and the
+screenshare never starts. Navigator then listens on `0.0.0.0` and logs a
+warning. The container still cannot dial the gateway, so set the host that
+goes in the streamer URL:
+
+```bash
+# slirp4netns — from inside the container the host is 10.0.2.2
+NAVIGATOR_RELAY_PUBLIC_HOST=10.0.2.2
+
+# pasta (newer rootlesskit) has no 10.0.2.2. Use host.docker.internal
+# after uncommenting extra_hosts on attendee-webpage-streamer-local in
+# docker/attendee-local.docker-compose.yaml, then re-run
+# ./scripts/sync-attendee-compose.sh:
+#   extra_hosts:
+#     - "host.docker.internal:host-gateway"
+# The host's own reachable IP works for either network driver.
+NAVIGATOR_RELAY_PUBLIC_HOST=host.docker.internal
+```
+
+Optional: `NAVIGATOR_RELAY_BIND_HOST=0.0.0.0` skips the gateway attempt.
+If the relay falls back to `0.0.0.0` and `NAVIGATOR_RELAY_PUBLIC_HOST` is
+unset, the log names that variable and screenshare stays on the public tunnel.
 
 **Never** expose Attendee’s API or Django UI to Clients or End Users (Elastic
 License 2.0). Only Navigator’s process talks to it.
@@ -584,7 +619,10 @@ See **`.env.example`** for the full commented list. Highlights:
 | `NAVIGATOR_HEADFUL` | `1` show browser; `0` headless (servers/VPS) |
 | `NAVIGATOR_DB_PATH` / `NAVIGATOR_REGISTRY_DB` | SQLite paths |
 | `NAVIGATOR_CHROMA_PATH` | Vector store dir |
-| `NAVIGATOR_ATTENDEE_*` | Base URL, API key, autostart, compose dir |
+| `NAVIGATOR_ATTENDEE_*` | Base URL, API key, autostart, compose dir, docker network |
+| `ATTENDEE_COMPOSE_DIR` | Attendee clone path used by the streamer preflight when `NAVIGATOR_ATTENDEE_COMPOSE_DIR` is unset |
+| `NAVIGATOR_RELAY_BIND_HOST` | Screenshare relay bind address. Empty: docker gateway, then `0.0.0.0` |
+| `NAVIGATOR_RELAY_PUBLIC_HOST` | Host in the screenshare URL Attendee dials (`host.docker.internal` or `10.0.2.2` on rootless Docker) |
 | `NAVIGATOR_TUNNEL_BIN` | `cloudflared` binary |
 | `NAVIGATOR_PUBLIC_BASE_URL` | Stable public origin (Zoom ZAK); empty → quick tunnel |
 | `NAVIGATOR_MEETING_PLATFORM` / `NAVIGATOR_MEETING_URL` | Default platform / static link |

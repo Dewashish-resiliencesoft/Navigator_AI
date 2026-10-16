@@ -45,11 +45,28 @@ def _in_pytest() -> bool:
     return "pytest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST") is not None
 
 
+def _stock_attendee_dir() -> Path:
+    return Path.home() / "projects" / "attendee"
+
+
 def _compose_dir() -> Path:
+    """Attendee clone used for compose, including the webpage-streamer.
+
+    ``NAVIGATOR_ATTENDEE_COMPOSE_DIR`` (process env, then the value Settings
+    loaded from ``.env``) wins. Otherwise follow ``ATTENDEE_COMPOSE_DIR``, the
+    same variable ``scripts/sync-attendee-compose.sh`` and ``docker-up.sh``
+    use, instead of always assuming ``~/projects/attendee``.
+    """
     raw = os.environ.get("NAVIGATOR_ATTENDEE_COMPOSE_DIR", "").strip()
     if raw:
         return Path(raw).expanduser()
-    return settings.attendee_compose_dir.expanduser()
+    configured = Path(settings.attendee_compose_dir).expanduser()
+    if configured != _stock_attendee_dir():
+        return configured
+    alt = os.environ.get("ATTENDEE_COMPOSE_DIR", "").strip()
+    if alt:
+        return Path(alt).expanduser()
+    return configured
 
 
 def _sync_attendee_override(compose_dir: Path) -> None:

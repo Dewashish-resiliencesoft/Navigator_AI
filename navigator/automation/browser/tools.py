@@ -51,38 +51,58 @@ def execute(
     started = time.perf_counter()
     attempts = 2 if call.tool in _RETRYABLE_TOOLS else 1
     detail, next_page_id, ok = "", page_id, False
-    for attempt in range(attempts):
-        try:
-            detail, next_page_id = handler(
-                page, graph, page_id, call, on_frame=on_frame, mouse_path=mouse_path
-            )
-            ok = True
-            break
-        except SiteGraphError as exc:
-            detail, next_page_id, ok = _describe(exc), page_id, False
-            break
-        except PlaywrightError as exc:
-            detail = _describe(exc)
-            if attempt + 1 < attempts and _retryable_action(exc):
-                print(
-                    f"[tool] {call.tool} retry {attempt + 1}: {detail[:140]}",
-                    flush=True,
+    _emit_browser_clock(call.tool, "start")
+    try:
+        for attempt in range(attempts):
+            try:
+                detail, next_page_id = handler(
+                    page, graph, page_id, call, on_frame=on_frame, mouse_path=mouse_path
                 )
-                continue
-            if attempt:
-                detail = f"retry exhausted: {detail}"
-            next_page_id, ok = page_id, False
-            break
+                ok = True
+                break
+            except SiteGraphError as exc:
+                detail, next_page_id, ok = _describe(exc), page_id, False
+                break
+            except PlaywrightError as exc:
+                detail = _describe(exc)
+                if attempt + 1 < attempts and _retryable_action(exc):
+                    print(
+                        f"[tool] {call.tool} retry {attempt + 1}: {detail[:140]}",
+                        flush=True,
+                    )
+                    continue
+                if attempt:
+                    detail = f"retry exhausted: {detail}"
+                next_page_id, ok = page_id, False
+                break
 
-    return (
-        ToolResult(
-            ok=ok,
-            tool=call.tool,
-            detail=detail,
-            duration_ms=int((time.perf_counter() - started) * 1000),
-        ),
-        next_page_id,
-    )
+        return (
+            ToolResult(
+                ok=ok,
+                tool=call.tool,
+                detail=detail,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            ),
+            next_page_id,
+        )
+    finally:
+        _emit_browser_clock(call.tool, "end", ok=ok, detail=detail)
+
+
+def _emit_browser_clock(
+    tool: str,
+    phase: str,
+    *,
+    ok: bool | None = None,
+    detail: str = "",
+) -> None:
+    """Stamp this action on the shared monotonic clock. Never fails the tool."""
+    try:
+        from navigator.agent_runtime.sync_clock import emit_browser_action
+
+        emit_browser_action(tool, phase, ok=ok, detail=detail)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tool] sync clock failed: {exc}", flush=True)
 
 
 def _describe(exc: Exception) -> str:

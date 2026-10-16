@@ -504,7 +504,16 @@ class AgentOrchestrator:
             latency_ms=latency_ms,
             payload=payload or {},
         )
+        stamped = dict(event.payload)
+        stamped.setdefault("monotonic_ns", event.monotonic_ns)
+        event = event.model_copy(update={"payload": stamped})
         self.events.emit(event)
+        try:
+            from navigator.agent_runtime.sync_clock import forward_event
+
+            forward_event(event)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[runtime] sync clock forward failed: {exc}", flush=True)
 
 
 def live_screen_tools_active() -> bool:

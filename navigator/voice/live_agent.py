@@ -459,6 +459,8 @@ class LiveAgent:
             pass
         self.audio_flush_count += 1
         self._drop_inflight_audio = True
+        # A line that never produced PCM must not stamp the next answer.
+        self._narration_chunk_open = False
         self._turn_done.set()
         self._set_playback("stopped", uid, reason=reason)
         self._set_playback("cleanup", uid, reason=reason)
@@ -757,9 +759,32 @@ class LiveAgent:
                 self._pump_ui()
                 self._stop.wait(min(0.1, max(0.0, end - time.monotonic())))
 
+    def _arm_narration_chunk(self, text: str, *, provider: str) -> None:
+        """Remember the sentence whose first PCM should share the sync clock."""
+        self._narration_chunk_text = text
+        self._narration_provider = provider
+        self._narration_chunk_open = True
+
+    def _emit_narration_chunk(self) -> None:
+        """One monotonic stamp per sentence, at the first audible buffer."""
+        if not getattr(self, "_narration_chunk_open", False):
+            return
+        self._narration_chunk_open = False
+        text = str(getattr(self, "_narration_chunk_text", "") or "")
+        if not text:
+            return
+        provider = str(getattr(self, "_narration_provider", "gemini_live") or "gemini_live")
+        try:
+            from navigator.agent_runtime.sync_clock import emit_narration_chunk
+
+            emit_narration_chunk(text, provider)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] narration clock failed: {exc}", flush=True)
+
     def _note_first_audio(self) -> None:
         from navigator.core import logtime
 
+        self._emit_narration_chunk()
         now = time.monotonic()
         jit = 250.0  # Attendee jitter buffer (patch) — audio heard ~this much later
         q = getattr(self, "_say_queued_at", 0.0)
@@ -1230,9 +1255,11 @@ class LiveAgent:
             cur = self._audio_s_sent()
             if cur > last_audio + 1e-3:
                 last_audio, last_progress = cur, now
-            # NVIDIA TTS blocks in another thread before the first PCM byte.
+            # Hosted TTS blocks in another thread before the first PCM byte.
             # Don't treat that wait as a dead Gemini session and reconnect.
-            if getattr(self, "_nvidia_synth", False) and now - start < 25.0:
+            if (
+                getattr(self, "_nvidia_synth", False) or getattr(self, "_external_synth", False)
+            ) and now - start < 25.0:
                 last_progress = now
             quiet = now - last_progress
             started_audio = cur > self._inflight_audio0() + 1e-3
@@ -1526,6 +1553,8 @@ class LiveAgent:
                 self._turn_closed = True
             if done_now:
                 self._drop_inflight_audio = False
+                if getattr(self, "_narration_chunk_open", False):
+                    self._narration_chunk_open = False
                 self._last_turn_audio_s = getattr(self, "_turn_audio_s", 0.0)
                 self.speaking = False
                 mark = getattr(self.bridge, "mark_line_end", None)
@@ -1554,14 +1583,17 @@ class LiveAgent:
             if cmd.kind == "close":
                 return
             if cmd.kind in ("say", "nudge"):
-                # NVIDIA speaks the phrased line. Gemini is the fallback and
-                # still hears the room. Default provider skips the HTTP path.
-                from navigator.voice.nvidia import voice_selected
+                # Hosted TTS speaks the phrased line. Gemini is the fallback
+                # and still hears the room. gemini_live skips the HTTP path.
+                from navigator.core.settings import settings as voice_settings
+                from navigator.voice.tts import try_hosted_tts
 
-                if voice_selected():
-                    from navigator.voice.tts import try_nvidia_tts
-
+                provider = voice_settings.voice_provider
+                self._arm_narration_chunk(cmd.text, provider="gemini_live")
+                if provider in ("nvidia", "fish"):
+                    self._narration_provider = provider
                     self._nvidia_synth = True
+                    self._external_synth = True
 
                     def _cancel() -> bool:
                         return bool(self.interrupted or self._stop.is_set())
@@ -1571,7 +1603,7 @@ class LiveAgent:
 
                     try:
                         audio_s = await asyncio.to_thread(
-                            try_nvidia_tts,
+                            try_hosted_tts,
                             self.bridge,
                             cmd.text,
                             language=str(self.cfg.language or "en"),
@@ -1580,11 +1612,14 @@ class LiveAgent:
                         )
                     finally:
                         self._nvidia_synth = False
+                        self._external_synth = False
                     # 0.0 is a barge-in before the first byte, not a failure.
                     # Falling through to Gemini would speak the line again.
                     if audio_s is not None:
                         self._finish_nvidia_turn(cmd.text, audio_s)
                         continue
+                    self._narration_provider = "gemini_live"
+                    self._narration_chunk_open = True
             if cmd.kind == "nudge":
                 self._nudge_sent_at = time.monotonic()
             try:
@@ -1597,7 +1632,7 @@ class LiveAgent:
                 return
 
     def _finish_nvidia_turn(self, text: str, audio_s: float) -> None:
-        """A phrased line was spoken by NVIDIA TTS, not Gemini Live.
+        """A phrased line was spoken by hosted TTS, not Gemini Live.
 
         Mark the words as said so say() does not replay a tail through Gemini,
         and unblock the walkthrough the same way generation_complete does.
@@ -1615,6 +1650,9 @@ class LiveAgent:
         self._drain_until = now + min(MAX_DRAIN_S, max(0.0, float(audio_s or 0.0))) + 0.3
         self._audio_rx_at = now
         self._drop_inflight_audio = False
+        if getattr(self, "_narration_chunk_open", False):
+            # Barge-in before the first byte: nothing to align on video.
+            self._narration_chunk_open = False
         self._turn_done.set()
         self._emit(LiveEvent(kind="said", text=text))
         self._emit(LiveEvent(kind="turn_complete"))

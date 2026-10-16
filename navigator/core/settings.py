@@ -32,8 +32,9 @@ class Settings(BaseSettings):
     #: Who speaks scripted lines. ``gemini_live`` is the current mouth.
     #: ``nvidia`` synthesizes the same phrased text on NVIDIA's hosted
     #: Magpie TTS and pushes PCM into the Attendee bridge; 429/errors
-    #: fall back to Gemini Live.
-    voice_provider: Literal["gemini_live", "nvidia"] = "gemini_live"
+    #: fall back to Gemini Live. ``fish`` does the same with Fish Audio's
+    #: free streaming model (``s2.1-pro-free``).
+    voice_provider: Literal["gemini_live", "nvidia", "fish"] = "gemini_live"
     #: Who transcribes meeting audio on the Groq Whisper path.
     #: ``nvidia`` uses the hosted Parakeet ASR (English). Hindi and
     #: NVIDIA errors fall back to Groq.
@@ -58,6 +59,16 @@ class Settings(BaseSettings):
     nvidia_stt_base_url: str = (
         "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com"
     )
+    #: Fish Audio key from the operator env. Empty unless voice_provider is fish.
+    #: Not the removed WAV-stack ``fish_api_key`` and not a vault provider.
+    fish_audio_api_key: str = ""
+    #: Free Fish model. The HTTP client always sends this header; a blank or
+    #: other value must not fall through to the paid ``s2.1-pro`` model.
+    fish_audio_model: str = "s2.1-pro-free"
+    #: Streaming TTS endpoint. Response body is raw PCM when format=pcm.
+    fish_audio_base_url: str = "https://api.fish.audio/v1/tts"
+    #: PCM rate into Attendee. Fish accepts 24000 for 16-bit mono.
+    fish_audio_sample_rate: int = 24_000
     #: Gemini Live model. Audio in/out, native VAD, sync tools only.
     live_conversational_model: str = "gemini-3.1-flash-live-preview"
     #: Silence before Live ends the human's turn. Google's default is ~800ms;

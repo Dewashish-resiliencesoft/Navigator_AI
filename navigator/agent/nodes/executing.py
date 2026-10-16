@@ -149,6 +149,9 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
 
 
 def executing(state: CallState, deps: CallDeps) -> CallState:
+    from navigator.automation.browser.viewport_awareness import begin_viewport_step
+
+    begin_viewport_step()
     try:
         from navigator.meeting.ui_jobs import service_before_step
 

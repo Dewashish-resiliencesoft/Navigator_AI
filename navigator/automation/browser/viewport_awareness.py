@@ -1,16 +1,15 @@
 """Which site-graph sections are inside the live viewport.
 
-One DOM read (`getBoundingClientRect` against `window.innerWidth/innerHeight`).
-No model call. The planner sees the section on screen and a short nearby
-off-screen list — not every alias on the page.
-
-Updated after scroll and navigation. Scroll distance comes from that same
-measurement.
+One DOM read per planner or executing step. Boxes are clipped by nested
+overflow, and scroll distance is measured against that scroller. No model
+call. The planner sees the section on screen and a short nearby off-screen
+list — not every alias on the page.
 """
 
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
@@ -21,6 +20,10 @@ EVAL_TIMEOUT_S = 3.0
 _ALIAS_CAP = 40
 _HEADING_CAP = 24
 _PARTIAL_NEARBY_PX = 24
+#: Sticky-header clearance when a client has not set one on the site graph.
+DEFAULT_HEADER_OFFSET_PX = 72
+
+_viewport_step = threading.local()
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,10 @@ class Placement:
     visible_ratio: float
     top: float
     css: str = ""
+    #: Unclipped viewport y, used to scroll. ``top`` may be the clipped box.
+    scroll_top: float = 0.0
+    #: Viewport y of the nested scroller that owns this box. 0 means the window.
+    container_top: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -80,6 +87,67 @@ class ViewportAwareness:
             }
             for p in nearby_offscreen(self)
         ]
+
+
+def begin_viewport_step() -> None:
+    """Reuse one viewport read for the rest of this planner or executing step."""
+    _viewport_step.active = True
+    _viewport_step.saved = None
+
+
+def end_viewport_step() -> None:
+    """Drop the step cache. The next read measures again."""
+    _viewport_step.active = False
+    _viewport_step.saved = None
+
+
+def header_offset_px(graph: Any = None) -> int:
+    """Pixels to keep clear under a sticky header. Per client via ``_meta``."""
+    meta = getattr(graph, "meta", None)
+    if isinstance(meta, dict) and meta.get("header_offset_px") is not None:
+        try:
+            return max(0, int(meta["header_offset_px"]))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_HEADER_OFFSET_PX
+
+
+def classify_in_view(
+    *,
+    top: float,
+    bottom: float,
+    left: float,
+    right: float,
+    viewport_w: float,
+    viewport_h: float,
+    clip_top: float | None = None,
+    clip_bottom: float | None = None,
+    clip_left: float | None = None,
+    clip_right: float | None = None,
+) -> tuple[str, int, float]:
+    """Classify a box against the window and any nested clip.
+
+    A box that sits in the window but outside an overflow ancestor is
+    off screen. Coordinates are shifted into that visible pane first.
+    """
+    view_top = 0.0 if clip_top is None else max(0.0, float(clip_top))
+    view_bottom = (
+        float(viewport_h) if clip_bottom is None else min(float(viewport_h), float(clip_bottom))
+    )
+    view_left = 0.0 if clip_left is None else max(0.0, float(clip_left))
+    view_right = (
+        float(viewport_w) if clip_right is None else min(float(viewport_w), float(clip_right))
+    )
+    if view_bottom - view_top <= 1 or view_right - view_left <= 1:
+        return "below", 0, 0.0
+    return classify_rect(
+        top=top - view_top,
+        bottom=bottom - view_top,
+        left=left - view_left,
+        right=right - view_left,
+        viewport_w=view_right - view_left,
+        viewport_h=view_bottom - view_top,
+    )
 
 
 def classify_rect(
@@ -172,8 +240,14 @@ def relation_for_label(awareness: ViewportAwareness, label: str) -> str | None:
     return None
 
 
-def measure_viewport(page: Any, *, graph: Any = None, page_id: str = "") -> ViewportAwareness:
-    """Read the live viewport once and place site-graph sections against it."""
+def measure_viewport(
+    page: Any, *, graph: Any = None, page_id: str = "", fresh: bool = False
+) -> ViewportAwareness:
+    """Read the live viewport once and place site-graph sections against it.
+
+    Inside a step started with ``begin_viewport_step``, later calls for the
+    same page reuse that read until a scroll or navigation asks for ``fresh``.
+    """
     if page is None or not hasattr(page, "evaluate"):
         return ViewportAwareness()
     url = ""
@@ -181,6 +255,10 @@ def measure_viewport(page: Any, *, graph: Any = None, page_id: str = "") -> View
         url = page.url or ""
     except Exception:  # noqa: BLE001
         url = ""
+    if not fresh:
+        cached = _recall(page, url)
+        if cached is not None:
+            return cached
     targets = _alias_targets(graph, page_id=page_id, page_url=url)
     try:
         raw = _eval(page, _MEASURE_JS, {"targets": targets})
@@ -188,15 +266,19 @@ def measure_viewport(page: Any, *, graph: Any = None, page_id: str = "") -> View
         print(f"[viewport] measure skipped: {exc}", flush=True)
         return ViewportAwareness()
     if not isinstance(raw, dict):
-        return ViewportAwareness()
-    return _from_raw(raw, graph=graph, targets=targets)
+        awareness = ViewportAwareness()
+        _remember(page, url, awareness)
+        return awareness
+    awareness = _from_raw(raw, graph=graph, targets=targets)
+    _remember(page, url, awareness)
+    return awareness
 
 
 def note_viewport_change(
     page: Any, graph: Any, page_id: str, *, why: str
 ) -> ViewportAwareness:
     """Remeasure after scroll or navigation and log the on-screen section."""
-    awareness = measure_viewport(page, graph=graph, page_id=page_id)
+    awareness = measure_viewport(page, graph=graph, page_id=page_id, fresh=True)
     text = awareness.summary().replace("\n", " | ") or "currently on screen: (unknown)"
     print(f"[viewport] {why} {text}", flush=True)
     return awareness
@@ -214,7 +296,7 @@ def bring_alias_into_view(page: Any, graph: Any, page_id: str, alias: str) -> No
             return
         if hit.relation == "partial" and hit.distance_px < _PARTIAL_NEARBY_PX:
             return
-        _scroll_by(page, hit)
+        _scroll_by(page, hit, graph=graph)
         note_viewport_change(page, graph, page_id, why="scroll")
     except Exception as exc:  # noqa: BLE001
         print(f"[viewport] scroll skipped: {exc}", flush=True)
@@ -237,7 +319,7 @@ def scroll_toward_label(page: Any, graph: Any, page_id: str, label: str) -> bool
     )
     if hit is None:
         return False
-    _scroll_by(page, hit)
+    _scroll_by(page, hit, graph=graph)
     note_viewport_change(page, graph, page_id, why="scroll")
     return True
 
@@ -250,8 +332,13 @@ def label_still_offscreen(page: Any, graph: Any, page_id: str, label: str) -> bo
     return rel in {"above", "below"}
 
 
-def _scroll_by(page: Any, hit: Placement) -> None:
-    delta = int(round(hit.top - 72))
+def _scroll_by(page: Any, hit: Placement, *, graph: Any = None) -> None:
+    header = header_offset_px(graph)
+    origin = hit.scroll_top if hit.scroll_top or hit.container_top else hit.top
+    # A nested pane cannot show anything above its own top. Aligning to the
+    # window header would scroll the element past that clip.
+    target = max(float(header), float(hit.container_top))
+    delta = int(round(origin - target))
     if abs(delta) < 12:
         return
     try:
@@ -287,7 +374,14 @@ def _from_raw(raw: dict[str, Any], *, graph: Any, targets: list[dict[str, str]])
                 distance_px=placed.distance_px,
                 visible_ratio=placed.visible_ratio,
                 top=placed.top,
-                css=_section_css(graph, pid),
+                css=_section_css(
+                    graph,
+                    pid,
+                    heading=text,
+                    heading_css=str(row.get("css") or ""),
+                ),
+                scroll_top=placed.scroll_top,
+                container_top=placed.container_top,
             )
         else:
             item = Placement(
@@ -298,6 +392,9 @@ def _from_raw(raw: dict[str, Any], *, graph: Any, targets: list[dict[str, str]])
                 distance_px=placed.distance_px,
                 visible_ratio=placed.visible_ratio,
                 top=placed.top,
+                css=str(row.get("css") or ""),
+                scroll_top=placed.scroll_top,
+                container_top=placed.container_top,
             )
         if item.id in seen:
             continue
@@ -322,6 +419,8 @@ def _from_raw(raw: dict[str, Any], *, graph: Any, targets: list[dict[str, str]])
             visible_ratio=placed.visible_ratio,
             top=placed.top,
             css=meta.get("css") or "",
+            scroll_top=placed.scroll_top,
+            container_top=placed.container_top,
         )
         if item.id in seen:
             continue
@@ -348,9 +447,21 @@ def _place_row(row: dict[str, Any], *, vw: float, vh: float, css: str) -> Placem
         right = float(row.get("right"))
     except (TypeError, ValueError):
         return None
-    relation, distance, ratio = classify_rect(
-        top=top, bottom=bottom, left=left, right=right, viewport_w=vw, viewport_h=vh
+    relation, distance, ratio = classify_in_view(
+        top=top,
+        bottom=bottom,
+        left=left,
+        right=right,
+        viewport_w=vw,
+        viewport_h=vh,
+        clip_top=_opt_float(row.get("clipTop")),
+        clip_bottom=_opt_float(row.get("clipBottom")),
+        clip_left=_opt_float(row.get("clipLeft")),
+        clip_right=_opt_float(row.get("clipRight")),
     )
+    raw_top = row.get("rawTop")
+    scroll_top = float(raw_top) if raw_top is not None else top
+    container_top = float(row.get("containerTop") or 0)
     return Placement(
         id="",
         name="",
@@ -360,7 +471,18 @@ def _place_row(row: dict[str, Any], *, vw: float, vh: float, css: str) -> Placem
         visible_ratio=ratio,
         top=top,
         css=css,
+        scroll_top=scroll_top,
+        container_top=container_top,
     )
+
+
+def _opt_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _alias_targets(graph: Any, *, page_id: str, page_url: str) -> list[dict[str, str]]:
@@ -408,15 +530,44 @@ def _eval(page: Any, expression: str, arg: Any = None):
         return fn(expression, arg)
 
 
-def _section_css(graph: Any, page_id: str) -> str:
+def _section_css(
+    graph: Any, page_id: str, *, heading: str = "", heading_css: str = ""
+) -> str:
+    """Selector for the heading that matched, never the page's first alias."""
+    css = (heading_css or "").strip()
+    if css and css.lower() != "body":
+        return css
     pages = getattr(graph, "pages", None) or {}
     spec = pages.get(page_id) if isinstance(pages, dict) else None
     selectors = getattr(spec, "selectors", None) or {}
-    for css in selectors.values():
-        css_s = str(css or "").strip()
+    want = _norm(heading)
+    if not want:
+        return ""
+    for alias, raw in selectors.items():
+        if _norm(str(alias)) != want and _norm(str(alias).replace("_", " ")) != want:
+            continue
+        css_s = str(raw or "").strip()
         if css_s and css_s.lower() != "body":
             return css_s
     return ""
+
+
+def _recall(page: Any, url: str) -> ViewportAwareness | None:
+    if not getattr(_viewport_step, "active", False):
+        return None
+    saved = getattr(_viewport_step, "saved", None)
+    if not saved:
+        return None
+    page_key, saved_url, awareness = saved
+    if page_key != id(page) or saved_url != url:
+        return None
+    return awareness
+
+
+def _remember(page: Any, url: str, awareness: ViewportAwareness) -> None:
+    if not getattr(_viewport_step, "active", False):
+        return
+    _viewport_step.saved = (id(page), url, awareness)
 
 
 def _match_page(text: str, graph: Any) -> tuple[str, str] | None:
@@ -486,16 +637,82 @@ def _fmt_list(items: list[Placement]) -> str:
 _MEASURE_JS = """(spec) => {
   const vw = window.innerWidth || 0;
   const vh = window.innerHeight || 0;
+  const clipsY = (oy) => oy === 'auto' || oy === 'scroll' || oy === 'hidden' || oy === 'clip';
+  const clipsX = (ox) => ox === 'auto' || ox === 'scroll' || ox === 'hidden' || ox === 'clip';
+  const cssEscape = (value) => {
+    if (window.CSS && CSS.escape) return CSS.escape(value);
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\\\$&');
+  };
+  const selectorFor = (el) => {
+    if (!el || el.nodeType !== 1) return '';
+    if (el.id) {
+      const sel = '#' + cssEscape(el.id);
+      try { if (document.querySelector(sel) === el) return sel; } catch (e) {}
+    }
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && node !== document.body && node !== document.documentElement) {
+      let part = node.tagName.toLowerCase();
+      if (node.id) { parts.unshift('#' + cssEscape(node.id)); break; }
+      const parent = node.parentElement;
+      if (parent) {
+        const same = Array.from(parent.children).filter((c) => c.tagName === node.tagName);
+        if (same.length > 1) part += ':nth-of-type(' + (same.indexOf(node) + 1) + ')';
+      }
+      parts.unshift(part);
+      if (parts.length > 6) break;
+      node = node.parentElement;
+    }
+    return parts.join(' > ');
+  };
   const box = (el) => {
     const r = el.getBoundingClientRect();
-    return {top: r.top, bottom: r.bottom, left: r.left, right: r.right,
-            width: r.width, height: r.height};
+    let top = r.top, bottom = r.bottom, left = r.left, right = r.right;
+    let clipTop = 0, clipBottom = vh, clipLeft = 0, clipRight = vw;
+    let containerTop = 0;
+    let foundScroller = false;
+    let node = el.parentElement;
+    while (node && node !== document.documentElement) {
+      const st = window.getComputedStyle(node);
+      const oy = st.overflowY;
+      const ox = st.overflowX;
+      const cy = clipsY(oy);
+      const cx = clipsX(ox);
+      if (cy || cx) {
+        const c = node.getBoundingClientRect();
+        if (cy) {
+          top = Math.max(top, c.top);
+          bottom = Math.min(bottom, c.bottom);
+          clipTop = Math.max(clipTop, c.top);
+          clipBottom = Math.min(clipBottom, c.bottom);
+        }
+        if (cx) {
+          left = Math.max(left, c.left);
+          right = Math.min(right, c.right);
+          clipLeft = Math.max(clipLeft, c.left);
+          clipRight = Math.min(clipRight, c.right);
+        }
+        if (!foundScroller && (oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 8) {
+          containerTop = c.top;
+          foundScroller = true;
+        }
+      }
+      node = node.parentElement;
+    }
+    return {
+      top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+      rawTop: r.top, containerTop: foundScroller ? containerTop : 0,
+      clipTop: clipTop, clipBottom: clipBottom, clipLeft: clipLeft, clipRight: clipRight,
+      css: selectorFor(el)
+    };
   };
   const measured = [];
   for (const item of (spec.targets || [])) {
     let el = null;
     try { el = document.querySelector(item.css); } catch (e) { el = null; }
     if (!el) { measured.push({id: item.id, missing: true}); continue; }
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) { measured.push({id: item.id, missing: true}); continue; }
     measured.push(Object.assign({id: item.id, missing: false}, box(el)));
   }
   const headings = [];
@@ -528,7 +745,7 @@ _SCROLL_JS = """(spec) => {
     try { el = document.querySelector(spec.css); } catch (e) { el = null; }
   }
   let node = el ? el.parentElement : null;
-  while (node && node !== document.body) {
+  while (node && node !== document.body && node !== document.documentElement) {
     const st = window.getComputedStyle(node);
     const oy = st.overflowY;
     if ((oy === 'auto' || oy === 'scroll') && node.scrollHeight > node.clientHeight + 8) {

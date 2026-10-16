@@ -8,11 +8,16 @@ from navigator.automation.browser.screen_context import planner_screen, screen_s
 from navigator.automation.browser.viewport_awareness import (
     Placement,
     ViewportAwareness,
+    begin_viewport_step,
     bring_alias_into_view,
+    end_viewport_step,
+    classify_in_view,
     classify_rect,
+    header_offset_px,
     measure_viewport,
     nearby_offscreen,
     pick_current,
+    scroll_toward_label,
 )
 from navigator.core.schemas import Persona
 from navigator.knowledge.site_graph import PageSpec, SiteGraph
@@ -44,14 +49,16 @@ class _Page:
     def __init__(self, raw: dict):
         self.raw = raw
         self.scrolls: list[dict] = []
+        self.reads = 0
 
     def title(self) -> str:
         return "App"
 
-    def evaluate(self, _js, arg=None):
+    def evaluate(self, _js, arg=None, **_k):
         if isinstance(arg, dict) and "delta" in arg:
             self.scrolls.append(arg)
             return True
+        self.reads += 1
         return self.raw
 
 
@@ -157,6 +164,69 @@ def test_scroll_uses_measured_distance():
     assert page.scrolls[0]["delta"] == 628
 
 
+def test_clipped_box_inside_the_window_is_not_visible():
+    """An overflow ancestor hides the box even when the window still contains it."""
+    relation, _distance, _ratio = classify_in_view(
+        top=400,
+        bottom=440,
+        left=0,
+        right=120,
+        viewport_w=800,
+        viewport_h=900,
+        clip_top=180,
+        clip_bottom=400,
+        clip_left=0,
+        clip_right=800,
+    )
+    assert relation == "below"
+    assert classify_rect(
+        top=400, bottom=440, left=0, right=120, viewport_w=800, viewport_h=900
+    )[0] == "visible"
+
+
+def test_nested_scroller_does_not_use_the_window_header():
+    raw = _raw()
+    raw["measured"][1] = {
+        **raw["measured"][1],
+        "rawTop": 700,
+        "containerTop": 200,
+    }
+    page = _Page(raw)
+    bring_alias_into_view(page, _graph(), "inbox", "composer")
+    assert page.scrolls[0]["delta"] == 500
+
+
+def test_header_offset_comes_from_the_site_graph():
+    graph = _graph().model_copy(update={"meta": {"header_offset_px": 0}})
+    assert header_offset_px(graph) == 0
+    page = _Page(_raw())
+    bring_alias_into_view(page, graph, "inbox", "composer")
+    assert page.scrolls[0]["delta"] == 700
+
+
+def test_section_css_is_the_matched_heading():
+    raw = _raw()
+    raw["headings"][0] = {**raw["headings"][0], "css": "#inbox-heading"}
+    awareness = measure_viewport(_Page(raw), graph=_graph(), page_id="inbox")
+    section = next(p for p in awareness.placements if p.id == "inbox")
+    assert section.css == "#inbox-heading"
+
+
+def test_viewport_is_read_once_per_step():
+    page = _Page(_raw())
+    begin_viewport_step()
+    try:
+        first = measure_viewport(page, graph=_graph(), page_id="inbox")
+        second = measure_viewport(page, graph=_graph(), page_id="inbox")
+        assert page.reads == 1
+        assert second.current_section == first.current_section
+        begin_viewport_step()
+        measure_viewport(page, graph=_graph(), page_id="inbox")
+        assert page.reads == 2
+    finally:
+        end_viewport_step()
+
+
 def test_dom_state_is_viewport_not_full_inventory():
     state = build_dom_state(_Page(_raw()), page_id="inbox", detailed=True, graph=_graph())
     assert state["currently_on_screen"] == "Inbox"
@@ -184,3 +254,58 @@ def test_planner_narrates_only_the_visible_section():
 
 def test_empty_awareness_summary():
     assert ViewportAwareness().summary() == ""
+
+
+def test_live_clip_scrolls_inside_the_nested_pane(browser):
+    """A heading inside the window but outside a nested pane is off screen.
+
+    Scrolling it uses the pane, and stops at the pane's top rather than the
+    window header. The selector is the heading, not the page's first alias.
+    """
+    context = browser.new_context(viewport={"width": 800, "height": 900})
+    page = context.new_page()
+    try:
+        page.set_content(
+            """
+            <style>
+              body { margin: 0; }
+              #pad { height: 180px; }
+              #pane { height: 220px; overflow: auto; }
+              #spacer { height: 500px; }
+              #billing { margin: 0; height: 40px; }
+            </style>
+            <div id="pad"></div>
+            <div id="pane">
+              <div id="spacer"></div>
+              <h2 id="billing">Billing</h2>
+              <div style="height:200px"></div>
+            </div>
+            """,
+            wait_until="domcontentloaded",
+        )
+        graph = SiteGraph(
+            version=1,
+            site="acme",
+            base_url="https://example.test",
+            pages={
+                "billing": PageSpec(
+                    name="Billing",
+                    url="/billing",
+                    selectors={"first_alias": "#not-the-heading"},
+                )
+            },
+        )
+        awareness = measure_viewport(page, graph=graph, page_id="billing")
+        billing = next(p for p in awareness.placements if p.name == "Billing")
+        assert billing.relation != "visible"
+        assert billing.css == "#billing"
+        pane_top = page.evaluate(
+            "() => document.querySelector('#pane').getBoundingClientRect().top"
+        )
+        assert scroll_toward_label(page, graph, "billing", "Billing") is True
+        after = page.evaluate(
+            "() => document.querySelector('#billing').getBoundingClientRect().top"
+        )
+        assert after >= pane_top - 4
+    finally:
+        context.close()

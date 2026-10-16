@@ -299,6 +299,9 @@ def _step_narration_hint(
 
 
 def planning(state: CallState, deps: CallDeps) -> CallState:
+    from navigator.automation.browser.viewport_awareness import begin_viewport_step
+
+    begin_viewport_step()
     if deps.set_status is not None:
         deps.set_status("tailoring", "Tailoring…")
     if deps.set_avatar_state is not None:
@@ -1140,21 +1143,45 @@ def _viewport_screen(deps: CallDeps, page_id: str, *, limit: int | None = None) 
     return text
 
 
+_LABEL_DISTANCE = re.compile(r"\s*\((?:above|below),\s*\d+px\)\s*$", re.I)
+_LABEL_SKIP = {"", "(none)", "(unknown)"}
+
+
+def _label_name(bit: str) -> str:
+    name = _LABEL_DISTANCE.sub("", (bit or "").strip()).strip(" -")
+    if name.lower() in _LABEL_SKIP:
+        return ""
+    return name
+
+
 def _on_screen_labels(screen: str) -> list[str]:
-    """Labels from the viewport block. Never the full list of site pages."""
+    """Names from the viewport block, without distances. Never the site map."""
     if "currently on screen:" not in (screen or ""):
         return []
     labels: list[str] = []
+
+    def add(bit: str) -> None:
+        name = _label_name(bit)
+        if name and name not in labels:
+            labels.append(name)
+
     for line in screen.splitlines():
         low = line.strip().lower()
         if low.startswith("currently on screen:"):
-            name = line.split(":", 1)[1].strip()
-            if name:
-                labels.append(name)
-        elif low.startswith("nearby offscreen:") or low.startswith("- "):
-            bit = line.split(":", 1)[-1].strip()
-            if bit and bit not in labels:
-                labels.append(bit)
+            add(line.split(":", 1)[1])
+        elif (
+            low.startswith("nearby offscreen:")
+            or low.startswith("partly visible:")
+            or low.startswith("visible:")
+        ):
+            rest = line.split(":", 1)[1]
+            parts = [rest] if low.startswith("visible:") else rest.split(";")
+            for part in parts:
+                bits = part.split(",") if low.startswith("visible:") else [part]
+                for bit in bits:
+                    add(bit)
+        elif low.startswith("- "):
+            add(line.strip()[2:])
     return labels[:8]
 
 

@@ -238,8 +238,12 @@ def test_on_screen_labels_are_not_the_sitemap():
     from navigator.agent.nodes.planning import _on_screen_labels
 
     labels = _on_screen_labels(
-        "currently on screen: Pricing\nnearby offscreen: FAQ (below, 120px)"
+        "currently on screen: Pricing\n"
+        "partly visible: Plans (below, 40px)\n"
+        "nearby offscreen: FAQ (below, 120px); Docs (above, 80px)\n"
+        "visible: search box, composer"
     )
-    assert labels == ["Pricing", "FAQ (below, 120px)"]
+    assert labels == ["Pricing", "Plans", "FAQ", "Docs", "search box", "composer"]
     assert "Blog" not in labels
+    assert all("px" not in label for label in labels)
     assert _on_screen_labels("page inventory: Home, Pricing, Blog") == []

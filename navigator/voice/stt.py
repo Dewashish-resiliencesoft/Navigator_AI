@@ -14,9 +14,12 @@ import wave
 from collections.abc import Callable, Iterator
 
 # One partial transcript after this much speech, while the utterance continues.
-# The final segment is still yielded after silence. Hosted ASR is request/response;
-# this is the streaming hook those endpoints actually support.
-PARTIAL_AFTER_MS = 400
+# The final segment is still yielded after silence.
+# Gemini Live streams input transcription on the socket. Groq Whisper is
+# request/response, so this partial is the streaming hook it supports.
+# Hosted NVIDIA Parakeet is one batch request per utterance (about 40/min);
+# partials are skipped there.
+PARTIAL_AFTER_MS = 240
 
 SAMPLE_RATE = 16_000
 # Silero VAD v5 requires exactly 512 samples @ 16 kHz (32 ms). Not 200 ms.
@@ -185,6 +188,27 @@ def spawn_partial_transcript(
             print(f"[stt] partial handler failed: {exc}", flush=True)
 
     threading.Thread(target=_run, name="stt-partial", daemon=True).start()
+
+
+def meeting_stt_mode() -> str:
+    """How the selected meeting STT returns text.
+
+    ``partial`` — Groq Whisper: one mid-utterance transcript, then a final
+    after ``NAVIGATOR_LIVE_STT_MIN_SILENCE_MS``. That is the streaming hook
+    the request/response API supports.
+
+    ``batch`` — hosted NVIDIA Parakeet: one request when the utterance ends.
+    Partials are not sent (the tier is about 40 requests per minute).
+
+    Gemini Live, when the mouth is connected, also streams
+    ``input_audio_transcription`` on the socket. That path does not go
+    through this function.
+    """
+    from navigator.voice.nvidia import stt_selected
+
+    if stt_selected():
+        return "batch"
+    return "partial"
 
 
 def transcribe(

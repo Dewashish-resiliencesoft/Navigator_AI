@@ -538,8 +538,9 @@ delegation (`NAVIGATOR_GOOGLE_SA_JSON`, `NAVIGATOR_GOOGLE_IMPERSONATE`).
 
 | Piece | Default |
 |---|---|
-| Voice | Gemini Live PCM (`Sulafat`) — no WAV TTS. `NAVIGATOR_VOICE_PROVIDER=nvidia` speaks the same phrased text with hosted Magpie TTS into that PCM path; `fish` uses Fish Audio streaming TTS (`s2.1-pro-free`). Hosted errors fall back to Gemini |
-| STT | Groq Whisper on Attendee mixed-audio WebSocket. `NAVIGATOR_STT_PROVIDER=nvidia` uses hosted Parakeet for English and falls back to Groq |
+| Voice | Gemini Live PCM (`Sulafat`) — no WAV TTS. Scripted lines start on the first clause. `NAVIGATOR_VOICE_PROVIDER=nvidia` or `fish` speaks that same text (Fish is free model `s2.1-pro-free` only). Hosted errors fall back to Gemini. The mouth reads `NAVIGATOR_GEMINI_LIVE_API_KEY`, then `NAVIGATOR_GEMINI_API_KEY` |
+| STT | Gemini Live streams input transcription. Groq Whisper (default on the meeting socket) emits one partial and endpoints after `NAVIGATOR_LIVE_STT_MIN_SILENCE_MS` (400). `NAVIGATOR_STT_PROVIDER=nvidia` is one batch request per utterance |
+| Sync | Audio chunks and video frames share `time.monotonic_ns()`. See the capture contract below |
 | Languages | `NAVIGATOR_DEFAULT_SPOKEN_LANGUAGE` (`en` / `hi`); mid-call switch supported |
 | Knowledge | Chroma at `NAVIGATOR_CHROMA_PATH` (first boot may download ONNX embed model ~80MB into `~/.cache/chroma`) |
 | Bio | Structured fields per product |
@@ -547,6 +548,26 @@ delegation (`NAVIGATOR_GOOGLE_SA_JSON`, `NAVIGATOR_GOOGLE_IMPERSONATE`).
 On a new machine, copy `~/.cache/chroma` or allow one slow first readiness call
 while the embedding model downloads — otherwise a single uvicorn worker can
 appear “hung” on `/client/api/demo-readiness`.
+
+### Capture clock (`/view`)
+
+Agent audio and screenshare frames use one process-monotonic clock
+(`time.monotonic_ns()`). Compare the integers; they are not Unix time.
+
+`realtime_audio.bot_output` data includes `monotonic_ns` next to `chunk` and
+`sample_rate`. `/frame.jpg` sends the same stamp in `X-Navigator-Monotonic-Ns`.
+`/status` includes `frame_monotonic_ns`.
+
+The video capture page reads `/screen.ws` binary messages:
+
+| Kind | Bytes |
+|---|---|
+| Audio | `A` + uint32le sample rate + uint64le `monotonic_ns` + int16le PCM |
+| Video | `F` + uint64le `monotonic_ns` + JPEG |
+| Clear | `C` (barge-in: drop queued audio and reset the page clock) |
+
+Pack and unpack live in `navigator/meeting/media_clock.py`. A barge-in flushes
+Attendee's queue and, when the capture page is connected, its PCM queue.
 
 ---
 

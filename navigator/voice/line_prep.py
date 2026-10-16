@@ -134,6 +134,53 @@ def pieces(text: str, max_chars: int = 220) -> list[str]:
     return out or ([text.strip()] if text.strip() else [])
 
 
+def speak_chunks(text: str, *, min_clause: int = 16) -> list[str]:
+    """Clause-sized pieces so the first audio request is not a whole sentence.
+
+    Splits on sentence ends and, inside a sentence, on commas, semicolons,
+    colons, and dashes once the left side is long enough to say. The first
+    piece can be synthesized while the rest are still queued.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    out: list[str] = []
+    for sentence in [s.strip() for s in _SENT.split(raw) if s.strip()]:
+        out.extend(_clauses(sentence, min_clause))
+    return out or [raw]
+
+
+def _clauses(sentence: str, min_clause: int) -> list[str]:
+    pieces: list[str] = []
+    rest = sentence.strip()
+    while rest:
+        cut = _clause_cut(rest, min_clause)
+        if cut is None:
+            pieces.append(rest)
+            break
+        left, right = rest[:cut].strip(), rest[cut:].strip()
+        if not right:
+            pieces.append(rest)
+            break
+        pieces.append(left)
+        rest = right
+    return [p for p in pieces if p]
+
+
+def _clause_cut(text: str, min_clause: int) -> int | None:
+    """Index just after the first clause break, or None."""
+    for i, ch in enumerate(text):
+        if i + 1 < min_clause:
+            continue
+        if ch in ",;:":
+            if len(text[i + 1 :].strip()) >= 8:
+                return i + 1
+        if text.startswith(" — ", i) or text.startswith(" – ", i):
+            if len(text[i + 3 :].strip()) >= 8:
+                return i
+    return None
+
+
 def lead_and_rest(text: str, max_chars: int = 220) -> list[str]:
     """First sentence alone, then the rest in ``pieces``.
 

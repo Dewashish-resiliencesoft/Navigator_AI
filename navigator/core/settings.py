@@ -72,8 +72,9 @@ class Settings(BaseSettings):
     #: Gemini Live model. Audio in/out, native VAD, sync tools only.
     live_conversational_model: str = "gemini-3.1-flash-live-preview"
     #: Silence before Live ends the human's turn. Google's default is ~800ms;
-    #: under ~300ms a mid-sentence pause reads as end-of-turn.
-    live_vad_silence_ms: int = 800
+    #: under ~300ms a mid-sentence pause reads as end-of-turn. 500ms is the
+    #: low-latency endpoint that still survives a breath.
+    live_vad_silence_ms: int = 500
     #: Quiet time after an interruption before the walkthrough resumes.
     live_resume_silence_s: float = 0.8
     default_spoken_language: Literal["en", "hi"] = "en"
@@ -185,7 +186,9 @@ class Settings(BaseSettings):
     #: VAD end-of-utterance silence for live Meet STT (ms).
     #: 800ms matches Gemini Live's own VAD — prevents false barge-ins from
     #: mid-sentence pauses being misread as turn-end.
-    live_stt_min_silence_ms: int = 800
+    #: Groq/segmenter end-of-utterance. Gemini Live uses ``live_vad_silence_ms``.
+    #: NVIDIA STT is one batch request per finished utterance (no stream).
+    live_stt_min_silence_ms: int = 400
     #: Max wait for Attendee audio websocket before starting demo anyway. Zoom
     #: can delay this until the host grants recording permission.
     live_audio_ws_wait_s: float = 120.0

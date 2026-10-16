@@ -326,7 +326,9 @@ class LiveAgent:
             self._playback_idle.clear()
 
     VAD_RMS = 1200.0
-    VAD_MIN_S = 0.35
+    #: Sustained inbound voice before playback is cut. Short enough to feel
+    #: instant, long enough that one noise spike does not flush the line.
+    VAD_MIN_S = 0.12
 
     def _vad_feed(self, rms: float, now: float) -> None:
         """Prospect's own track (no bot echo): ~0.35s of sustained voice during a
@@ -444,6 +446,31 @@ class LiveAgent:
 
         threading.Thread(target=run, daemon=True, name="open-backstop").start()
 
+    def _drop_queued_speech(self) -> None:
+        """Drop say/nudge commands still waiting so the next clause does not start."""
+        kept: list[_Cmd] = []
+        while True:
+            try:
+                cmd = self._cmds.get_nowait()
+            except queue.Empty:
+                break
+            if cmd.kind in ("say", "nudge"):
+                continue
+            kept.append(cmd)
+        for cmd in kept:
+            self._cmds.put(cmd)
+
+    def _clear_capture_audio(self) -> None:
+        """Tell the /view page to drop queued PCM when that page is connected."""
+        try:
+            from navigator.meeting.relay import LAST_HANDLE
+
+            clear = getattr(LAST_HANDLE, "clear_pcm", None)
+            if callable(clear):
+                clear()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _confirm_barge_in(self, reason: str = "user") -> None:
         """Confirmed barge-in: flush Attendee audio, then allow a new utterance."""
         uid = self._active_utterance_id
@@ -453,10 +480,12 @@ class LiveAgent:
         self.barge_in_confirmed += 1
         self._last_interrupt_time = time.monotonic()
         self._set_playback("interrupted", uid, reason=reason)
+        self._drop_queued_speech()
         try:
             self.bridge.flush_bot_output()
         except Exception:  # noqa: BLE001
             pass
+        self._clear_capture_audio()
         self.audio_flush_count += 1
         self._drop_inflight_audio = True
         # A line that never produced PCM must not stamp the next answer.
@@ -510,9 +539,9 @@ class LiveAgent:
             return
         spoken.add(key)
         _lang0 = str(getattr(self.cfg, "language", "en") or "en")
-        from navigator.voice.line_prep import lead_and_rest as _lead_and_rest
+        from navigator.voice.line_prep import speak_chunks as _speak_chunks
 
-        _raw_parts = _lead_and_rest(text)
+        _raw_parts = _speak_chunks(text)
         if _lang0 != "en" and mode in ("verbatim", "natural"):
             from navigator.voice import line_prep
 
@@ -553,8 +582,8 @@ class LiveAgent:
 
         self._rotate_before_line(uid)
 
-        # Always lead with the first sentence. Waiting to translate or
-        # synthesize the whole paragraph is what made the first audio late.
+        # Always lead with the first clause. Waiting to translate or
+        # synthesize the whole sentence is what made the first audio late.
         parts = _raw_parts or [text]
         self.last_spoken = text
         self.interrupted = False

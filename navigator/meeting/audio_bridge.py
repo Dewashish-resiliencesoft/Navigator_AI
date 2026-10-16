@@ -338,9 +338,9 @@ class AudioBridge:
         try:
             from navigator.meeting.relay import LAST_HANDLE
 
-            page = LAST_HANDLE
-            if page is not None:
-                page.clear_pcm()
+            clear = getattr(LAST_HANDLE, "clear_pcm", None)
+            if callable(clear):
+                clear()
         except Exception:  # noqa: BLE001
             pass
         self._send_json({"trigger": "realtime_audio.bot_output_clear", "data": {}})
@@ -371,11 +371,16 @@ class AudioBridge:
             out, out_rate = resample_pcm16(pcm, rate, _ATTENDEE_PLAYBACK_RATE), _ATTENDEE_PLAYBACK_RATE
         else:
             out, out_rate = pcm, rate
+        from navigator.meeting.media_clock import now_ns
+
+        stamp = now_ns()
+        self.last_audio_monotonic_ns = stamp
         payload = {
             "trigger": "realtime_audio.bot_output",
             "data": {
                 "chunk": base64.b64encode(out).decode(),
                 "sample_rate": out_rate,
+                "monotonic_ns": stamp,
             },
         }
         # Handshake can finish a tick before the handler assigns self._ws.

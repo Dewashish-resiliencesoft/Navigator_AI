@@ -21,7 +21,7 @@ from navigator.automation.browser.page_snapshot import (
 )
 from navigator.automation.browser.tools import ACTION_TIMEOUT_CAP_MS, _action_timeout
 from navigator.core.schemas import ClickElement, Postcondition, ToolResult
-from navigator.voice.line_prep import lead_and_rest
+from navigator.voice.line_prep import lead_and_rest, speak_chunks
 from navigator.voice.stt import BYTES_PER_FRAME, VoiceSegmenter
 
 
@@ -30,6 +30,41 @@ def test_lead_and_rest_speaks_the_first_sentence_alone():
     assert parts[0] == "Hello there."
     assert parts[1].startswith("This is")
     assert lead_and_rest("One short line.") == ["One short line."]
+
+
+def test_speak_chunks_starts_on_the_first_clause():
+    parts = speak_chunks("I'll open the pricing page, then we'll look at the plans.")
+    assert parts[0] == "I'll open the pricing page,"
+    assert parts[1].startswith("then we'll")
+    assert speak_chunks("Hello there. This is the second sentence.") == [
+        "Hello there.",
+        "This is the second sentence.",
+    ]
+
+
+def test_say_queues_the_first_clause_before_the_rest():
+    from navigator.voice.live_agent import LiveAgent, LiveAgentConfig
+
+    bridge = MagicMock()
+    bridge.audio_s_sent = 0.0
+    bridge.out_play_end = 0.0
+    bridge._tap_play_end = 0.0
+    agent = LiveAgent(LiveAgentConfig(api_key="t", system_instruction="t", language="en"), bridge)
+    queued: list[str] = []
+
+    def put(cmd):
+        queued.append(cmd.text)
+        agent._turn_said.append(cmd.text)
+        agent._last_turn_audio_s = 3.0
+        agent._turn_done.set()
+
+    agent._cmds.put = put
+    try:
+        agent.say("I'll open the pricing page, then we'll look at the plans.")
+    finally:
+        agent._loop.close()
+    assert queued[0] == "I'll open the pricing page,"
+    assert queued[1].startswith("then we'll")
 
 
 def test_say_queues_the_first_sentence_before_the_rest():
@@ -119,9 +154,11 @@ def test_vad_stops_playback_when_the_user_talks_over_an_answer():
         now = time.monotonic()
         agent._audio_rx_at = now
         agent._vad_feed(2000, now)
-        agent._vad_feed(2000, now + 0.4)
+        assert agent.interrupted is False
+        agent._vad_feed(2000, now + agent.VAD_MIN_S + 0.02)
         assert agent.interrupted is True
         assert agent.barge_in_confirmed == 1
+        agent.bridge.flush_bot_output.assert_called()
     finally:
         agent._loop.close()
 

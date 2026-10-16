@@ -126,11 +126,22 @@ def transcribe(
     model: str = "whisper-large-v3-turbo",
     language: str | None = None,
 ) -> str:
-    """Transcribe 16-bit mono PCM (or WAV bytes) via Groq Whisper.
+    """Transcribe 16-bit mono PCM (or WAV bytes).
 
-    Do not pin ``language`` to English. Omit it so Whisper IDs the spoken
-    language; pass a BCP-47 code only when the caller already knows it.
+    Default is Groq Whisper. ``NAVIGATOR_STT_PROVIDER=nvidia`` tries the
+    hosted Parakeet endpoint first and falls back to Groq on 429, errors,
+    or a non-English language (Parakeet's hosted model is English-only).
+
+    Do not pin ``language`` to English on the Groq path. Omit it so Whisper
+    IDs the spoken language; pass a code only when the caller already knows it.
     """
+    from navigator.voice.nvidia import NvidiaVoiceError, stt_selected, transcribe_nvidia
+
+    if stt_selected():
+        try:
+            return transcribe_nvidia(audio, language=language)
+        except NvidiaVoiceError as exc:
+            print(f"[nvidia-stt] falling back to Groq ({exc})", flush=True)
     if not api_key:
         raise RuntimeError("Groq API key missing for STT")
     payload = audio

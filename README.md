@@ -538,8 +538,8 @@ delegation (`NAVIGATOR_GOOGLE_SA_JSON`, `NAVIGATOR_GOOGLE_IMPERSONATE`).
 
 | Piece | Default |
 |---|---|
-| Voice | Gemini Live PCM (`Sulafat`) — no WAV TTS |
-| STT | Groq Whisper on Attendee mixed-audio WebSocket |
+| Voice | Gemini Live PCM (`Sulafat`) — no WAV TTS. `NAVIGATOR_VOICE_PROVIDER=nvidia` speaks the same phrased text with hosted Magpie TTS into that PCM path; 429 falls back to Gemini |
+| STT | Groq Whisper on Attendee mixed-audio WebSocket. `NAVIGATOR_STT_PROVIDER=nvidia` uses hosted Parakeet for English and falls back to Groq |
 | Languages | `NAVIGATOR_DEFAULT_SPOKEN_LANGUAGE` (`en` / `hi`); mid-call switch supported |
 | Knowledge | Chroma at `NAVIGATOR_CHROMA_PATH` (first boot may download ONNX embed model ~80MB into `~/.cache/chroma`) |
 | Bio | Structured fields per product |
@@ -566,6 +566,9 @@ See **`.env.example`** for the full commented list. Highlights:
 | `NAVIGATOR_GOOGLE_SA_JSON` / `NAVIGATOR_GOOGLE_IMPERSONATE` | Meet space creation |
 | `NAVIGATOR_ZOOM_*` | Zoom Server-to-Server OAuth |
 | `NAVIGATOR_GROQ_*` / `NAVIGATOR_GEMINI_*` | LLM / STT / Live audio |
+| `NAVIGATOR_VOICE_PROVIDER` | `gemini_live` (default) or `nvidia` mouth |
+| `NAVIGATOR_STT_PROVIDER` | `groq` (default) or `nvidia` (English Parakeet) |
+| `NAVIGATOR_NVIDIA_API_KEY` | build.nvidia.com key; empty unless a provider is `nvidia` |
 | `NAVIGATOR_CREDENTIAL_KEY` | Product-login vault Fernet key |
 | `NAVIGATOR_TARGET_FPS` | JPEG poll hint. 60fps through the tunnel floods Cloudflare and starves Gemini Live voice |
 | `NAVIGATOR_SCREENSHARE_MODE` | `video` (default): Attendee loads a captureStream page that also plays agent voice. `jpeg`: legacy `/frame.jpg` poll |

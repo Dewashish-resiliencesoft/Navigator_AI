@@ -29,6 +29,35 @@ class Settings(BaseSettings):
     db_path: Path = Path("navigator.db")
     #: Warm female voice for English + Hindi (Gemini Live prebuilt).
     gemini_live_voice: str = "Sulafat"
+    #: Who speaks scripted lines. ``gemini_live`` is the current mouth.
+    #: ``nvidia`` synthesizes the same phrased text on NVIDIA's hosted
+    #: Magpie TTS and pushes PCM into the Attendee bridge; 429/errors
+    #: fall back to Gemini Live.
+    voice_provider: Literal["gemini_live", "nvidia"] = "gemini_live"
+    #: Who transcribes meeting audio on the Groq Whisper path.
+    #: ``nvidia`` uses the hosted Parakeet ASR (English). Hindi and
+    #: NVIDIA errors fall back to Groq.
+    stt_provider: Literal["groq", "nvidia"] = "groq"
+    #: build.nvidia.com API key. Empty unless voice or STT provider is nvidia.
+    nvidia_api_key: str = ""
+    #: Catalog model the TTS base URL is expected to serve.
+    nvidia_tts_model: str = "magpie-tts-multilingual"
+    #: Magpie multilingual voices. Hindi has no Aria; Sofia is the female hi-IN voice.
+    nvidia_tts_voice: str = "Magpie-Multilingual.EN-US.Aria"
+    nvidia_tts_voice_hi: str = "Magpie-Multilingual.HI-IN.Sofia"
+    #: Hosted Magpie multilingual function (build.nvidia.com API reference),
+    #: or a self-hosted NIM origin (http://host:9000).
+    nvidia_tts_base_url: str = (
+        "https://877104f7-e885-42b9-8de8-f6e4c6303969.invocation.api.nvcf.nvidia.com"
+    )
+    #: Requested PCM rate. 24 kHz matches Gemini Live into Attendee.
+    nvidia_tts_sample_rate: int = 24_000
+    #: Catalog model the STT base URL is expected to serve (English Parakeet).
+    nvidia_stt_model: str = "parakeet-ctc-1.1b-asr"
+    #: Hosted Parakeet CTC function, or a self-hosted ASR NIM origin.
+    nvidia_stt_base_url: str = (
+        "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com"
+    )
     #: Gemini Live model. Audio in/out, native VAD, sync tools only.
     live_conversational_model: str = "gemini-3.1-flash-live-preview"
     #: Silence before Live ends the human's turn. Google's default is ~800ms;

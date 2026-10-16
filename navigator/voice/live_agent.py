@@ -1205,6 +1205,10 @@ class LiveAgent:
             cur = self._audio_s_sent()
             if cur > last_audio + 1e-3:
                 last_audio, last_progress = cur, now
+            # NVIDIA TTS blocks in another thread before the first PCM byte.
+            # Don't treat that wait as a dead Gemini session and reconnect.
+            if getattr(self, "_nvidia_synth", False) and now - start < 25.0:
+                last_progress = now
             quiet = now - last_progress
             started_audio = cur > self._inflight_audio0() + 1e-3
             limit = 8.0 if started_audio else 10.0
@@ -1510,6 +1514,27 @@ class LiveAgent:
                 continue
             if cmd.kind == "close":
                 return
+            if cmd.kind in ("say", "nudge"):
+                # NVIDIA speaks the phrased line. Gemini is the fallback and
+                # still hears the room. Default provider skips the HTTP path.
+                from navigator.voice.nvidia import voice_selected
+
+                if voice_selected():
+                    from navigator.voice.tts import try_nvidia_tts
+
+                    self._nvidia_synth = True
+                    try:
+                        audio_s = await asyncio.to_thread(
+                            try_nvidia_tts,
+                            self.bridge,
+                            cmd.text,
+                            language=str(self.cfg.language or "en"),
+                        )
+                    finally:
+                        self._nvidia_synth = False
+                    if audio_s is not None:
+                        self._finish_nvidia_turn(cmd.text, audio_s)
+                        continue
             if cmd.kind == "nudge":
                 self._nudge_sent_at = time.monotonic()
             try:
@@ -1520,6 +1545,28 @@ class LiveAgent:
                 self._emit(LiveEvent(kind="error", text=f"send text: {exc}"))
                 self._turn_done.set()
                 return
+
+    def _finish_nvidia_turn(self, text: str, audio_s: float) -> None:
+        """A phrased line was spoken by NVIDIA TTS, not Gemini Live.
+
+        Mark the words as said so say() does not replay a tail through Gemini,
+        and unblock the walkthrough the same way generation_complete does.
+        """
+        self.__dict__.setdefault("_turn_said", []).append(text)
+        self._last_turn_audio_s = float(audio_s or 0.0)
+        self._turn_audio_s = 0.0
+        self.speaking = False
+        self._turn_closed = True
+        mark = getattr(self.bridge, "mark_line_end", None)
+        if callable(mark):
+            mark()
+        now = time.monotonic()
+        self._gen_done_at = now
+        self._drain_until = now + min(MAX_DRAIN_S, max(0.0, float(audio_s or 0.0))) + 0.3
+        self._audio_rx_at = now
+        self._turn_done.set()
+        self._emit(LiveEvent(kind="said", text=text))
+        self._emit(LiveEvent(kind="turn_complete"))
 
     def _emit(self, event: LiveEvent) -> None:
         if self.cfg.on_event is None:

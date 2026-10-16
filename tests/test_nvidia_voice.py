@@ -336,7 +336,7 @@ def test_finish_nvidia_turn_unblocks_say_wait():
         agent._loop.close()
 
 
-def test_pump_cmd_nvidia_does_not_send_text_to_gemini(monkeypatch):
+async def test_pump_cmd_nvidia_does_not_send_text_to_gemini(monkeypatch):
     monkeypatch.setattr(settings, "voice_provider", "nvidia")
     bridge = _Bridge()
     agent = LiveAgent(LiveAgentConfig(api_key="x", system_instruction="s"), bridge)
@@ -366,7 +366,7 @@ def test_pump_cmd_nvidia_does_not_send_text_to_gemini(monkeypatch):
         await asyncio.wait_for(task, timeout=2)
 
     try:
-        asyncio.run(_run())
+        await _run()
     finally:
         agent._loop.close()
     assert sent == []
@@ -374,7 +374,7 @@ def test_pump_cmd_nvidia_does_not_send_text_to_gemini(monkeypatch):
     assert agent._turn_said[-1] == "Phrased by the brain"
 
 
-def test_pump_cmd_nvidia_error_falls_back_to_gemini(monkeypatch):
+async def test_pump_cmd_nvidia_error_falls_back_to_gemini(monkeypatch):
     monkeypatch.setattr(settings, "voice_provider", "nvidia")
     bridge = _Bridge()
     agent = LiveAgent(LiveAgentConfig(api_key="x", system_instruction="s", language="en"), bridge)
@@ -392,7 +392,7 @@ def test_pump_cmd_nvidia_error_falls_back_to_gemini(monkeypatch):
         await asyncio.wait_for(agent._pump_cmd(Session()), timeout=2)
 
     try:
-        asyncio.run(_run())
+        await _run()
     finally:
         agent._loop.close()
     assert sent

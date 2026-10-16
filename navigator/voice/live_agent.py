@@ -343,9 +343,10 @@ class LiveAgent:
             d["_vad_run_start"] = 0.0
             return
         start = d.get("_vad_run_start") or 0.0
+        phase = getattr(self, "playback_phase", "playing")
         playing = (
             (getattr(self, "_in_say", False) or self.speaking)
-            and self.playback_phase not in {"interrupted", "stopped", "cleanup", "ready"}
+            and phase not in {"interrupted", "stopped", "cleanup", "ready"}
         )
         anchor = max(
             float(getattr(self, "_say_queued_at", 0.0) or 0.0),
@@ -897,7 +898,10 @@ class LiveAgent:
             if not user_turn:
                 # Scripted line in progress: the flow executor owns the screen.
                 # A model-initiated click here raced the flow and cut the line.
-                mid_line = bool(getattr(self, "_in_say", False)) and not self._turn_done.is_set()
+                turn_done = getattr(self, "_turn_done", None)
+                mid_line = bool(getattr(self, "_in_say", False)) and not (
+                    turn_done.is_set() if turn_done is not None else True
+                )
                 print(f"[live] tool_call {name} refused: not the user's turn (spontaneous)"
                       f"{'' if mid_line else ' — line already done, reply muted'}", flush=True)
                 # 11:18 / 16:21:15 runs: the reply after a refusal repeated the

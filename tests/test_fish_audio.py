@@ -221,7 +221,7 @@ def test_fish_error_status():
     assert err.status == 429
 
 
-def test_pump_cmd_fish_does_not_send_text_to_gemini(monkeypatch):
+async def test_pump_cmd_fish_does_not_send_text_to_gemini(monkeypatch):
     captured = _arm(monkeypatch, b"\x05\x00" * 30)
     monkeypatch.setattr(settings, "fish_audio_model", "")
     bridge = _Bridge()
@@ -245,7 +245,7 @@ def test_pump_cmd_fish_does_not_send_text_to_gemini(monkeypatch):
         await asyncio.wait_for(task, timeout=2)
 
     try:
-        asyncio.run(_run())
+        await _run()
     finally:
         agent._loop.close()
     assert sent == []

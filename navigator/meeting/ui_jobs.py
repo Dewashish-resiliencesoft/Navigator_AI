@@ -570,9 +570,11 @@ class UiJobs:
             from navigator.meeting.screen_page import capture_pump_ms, video_mode
 
             if video_mode():
-                # Follow the capture setting (8ms at 60fps). 40ms capped the
-                # fallback screencast at 25fps.
-                gap = capture_pump_ms() / 1000.0
+                # Follow this demo's relay, not a process-wide fps.
+                screen = getattr(self, "screen", None)
+                relay = getattr(screen, "relay", None) if screen is not None else None
+                url = getattr(relay, "meeting_url", "") if relay is not None else ""
+                gap = capture_pump_ms(url) / 1000.0
         except Exception:  # noqa: BLE001
             pass
         if now - getattr(self, "_last_spin", 0.0) < gap:
@@ -729,7 +731,8 @@ class ScreenThread:
                         from navigator.meeting.screen_page import capture_pump_ms, video_mode
 
                         if video_mode():
-                            pump_ms = capture_pump_ms()
+                            url = getattr(self.relay, "meeting_url", "") if self.relay is not None else ""
+                            pump_ms = capture_pump_ms(url)
                         (self.page or pg).wait_for_timeout(pump_ms)
                     except Exception:  # noqa: BLE001
                         time.sleep(0.05)

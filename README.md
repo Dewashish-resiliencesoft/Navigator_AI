@@ -567,9 +567,10 @@ See **`.env.example`** for the full commented list. Highlights:
 | `NAVIGATOR_ZOOM_*` | Zoom Server-to-Server OAuth |
 | `NAVIGATOR_GROQ_*` / `NAVIGATOR_GEMINI_*` | LLM / STT / Live audio |
 | `NAVIGATOR_CREDENTIAL_KEY` | Product-login vault Fernet key |
-| `NAVIGATOR_TARGET_FPS` | Legacy JPEG poll hint. The relay ceiling is the meeting URL (Meet 30, Zoom/Teams/local 60), not a fixed 8–24 band |
+| `NAVIGATOR_TARGET_FPS` | JPEG poll hint. 60fps through the tunnel floods Cloudflare and starves Gemini Live voice |
 | `NAVIGATOR_SCREENSHARE_MODE` | `video` (default): Attendee loads a captureStream page that also plays agent voice. `jpeg`: legacy `/frame.jpg` poll |
-| `NAVIGATOR_SCREENSHARE_FPS` | Forces the capture rate (1–60). Unset: `meet.google.com` is 30fps, Zoom/Teams/local are 60fps, at 1920×1080 |
+| `NAVIGATOR_SCREENSHARE_FPS` | Optional extra ceiling. Unset: `meet.google.com` is 30fps, Zoom/Teams/local are 60fps, at 1920×1080 |
+| `NAVIGATOR_ATTENDEE_MAX_FPS` | Hard ceiling matching Attendee's grab (default 15). Raise to 30 or 60 after the Attendee-repo framerate patch is deployed |
 | `NAVIGATOR_VIEWPORT_WIDTH` / `HEIGHT` | Playwright viewport for live, record, explore, and authoring (default 1920×1080) |
 | `NAVIGATOR_SCREENSHOT_QUALITY` | JPEG quality for screenshare (default 70) |
 | `NAVIGATOR_SCREENSHOT_MAX_WIDTH` | Legacy JPEG width note; the live frame size follows the viewport |
@@ -600,7 +601,7 @@ Lean server pattern (LAN “cloud” box):
 
 1. Sync project (code + `.env` + DBs + `chroma/` + `voices/` + `web/dist`).
    Keep remote `.venv` machine-local.
-2. `NAVIGATOR_HEADFUL=0`. The capture page is 1920×1080. Fps follows the meeting URL (Meet 30, Zoom/Teams/local 60) unless `NAVIGATOR_SCREENSHARE_FPS` forces a rate. Set Attendee's `WEBPAGE_STREAMER_VIDEO_FRAME_SIZE=1920x1080`. Attendee's webpage streamer still hardcodes a 15fps grab; that change lives in the Attendee repo.
+2. `NAVIGATOR_HEADFUL=0`. The capture page is 1920×1080. Platform fps is Meet 30, Zoom/Teams/local 60, then clamped to `min(platform, NAVIGATOR_SCREENSHARE_FPS, NAVIGATOR_ATTENDEE_MAX_FPS)`. The Attendee max defaults to 15 because 60fps through the tunnel floods Cloudflare and starves Gemini Live voice, and Attendee's webpage streamer still hardcodes a 15fps grab. Raise `NAVIGATOR_ATTENDEE_MAX_FPS` to 30 or 60 after that Attendee-repo patch is deployed. Set `WEBPAGE_STREAMER_VIDEO_FRAME_SIZE=1920x1080` on Attendee.
 3. Clone/sync Attendee under the same projects root, e.g.
    `~/dewashish_projects/attendee`, set
    `NAVIGATOR_ATTENDEE_COMPOSE_DIR` accordingly, `AUTOSTART=1`.

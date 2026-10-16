@@ -25,8 +25,6 @@ from urllib.parse import urlparse
 
 from playwright.sync_api import Page
 
-_capture_meeting_url = ""
-
 
 def fps_for_meeting_url(url: str | None) -> int:
     """Capture rate for one meeting link. The frame size stays 1920×1080.
@@ -45,20 +43,6 @@ def fps_for_meeting_url(url: str | None) -> int:
     return 60
 
 
-def set_capture_meeting_url(url: str | None) -> None:
-    """Remember the link for this demo so the relay cap matches the platform."""
-    global _capture_meeting_url
-    _capture_meeting_url = (url or "").strip()
-
-
-def capture_meeting_url() -> str:
-    if _capture_meeting_url:
-        return _capture_meeting_url
-    from navigator.core.settings import settings
-
-    return (getattr(settings, "meeting_url", "") or "").strip()
-
-
 def _fps_override() -> int | None:
     """``NAVIGATOR_SCREENSHARE_FPS`` when set. None means use the meeting URL."""
     from navigator.core.settings import settings
@@ -75,41 +59,64 @@ def _fps_override() -> int | None:
     return max(1, min(60, n))
 
 
-def relay_fps_cap(meeting_url: str | None = None) -> int:
-    """Upper capture rate for the relay, including ``target_fps`` usage.
+def _attendee_max_fps() -> int:
+    """``NAVIGATOR_ATTENDEE_MAX_FPS``. Default 15 matches Attendee's grab."""
+    from navigator.core.settings import settings
 
-    An explicit ``NAVIGATOR_SCREENSHARE_FPS`` forces the value. Otherwise the
-    meeting URL selects 30 (Google Meet) or 60 (Zoom, Teams, local).
+    raw = getattr(settings, "attendee_max_fps", 15)
+    try:
+        n = int(15 if raw is None else raw)
+    except (TypeError, ValueError):
+        n = 15
+    return max(1, min(60, n or 15))
+
+
+def resolve_capture_fps(meeting_url: str | None) -> int:
+    """Frames this session encodes. Passed a URL; nothing is process-global.
+
+    ``min(platform fps, NAVIGATOR_SCREENSHARE_FPS if set, NAVIGATOR_ATTENDEE_MAX_FPS)``.
+    Platform is 30 on Google Meet and 60 on Zoom, Teams, and local. The
+    Attendee cap defaults to 15 because the webpage streamer hardcodes
+    ``framerate=15/1`` — faster encodes are dropped. Raise
+    ``NAVIGATOR_ATTENDEE_MAX_FPS`` to 30 or 60 once that Attendee-repo patch
+    is deployed.
+
+    60fps through the public tunnel floods Cloudflare and starves Gemini
+    Live voice. 15fps leaves CPU and bandwidth for clear audio.
     """
+    parts = [fps_for_meeting_url(meeting_url), _attendee_max_fps()]
     override = _fps_override()
     if override is not None:
-        return override
-    url = capture_meeting_url() if meeting_url is None else meeting_url
-    return fps_for_meeting_url(url)
+        parts.append(override)
+    return max(1, min(parts))
 
 
-def view_frame_ms(target_fps: int | None = None) -> int:
-    """Poll interval for /view → frame.jpg (ms).
+def relay_fps_cap(meeting_url: str | None = None) -> int:
+    """Capture rate for one meeting link. ``None`` is a local (no-link) session."""
+    return resolve_capture_fps(meeting_url)
 
-    The ceiling is :func:`relay_fps_cap` (platform, or the env override), not
-    a fixed 8–24fps band. ``target_fps`` still asks for a slower poll.
+
+def view_frame_ms(target_fps: int | None = None, meeting_url: str | None = None) -> int:
+    """Poll interval for /view → frame.jpg (ms), for this meeting link only.
+
+    The ceiling is :func:`resolve_capture_fps`, not a fixed 8–24fps band.
+    ``target_fps`` still asks for a slower poll under that ceiling.
     """
-    cap = relay_fps_cap()
+    cap = resolve_capture_fps(meeting_url)
     if target_fps is None:
         target_fps = cap
     fps = max(1, min(cap, int(target_fps)))
     return max(1, int(round(1000.0 / fps)))
 
 
-def screencast_every_nth(target_fps: int | None = None) -> int:
+def screencast_every_nth(target_fps: int | None = None, meeting_url: str | None = None) -> int:
     """Drop CDP frames when the capture rate is below the compositor's ~60fps.
 
-    Video mode follows :func:`relay_fps_cap` (Meet 30, Zoom/Teams/local 60,
-    or ``NAVIGATOR_SCREENSHARE_FPS``). Floor, not round, so a rate is never
-    subsampled below what was asked. An explicit ``target_fps`` is clamped
-    to that same cap.
+    Video mode follows :func:`resolve_capture_fps` for ``meeting_url``.
+    Floor, not round, so a rate is never subsampled below what was asked.
+    An explicit ``target_fps`` is clamped to that same per-link ceiling.
     """
-    cap = relay_fps_cap()
+    cap = resolve_capture_fps(meeting_url)
     if target_fps is None:
         from navigator.core.settings import settings
         from navigator.meeting.screen_page import video_mode
@@ -184,6 +191,11 @@ class RelayHandle:
     _screen_clients: list = field(default_factory=list)
     _screen_lock: threading.Lock = field(default_factory=threading.Lock)
     _wake: int = 0
+    #: This demo's link. Fps is derived from it so two relays cannot share a rate.
+    meeting_url: str = ""
+
+    def capture_fps(self) -> int:
+        return resolve_capture_fps(self.meeting_url)
 
     def set_frame(self, data: bytes) -> None:
         """Replace the latest frame and wake MJPEG streams (no queue)."""
@@ -287,8 +299,19 @@ class RelayHandle:
         self._thread.join(timeout=5)
 
 
-def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
-    """Start the HTTP server. Push frames from the Playwright thread via push_frame."""
+def start_relay(
+    host: str = "127.0.0.1", port: int = 0, meeting_url: str | None = None
+) -> RelayHandle:
+    """Start the HTTP server. Push frames from the Playwright thread via push_frame.
+
+    ``meeting_url`` is stored on the handle. Omit it to snapshot
+    ``settings.meeting_url`` once — later demos do not inherit this relay's link.
+    """
+    if meeting_url is None:
+        from navigator.core.settings import settings
+
+        meeting_url = getattr(settings, "meeting_url", "") or ""
+    meeting_url = str(meeting_url or "").strip()
     holder: dict[str, RelayHandle] = {}
 
     class Handler(BaseHTTPRequestHandler):
@@ -335,7 +358,7 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
                 handle.view_hits += 1
                 from navigator.meeting.screen_page import view_page_html
 
-                body = view_page_html().encode("utf-8")
+                body = view_page_html(meeting_url=handle.meeting_url).encode("utf-8")
                 self.send_response(200)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
@@ -410,7 +433,9 @@ def start_relay(host: str = "127.0.0.1", port: int = 0) -> RelayHandle:
     thread = threading.Thread(
         target=httpd.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True
     )
-    handle = RelayHandle(host=host, port=real_port, _httpd=httpd, _thread=thread)
+    handle = RelayHandle(
+        host=host, port=real_port, _httpd=httpd, _thread=thread, meeting_url=meeting_url
+    )
     holder["h"] = handle
     thread.start()
     global LAST_HANDLE
@@ -473,7 +498,7 @@ def start_screencast(handle: RelayHandle, page: Page):
     from navigator.core.settings import settings
 
     quality = max(1, min(100, int(settings.screenshot_quality or 70)))
-    nth = screencast_every_nth()
+    nth = screencast_every_nth(meeting_url=handle.meeting_url)
     max_w, max_h = screencast_max_size()
     try:
         cdp = page.context.new_cdp_session(page)
@@ -506,12 +531,12 @@ def start_screencast(handle: RelayHandle, page: Page):
     except Exception as exc:  # noqa: BLE001
         print(f"[live] startScreencast failed, using screenshots: {exc}", flush=True)
         return None
-    from navigator.meeting.screen_page import delivered_capture_fps, video_mode
+    from navigator.meeting.screen_page import video_mode
 
     cadence = (
-        f"capture_fps={delivered_capture_fps()}"
+        f"capture_fps={handle.capture_fps()}"
         if video_mode()
-        else f"view_ms={view_frame_ms()}"
+        else f"view_ms={view_frame_ms(meeting_url=handle.meeting_url)}"
     )
     print(
         f"[live] screencast=on quality={quality} everyNth={nth} "

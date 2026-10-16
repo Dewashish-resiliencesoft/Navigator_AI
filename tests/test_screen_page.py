@@ -10,7 +10,6 @@ from navigator.core.settings import settings
 from navigator.meeting.relay import (
     offer_voice_to_capture_page,
     screencast_every_nth,
-    set_capture_meeting_url,
     start_relay,
 )
 from navigator.meeting.screen_page import (
@@ -25,6 +24,7 @@ from navigator.meeting.screen_page import (
 
 def test_delivered_fps_follows_override_without_a_lower_band(monkeypatch):
     monkeypatch.setattr(settings, "screenshare_fps", 30)
+    monkeypatch.setattr(settings, "attendee_max_fps", 60)
     monkeypatch.setattr(settings, "screenshare_mode", "video")
     assert delivered_capture_fps() == 30
     assert screencast_every_nth() == 2  # compositor ~60 / 30
@@ -33,6 +33,7 @@ def test_delivered_fps_follows_override_without_a_lower_band(monkeypatch):
 
 def test_sixty_fps_is_not_collapsed_to_the_jpeg_band(monkeypatch):
     monkeypatch.setattr(settings, "screenshare_fps", 60)
+    monkeypatch.setattr(settings, "attendee_max_fps", 60)
     monkeypatch.setattr(settings, "screenshare_mode", "video")
     assert delivered_capture_fps() == 60
     assert screencast_every_nth() == 1
@@ -47,7 +48,6 @@ def test_sixty_fps_is_not_collapsed_to_the_jpeg_band(monkeypatch):
     assert capture_pump_ms() == 16
     monkeypatch.setattr(settings, "screenshare_fps", 0)
     monkeypatch.setattr(settings, "meeting_url", "")
-    set_capture_meeting_url("")
     assert delivered_capture_fps() == 60  # 0 means auto; no URL is local
     monkeypatch.setattr(settings, "screenshare_fps", 120)
     assert delivered_capture_fps() == 60
@@ -57,6 +57,7 @@ def test_video_page_is_1080p30_and_jpeg_page_still_polls(monkeypatch):
     monkeypatch.setattr(settings, "viewport_width", 1920)
     monkeypatch.setattr(settings, "viewport_height", 1080)
     monkeypatch.setattr(settings, "screenshare_fps", 30)
+    monkeypatch.setattr(settings, "attendee_max_fps", 60)
     video = view_page_html(jpeg=False)
     assert "captureStream(FPS)" in video and "FPS=30" in video
     assert "width=1920" in video and "height=1080" in video

@@ -13,15 +13,17 @@ from navigator.meeting.relay import (
     relay_fps_cap,
     screencast_every_nth,
     screencast_max_size,
-    set_capture_meeting_url,
     start_relay,
     view_frame_ms,
 )
 
 
-def test_view_and_screencast_tuned_for_smoothness():
-    # No meeting URL is a local run: 60fps at 1920×1080. A slower request
-    # still polls at that rate. 60 is not pulled down to the old 24fps cap.
+def test_view_and_screencast_tuned_for_smoothness(monkeypatch):
+    # Attendee cap lifted so the platform rate is visible. Local is 60fps
+    # at 1920×1080. A slower request still polls at that rate.
+    monkeypatch.setattr(settings, "screenshare_fps", None)
+    monkeypatch.setattr(settings, "attendee_max_fps", 60)
+    monkeypatch.setattr(settings, "meeting_url", "")
     assert SCREENCAST_EVERY_NTH_FRAME >= 1
     assert view_frame_ms(20) == 50
     assert view_frame_ms(60) == 17
@@ -37,10 +39,16 @@ def test_view_and_screencast_tuned_for_smoothness():
         ("https://meet.google.com/abc-defg-hij", 30),
         ("http://meet.google.com/lookup/xyz", 30),
         ("meet.google.com/abc-defg-hij", 30),
+        ("HTTPS://MEET.GOOGLE.COM/abc", 30),
+        ("https://meet.google.com/abc-defg-hij?authuser=0&hs=1", 30),
+        ("https://x.meet.google.com/abc", 30),
         ("https://zoom.us/j/123456789", 60),
         ("https://company.zoom.us/j/1", 60),
         ("https://teams.microsoft.com/l/meetup-join/19%3ameeting", 60),
         ("https://teams.live.com/meet/123", 60),
+        ("https://meet.google.com.evil.com/abc", 60),
+        ("https://notmeet.google.com/abc", 60),
+        ("https://meet.google.com.attacker.com/x?q=1", 60),
         ("", 60),
         (None, 60),
         ("http://127.0.0.1:8000/view", 60),
@@ -50,24 +58,63 @@ def test_fps_for_meeting_url(url, fps):
     assert fps_for_meeting_url(url) == fps
 
 
-def test_relay_cap_follows_the_url_unless_the_env_forces_it(monkeypatch):
+def test_relay_cap_follows_the_url_unless_the_env_lowers_it(monkeypatch):
     monkeypatch.setattr(settings, "screenshare_fps", None)
+    monkeypatch.setattr(settings, "attendee_max_fps", 60)
     monkeypatch.setattr(settings, "meeting_url", "")
-    set_capture_meeting_url("")
+    meet = "https://meet.google.com/abc-defg-hij"
+    assert relay_fps_cap(meet) == 30
+    assert relay_fps_cap("https://zoom.us/j/1") == 60
+    assert relay_fps_cap("https://teams.microsoft.com/l/meetup-join/x") == 60
+    assert relay_fps_cap("") == 60
+    assert view_frame_ms(60, meet) == 33  # requested 60, Meet cap is 30
+    assert screencast_every_nth(meeting_url=meet) == 2
+    monkeypatch.setattr(settings, "screenshare_fps", 10)
+    assert relay_fps_cap(meet) == 10
+    monkeypatch.setattr(settings, "screenshare_fps", 60)
+    # 60 does not raise a Meet link above 30.
+    assert relay_fps_cap(meet) == 30
+    assert relay_fps_cap("") == 60
+
+
+def test_attendee_max_fps_clamps_encode_rate(monkeypatch):
+    monkeypatch.setattr(settings, "screenshare_fps", None)
+    monkeypatch.setattr(settings, "attendee_max_fps", 15)
+    meet = "https://meet.google.com/abc-defg-hij"
+    zoom = "https://zoom.us/j/1"
+    assert relay_fps_cap(meet) == 15
+    assert relay_fps_cap(zoom) == 15
+    assert relay_fps_cap("") == 15
+    monkeypatch.setattr(settings, "attendee_max_fps", 30)
+    assert relay_fps_cap(meet) == 30
+    assert relay_fps_cap(zoom) == 30
+    monkeypatch.setattr(settings, "screenshare_fps", 10)
+    assert relay_fps_cap(zoom) == 10
+    monkeypatch.setattr(settings, "screenshare_fps", 60)
+    monkeypatch.setattr(settings, "attendee_max_fps", 15)
+    assert relay_fps_cap(zoom) == 15
+
+
+def test_two_relays_keep_meet_and_zoom_fps(monkeypatch):
+    monkeypatch.setattr(settings, "screenshare_fps", None)
+    monkeypatch.setattr(settings, "attendee_max_fps", 60)
+    monkeypatch.setattr(settings, "meeting_url", "https://meet.google.com/should-not-leak")
+    meet = start_relay(meeting_url="https://meet.google.com/abc-defg-hij")
+    zoom = start_relay(meeting_url="https://zoom.us/j/123456")
     try:
-        assert relay_fps_cap("https://meet.google.com/abc-defg-hij") == 30
-        assert relay_fps_cap("https://zoom.us/j/1") == 60
-        assert relay_fps_cap("https://teams.microsoft.com/l/meetup-join/x") == 60
-        assert relay_fps_cap("") == 60
-        set_capture_meeting_url("https://meet.google.com/abc-defg-hij")
-        assert relay_fps_cap() == 30
-        assert view_frame_ms(60) == 33  # requested 60, Meet cap is 30
-        assert screencast_every_nth() == 2
-        monkeypatch.setattr(settings, "screenshare_fps", 60)
-        assert relay_fps_cap("https://meet.google.com/abc-defg-hij") == 60
-        assert view_frame_ms() == 17
+        assert meet.capture_fps() == 30
+        assert zoom.capture_fps() == 60
+        with urlopen(meet.view_url, timeout=5) as resp:
+            meet_html = resp.read().decode()
+        with urlopen(zoom.view_url, timeout=5) as resp:
+            zoom_html = resp.read().decode()
+        assert "FPS=30" in meet_html
+        assert "FPS=60" in zoom_html
+        assert meet.capture_fps() == 30
+        assert zoom.capture_fps() == 60
     finally:
-        set_capture_meeting_url("")
+        meet.stop()
+        zoom.stop()
 
 
 def test_view_returns_html():
@@ -77,7 +124,7 @@ def test_view_returns_html():
             body = resp.read().decode()
             assert resp.status == 200
         assert "getUserMedia" not in body  # screenshare page — no mic requirement
-        assert "captureStream(FPS)" in body and "FPS=60" in body
+        assert "captureStream(FPS)" in body and "FPS=15" in body
         assert "width=1920" in body and "height=1080" in body
         assert "<video" in body
         assert "/screen.ws" in body

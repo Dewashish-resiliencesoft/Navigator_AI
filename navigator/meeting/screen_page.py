@@ -10,10 +10,15 @@ The streamer's pipeline still hardcodes ``framerate=15/1``. Raising that
 grab to 30fps is a patch in the Attendee repo, not in Navigator.
 
 Playwright stays in this process. CDP frames are pushed on ``/screen.ws``
-and painted into a ``<video>`` via ``canvas.captureStream`` at the relay
-cap: 30fps on ``meet.google.com``, 60fps on Zoom, Teams, and local, at the
-shared viewport (default 1920×1080). ``NAVIGATOR_SCREENSHARE_FPS`` forces a
-rate. That path does not use a fixed 8–24fps poll cap.
+and painted into a ``<video>`` via ``canvas.captureStream`` at the rate for
+that session's meeting link: 30fps on ``meet.google.com``, 60fps on Zoom,
+Teams, and local, then clamped to
+``min(platform, NAVIGATOR_SCREENSHARE_FPS, NAVIGATOR_ATTENDEE_MAX_FPS)``.
+The Attendee ceiling defaults to 15 so we do not encode frames the
+hardcoded grab drops. 60fps through the public tunnel floods Cloudflare
+and starves Gemini Live voice; raise ``NAVIGATOR_ATTENDEE_MAX_FPS`` to 30
+or 60 after the Attendee-repo framerate patch is deployed. There is no
+fixed 8–24fps poll cap. The viewport stays 1920×1080.
 Agent PCM is played by an AudioContext in the same document, so the grab
 hears the voice. ``NAVIGATOR_SCREENSHARE_MODE=jpeg`` restores the polled
 ``/frame.jpg`` page and leaves voice on the Attendee bot-output websocket.
@@ -153,29 +158,30 @@ def video_mode() -> bool:
     return mode != "jpeg"
 
 
-def delivered_capture_fps() -> int:
-    """Paint rate for the video capture page.
+def delivered_capture_fps(meeting_url: str | None = None) -> int:
+    """Paint rate for one session's capture page. See ``resolve_capture_fps``."""
+    from navigator.meeting.relay import resolve_capture_fps
 
-    Same number as the relay cap: 30 on a Google Meet link, 60 on Zoom,
-    Teams, and local. ``NAVIGATOR_SCREENSHARE_FPS`` forces a value in 1–60.
-    """
-    from navigator.meeting.relay import relay_fps_cap
-
-    return relay_fps_cap()
+    return resolve_capture_fps(meeting_url)
 
 
-def capture_pump_ms() -> int:
-    """How often a Playwright caller must wake so CDP is not held below the setting.
+def capture_pump_ms(meeting_url: str | None = None) -> int:
+    """How often a Playwright caller must wake so CDP is not held below this session.
 
-    Half a frame, at least 1ms. At 60fps this is 8ms; at 30fps it is 16ms.
-    JPEG mode keeps a 20ms pump.
+    Half a frame, at least 1ms. JPEG mode keeps a 20ms pump.
     """
     if not video_mode():
         return 20
-    return max(1, int(1000 / delivered_capture_fps() / 2))
+    return max(1, int(1000 / delivered_capture_fps(meeting_url) / 2))
 
 
-def view_page_html(*, jpeg: bool | None = None, frame_ms: int | None = None, mjpeg: bool | None = None) -> str:
+def view_page_html(
+    *,
+    jpeg: bool | None = None,
+    frame_ms: int | None = None,
+    mjpeg: bool | None = None,
+    meeting_url: str | None = None,
+) -> str:
     """HTML for ``/view``. Video mode is the default; jpeg keeps the poll path."""
     from navigator.automation.browser.viewport import viewport_px
 
@@ -186,7 +192,7 @@ def view_page_html(*, jpeg: bool | None = None, frame_ms: int | None = None, mjp
             from navigator.meeting.relay import _mjpeg_on, view_frame_ms
 
             if frame_ms is None:
-                frame_ms = view_frame_ms()
+                frame_ms = view_frame_ms(meeting_url=meeting_url)
             if mjpeg is None:
                 mjpeg = _mjpeg_on()
         return (
@@ -198,7 +204,7 @@ def view_page_html(*, jpeg: bool | None = None, frame_ms: int | None = None, mjp
     return (
         _VIDEO_VIEW.replace("__W__", str(w))
         .replace("__H__", str(h))
-        .replace("__FPS__", str(delivered_capture_fps()))
+        .replace("__FPS__", str(delivered_capture_fps(meeting_url)))
     )
 
 

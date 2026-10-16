@@ -47,7 +47,6 @@ from navigator.meeting.meet_speaker import MeetSpeaker
 from navigator.meeting.public_mount import publish_http_or_tunnel, publish_ws_or_tunnel
 from navigator.meeting.relay import (
     push_frame,
-    set_capture_meeting_url,
     start_relay,
     start_screencast,
     stop_screencast,
@@ -936,8 +935,11 @@ def run_live_meet_demo(
         persona = persona.model_copy(update={"tone": agent_settings.tone.strip()})
 
     _docker_gw = _attendee_docker_gateway()
-    set_capture_meeting_url(meeting_url)
-    relay = start_relay(host=_docker_gw) if _docker_gw else start_relay()
+    relay = (
+        start_relay(host=_docker_gw, meeting_url=meeting_url)
+        if _docker_gw
+        else start_relay(meeting_url=meeting_url)
+    )
     tunnel = None
     audio_bridge = None
     audio_tunnel = None

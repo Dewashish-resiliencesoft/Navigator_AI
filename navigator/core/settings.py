@@ -161,7 +161,8 @@ class Settings(BaseSettings):
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
     #: Screenshare /view JPEG poll rate through the public tunnel.
-    #: 20fps balances motion smoothness vs Cloudflare bandwidth; keep ≤24.
+    #: 60fps floods Cloudflare + starves Gemini Live voice; 15fps is fluid
+    #: enough for demos and leaves CPU/bandwidth for clear audio.
     target_fps: int = 20
     #: JPEG quality for Meet/Zoom screenshare frames (1–100).
     screenshot_quality: int = 80
@@ -185,12 +186,15 @@ class Settings(BaseSettings):
     #: agent voice. jpeg: legacy polled /frame.jpg page; voice stays on the
     #: bot-output websocket.
     screenshare_mode: Literal["video", "jpeg"] = "video"
-    #: Force the capture rate. Unset: meet.google.com is 30fps, Zoom/Teams/local
-    #: are 60fps, all at the viewport (default 1920×1080). Set
-    #: NAVIGATOR_SCREENSHARE_FPS to force a value (clamped 1–60). Attendee's
-    #: webpage streamer still hardcodes a 15fps ximagesrc grab; that patch is
-    #: in the Attendee repo, not here.
+    #: Optional ceiling below the platform rate (Meet 30, Zoom/Teams/local 60).
+    #: Combined as min(platform, this, NAVIGATOR_ATTENDEE_MAX_FPS). Unset means
+    #: no extra ceiling. Viewport stays 1920×1080.
     screenshare_fps: int | None = None
+    #: Attendee's webpage streamer hardcodes framerate=15/1, so encoding faster
+    #: only produces frames that get dropped. 60fps through the public tunnel
+    #: also floods Cloudflare and starves Gemini Live voice. Raise this to 30
+    #: or 60 once the Attendee-repo framerate patch is deployed.
+    attendee_max_fps: int = 15
 
 
 settings = Settings()

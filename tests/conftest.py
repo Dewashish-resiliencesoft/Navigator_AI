@@ -36,6 +36,26 @@ def _fast_cursor_motion(monkeypatch):
     )
 
 
+@pytest.fixture
+def voice_keys_ready(monkeypatch):
+    """Satisfy demo-start readiness without changing the production checks.
+
+    Live voice is ready when a Gemini key is set, Groq is required for
+    conversational interrupts, and a public demo also needs Attendee. These
+    tests do not call those services.
+    """
+    from navigator.core.settings import settings
+
+    monkeypatch.setattr(settings, "gemini_live_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "gemini_live_api_keys", "", raising=False)
+    monkeypatch.setattr(settings, "gemini_api_key", "test-gemini-key", raising=False)
+    monkeypatch.setattr(settings, "groq_api_key", "test-groq-key", raising=False)
+    monkeypatch.setattr(
+        "navigator.meeting.attendee_stack.attendee_reachable",
+        lambda _url: True,
+    )
+
+
 @pytest.fixture(autouse=True)
 def _clear_semantic_cache():
     from navigator.agent.brain_router import get_semantic_cache

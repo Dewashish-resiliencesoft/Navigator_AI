@@ -22,6 +22,21 @@ fixed 8–24fps poll cap. The viewport stays 1920×1080.
 Agent PCM is played by an AudioContext in the same document, so the grab
 hears the voice. ``NAVIGATOR_SCREENSHARE_MODE=jpeg`` restores the polled
 ``/frame.jpg`` page and leaves voice on the Attendee bot-output websocket.
+
+``/screen.ws`` binary messages, either layout (merge order with the shared
+clock does not matter):
+
+- Timestamped audio: ``A`` | uint32le sample_rate | uint64le monotonic_ns | PCM
+- Timestamped video: ``F`` | uint64le monotonic_ns | JPEG
+- Legacy audio: ``A`` | uint32le sample_rate | PCM
+- Legacy video: ``F`` | JPEG, or a raw JPEG with no tag
+- Clear: ``C``
+
+Both audio forms start with ``A`` and a uint32le rate, so the tag byte alone
+cannot split them. A JPEG SOI (``FF D8``) at offset 9 marks a timestamped
+frame; SOI at offset 1, or no SOI, is legacy. Audio queued before the first
+frame follows that frame's layout. Stamps schedule PCM against the frame
+that is on screen.
 """
 
 from __future__ import annotations
@@ -104,8 +119,19 @@ let pending = null;
 function paint(bmp){ ctx.drawImage(bmp, 0, 0, W, H); }
 function loop(){ if (lastBitmap) paint(lastBitmap); requestAnimationFrame(loop); }
 loop();
-function playPcm(rate, bytes){
-  if (!rate || bytes.byteLength < 2) return;
+let layout = '';
+let queued = [];
+let clockNs = 0;
+let clockAt = 0;
+let haveClock = false;
+function u64le(view, offset){
+  return view.getUint32(offset, true) + view.getUint32(offset + 4, true) * 4294967296;
+}
+function soi(u, offset){
+  return offset + 1 < u.length && u[offset] === 0xFF && u[offset + 1] === 0xD8;
+}
+function playPcm(rate, bytes, ns){
+  if (!rate || !bytes || bytes.byteLength < 2) return;
   audioCtx.resume();
   const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, bytes.byteLength >> 1);
   const buf = audioCtx.createBuffer(1, pcm.length, rate);
@@ -114,9 +140,70 @@ function playPcm(rate, bytes){
   const src = audioCtx.createBufferSource();
   src.buffer = buf;
   src.connect(audioCtx.destination);
-  const start = Math.max(audioCtx.currentTime + 0.02, nextTime);
+  let start = Math.max(audioCtx.currentTime + 0.02, nextTime);
+  if (ns !== null && haveClock) {
+    const when = clockAt + (ns - clockNs) / 1e9;
+    if (when >= audioCtx.currentTime - 0.05) start = Math.max(start, when);
+  }
   src.start(start);
   nextTime = start + buf.duration;
+}
+function takeAudio(u){
+  const view = new DataView(u.buffer, u.byteOffset, u.byteLength);
+  const rate = u.length >= 5 ? view.getUint32(1, true) : 0;
+  if (layout === 'S' && u.length >= 13) {
+    const n = u.length - 13 - ((u.length - 13) % 2);
+    return {rate: rate, ns: u64le(view, 5), pcm: n >= 2 ? u.subarray(13, 13 + n) : null};
+  }
+  const n = u.length - 5 - ((u.length - 5) % 2);
+  return {rate: rate, ns: null, pcm: n >= 2 ? u.subarray(5, 5 + n) : null};
+}
+function takeVideo(u){
+  if (u.length >= 2 && u[0] === 0xFF && u[1] === 0xD8) return {ns: null, jpeg: u};
+  if (u[0] !== 70) return null;
+  if (u.length >= 11 && soi(u, 9)) {
+    const view = new DataView(u.buffer, u.byteOffset, u.byteLength);
+    return {ns: u64le(view, 1), jpeg: u.subarray(9)};
+  }
+  return {ns: null, jpeg: u.subarray(1)};
+}
+function showVideo(parsed){
+  if (!parsed) return;
+  if (!layout) layout = parsed.ns === null ? 'L' : 'S';
+  if (parsed.ns !== null) {
+    clockNs = parsed.ns;
+    clockAt = audioCtx.currentTime;
+    haveClock = true;
+  }
+  const blob = new Blob([parsed.jpeg], {type: 'image/jpeg'});
+  if (decoding) pending = blob;
+  else decode(blob);
+  const waiting = queued;
+  queued = [];
+  for (let i = 0; i < waiting.length; i++) onPayload(waiting[i]);
+}
+function onPayload(u){
+  if (!u.length) return;
+  const kind = u[0];
+  if (kind === 67) { nextTime = 0; queued = []; return; }
+  if (kind === 70 || (kind === 0xFF && u.length > 1 && u[1] === 0xD8)) {
+    showVideo(takeVideo(u));
+    return;
+  }
+  if (kind === 65) {
+    if (!layout) {
+      queued.push(u.slice());
+      if (queued.length > 32) {
+        layout = 'L';
+        const waiting = queued;
+        queued = [];
+        for (let i = 0; i < waiting.length; i++) onPayload(waiting[i]);
+      }
+      return;
+    }
+    const a = takeAudio(u);
+    if (a.pcm) playPcm(a.rate, a.pcm, a.ns);
+  }
 }
 async function decode(blob){
   decoding = true;
@@ -132,23 +219,155 @@ async function decode(blob){
 const wsProto = location.protocol === 'https:' ? 'wss://' : 'ws://';
 const ws = new WebSocket(wsProto + location.host + '/screen.ws');
 ws.binaryType = 'arraybuffer';
-ws.onmessage = (ev) => {
-  const u = new Uint8Array(ev.data);
-  const kind = u[0];
-  if (kind === 67) { nextTime = 0; return; }
-  if (kind === 65) {
-    const view = new DataView(u.buffer, u.byteOffset, u.byteLength);
-    playPcm(view.getUint32(1, true), u.subarray(5));
-    return;
-  }
-  if (kind === 70) {
-    const blob = new Blob([u.subarray(1)], {type: 'image/jpeg'});
-    if (decoding) pending = blob;
-    else decode(blob);
-  }
-};
+ws.onmessage = (ev) => { onPayload(new Uint8Array(ev.data)); };
 </script></body></html>
 """
+
+
+# Widths from the shared-clock spec (PR #35 media_clock.py).
+_U32 = 4
+_U64 = 8
+AUDIO_TAG = b"A"
+FRAME_TAG = b"F"
+CLEAR_TAG = b"C"
+STAMPED_AUDIO_HEADER = 1 + _U32 + _U64  # 13: tag, uint32le rate, uint64le ns
+LEGACY_AUDIO_HEADER = 1 + _U32  # 5: tag, uint32le rate
+STAMPED_FRAME_HEADER = 1 + _U64  # 9: tag, uint64le ns
+_JPEG_SOI = b"\xff\xd8"
+_AUDIO_QUEUE_CAP = 32
+SYNC_LATE_S = 0.05
+
+
+class ScreenMessage:
+    """One decoded ``/screen.ws`` payload."""
+
+    __slots__ = ("kind", "sample_rate", "monotonic_ns", "body")
+
+    def __init__(
+        self,
+        kind: str,
+        *,
+        sample_rate: int | None = None,
+        monotonic_ns: int | None = None,
+        body: bytes = b"",
+    ) -> None:
+        self.kind = kind
+        self.sample_rate = sample_rate
+        self.monotonic_ns = monotonic_ns
+        self.body = body
+
+
+def presentation_delay_s(media_ns: int, anchor_ns: int) -> float:
+    """Seconds after the anchor frame when a stamped chunk should start.
+
+    Negative means the chunk is already late relative to the frame on screen.
+    The page plays those immediately instead of scheduling them in the past.
+    """
+    return (int(media_ns) - int(anchor_ns)) / 1_000_000_000
+
+
+def _even_pcm(payload: bytes, offset: int) -> bytes:
+    body = payload[offset:]
+    if len(body) % 2:
+        body = body[:-1]
+    return body
+
+
+def _soi_at(payload: bytes, offset: int) -> bool:
+    return offset >= 0 and payload[offset : offset + 2] == _JPEG_SOI
+
+
+def parse_screen_payload(payload: bytes, *, stamped: bool | None = None) -> ScreenMessage:
+    """Decode one capture-page message.
+
+    ``stamped=True`` forces the timestamped audio header. ``stamped=False``
+    or ``None`` reads legacy audio (``A`` + uint32le rate + PCM). Video does
+    not use the flag: a JPEG SOI at offset 9 is timestamped, anything else
+    after ``F`` is legacy. A raw SOI with no tag is a legacy frame. ``C``
+    clears the play clock.
+    """
+    if not payload:
+        return ScreenMessage("ignore")
+    tag = payload[:1]
+    if tag == CLEAR_TAG:
+        return ScreenMessage("clear")
+    if tag == FRAME_TAG or _soi_at(payload, 0):
+        return _parse_video(payload)
+    if tag == AUDIO_TAG:
+        return _parse_audio(payload, stamped=bool(stamped))
+    return ScreenMessage("ignore")
+
+
+def _parse_video(payload: bytes) -> ScreenMessage:
+    if _soi_at(payload, 0):
+        return ScreenMessage("video", body=payload)
+    if len(payload) >= STAMPED_FRAME_HEADER + 2 and _soi_at(payload, STAMPED_FRAME_HEADER):
+        stamp = int.from_bytes(payload[1:STAMPED_FRAME_HEADER], "little")
+        return ScreenMessage("video", monotonic_ns=stamp, body=payload[STAMPED_FRAME_HEADER:])
+    return ScreenMessage("video", body=payload[1:])
+
+
+def _parse_audio(payload: bytes, *, stamped: bool) -> ScreenMessage:
+    if len(payload) < LEGACY_AUDIO_HEADER:
+        return ScreenMessage("audio", sample_rate=0, body=b"")
+    rate = int.from_bytes(payload[1:LEGACY_AUDIO_HEADER], "little")
+    if stamped and len(payload) >= STAMPED_AUDIO_HEADER:
+        stamp = int.from_bytes(payload[LEGACY_AUDIO_HEADER:STAMPED_AUDIO_HEADER], "little")
+        return ScreenMessage(
+            "audio",
+            sample_rate=rate,
+            monotonic_ns=stamp,
+            body=_even_pcm(payload, STAMPED_AUDIO_HEADER),
+        )
+    return ScreenMessage(
+        "audio",
+        sample_rate=rate,
+        monotonic_ns=None,
+        body=_even_pcm(payload, LEGACY_AUDIO_HEADER),
+    )
+
+
+class ScreenClockReader:
+    """Stream reader. The first video frame picks legacy or timestamped audio.
+
+    Audio that arrives before that frame is held (up to 32 messages). A
+    leading ``A`` or ``F`` is tagged; any other byte is legacy only when it
+    is a raw JPEG.
+    """
+
+    def __init__(self) -> None:
+        self.stamped: bool | None = None
+        self.clock_ns: int | None = None
+        self._pending: list[bytes] = []
+
+    def feed(self, payload: bytes) -> list[ScreenMessage]:
+        if not payload:
+            return []
+        tag = payload[:1]
+        if tag == CLEAR_TAG:
+            self._pending.clear()
+            return [ScreenMessage("clear")]
+        if tag == FRAME_TAG or _soi_at(payload, 0):
+            video = _parse_video(payload)
+            if self.stamped is None:
+                self.stamped = video.monotonic_ns is not None
+            if video.monotonic_ns is not None:
+                self.clock_ns = video.monotonic_ns
+            pending, self._pending = self._pending, []
+            audio = [
+                _parse_audio(item, stamped=bool(self.stamped)) for item in pending
+            ]
+            return [video, *audio]
+        if tag == AUDIO_TAG:
+            if self.stamped is None:
+                self._pending.append(payload)
+                if len(self._pending) > _AUDIO_QUEUE_CAP:
+                    self.stamped = False
+                    pending, self._pending = self._pending, []
+                    return [_parse_audio(item, stamped=False) for item in pending]
+                return []
+            return [_parse_audio(payload, stamped=self.stamped)]
+        return []
 
 
 def video_mode() -> bool:

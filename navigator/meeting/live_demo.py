@@ -47,6 +47,7 @@ from navigator.meeting.meet_speaker import MeetSpeaker
 from navigator.meeting.public_mount import publish_http_or_tunnel, publish_ws_or_tunnel
 from navigator.meeting.relay import (
     push_frame,
+    set_capture_meeting_url,
     start_relay,
     start_screencast,
     stop_screencast,
@@ -935,6 +936,7 @@ def run_live_meet_demo(
         persona = persona.model_copy(update={"tone": agent_settings.tone.strip()})
 
     _docker_gw = _attendee_docker_gateway()
+    set_capture_meeting_url(meeting_url)
     relay = start_relay(host=_docker_gw) if _docker_gw else start_relay()
     tunnel = None
     audio_bridge = None
@@ -1442,10 +1444,9 @@ def run_live_meet_demo(
                     args=[f"--remote-debugging-port={_cdp_port}", "--remote-debugging-address=127.0.0.1"],
                 ),
             )
-            context = browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                device_scale_factor=1,
-            )
+            from navigator.automation.browser.viewport import context_kwargs
+
+            context = browser.new_context(**context_kwargs())
             from navigator.automation.browser.lighten import block_trackers
 
             block_trackers(context)

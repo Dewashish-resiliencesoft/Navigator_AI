@@ -92,7 +92,11 @@ def element_at_point(
     """
     if not elements:
         return None
-    vw, vh = viewport or (1280, 720)
+    if viewport is None:
+        from navigator.automation.browser.viewport import viewport_px
+
+        viewport = viewport_px()
+    vw, vh = viewport
     px = (x_norm / 1000.0) * vw
     py = (y_norm / 1000.0) * vh
     hits: list[tuple[float, dict[str, Any]]] = []
@@ -171,7 +175,11 @@ def locate(
 def click_hit(page: Any, hit: LocateHit) -> bool:
     """Click via mouse at the resolved point. False on any Playwright error."""
     try:
-        size = page.viewport_size or {"width": 1280, "height": 720}
+        size = page.viewport_size
+        if not size:
+            from navigator.automation.browser.viewport import viewport_dict
+
+            size = viewport_dict()
         vw, vh = int(size["width"]), int(size["height"])
         page.mouse.click(int(hit.x_norm / 1000.0 * vw), int(hit.y_norm / 1000.0 * vh))
         return True

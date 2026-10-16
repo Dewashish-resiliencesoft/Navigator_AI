@@ -482,7 +482,11 @@ def _box_in_viewport(
 ) -> bool:
     if not box:
         return False
-    vp = page.viewport_size or {"width": 1280, "height": 720}
+    vp = page.viewport_size
+    if not vp:
+        from navigator.automation.browser.viewport import viewport_dict
+
+        vp = viewport_dict()
     return (
         box["y"] + box["height"] > margin
         and box["y"] < vp["height"] - margin

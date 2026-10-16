@@ -432,7 +432,9 @@ def _run_exploration(
 
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=not headful)
-        context = browser.new_context()
+        from navigator.automation.browser.viewport import context_kwargs
+
+        context = browser.new_context(**context_kwargs())
         page = context.new_page()
         try:
             if session.stop_event.is_set():

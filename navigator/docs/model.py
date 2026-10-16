@@ -255,6 +255,57 @@ CHECK_DESCRIPTIONS = {
 }
 
 
+_HTTP_METHODS = (
+    "delete",
+    "get",
+    "head",
+    "options",
+    "patch",
+    "post",
+    "put",
+    "trace",
+)
+
+
+def _stable_openapi(spec: dict) -> dict:
+    """Make path methods and operationIds stable across processes.
+
+    FastAPI keeps a route's methods in a set, so the method that wins the
+    shared operationId (and the order of those methods) changes with
+    PYTHONHASHSEED. ``tests/test_docs.py`` compares the generated file byte
+    for byte.
+    """
+    paths = spec.get("paths")
+    if not isinstance(paths, dict):
+        return spec
+    method_set = set(_HTTP_METHODS)
+    for path, item in paths.items():
+        if not isinstance(item, dict):
+            continue
+        methods = sorted(k for k in item if k in method_set)
+        if not methods:
+            continue
+        pending = iter(methods)
+        ordered: dict = {}
+        for key in item:
+            if key in method_set:
+                method = next(pending)
+                operation = item[method]
+                if isinstance(operation, dict) and isinstance(operation.get("operationId"), str):
+                    operation = dict(operation)
+                    op_id = operation["operationId"]
+                    for known in _HTTP_METHODS:
+                        suffix = "_" + known
+                        if op_id.endswith(suffix):
+                            operation["operationId"] = op_id[: -len(suffix)] + "_" + method
+                            break
+                ordered[method] = operation
+            else:
+                ordered[key] = item[key]
+        paths[path] = ordered
+    return spec
+
+
 def build(app: Any | None = None) -> DocsModel:
     """Assemble the docs model from live code."""
     if app is None:
@@ -262,7 +313,7 @@ def build(app: Any | None = None) -> DocsModel:
 
         app = default_app
 
-    spec = app.openapi()
+    spec = _stable_openapi(app.openapi())
 
     return DocsModel(
         title=spec["info"]["title"],

@@ -377,7 +377,9 @@ def _crawl_and_write(
                         "On the API host run: .venv/bin/python -m playwright install chromium"
                     ) from exc
                 raise
-        context = browser.new_context(no_viewport=True)
+        from navigator.automation.browser.viewport import context_kwargs
+
+        context = browser.new_context(**context_kwargs())
         page = context.new_page()
         try:
             if login_config_fn is not None:

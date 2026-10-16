@@ -274,7 +274,9 @@ def start_ai_flow_job(*, product_id: str, base_url: str, login: tuple[str, str, 
 
             with sync_playwright() as pw:
                 b = pw.chromium.launch(headless=True)
-                page = b.new_context(viewport={"width": 1280, "height": 720}).new_page()
+                from navigator.automation.browser.viewport import context_kwargs
+
+                page = b.new_context(**context_kwargs()).new_page()
                 if login and login[1] and login[2]:
                     job.log("signing in with saved demo credentials")
                     from navigator.automation.browser.product_login import login_product

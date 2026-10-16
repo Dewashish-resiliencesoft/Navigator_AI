@@ -254,7 +254,9 @@ def crawl_inventory(base_url: str, login: tuple[str, str, str] | None) -> list[d
     with sync_playwright() as p:
         browser = p.chromium.launch()
         try:
-            page = browser.new_page(viewport={"width": 1280, "height": 720})
+            from navigator.automation.browser.viewport import viewport_dict
+
+            page = browser.new_page(viewport=viewport_dict())
             if login and login[1] and login[2]:
                 from navigator.automation.browser.product_login import login_product
 

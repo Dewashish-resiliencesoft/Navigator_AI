@@ -565,7 +565,17 @@ class UiJobs:
         without this the screenshare froze on the last frame during narration.
         """
         now = time.monotonic()
-        if now - getattr(self, "_last_spin", 0.0) < 0.04:
+        gap = 0.04
+        try:
+            from navigator.meeting.screen_page import capture_pump_ms, video_mode
+
+            if video_mode():
+                # Follow the capture setting (8ms at 60fps). 40ms capped the
+                # fallback screencast at 25fps.
+                gap = capture_pump_ms() / 1000.0
+        except Exception:  # noqa: BLE001
+            pass
+        if now - getattr(self, "_last_spin", 0.0) < gap:
             return
         self._last_spin = now
         try:
@@ -712,8 +722,15 @@ class ScreenThread:
                     if DEFERRED_TOURS and self.page is not None:
                         run_deferred_tours(self.page)
                     try:
-                        # Keeps CDP screencast events flowing continuously.
-                        (self.page or pg).wait_for_timeout(20)
+                        # CDP events dispatch during this wait. The interval
+                        # is half a capture frame in video mode (8ms at 60fps)
+                        # so a setting of 60 is not held at 20ms.
+                        pump_ms = 20
+                        from navigator.meeting.screen_page import capture_pump_ms, video_mode
+
+                        if video_mode():
+                            pump_ms = capture_pump_ms()
+                        (self.page or pg).wait_for_timeout(pump_ms)
                     except Exception:  # noqa: BLE001
                         time.sleep(0.05)
         except Exception as exc:  # noqa: BLE001

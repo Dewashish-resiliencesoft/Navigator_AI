@@ -226,6 +226,10 @@ class AudioBridge:
         self._line_rx(pcm or b"", sample_rate, now)
         self.pcm_in_bytes += len(pcm or b"")
         self._tap_pcm(pcm or b"", sample_rate)
+        from navigator.meeting.relay import offer_voice_to_capture_page
+
+        if offer_voice_to_capture_page(pcm or b"", sample_rate):
+            return
         self._outbound.put((pcm, sample_rate))
 
     # ---- adaptive pre-buffer -------------------------------------------
@@ -331,6 +335,14 @@ class AudioBridge:
         dropped = self.clear_outbound()
         self._out_epoch += 1
         self.out_play_end = time.monotonic()
+        try:
+            from navigator.meeting.relay import LAST_HANDLE
+
+            page = LAST_HANDLE
+            if page is not None:
+                page.clear_pcm()
+        except Exception:  # noqa: BLE001
+            pass
         self._send_json({"trigger": "realtime_audio.bot_output_clear", "data": {}})
         print(f"[audio] bot output flushed (dropped {dropped} chunk(s))", flush=True)
 

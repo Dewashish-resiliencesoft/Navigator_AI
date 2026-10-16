@@ -168,11 +168,29 @@ class Settings(BaseSettings):
     #: Cap CDP screencast width (height scales). 960 cuts tunnel bytes ~40%
     #: vs 1280 while staying sharp enough for product demos.
     screenshot_max_width: int = 1280
-    #: CDP everyNthFrame. 0 = derive from target_fps; 1 = every repaint (smoothest).
+    #: CDP everyNthFrame for the jpeg screenshare path. 0 = derive from
+    #: target_fps; 1 = every repaint. Video mode ignores this and follows
+    #: screenshare_fps instead.
     screencast_every_nth: int = 3
     #: Serve /view via MJPEG push (/stream) — latest frame only, no per-frame
     #: HTTP round trip through the tunnel. Falls back to polling on error.
+    #: Used when screenshare_mode is jpeg.
     screencast_mjpeg: bool = True
+    #: CSS pixels for every Playwright context (live, record, explore, authoring).
+    #: Default is 1080p, which is what Meet will deliver. Ops set Attendee's
+    #: WEBPAGE_STREAMER_VIDEO_FRAME_SIZE to the same size.
+    viewport_width: int = 1920
+    viewport_height: int = 1080
+    #: video: Attendee loads /view as a captureStream video that also plays
+    #: agent voice. jpeg: legacy polled /frame.jpg page; voice stays on the
+    #: bot-output websocket.
+    screenshare_mode: Literal["video", "jpeg"] = "video"
+    #: Force the capture rate. Unset: meet.google.com is 30fps, Zoom/Teams/local
+    #: are 60fps, all at the viewport (default 1920×1080). Set
+    #: NAVIGATOR_SCREENSHARE_FPS to force a value (clamped 1–60). Attendee's
+    #: webpage streamer still hardcodes a 15fps ximagesrc grab; that patch is
+    #: in the Attendee repo, not here.
+    screenshare_fps: int | None = None
 
 
 settings = Settings()

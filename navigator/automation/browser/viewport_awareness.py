@@ -16,6 +16,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 _NEARBY_EACH = 3
+#: Hard limit for one DOM read. A hung evaluate is cancelled and the step moves on.
+EVAL_TIMEOUT_S = 3.0
 _ALIAS_CAP = 40
 _HEADING_CAP = 24
 _PARTIAL_NEARBY_PX = 24
@@ -181,7 +183,7 @@ def measure_viewport(page: Any, *, graph: Any = None, page_id: str = "") -> View
         url = ""
     targets = _alias_targets(graph, page_id=page_id, page_url=url)
     try:
-        raw = page.evaluate(_MEASURE_JS, {"targets": targets})
+        raw = _eval(page, _MEASURE_JS, {"targets": targets})
     except Exception as exc:  # noqa: BLE001
         print(f"[viewport] measure skipped: {exc}", flush=True)
         return ViewportAwareness()
@@ -252,10 +254,10 @@ def _scroll_by(page: Any, hit: Placement) -> None:
     delta = int(round(hit.top - 72))
     if abs(delta) < 12:
         return
-    page.evaluate(
-        _SCROLL_JS,
-        {"css": hit.css or "", "delta": delta},
-    )
+    try:
+        _eval(page, _SCROLL_JS, {"css": hit.css or "", "delta": delta})
+    except TimeoutError as exc:
+        print(f"[viewport] scroll evaluate timed out: {exc}", flush=True)
 
 
 def _from_raw(raw: dict[str, Any], *, graph: Any, targets: list[dict[str, str]]) -> ViewportAwareness:
@@ -384,6 +386,26 @@ def _alias_targets(graph: Any, *, page_id: str, page_url: str) -> list[dict[str,
             if len(out) >= _ALIAS_CAP:
                 return out
     return out
+
+
+def _eval(page: Any, expression: str, arg: Any = None):
+    """Run ``page.evaluate`` with a hard limit.
+
+    An async stub is cancelled by ``asyncio.wait_for``. Sync Playwright
+    receives the same limit as its own ``timeout`` (milliseconds).
+    """
+    import inspect
+
+    from navigator.automation.browser.bounded import run_limited
+
+    fn = page.evaluate
+    if inspect.iscoroutinefunction(fn):
+        return run_limited(fn(expression, arg), EVAL_TIMEOUT_S)
+    timeout_ms = max(1, int(EVAL_TIMEOUT_S * 1000))
+    try:
+        return fn(expression, arg, timeout=timeout_ms)
+    except TypeError:
+        return fn(expression, arg)
 
 
 def _section_css(graph: Any, page_id: str) -> str:

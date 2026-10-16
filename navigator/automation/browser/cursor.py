@@ -660,6 +660,9 @@ def click_with_cursor(
         _play_click_fx(page, x, y)
         _paced_wait(page, PRESS_MS / 2.0, on_frame)
         loc.click(timeout=timeout)
+        from navigator.automation.browser.gesture import note_gesture_sent
+
+        note_gesture_sent()
         _paced_wait(page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0), on_frame)
         _clear_highlight(page)
         _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)
@@ -672,6 +675,9 @@ def click_with_cursor(
     _play_click_fx(page, x, y)
     _paced_wait(page, PRESS_MS / 2.0 * _motion_scale(), on_frame)
     page.mouse.click(x, y)
+    from navigator.automation.browser.gesture import note_gesture_sent
+
+    note_gesture_sent()
     _paced_wait(
         page, max(RIPPLE_MS / 2.0, HIGHLIGHT_FADE_MS / 2.0) * _motion_scale(), on_frame
     )

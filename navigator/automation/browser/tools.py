@@ -11,6 +11,7 @@ exception that kills the call.
 
 from __future__ import annotations
 
+import inspect
 import time
 from typing import Callable
 
@@ -59,6 +60,9 @@ def execute(
     Click, fill, navigate, and wait retry at most twice, with a short backoff.
     The step watchdog marks a call that is still failing after ``STEP_WATCHDOG_S``.
     """
+    from navigator.automation.browser.bounded import run_limited
+    from navigator.automation.browser.gesture import begin_attempt, gesture_was_sent
+
     handler = _HANDLERS[call.tool]
     started = time.perf_counter()
     attempts = 3 if call.tool in _RETRYABLE_TOOLS else 1
@@ -66,10 +70,25 @@ def execute(
     _emit_browser_clock(call.tool, "start")
     try:
         for attempt in range(attempts):
+            remaining = STEP_WATCHDOG_S - (time.perf_counter() - started)
+            if STEP_WATCHDOG_S > 0 and remaining <= 0:
+                detail = f"watchdog: {detail or 'step exceeded the hard limit'}"
+                ok = False
+                break
+            begin_attempt()
             try:
-                detail, next_page_id = handler(
+                produced = handler(
                     page, graph, page_id, call, on_frame=on_frame, mouse_path=mouse_path
                 )
+                if inspect.isawaitable(produced):
+                    limit = remaining if STEP_WATCHDOG_S > 0 else STEP_WATCHDOG_S
+                    try:
+                        produced = run_limited(produced, max(limit, 0.0))
+                    except TimeoutError:
+                        detail = "watchdog: step exceeded the hard limit"
+                        ok = False
+                        break
+                detail, next_page_id = produced
                 ok = True
                 break
             except SiteGraphError as exc:
@@ -77,6 +96,11 @@ def execute(
                 break
             except PlaywrightError as exc:
                 detail = _describe(exc)
+                # A landed click/fill must not be sent again when only the
+                # confirmation timed out.
+                if gesture_was_sent():
+                    next_page_id, ok = page_id, False
+                    break
                 if attempt + 1 < attempts and _retryable_action(exc):
                     pause = _BACKOFF_S[min(attempt, len(_BACKOFF_S) - 1)]
                     print(
@@ -198,6 +222,9 @@ def fill_field(
         x, y = replay_mouse_path(page, mouse_path, on_frame=on_frame)
         # Focus the recorded point first so fill lands where the Client typed.
         page.mouse.click(x, y)
+        from navigator.automation.browser.gesture import note_gesture_sent
+
+        note_gesture_sent()
         # Duplicate ids (signup #email + sign-in #email) are common. After the
         # recorded click, type into :focus — not locator(css).first, which hits
         # the wrong form.
@@ -205,6 +232,10 @@ def fill_field(
     else:
         guide_to(page, css, timeout=timeout, highlight=True, on_frame=on_frame)
         target = _visible_locator(page, css)
+    from navigator.automation.browser.gesture import note_gesture_sent
+
+    # Once fill is attempted, a confirmation timeout must not type it again.
+    note_gesture_sent()
     target.fill(call.value, timeout=timeout)
     _clear_highlight(page)
     _paced_wait(page, PAUSE_AFTER_CLICK_MS, on_frame)

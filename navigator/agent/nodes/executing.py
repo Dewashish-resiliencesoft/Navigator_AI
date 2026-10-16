@@ -541,7 +541,11 @@ def _look(deps, reason: str) -> None:
     try:
         from navigator.agent.on_demand_vision import look_once
 
-        look_once(getattr(deps, "page", None), reason=reason)
+        look_once(
+            getattr(deps, "page", None),
+            reason=reason,
+            session_id=str(getattr(deps, "session_id", "") or ""),
+        )
     except Exception as exc:  # noqa: BLE001
         print(f"[vision] look skipped ({reason}): {exc}", flush=True)
 

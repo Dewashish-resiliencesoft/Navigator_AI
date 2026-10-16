@@ -8,7 +8,9 @@ what is on screen.
 
 from __future__ import annotations
 
+import inspect
 import re
+import threading
 import time
 from io import BytesIO
 
@@ -25,9 +27,29 @@ _WHERE = re.compile(
 )
 
 _MIN_GAP_S = 8.0
-_last_at = 0.0
-_last_text = ""
-_last_until = 0.0
+#: A vision call that never returns must not hold the demo or another session.
+VISION_TIMEOUT_S = 8.0
+
+_guard = threading.Lock()
+_sessions: dict[str, "_Look"] = {}
+
+
+class _Look:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.last_at = 0.0
+        self.last_text = ""
+        self.last_until = 0.0
+
+
+def _bucket(session_id: str) -> _Look:
+    key = session_id or ""
+    with _guard:
+        bucket = _sessions.get(key)
+        if bucket is None:
+            bucket = _Look()
+            _sessions[key] = bucket
+        return bucket
 
 
 def asks_where(utterance: str) -> bool:
@@ -35,38 +57,43 @@ def asks_where(utterance: str) -> bool:
     return bool(_WHERE.search(utterance or ""))
 
 
-def last_look() -> str:
-    """The latest vision note, while it is still fresh for the planner."""
-    if time.monotonic() > _last_until:
+def last_look(session_id: str = "") -> str:
+    """The latest vision note for this session, while it is still fresh."""
+    bucket = _bucket(session_id)
+    if time.monotonic() > bucket.last_until:
         return ""
-    return _last_text
+    return bucket.last_text
 
 
-def reset_look() -> None:
-    """Test hook."""
-    global _last_at, _last_text, _last_until
-    _last_at = 0.0
-    _last_text = ""
-    _last_until = 0.0
+def reset_look(session_id: str | None = None) -> None:
+    """Test hook. Clears one session, or every session when id is omitted."""
+    with _guard:
+        if session_id is None:
+            _sessions.clear()
+            return
+        _sessions.pop(session_id or "", None)
 
 
-def look_once(page, *, reason: str, complete=None) -> str:
+def look_once(page, *, reason: str, complete=None, session_id: str = "") -> str:
     """Capture one screenshot for ``reason`` and describe it.
 
-    A second call inside ``_MIN_GAP_S`` logs the reason and does not
-    capture again. Returns "" when there is nothing new to add.
+    Rate limiting is per session. A hung model call is abandoned after
+    ``VISION_TIMEOUT_S`` and does not spend another session's budget.
     """
-    global _last_at, _last_text, _last_until
-    print(f"[vision] trigger={reason}", flush=True)
+    print(f"[vision] trigger={reason} session={session_id or '-'}", flush=True)
+    bucket = _bucket(session_id)
     now = time.monotonic()
-    if _last_at and now - _last_at < _MIN_GAP_S:
-        print(f"[vision] skipped: rate limit reason={reason}", flush=True)
-        return ""
+    with bucket.lock:
+        if bucket.last_at and now - bucket.last_at < _MIN_GAP_S:
+            print(f"[vision] skipped: rate limit reason={reason}", flush=True)
+            return ""
+        # Reserve only this session. The model call stays outside the lock.
+        bucket.last_at = now
     if page is None:
         print(f"[vision] skipped: no page reason={reason}", flush=True)
         return ""
     try:
-        png = page.screenshot(type="png", full_page=False)
+        png = _screenshot(page, VISION_TIMEOUT_S)
     except Exception as exc:  # noqa: BLE001
         print(f"[vision] screenshot failed ({reason}): {exc}", flush=True)
         return ""
@@ -75,25 +102,61 @@ def look_once(page, *, reason: str, complete=None) -> str:
         from navigator.agent.providers import get_provider
 
         complete = get_provider().complete_with_image
-    _last_at = now
+    system = (
+        "You describe one product screenshot for a live demo. "
+        "Two short sentences: what is visible, and where to go next. "
+        "No markdown."
+    )
+    user = f"Reason for looking: {reason}."
     try:
-        text = (
-            complete(
-                "You describe one product screenshot for a live demo. "
-                "Two short sentences: what is visible, and where to go next. "
-                "No markdown.",
-                f"Reason for looking: {reason}.",
-                png,
-            )
-            or ""
-        ).strip()
+        text = (_invoke(complete, system, user, png, VISION_TIMEOUT_S) or "").strip()
+    except TimeoutError:
+        print(f"[vision] timed out ({reason})", flush=True)
+        return ""
     except Exception as exc:  # noqa: BLE001
         print(f"[vision] model failed ({reason}): {exc}", flush=True)
         return ""
-    _last_text = text
-    _last_until = now + 30.0
+    with bucket.lock:
+        bucket.last_text = text
+        bucket.last_until = now + 30.0
     print(f"[vision] {reason}: {text[:160]}", flush=True)
     return text
+
+
+def _screenshot(page, timeout_s: float) -> bytes:
+    fn = page.screenshot
+    if inspect.iscoroutinefunction(fn):
+        from navigator.automation.browser.bounded import run_limited
+
+        return run_limited(fn(type="png", full_page=False), timeout_s)
+    timeout_ms = max(1, int(timeout_s * 1000))
+    try:
+        return fn(type="png", full_page=False, timeout=timeout_ms)
+    except TypeError:
+        return fn(type="png", full_page=False)
+
+
+def _invoke(complete, system: str, user: str, png: bytes, timeout_s: float) -> str:
+    if inspect.iscoroutinefunction(complete):
+        from navigator.automation.browser.bounded import run_limited
+
+        return run_limited(complete(system, user, png), timeout_s)
+    box: dict = {}
+
+    def _run() -> None:
+        try:
+            box["value"] = complete(system, user, png)
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout_s)
+    if worker.is_alive():
+        raise TimeoutError("vision timed out")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value") or ""
 
 
 def _downscale(png: bytes, max_w: int = 768) -> bytes:

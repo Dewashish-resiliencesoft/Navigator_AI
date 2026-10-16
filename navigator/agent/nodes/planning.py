@@ -1134,7 +1134,7 @@ def _viewport_screen(deps: CallDeps, page_id: str, *, limit: int | None = None) 
         text = text[:limit]
     from navigator.agent.on_demand_vision import last_look
 
-    noted = last_look()
+    noted = last_look(str(getattr(deps, "session_id", "") or ""))
     if noted and noted not in text:
         text = f"{text}\nWhat the last look showed: {noted}".strip()
     return text
@@ -1178,12 +1178,17 @@ def _try_turn_brain(
         screen = attach_snapshot(deps.page, screen)
     except Exception as exc:  # noqa: BLE001
         print(f"[plan] screen_context skipped: {exc}", flush=True)
-    noted = last_look()
+    session_id = str(getattr(deps, "session_id", "") or "")
+    noted = last_look(session_id)
     if noted and noted not in screen:
         screen = f"{screen}\nWhat the last look showed: {noted}".strip()
     png = b""
     if asks_where(utterance):
-        png_note = look_once(getattr(deps, "page", None), reason="where_we_are")
+        png_note = look_once(
+            getattr(deps, "page", None),
+            reason="where_we_are",
+            session_id=session_id,
+        )
         if png_note:
             screen = f"{screen}\nWhat the screenshot shows: {png_note}".strip()
 

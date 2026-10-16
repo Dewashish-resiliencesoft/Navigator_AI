@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +13,9 @@ from playwright.sync_api import Error as PlaywrightError
 from navigator.agent.on_demand_vision import asks_where, look_once, reset_look
 from navigator.agent.turn_brain import decide_from_viewport
 from navigator.automation.browser import tools
-from navigator.core.schemas import ClickElement, Postcondition
+from navigator.automation.browser import viewport_awareness as viewport
+from navigator.automation.browser.gesture import note_gesture_sent
+from navigator.core.schemas import ClickElement, FillField, Postcondition
 from navigator.knowledge.site_graph import SiteGraphError
 
 
@@ -45,6 +50,105 @@ def test_execute_retries_a_timeout_then_succeeds(monkeypatch):
     assert result.ok is True
     assert page_id == "home"
     assert not result.detail.startswith("watchdog")
+
+
+def test_landed_click_is_not_sent_again_when_confirmation_times_out(monkeypatch):
+    """The gesture already landed. A confirmation timeout must not click twice."""
+    sent = {"n": 0}
+
+    def handler(*_a, **_k):
+        sent["n"] += 1
+        note_gesture_sent()
+        raise PlaywrightError("Timeout 6000ms exceeded")
+
+    monkeypatch.setitem(tools._HANDLERS, "click_element", handler)
+    monkeypatch.setattr(tools.time, "sleep", lambda _s: None)
+    result, _page_id = tools.execute(SimpleNamespace(), SimpleNamespace(), "home", _click())
+    assert sent["n"] == 1
+    assert result.ok is False
+    assert "retry exhausted" not in result.detail
+
+
+def test_landed_fill_is_not_sent_again_when_confirmation_times_out(monkeypatch):
+    sent = {"n": 0}
+
+    def handler(*_a, **_k):
+        sent["n"] += 1
+        note_gesture_sent()
+        raise PlaywrightError("Timeout 6000ms exceeded")
+
+    monkeypatch.setitem(tools._HANDLERS, "fill_field", handler)
+    monkeypatch.setattr(tools.time, "sleep", lambda _s: None)
+    call = FillField(
+        selector="email",
+        value="a@b.c",
+        expects=Postcondition(check="value_equals", selector="email", expected="a@b.c"),
+    )
+    result, _page_id = tools.execute(SimpleNamespace(), SimpleNamespace(), "home", call)
+    assert sent["n"] == 1
+    assert result.ok is False
+
+
+def test_hung_evaluate_is_cancelled_and_the_read_returns(monkeypatch):
+    """A page.evaluate that never returns is cancelled inside the hard limit."""
+    monkeypatch.setattr(viewport, "EVAL_TIMEOUT_S", 0.2)
+    cancelled = {"yes": False}
+
+    async def evaluate(_expression, _arg=None):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled["yes"] = True
+            raise
+
+    page = SimpleNamespace(evaluate=evaluate, url="https://example.test/")
+    started = time.monotonic()
+    awareness = viewport.measure_viewport(page)
+    elapsed = time.monotonic() - started
+    assert elapsed < 1.0
+    assert cancelled["yes"] is True
+    assert awareness.placements == ()
+
+
+def test_hung_vision_times_out_without_spending_another_sessions_budget(monkeypatch):
+    """One session's stuck model call must not block or rate-limit the next."""
+    reset_look()
+    monkeypatch.setattr(
+        "navigator.agent.on_demand_vision.VISION_TIMEOUT_S",
+        0.4,
+    )
+    entered = threading.Event()
+
+    def hung(_system, _user, _png):
+        entered.set()
+        threading.Event().wait()
+        return "too late"
+
+    page = SimpleNamespace(screenshot=lambda **_k: b"\x89PNG\r\n")
+    results: dict = {}
+
+    def session_a() -> None:
+        results["a"] = look_once(
+            page, reason="stuck", complete=hung, session_id="session-a"
+        )
+
+    worker = threading.Thread(target=session_a)
+    worker.start()
+    assert entered.wait(2)
+    started = time.monotonic()
+    results["b"] = look_once(
+        page,
+        reason="stuck",
+        complete=lambda *_a: "Session B still has a look.",
+        session_id="session-b",
+    )
+    results["b_s"] = time.monotonic() - started
+    assert results["b"] == "Session B still has a look."
+    assert results["b_s"] < 0.25
+    worker.join(2)
+    assert not worker.is_alive()
+    assert results["a"] == ""
+    reset_look()
 
 
 def test_execute_does_not_retry_a_site_graph_error(monkeypatch):

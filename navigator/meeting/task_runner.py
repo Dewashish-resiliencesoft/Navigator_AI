@@ -277,7 +277,7 @@ def _navigate_for(page, goal: str, push_frame) -> str:
         return ""
     if (page.url or "").rstrip("/").endswith(href.rstrip("/")):
         return href
-    page.goto(urljoin(page.url, href), wait_until="domcontentloaded", timeout=15000)
+    page.goto(urljoin(page.url, href), wait_until="domcontentloaded", timeout=8000)
     page.wait_for_timeout(1200)
     _push(push_frame)
     return href

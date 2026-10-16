@@ -29,6 +29,15 @@ from navigator.core.schemas import (
 )
 
 
+# One action must not sit on the schema's 15s default. A step that still
+# fails after the retries is returned, not left running.
+ACTION_TIMEOUT_CAP_MS = 6000
+NAV_TIMEOUT_CAP_MS = 8000
+STEP_WATCHDOG_S = 18.0
+_RETRYABLE_TOOLS = frozenset({"click_element", "fill_field", "navigate", "wait_for"})
+_BACKOFF_S = (0.2, 0.5)
+
+
 def execute(
     page: Page,
     graph: SiteGraph,
@@ -46,10 +55,13 @@ def execute(
 
     ``on_frame`` is the live-demo frame pusher. Handlers that animate the cursor
     call it per micro-step so the screenshare shows motion, not a teleport.
+
+    Click, fill, navigate, and wait retry at most twice, with a short backoff.
+    The step watchdog marks a call that is still failing after ``STEP_WATCHDOG_S``.
     """
     handler = _HANDLERS[call.tool]
     started = time.perf_counter()
-    attempts = 2 if call.tool in _RETRYABLE_TOOLS else 1
+    attempts = 3 if call.tool in _RETRYABLE_TOOLS else 1
     detail, next_page_id, ok = "", page_id, False
     _emit_browser_clock(call.tool, "start")
     try:
@@ -66,22 +78,30 @@ def execute(
             except PlaywrightError as exc:
                 detail = _describe(exc)
                 if attempt + 1 < attempts and _retryable_action(exc):
+                    pause = _BACKOFF_S[min(attempt, len(_BACKOFF_S) - 1)]
                     print(
-                        f"[tool] {call.tool} retry {attempt + 1}: {detail[:140]}",
+                        f"[tool] {call.tool} retry {attempt + 1} in {pause:.1f}s: {detail[:140]}",
                         flush=True,
                     )
+                    time.sleep(pause)
                     continue
                 if attempt:
                     detail = f"retry exhausted: {detail}"
                 next_page_id, ok = page_id, False
                 break
-
+        elapsed = time.perf_counter() - started
+        if not ok and elapsed >= STEP_WATCHDOG_S:
+            print(
+                f"[step] watchdog {call.tool} still failing after {elapsed:.1f}s — skipping",
+                flush=True,
+            )
+            detail = f"watchdog: {detail}"
         return (
             ToolResult(
                 ok=ok,
                 tool=call.tool,
                 detail=detail,
-                duration_ms=int((time.perf_counter() - started) * 1000),
+                duration_ms=int(elapsed * 1000),
             ),
             next_page_id,
         )
@@ -114,24 +134,20 @@ def _describe(exc: Exception) -> str:
 # Each returns (detail, next_page_id) and lets exceptions escape to execute().
 
 
-# Cap a single Playwright action. The schema default is 15s, and raising every
-# call to at least 15s is how a missing control froze the demo. A future
-# browser worker can wrap this same helper. Sub-second values stay exact so
-# unit tests can still use a short timeout.
-ACTION_TIMEOUT_CAP_MS = 6000
-_RETRYABLE_TOOLS = frozenset({"click_element", "fill_field"})
-
-
-def _action_timeout(ms: int) -> int:
-    """Caller timeout, capped. Sub-1s values are returned unchanged."""
+def _action_timeout(ms: int, *, navigate: bool = False) -> int:
+    """Caller timeout, capped. Sub-1s values stay exact for unit tests."""
+    cap = NAV_TIMEOUT_CAP_MS if navigate else ACTION_TIMEOUT_CAP_MS
     if ms < 1000:
         return ms
-    return min(int(ms), ACTION_TIMEOUT_CAP_MS)
+    return min(int(ms), cap)
 
 
 def _retryable_action(exc: BaseException) -> bool:
     msg = str(exc).lower()
-    return any(bit in msg for bit in ("timeout", "not visible", "detached", "intercept"))
+    return any(
+        bit in msg
+        for bit in ("timeout", "not visible", "detached", "intercept", "net::")
+    )
 
 
 def click_element(
@@ -241,7 +257,11 @@ def navigate(
     if current and same_page_path(current, url):
         _note_navigation(page, graph, call.page_id)
         return f"already on {call.page_id}", call.page_id
-    page.goto(url, timeout=call.expects.timeout_ms, wait_until="domcontentloaded")
+    page.goto(
+        url,
+        timeout=_action_timeout(call.expects.timeout_ms, navigate=True),
+        wait_until="domcontentloaded",
+    )
     try:
         from navigator.automation.browser.cursor import install_cursor, _paced_wait
 
@@ -291,13 +311,15 @@ def scroll_page(
     if alias and alias.lower() != "body":
         css = graph.selector(page_id, alias)
         page.locator(css).first.evaluate(
-            "(el, pos) => { el.scrollTo({left: pos.x, top: pos.y, behavior: 'smooth'}); }",
+            "(el, pos) => { el.scrollTo({left: pos.x, top: pos.y}); }",
             {"x": x, "y": y},
+            timeout=_action_timeout(2000),
         )
     else:
         page.evaluate(
-            "(pos) => { window.scrollTo({left: pos.x, top: pos.y, behavior: 'smooth'}); }",
+            "(pos) => { window.scrollTo({left: pos.x, top: pos.y}); }",
             {"x": x, "y": y},
+            timeout=_action_timeout(2000),
         )
     try:
         from navigator.automation.browser.cursor import _paced_wait

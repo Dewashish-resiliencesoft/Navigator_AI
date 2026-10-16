@@ -100,9 +100,10 @@ def build_prompt(
             )
         if "currently on screen:" in screen_context:
             lines.append(
+                "The viewport block above is the only map. "
                 "Narrate only the section currently on screen. "
                 "Mention a nearby offscreen section only as the next scroll, "
-                "with its direction and distance. Do not describe the rest of the page."
+                "with its direction and distance. Do not describe the rest of the site."
             )
     lines.extend(
         [

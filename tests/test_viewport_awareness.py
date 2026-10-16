@@ -177,6 +177,8 @@ def test_planner_narrates_only_the_visible_section():
         screen_context="currently on screen: Inbox\nnearby offscreen: Billing (below, 300px)",
     )
     assert "Narrate only the section currently on screen." in prompt
+    assert "only map" in prompt
+    assert "Do not describe the rest of the site." in prompt
     assert "Billing (below, 300px)" in prompt
 
 

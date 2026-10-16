@@ -1131,8 +1131,31 @@ def _viewport_screen(deps: CallDeps, page_id: str, *, limit: int | None = None) 
         except Exception as exc:  # noqa: BLE001
             print(f"[plan] viewport screen skipped: {exc}", flush=True)
     if limit is not None:
-        return text[:limit]
+        text = text[:limit]
+    from navigator.agent.on_demand_vision import last_look
+
+    noted = last_look()
+    if noted and noted not in text:
+        text = f"{text}\nWhat the last look showed: {noted}".strip()
     return text
+
+
+def _on_screen_labels(screen: str) -> list[str]:
+    """Labels from the viewport block. Never the full list of site pages."""
+    if "currently on screen:" not in (screen or ""):
+        return []
+    labels: list[str] = []
+    for line in screen.splitlines():
+        low = line.strip().lower()
+        if low.startswith("currently on screen:"):
+            name = line.split(":", 1)[1].strip()
+            if name:
+                labels.append(name)
+        elif low.startswith("nearby offscreen:") or low.startswith("- "):
+            bit = line.split(":", 1)[-1].strip()
+            if bit and bit not in labels:
+                labels.append(bit)
+    return labels[:8]
 
 
 def _try_turn_brain(
@@ -1142,7 +1165,8 @@ def _try_turn_brain(
         return None
     if not _use_turn_brain(deps):
         return None
-    from navigator.agent.turn_brain import TurnDecision, capture_screenshot_png, decide_turn
+    from navigator.agent.on_demand_vision import asks_where, last_look, look_once
+    from navigator.agent.turn_brain import TurnDecision, decide_from_viewport
     from navigator.core.schemas import Navigate, Postcondition
 
     walkthrough_step = int(state.get("walkthrough_step") or 0)
@@ -1154,11 +1178,14 @@ def _try_turn_brain(
         screen = attach_snapshot(deps.page, screen)
     except Exception as exc:  # noqa: BLE001
         print(f"[plan] screen_context skipped: {exc}", flush=True)
-    try:
-        png = capture_screenshot_png(deps.page)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[plan] screenshot skipped: {exc}", flush=True)
-        return None
+    noted = last_look()
+    if noted and noted not in screen:
+        screen = f"{screen}\nWhat the last look showed: {noted}".strip()
+    png = b""
+    if asks_where(utterance):
+        png_note = look_once(getattr(deps, "page", None), reason="where_we_are")
+        if png_note:
+            screen = f"{screen}\nWhat the screenshot shows: {png_note}".strip()
 
     intake = deps.intake
     intake_summary = ""
@@ -1167,7 +1194,8 @@ def _try_turn_brain(
             f"{intake.name} at {intake.company}, "
             f"{intake.business_type}, need={intake.looking_for}"
         )
-    nav_labels = [p.name for p in deps.graph.pages.values()]
+    # Page ids stay as the allow-list. Names of every other page are not a map.
+    nav_labels = _on_screen_labels(screen)
     try:
         if deps.decide_turn is not None:
             decision = deps.decide_turn(
@@ -1182,7 +1210,7 @@ def _try_turn_brain(
             if not isinstance(decision, TurnDecision):
                 decision = TurnDecision.model_validate(decision)
         else:
-            decision = decide_turn(
+            decision = decide_from_viewport(
                 utterance=utterance,
                 screenshot_png=png,
                 screen_text=screen,

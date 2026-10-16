@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
 from navigator.agent.live_input import needs_live_input, resolve_demo_fill
 from navigator.agent.state import CLEAR, CallDeps, CallState
-from navigator.automation.browser.tools import execute as run_tool
+from navigator.automation.browser.tools import NAV_TIMEOUT_CAP_MS, execute as run_tool
 from navigator.automation.external_links import (
     EXTERNAL_LINK_SPOKEN,
     is_external_url,
@@ -261,6 +261,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             ran_on,
         )
     elif _missing_fast(deps, ran_on, call):
+        _look(deps, "element_not_found")
         result, next_page_id = _recover_failed_step(
             deps, ran_on, call, RuntimeError("element not on page (3s check)")
         )
@@ -291,7 +292,14 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             from navigator.core import logtime as _lt
 
             _lt.record("step_action", (time.monotonic() - _st0) * 1000, str(getattr(call, "selector", "")))
+            if not result.ok and not str(result.detail).startswith("skipped"):
+                reason = "stuck" if str(result.detail).startswith("watchdog") else "action_failed"
+                _look(deps, reason)
+                result, next_page_id = _recover_failed_step(
+                    deps, ran_on, call, RuntimeError(result.detail)
+                )
         except Exception as exc:  # noqa: BLE001 — a missing element must never kill the demo
+            _look(deps, "action_failed")
             result, next_page_id = _recover_failed_step(deps, ran_on, call, exc)
     _end_nudge(deps)
     if is_external_url(deps.page.url, deps.graph.base_url):
@@ -528,6 +536,16 @@ def _text_of(selector: str) -> str:
     return sel if sel and not any(c in sel for c in "#.[]>=:/") else ""
 
 
+def _look(deps, reason: str) -> None:
+    """One screenshot when a step is lost. Never raises into the demo."""
+    try:
+        from navigator.agent.on_demand_vision import look_once
+
+        look_once(getattr(deps, "page", None), reason=reason)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[vision] look skipped ({reason}): {exc}", flush=True)
+
+
 def _recover_failed_step(deps, ran_on, call, exc):
     """Missing/hidden element: try text variants + scroll; else skip, never raise."""
     from navigator.core.schemas import ToolResult
@@ -740,7 +758,7 @@ def _return_from_detour(deps: CallDeps, call) -> None:
             try:
                 dlg = page.locator("[role=dialog],[aria-modal=true],dialog[open]")
                 if dlg.count() and dlg.last.is_visible():
-                    page.reload(wait_until="domcontentloaded", timeout=15000)
+                    page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
                     print("[exec] detour left a dialog open — reloaded before the scripted step", flush=True)
             except Exception:  # noqa: BLE001
                 pass
@@ -748,7 +766,7 @@ def _return_from_detour(deps: CallDeps, call) -> None:
         if not back:
             return
         if (page.url or "") != back:
-            page.goto(back, wait_until="domcontentloaded", timeout=15000)
+            page.goto(back, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
             page.wait_for_timeout(500)
         print(f"[exec] resumed scripted flow at {back}", flush=True)
     except Exception as exc:  # noqa: BLE001
@@ -966,7 +984,7 @@ def _restore_step_screen(deps, call) -> None:
         cur = page.url or ""
         if cur.split("#")[0].rstrip("/") != STEP_URL.split("#")[0].rstrip("/"):
             print(f"[sync] screen drifted to {cur} — restoring {STEP_URL}", flush=True)
-            page.goto(STEP_URL, wait_until="domcontentloaded", timeout=15000)
+            page.goto(STEP_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
             page.wait_for_timeout(400)
     except Exception as exc:  # noqa: BLE001
         print(f"[sync] restore skipped: {exc}", flush=True)
@@ -1006,7 +1024,7 @@ def _verify_step_screen(deps, call) -> None:
             return True
         print(f"[sync] step screen mismatch: on {cur}, expected {want} — re-navigating", flush=True)
         try:
-            page.goto(urljoin(deps.graph.base_url, want if want == "/" else want + "/"), wait_until="domcontentloaded", timeout=15000)
+            page.goto(urljoin(deps.graph.base_url, want if want == "/" else want + "/"), wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
             page.wait_for_timeout(500)
         except Exception as exc:  # noqa: BLE001
             print(f"[sync] re-navigate failed: {exc}", flush=True)
@@ -1072,7 +1090,7 @@ def _close_leftover_dialog(page) -> None:
         page.keyboard.press("Escape")
         page.wait_for_timeout(250)
         if dlg.count() and dlg.last.is_visible():
-            page.reload(wait_until="domcontentloaded", timeout=15000)
+            page.reload(wait_until="domcontentloaded", timeout=NAV_TIMEOUT_CAP_MS)
         print("[exec] closed a dialog left open before the scripted step", flush=True)
     except Exception as exc:  # noqa: BLE001
         print(f"[exec] dialog cleanup skipped: {exc}", flush=True)

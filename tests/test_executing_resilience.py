@@ -49,5 +49,5 @@ def test_recover_skips_unknown_with_bridge_never_raises():
     deps = SimpleNamespace(page=pg, graph=MagicMock(), speaker=MagicMock(spec=["say"]),
                            push_frame=None)
     res, _ = ex._recover_failed_step(deps, "home", _call("text=Reports"), RuntimeError("no bounding box"))
-    assert res.ok and res.detail.startswith("skipped")
+    assert not res.ok and res.detail.startswith("skipped")
     deps.speaker.say.assert_called_once()

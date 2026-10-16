@@ -4,9 +4,43 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeout
 
 from navigator.automation.browser.cursor import click_with_cursor, install_cursor
+
+# After submit, success (leave /login/, or the ready element) races a visible
+# login error. Wrong credentials must raise within a few seconds. The cap is
+# the slow-success budget and stays well under Playwright's 60s default.
+_LOGIN_WAIT_MS = 15_000
+
+_LOGIN_OUTCOME_JS = r"""
+(ready) => {
+  const path = (location.pathname || "").toLowerCase();
+  const onLogin = path.includes("/login");
+  if (ready) {
+    try {
+      const hit = document.querySelector(ready);
+      if (hit && hit.getClientRects().length) return "ok";
+    } catch (e) {}
+  }
+  if (!ready && !onLogin) return "ok";
+  if (!onLogin) return null;
+  const bad = /invalid|incorrect|wrong password|login failed|credentials|unauthorized|do not match|try again/i;
+  const sel = '[role="alert"], [class*="destructive"], [class*="text-red"], [data-sonner-toast], [class*="error"], [class*="alert"]';
+  for (const el of document.querySelectorAll(sel)) {
+    if (el.closest && el.closest("#nav-cursor, #nav-cursor-highlight")) continue;
+    if (!el.getClientRects().length) continue;
+    const cls = typeof el.className === "string" ? el.className : (el.getAttribute("class") || "");
+    const text = ((el.innerText || el.textContent || el.getAttribute("aria-label") || "") + "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text.length < 2 || text.length > 240) continue;
+    const errorEl = el.getAttribute("role") === "alert" || /destructive|alert/i.test(cls);
+    if (errorEl || bad.test(text)) return "invalid";
+  }
+  return null;
+}
+"""
 
 
 def open_login_page(
@@ -77,11 +111,18 @@ def login_product(
         page.locator(password_selector).first.fill(password, timeout=15_000)
         click_with_cursor(page, submit_selector, timeout=15_000)
 
-    if ready_selector:
-        page.wait_for_selector(ready_selector, timeout=60_000)
-    else:
-        # Logged-in apps usually leave /login/
-        page.wait_for_function(
-            "() => !location.pathname.includes('/login')",
-            timeout=60_000,
-        )
+    _await_login_outcome(page, ready_selector)
+
+
+def _await_login_outcome(page: Page, ready_selector: str | None) -> None:
+    """Return once login succeeds, or raise when the form rejects the password."""
+    try:
+        status = page.wait_for_function(
+            _LOGIN_OUTCOME_JS,
+            arg=ready_selector or "",
+            timeout=_LOGIN_WAIT_MS,
+        ).json_value()
+    except PlaywrightTimeout:
+        raise RuntimeError("invalid credentials") from None
+    if status == "invalid":
+        raise RuntimeError("invalid credentials")

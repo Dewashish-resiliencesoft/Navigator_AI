@@ -180,6 +180,12 @@ def attach_snapshot(page, screen: str, *, limit: int = 1200) -> str:
     return merged[:limit]
 
 
+# Best-effort pre-scroll. Playwright's default locator timeout is 30s, and a
+# step alias used as CSS ("send_button") used to sit there until a 60s test
+# timeout. The click that follows has its own cap.
+_SCROLL_EVAL_TIMEOUT_MS = 1_000
+
+
 def scroll_locator_into_view(page, loc) -> bool:
     """Instant-scroll ``loc`` to the middle of the live viewport.
 
@@ -187,7 +193,7 @@ def scroll_locator_into_view(page, loc) -> bool:
     Returns False when the element cannot be measured.
     """
     try:
-        info = loc.evaluate(_SCROLL_EL_JS)
+        info = loc.evaluate(_SCROLL_EL_JS, timeout=_SCROLL_EVAL_TIMEOUT_MS)
     except Exception as exc:  # noqa: BLE001
         print(f"[page] scroll-into-view failed: {exc}", flush=True)
         return False

@@ -553,6 +553,23 @@ def _look(deps, reason: str) -> None:
         print(f"[vision] look skipped ({reason}): {exc}", flush=True)
 
 
+def _resolved_selector(deps, page_id: str, alias: str) -> str:
+    """CSS for a site-graph alias.
+
+    Tool calls store the alias (``send_button``). ``PageSpec`` keeps the CSS
+    on ``selectors``, not ``elements``. Using the alias as a Playwright
+    selector waits out the 30s default timeout.
+    """
+    graph = getattr(deps, "graph", None)
+    resolve = getattr(graph, "selector", None)
+    if callable(resolve) and page_id and alias:
+        try:
+            return str(resolve(page_id, alias))
+        except Exception:  # noqa: BLE001 — already-CSS, or unknown alias
+            pass
+    return alias
+
+
 def _recover_failed_step(deps, ran_on, call, exc):
     """Missing/hidden element: try text variants + scroll; else skip, never raise."""
     from navigator.core.schemas import ToolResult
@@ -564,13 +581,9 @@ def _recover_failed_step(deps, ran_on, call, exc):
         print("[exec] login step skipped: already signed in", flush=True)
         return ToolResult(ok=True, tool=tool, detail="skipped: already signed in", duration_ms=0), ran_on
     page = deps.page
-    raw = str(getattr(call, "selector", "") or "")
-    try:
-        el = (deps.graph.pages.get(ran_on).elements or {}).get(raw)  # alias → real selector
-        raw = str(getattr(el, "selector", "") or el or raw) if el else raw
-    except Exception:  # noqa: BLE001
-        pass
-    text = _text_of(raw) or _text_of(str(getattr(call, "selector", "")).replace("_", " "))
+    alias = str(getattr(call, "selector", "") or "")
+    raw = _resolved_selector(deps, ran_on, alias) if alias else alias
+    text = _text_of(alias) or _text_of(alias.replace("_", " "))
     candidates = []
     if raw and not raw.startswith("text="):
         candidates.append(lambda: page.locator(raw))
@@ -632,11 +645,7 @@ def _scroll_call_target(deps, page_id, call) -> None:
     if not raw:
         return
     try:
-        pages = getattr(getattr(deps, "graph", None), "pages", None)
-        page_spec = pages.get(page_id) if hasattr(pages, "get") else None
-        elements = getattr(page_spec, "elements", None) if page_spec is not None else None
-        el = elements.get(raw) if isinstance(elements, dict) else None
-        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        sel = _resolved_selector(deps, page_id, raw)
         from navigator.automation.browser.page_snapshot import scroll_locator_into_view
 
         scroll_locator_into_view(page, page.locator(sel).first)
@@ -648,8 +657,7 @@ def _target_visible(deps, page_id, call) -> bool:
     """True when the step's element is actually on screen (then never skip it)."""
     raw = str(getattr(call, "selector", "") or "")
     try:
-        el = (deps.graph.pages.get(page_id).elements or {}).get(raw)
-        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        sel = _resolved_selector(deps, page_id, raw)
         loc = deps.page.locator(sel)
         for i in range(min(loc.count(), 3)):
             if loc.nth(i).is_visible():
@@ -671,8 +679,7 @@ def _missing_fast(deps, page_id, call, wait_ms: int = 3000) -> bool:
     if not raw:
         return False
     try:
-        el = (deps.graph.pages.get(page_id).elements or {}).get(raw)
-        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        sel = _resolved_selector(deps, page_id, raw)
         loc = deps.page.locator(sel)
         deadline = time.monotonic() + wait_ms / 1000.0
         scrolled = False

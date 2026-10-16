@@ -25,7 +25,9 @@ def browser_page(headful: bool = True, slow_mo_ms: int = 0) -> Iterator[Page]:
             slow_mo=slow_mo_ms,
             args=["--start-maximized"] if headful else [],
         )
-        context = browser.new_context(no_viewport=headful)
+        from navigator.automation.browser.viewport import context_kwargs
+
+        context = browser.new_context(**context_kwargs())
         page = context.new_page()
         try:
             yield page

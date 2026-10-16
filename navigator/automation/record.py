@@ -1337,13 +1337,11 @@ def record_session(
                     ) from exc
                 raise
 
-        # Headful record: use the real window size (maximized). A fixed
-        # 1280×720 viewport inside a maximized Chrome looks like a white
-        # letterbox with the site stuck in one corner.
-        if headful:
-            context = browser.new_context(no_viewport=True)
-        else:
-            context = browser.new_context(viewport={"width": 1280, "height": 720})
+        # Same viewport as the live demo so recorded coordinates match the
+        # screen Attendee captures. NAVIGATOR_VIEWPORT_WIDTH / HEIGHT.
+        from navigator.automation.browser.viewport import context_kwargs
+
+        context = browser.new_context(**context_kwargs())
         # Before new_page: context init_script survives SPA nav / remote CDP
         # without blocking evaluate in the wait loop.
         try:

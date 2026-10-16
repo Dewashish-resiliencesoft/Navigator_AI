@@ -161,18 +161,40 @@ class Settings(BaseSettings):
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
     #: Screenshare /view JPEG poll rate through the public tunnel.
-    #: 20fps balances motion smoothness vs Cloudflare bandwidth; keep ≤24.
+    #: 60fps floods Cloudflare + starves Gemini Live voice; 15fps is fluid
+    #: enough for demos and leaves CPU/bandwidth for clear audio.
     target_fps: int = 20
     #: JPEG quality for Meet/Zoom screenshare frames (1–100).
     screenshot_quality: int = 80
     #: Cap CDP screencast width (height scales). 960 cuts tunnel bytes ~40%
     #: vs 1280 while staying sharp enough for product demos.
     screenshot_max_width: int = 1280
-    #: CDP everyNthFrame. 0 = derive from target_fps; 1 = every repaint (smoothest).
+    #: CDP everyNthFrame for the jpeg screenshare path. 0 = derive from
+    #: target_fps; 1 = every repaint. Video mode ignores this and follows
+    #: screenshare_fps instead.
     screencast_every_nth: int = 3
     #: Serve /view via MJPEG push (/stream) — latest frame only, no per-frame
     #: HTTP round trip through the tunnel. Falls back to polling on error.
+    #: Used when screenshare_mode is jpeg.
     screencast_mjpeg: bool = True
+    #: CSS pixels for every Playwright context (live, record, explore, authoring).
+    #: Default is 1080p, which is what Meet will deliver. Ops set Attendee's
+    #: WEBPAGE_STREAMER_VIDEO_FRAME_SIZE to the same size.
+    viewport_width: int = 1920
+    viewport_height: int = 1080
+    #: video: Attendee loads /view as a captureStream video that also plays
+    #: agent voice. jpeg: legacy polled /frame.jpg page; voice stays on the
+    #: bot-output websocket.
+    screenshare_mode: Literal["video", "jpeg"] = "video"
+    #: Optional ceiling below the platform rate (Meet 30, Zoom/Teams/local 60).
+    #: Combined as min(platform, this, NAVIGATOR_ATTENDEE_MAX_FPS). Unset means
+    #: no extra ceiling. Viewport stays 1920×1080.
+    screenshare_fps: int | None = None
+    #: Attendee's webpage streamer hardcodes framerate=15/1, so encoding faster
+    #: only produces frames that get dropped. 60fps through the public tunnel
+    #: also floods Cloudflare and starves Gemini Live voice. Raise this to 30
+    #: or 60 once the Attendee-repo framerate patch is deployed.
+    attendee_max_fps: int = 15
 
 
 settings = Settings()

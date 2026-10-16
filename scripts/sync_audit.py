@@ -18,6 +18,8 @@ ap.add_argument("--out", default="/tmp/navsync")
 A = ap.parse_args()
 
 from playwright.sync_api import sync_playwright
+
+from navigator.automation.browser.viewport import context_kwargs
 from navigator.app.deps import _registry
 from navigator.agent.state import CallDeps
 from navigator.agent.nodes import executing as ex
@@ -92,7 +94,7 @@ def sentences(t): return [x for x in re.split(r"(?<=[.!?\u0964])\s+", (t or "").
 def path(u): return (urlparse(u or "").path or "/").rstrip("/") or "/"
 
 with sync_playwright() as p:
-    b = p.chromium.launch(); ctx = b.new_context(viewport={"width": 1280, "height": 720}); page = ctx.new_page()
+    b = p.chromium.launch(); ctx = b.new_context(**context_kwargs()); page = ctx.new_page()
     jobs = ui_jobs.UiJobs(); jobs.bind(page)
     live = LiveAgent(LiveAgentConfig(
         api_key=keys[0], language="en", fallback_keys=list(keys[1:]),

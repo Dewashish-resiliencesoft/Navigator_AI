@@ -935,7 +935,11 @@ def run_live_meet_demo(
         persona = persona.model_copy(update={"tone": agent_settings.tone.strip()})
 
     _docker_gw = _attendee_docker_gateway()
-    relay = start_relay(host=_docker_gw) if _docker_gw else start_relay()
+    relay = (
+        start_relay(host=_docker_gw, meeting_url=meeting_url)
+        if _docker_gw
+        else start_relay(meeting_url=meeting_url)
+    )
     tunnel = None
     audio_bridge = None
     audio_tunnel = None
@@ -1442,10 +1446,9 @@ def run_live_meet_demo(
                     args=[f"--remote-debugging-port={_cdp_port}", "--remote-debugging-address=127.0.0.1"],
                 ),
             )
-            context = browser.new_context(
-                viewport={"width": 1280, "height": 720},
-                device_scale_factor=1,
-            )
+            from navigator.automation.browser.viewport import context_kwargs
+
+            context = browser.new_context(**context_kwargs())
             from navigator.automation.browser.lighten import block_trackers
 
             block_trackers(context)

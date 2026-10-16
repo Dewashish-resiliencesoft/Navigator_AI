@@ -262,6 +262,8 @@ def build(app: Any | None = None) -> DocsModel:
 
         app = default_app
 
+    # Method order and operationIds are pinned in navigator.app.openapi so this
+    # spec matches the committed Fern artifact across PYTHONHASHSEED values.
     spec = app.openapi()
 
     return DocsModel(

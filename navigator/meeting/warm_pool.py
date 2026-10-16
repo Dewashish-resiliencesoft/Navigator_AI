@@ -214,9 +214,9 @@ class WarmPool:
             self._teardown_browser()
             self._pw = sync_playwright().start()
             self._browser = self._pw.chromium.launch(headless=False)
-            context = self._browser.new_context(
-                viewport={"width": 1280, "height": 720}, device_scale_factor=1
-            )
+            from navigator.automation.browser.viewport import context_kwargs
+
+            context = self._browser.new_context(**context_kwargs())
             from navigator.automation.browser.lighten import block_trackers
 
             block_trackers(context)

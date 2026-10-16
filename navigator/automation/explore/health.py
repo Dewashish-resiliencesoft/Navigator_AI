@@ -161,7 +161,9 @@ def _replay_all(
     any_broken = False
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        context = browser.new_context()
+        from navigator.automation.browser.viewport import context_kwargs
+
+        context = browser.new_context(**context_kwargs())
         page = context.new_page()
         try:
             result = run_login_gate(

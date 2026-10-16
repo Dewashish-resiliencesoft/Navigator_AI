@@ -567,9 +567,13 @@ See **`.env.example`** for the full commented list. Highlights:
 | `NAVIGATOR_ZOOM_*` | Zoom Server-to-Server OAuth |
 | `NAVIGATOR_GROQ_*` / `NAVIGATOR_GEMINI_*` | LLM / STT / Live audio |
 | `NAVIGATOR_CREDENTIAL_KEY` | Product-login vault Fernet key |
-| `NAVIGATOR_TARGET_FPS` | Screenshare /view poll rate (default 20; keep ≤24 through tunnel) |
+| `NAVIGATOR_TARGET_FPS` | JPEG poll hint. 60fps through the tunnel floods Cloudflare and starves Gemini Live voice |
+| `NAVIGATOR_SCREENSHARE_MODE` | `video` (default): Attendee loads a captureStream page that also plays agent voice. `jpeg`: legacy `/frame.jpg` poll |
+| `NAVIGATOR_SCREENSHARE_FPS` | Optional extra ceiling. Unset: `meet.google.com` is 30fps, Zoom/Teams/local are 60fps, at 1920×1080 |
+| `NAVIGATOR_ATTENDEE_MAX_FPS` | Hard ceiling matching Attendee's grab (default 15). Raise to 30 or 60 after the Attendee-repo framerate patch is deployed |
+| `NAVIGATOR_VIEWPORT_WIDTH` / `HEIGHT` | Playwright viewport for live, record, explore, and authoring (default 1920×1080) |
 | `NAVIGATOR_SCREENSHOT_QUALITY` | JPEG quality for screenshare (default 70) |
-| `NAVIGATOR_SCREENSHOT_MAX_WIDTH` | CDP frame width cap (default 960; lower = less lag) |
+| `NAVIGATOR_SCREENSHOT_MAX_WIDTH` | Legacy JPEG width note; the live frame size follows the viewport |
 | `NAVIGATOR_JWT_SECRET` | Dashboard JWT signing |
 
 Never commit real `.env` values.
@@ -597,7 +601,7 @@ Lean server pattern (LAN “cloud” box):
 
 1. Sync project (code + `.env` + DBs + `chroma/` + `voices/` + `web/dist`).
    Keep remote `.venv` machine-local.
-2. `NAVIGATOR_HEADFUL=0`, `NAVIGATOR_TARGET_FPS=20`, `NAVIGATOR_SCREENSHOT_QUALITY=70`, `NAVIGATOR_SCREENSHOT_MAX_WIDTH=960`.
+2. `NAVIGATOR_HEADFUL=0`. The capture page is 1920×1080. Platform fps is Meet 30, Zoom/Teams/local 60, then clamped to `min(platform, NAVIGATOR_SCREENSHARE_FPS, NAVIGATOR_ATTENDEE_MAX_FPS)`. The Attendee max defaults to 15 because 60fps through the tunnel floods Cloudflare and starves Gemini Live voice, and Attendee's webpage streamer still hardcodes a 15fps grab. Raise `NAVIGATOR_ATTENDEE_MAX_FPS` to 30 or 60 after that Attendee-repo patch is deployed. Set `WEBPAGE_STREAMER_VIDEO_FRAME_SIZE=1920x1080` on Attendee.
 3. Clone/sync Attendee under the same projects root, e.g.
    `~/dewashish_projects/attendee`, set
    `NAVIGATOR_ATTENDEE_COMPOSE_DIR` accordingly, `AUTOSTART=1`.

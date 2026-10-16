@@ -417,7 +417,9 @@ class DemoRunner:
                 browser = pw.chromium.launch(headless=not self.headful)
                 # A fresh context per demo: separate cookie jar, storage, and
                 # session. This is the tenant boundary in the browser.
-                context = browser.new_context()
+                from navigator.automation.browser.viewport import context_kwargs
+
+                context = browser.new_context(**context_kwargs())
                 page = context.new_page()
                 try:
                     with ActionLog(self.db_path) as log:

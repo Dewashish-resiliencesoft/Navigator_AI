@@ -868,8 +868,12 @@ def expected_path(graph, call) -> str:
         return ""
     if not u or any(ch in u for ch in "*{}<>"):
         return ""
-    from urllib.parse import urlparse
+    from urllib.parse import urljoin, urlparse
 
+    # Relative page urls (fixture files, site-relative paths) must be compared
+    # to the document the browser actually loaded, not the raw graph string.
+    if not urlparse(u).scheme and graph is not None:
+        u = urljoin(getattr(graph, "base_url", "") or "", u)
     return (urlparse(u).path or "/").rstrip("/") or "/"
 
 

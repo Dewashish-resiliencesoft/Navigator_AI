@@ -71,6 +71,7 @@ async def _lifespan(_app: FastAPI):
     except Exception as exc:  # noqa: BLE001
         print(f"[warm] pool start skipped: {exc}", flush=True)
     yield
+    _runner.stop_sync()
     try:
         from navigator.meeting.warm_pool import get_warm_pool
 

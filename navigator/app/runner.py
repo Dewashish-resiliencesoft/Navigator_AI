@@ -21,7 +21,6 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-import time
 from typing import Callable, Literal
 from uuid import UUID, uuid4
 
@@ -157,6 +156,8 @@ class DemoRunner:
         headful: bool = False,
         archive_dir: str | Path = "archives",
         redis_url: str | None = None,
+        *,
+        sync_enabled: bool | None = None,
     ) -> None:
         self.db_path = db_path
         self.headful = headful
@@ -167,7 +168,24 @@ class DemoRunner:
         self.worker_id = str(uuid4())
         from navigator.app.state import DemoStateStore
         self._store = DemoStateStore(redis_url, self.worker_id, self._on_remote_stop)
-        threading.Thread(target=self._sync_loop, daemon=True).start()
+        if sync_enabled is None:
+            from navigator.core.settings import settings
+
+            sync_enabled = settings.demo_sync_enabled
+        self._sync_stop = threading.Event()
+        self._sync_thread: threading.Thread | None = None
+        if sync_enabled:
+            self._sync_thread = threading.Thread(
+                target=self._sync_loop, name="demo-sync", daemon=True
+            )
+            self._sync_thread.start()
+
+    def stop_sync(self) -> None:
+        """Stop the background demo-state sync loop."""
+        self._sync_stop.set()
+        thread = self._sync_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
 
     def _on_remote_stop(self, demo_id: UUID) -> None:
         handle = self._demos.get(demo_id)
@@ -175,12 +193,12 @@ class DemoRunner:
             handle._stop.set()
 
     def _sync_loop(self) -> None:
-        while True:
+        while not self._sync_stop.is_set():
             with self._lock:
                 handles = list(self._demos.values())
             for h in handles:
                 self._store.save(h)
-            time.sleep(1.0)
+            self._sync_stop.wait(1.0)
 
     def start(
         self,

@@ -92,13 +92,12 @@ class ViewportAwareness:
 def begin_viewport_step() -> None:
     """Reuse one viewport read for the rest of this planner or executing step."""
     _viewport_step.active = True
-    _viewport_step.saved = None
+    _viewport_step.token = getattr(_viewport_step, "token", 0) + 1
 
 
 def end_viewport_step() -> None:
     """Drop the step cache. The next read measures again."""
     _viewport_step.active = False
-    _viewport_step.saved = None
 
 
 def header_offset_px(graph: Any = None) -> int:
@@ -555,11 +554,11 @@ def _section_css(
 def _recall(page: Any, url: str) -> ViewportAwareness | None:
     if not getattr(_viewport_step, "active", False):
         return None
-    saved = getattr(_viewport_step, "saved", None)
+    saved = getattr(page, "_navigator_viewport", None)
     if not saved:
         return None
-    page_key, saved_url, awareness = saved
-    if page_key != id(page) or saved_url != url:
+    token, saved_url, awareness = saved
+    if token != getattr(_viewport_step, "token", None) or saved_url != url:
         return None
     return awareness
 
@@ -567,7 +566,14 @@ def _recall(page: Any, url: str) -> ViewportAwareness | None:
 def _remember(page: Any, url: str, awareness: ViewportAwareness) -> None:
     if not getattr(_viewport_step, "active", False):
         return
-    _viewport_step.saved = (id(page), url, awareness)
+    try:
+        page._navigator_viewport = (
+            getattr(_viewport_step, "token", 0),
+            url,
+            awareness,
+        )
+    except Exception:  # noqa: BLE001 — a page that rejects attributes just remeasures
+        pass
 
 
 def _match_page(text: str, graph: Any) -> tuple[str, str] | None:

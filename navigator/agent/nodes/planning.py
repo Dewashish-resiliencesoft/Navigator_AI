@@ -299,105 +299,108 @@ def _step_narration_hint(
 
 
 def planning(state: CallState, deps: CallDeps) -> CallState:
-    from navigator.automation.browser.viewport_awareness import begin_viewport_step
+    from navigator.automation.browser.viewport_awareness import begin_viewport_step, end_viewport_step
 
     begin_viewport_step()
-    if deps.set_status is not None:
-        deps.set_status("tailoring", "Tailoring…")
-    if deps.set_avatar_state is not None:
-        deps.set_avatar_state("thinking")
-    from navigator.voice.conversation_language import publish_speech
+    try:
+        if deps.set_status is not None:
+            deps.set_status("tailoring", "Tailoring…")
+        if deps.set_avatar_state is not None:
+            deps.set_avatar_state("thinking")
+        from navigator.voice.conversation_language import publish_speech
 
-    publish_speech(deps, status="thinking")
-    if getattr(deps.speaker, "bot_ended", False):
-        return CallState(
-            plan=Plan(spoken_response="", tool_calls=[]),
-            pending_calls=[],
-            finished=True,
-            phase="ending",
+        publish_speech(deps, status="thinking")
+        if getattr(deps.speaker, "bot_ended", False):
+            return CallState(
+                plan=Plan(spoken_response="", tool_calls=[]),
+                pending_calls=[],
+                finished=True,
+                phase="ending",
+            )
+        if deps.scripted_flow is not None:
+            page_id, flow_id = deps.scripted_flow
+            if _flow_offerable(deps, page_id, flow_id):
+                return _plan_from_flow(
+                    deps,
+                    page_id,
+                    flow_id,
+                    spoken=_describe(deps.graph.page(page_id).name, flow_id),
+                )
+
+        if state.get("user_correction"):
+            query = _query_from_transcript(list(state.get("transcript") or []))
+            if query:
+                brain = _try_turn_brain(state, deps, utterance=query)
+                if brain is not None:
+                    return brain
+            return _plan_user_correction(state, deps)
+
+        phase = state.get("phase") or "walkthrough"
+        transcript = list(state.get("transcript") or [])
+        utterance = _query_from_transcript(transcript)
+
+        switched = _maybe_language_switch_ack(
+            state, deps, utterance=utterance, phase=phase
         )
-    if deps.scripted_flow is not None:
-        page_id, flow_id = deps.scripted_flow
-        if _flow_offerable(deps, page_id, flow_id):
-            return _plan_from_flow(
-                deps,
-                page_id,
-                flow_id,
-                spoken=_describe(deps.graph.page(page_id).name, flow_id),
+        if switched is not None:
+            return switched
+
+        if utterance and is_goodbye(utterance):
+            return CallState(
+                phase="ending",
+                plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
+                pending_calls=[],
+                narration=[WRAP_UP],
+                transcript=[f"agent: {WRAP_UP}"],
             )
 
-    if state.get("user_correction"):
-        query = _query_from_transcript(list(state.get("transcript") or []))
-        if query:
-            brain = _try_turn_brain(state, deps, utterance=query)
-            if brain is not None:
-                return brain
-        return _plan_user_correction(state, deps)
+        if utterance and is_exfil_request(utterance):
+            return CallState(
+                plan=Plan(spoken_response=REFUSE_SPOKEN, tool_calls=[]),
+                pending_calls=[],
+                narration=[REFUSE_SPOKEN],
+                transcript=[f"agent: {REFUSE_SPOKEN}"],
+                phase=phase,
+                walkthrough_step=state.get("walkthrough_step"),
+            )
 
-    phase = state.get("phase") or "walkthrough"
-    transcript = list(state.get("transcript") or [])
-    utterance = _query_from_transcript(transcript)
+        if phase == "ending":
+            return CallState(
+                plan=Plan(spoken_response="", tool_calls=[]),
+                pending_calls=[],
+                finished=True,
+            )
 
-    switched = _maybe_language_switch_ack(
-        state, deps, utterance=utterance, phase=phase
-    )
-    if switched is not None:
-        return switched
+        if phase == "anything_else":
+            return _plan_anything_else(state, deps, utterance=utterance, transcript=transcript)
 
-    if utterance and is_goodbye(utterance):
-        return CallState(
-            phase="ending",
-            plan=Plan(spoken_response=WRAP_UP, tool_calls=[]),
-            pending_calls=[],
-            narration=[WRAP_UP],
-            transcript=[f"agent: {WRAP_UP}"],
-        )
+        if phase == "awaiting_resume":
+            return _plan_awaiting_resume(
+                state, deps, utterance=utterance, transcript=transcript
+            )
 
-    if utterance and is_exfil_request(utterance):
-        return CallState(
-            plan=Plan(spoken_response=REFUSE_SPOKEN, tool_calls=[]),
-            pending_calls=[],
-            narration=[REFUSE_SPOKEN],
-            transcript=[f"agent: {REFUSE_SPOKEN}"],
-            phase=phase,
-            walkthrough_step=state.get("walkthrough_step"),
-        )
+        if phase == "detour":
+            if utterance and not _is_continue(utterance):
+                return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
+            return _plan_detour_next(state, deps)
 
-    if phase == "ending":
-        return CallState(
-            plan=Plan(spoken_response="", tool_calls=[]),
-            pending_calls=[],
-            finished=True,
-        )
-
-    if phase == "anything_else":
-        return _plan_anything_else(state, deps, utterance=utterance, transcript=transcript)
-
-    if phase == "awaiting_resume":
-        return _plan_awaiting_resume(
-            state, deps, utterance=utterance, transcript=transcript
-        )
-
-    if phase == "detour":
-        if utterance and not _is_continue(utterance):
+        # Clarifying-question follow-up must see "yes"/"ok" — those are also continue tokens.
+        if (state.get("awaiting_confirm_flow_id") or "").strip() and utterance:
             return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
-        return _plan_detour_next(state, deps)
 
-    # Clarifying-question follow-up must see "yes"/"ok" — those are also continue tokens.
-    if (state.get("awaiting_confirm_flow_id") or "").strip() and utterance:
-        return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
+        if utterance and not _is_continue(utterance):
+            if (
+                getattr(deps, "playlist_only", False)
+                and phase == "walkthrough"
+                and deps.live_agent is None
+            ):
+                if not is_goodbye(utterance):
+                    return _plan_walkthrough_next(state, deps)
+            return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
 
-    if utterance and not _is_continue(utterance):
-        if (
-            getattr(deps, "playlist_only", False)
-            and phase == "walkthrough"
-            and deps.live_agent is None
-        ):
-            if not is_goodbye(utterance):
-                return _plan_walkthrough_next(state, deps)
-        return _plan_interrupt(state, deps, utterance=utterance, transcript=transcript)
-
-    return _plan_walkthrough_next(state, deps)
+        return _plan_walkthrough_next(state, deps)
+    finally:
+        end_viewport_step()
 
 
 def _is_continue(utterance: str) -> bool:
@@ -829,17 +832,6 @@ def _decide_live_turn(
         deps.chroma_path if deps.chroma_path is not None else settings.chroma_path
     )
 
-    enriched = utterance
-    screen = _viewport_screen(deps, page_id, limit=400)
-    try:
-        from navigator.automation.browser.page_snapshot import attach_snapshot
-
-        screen = attach_snapshot(deps.page, screen, limit=400)
-    except Exception:  # noqa: BLE001
-        pass
-    if screen.strip():
-        enriched = f"{utterance} {screen}"
-
     try:
         ruled = route_turn(
             utterance=utterance,
@@ -850,7 +842,7 @@ def _decide_live_turn(
             flow_texts=flow_texts,
             chroma_path=chroma_path,
             retrieve=lambda q, *a, **kw: retrieve(
-                enriched if q == utterance else q,
+                q,
                 deps.product_id,
                 flow_texts=flow_texts,
                 available_flow_ids=list(flow_texts),

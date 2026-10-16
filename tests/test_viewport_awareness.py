@@ -212,6 +212,37 @@ def test_section_css_is_the_matched_heading():
     assert section.css == "#inbox-heading"
 
 
+def test_a_second_page_does_not_reuse_another_pages_reading():
+    """A step left open must not serve page A's reading to page B.
+
+    The cache used to key on ``id(page)``. CPython reuses that id after the
+    first page is freed, so a later scroll applied the wrong container.
+    """
+    begin_viewport_step()
+    try:
+        first = _Page(_raw())
+        measure_viewport(first, graph=_graph(), page_id="inbox")
+        freed = id(first)
+        del first
+        raw = _raw()
+        raw["measured"][1] = {
+            **raw["measured"][1],
+            "rawTop": 700,
+            "containerTop": 200,
+        }
+        second = None
+        for _ in range(64):
+            candidate = _Page(raw)
+            if id(candidate) == freed:
+                second = candidate
+                break
+        assert second is not None
+        bring_alias_into_view(second, _graph(), "inbox", "composer")
+        assert second.scrolls[0]["delta"] == 500
+    finally:
+        end_viewport_step()
+
+
 def test_viewport_is_read_once_per_step():
     page = _Page(_raw())
     begin_viewport_step()

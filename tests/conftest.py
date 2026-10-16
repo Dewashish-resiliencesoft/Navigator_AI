@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from uuid import uuid4
+
+# Before Navigator settings load: DemoRunner starts the sync loop at import.
+os.environ["NAVIGATOR_DEMO_SYNC_ENABLED"] = "0"
 
 import pytest
 
@@ -12,6 +16,15 @@ from navigator.voice.tts import PrintSpeaker
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SEED_GRAPH = Path(__file__).parent.parent / "navigator/knowledge/sites/whatsapp_crm.yaml"
+
+
+@pytest.fixture(autouse=True)
+def _disable_demo_sync(monkeypatch):
+    """Keep the demo-state sync loop from outliving the FastAPI test client."""
+    monkeypatch.setenv("NAVIGATOR_DEMO_SYNC_ENABLED", "0")
+    from navigator.core.settings import settings
+
+    monkeypatch.setattr(settings, "demo_sync_enabled", False)
 
 
 @pytest.fixture(autouse=True)

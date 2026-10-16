@@ -33,8 +33,16 @@ def test_multi_worker_visibility_and_stop(tmp_path, monkeypatch):
     monkeypatch.setattr("redis.Redis.from_url", fake_from_url)
     
     # Setup two runners simulating two workers
-    runner1 = DemoRunner(str(tmp_path / "db1.sqlite"), redis_url="redis://localhost/0")
-    runner2 = DemoRunner(str(tmp_path / "db2.sqlite"), redis_url="redis://localhost/0")
+    runner1 = DemoRunner(
+        str(tmp_path / "db1.sqlite"),
+        redis_url="redis://localhost/0",
+        sync_enabled=True,
+    )
+    runner2 = DemoRunner(
+        str(tmp_path / "db2.sqlite"),
+        redis_url="redis://localhost/0",
+        sync_enabled=True,
+    )
     
     # Start on runner 1
     graph = get_mock_graph()

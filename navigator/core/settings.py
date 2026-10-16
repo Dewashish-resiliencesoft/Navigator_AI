@@ -155,6 +155,9 @@ class Settings(BaseSettings):
     client_api_key: str = ""
     #: Redis URL for multi-worker demo state coordination (e.g. redis://localhost:6379/0).
     redis_url: str = ""
+    #: Background sync of in-process demo handles. Off in tests so the loop
+    #: does not outlive the FastAPI test client.
+    demo_sync_enabled: bool = True
     #: JWT secret for client dashboard auth
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
     #: Screenshare /view JPEG poll rate through the public tunnel.

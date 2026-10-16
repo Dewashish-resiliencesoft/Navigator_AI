@@ -1820,9 +1820,7 @@ def _plan_user_correction(state: CallState, deps: CallDeps) -> CallState:
             user_correction=False,
             phase=state.get("phase") or "walkthrough",
         )
-    spoken = (
-        "Thanks — I've noted that. Let's keep going with the demo."
-    )
+    spoken = "Thanks — I've noted that correction. Let's keep going with the demo."
     plan = Plan(spoken_response=spoken, tool_calls=[])
     return CallState(
         plan=plan,

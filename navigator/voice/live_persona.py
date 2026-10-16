@@ -52,13 +52,15 @@ def _style_rules(lang: SpokenLanguage, gender: str) -> str:
             "unless the person explicitly switches to English. Do NOT ask the person "
             "which language they prefer — Hindi is already configured. Mirror them if they "
             "switch: if they speak English mid-call, reply in English; if they return to "
-            "Hindi, return to Hindi immediately."
+            "Hindi, return to Hindi immediately. "
+            "Never refuse a language switch. You speak both English and Hindi."
         )
     else:
         bilingual = (
             "Your default language for this session is English. Start and continue in English "
             "unless the person explicitly switches to Hindi. If they switch language, mirror "
-            "them immediately. Never ask which language they prefer."
+            "them immediately. Never ask which language they prefer. "
+            "Never refuse a language switch. You speak both English and Hindi."
         )
     return (
         f"{voice} Refer to yourself in the first person using {person} verb forms "

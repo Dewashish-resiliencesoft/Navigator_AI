@@ -61,7 +61,7 @@ def test_listening_uses_audio_frames_and_injected_transcribe(
     # Without score injection Silero may be missing — patch VoiceSegmenter.
     from unittest.mock import patch
 
-    def fake_segments(self, frames_iter):
+    def fake_segments(self, frames_iter, on_partial=None, partial_after_ms=240):
         yield b"\x00\x01" * 100
 
     with patch(

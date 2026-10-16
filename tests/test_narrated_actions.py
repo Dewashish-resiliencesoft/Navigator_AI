@@ -17,16 +17,20 @@ pw = pytest.importorskip("playwright.sync_api")
 def browser():
     import asyncio
 
-    # an earlier test in the full suite leaks a 'running' loop marker; the sync
-    # Playwright API refuses to start under it (test-only reset)
+    # A leaked running-loop marker stops a fresh sync Playwright from starting.
+    # Put the previous marker back so the session browser can open contexts.
+    saved = asyncio.events._get_running_loop()
     asyncio.events._set_running_loop(None)
-    with pw.sync_playwright() as p:
-        try:
-            b = p.chromium.launch()
-        except Exception as exc:  # noqa: BLE001
-            pytest.skip(f"chromium unavailable: {exc}")
-        yield b
-        b.close()
+    try:
+        with pw.sync_playwright() as p:
+            try:
+                b = p.chromium.launch()
+            except Exception as exc:  # noqa: BLE001
+                pytest.skip(f"chromium unavailable: {exc}")
+            yield b
+            b.close()
+    finally:
+        asyncio.events._set_running_loop(saved)
 
 
 @pytest.fixture

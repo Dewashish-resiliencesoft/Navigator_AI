@@ -42,7 +42,13 @@ def test_filter_exempts_current_screen_and_ignores_sidebar_only():
 
 def _agent():
     a = LiveAgent.__new__(LiveAgent)
-    a.__dict__.update(_in_say=True, speaking=True, interrupted=False, _say_queued_at=time.monotonic() - 1)
+    a.__dict__.update(
+        _in_say=True,
+        speaking=True,
+        interrupted=False,
+        playback_phase="playing",
+        _say_queued_at=time.monotonic() - 1,
+    )
     a.hits = []
     a._confirm_barge_in = lambda reason="": a.hits.append(reason) or setattr(a, "interrupted", True)
     return a
@@ -59,7 +65,7 @@ def test_vad_stops_playback_on_sustained_voice_only():
 
 
 def test_vad_ignored_when_not_speaking_a_line():
-    a = _agent(); a._in_say = False; t = time.monotonic()
+    a = _agent(); a._in_say = False; a.speaking = False; t = time.monotonic()
     for k in range(10):
         a._vad_feed(3000, t + k * 0.1)
     assert a.hits == []

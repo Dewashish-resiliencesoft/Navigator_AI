@@ -178,7 +178,11 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
             return ""
         poll_barge_in_language_switch(deps)
         if deps.audio_frames is not None:
-            text = _from_audio(deps, silence_timeout=2.5)
+            try:
+                text = _from_audio(deps, silence_timeout=2.5)
+            except RuntimeError:
+                # Auto-advance must not stall when local VAD is not installed.
+                text = ""
             if text:
                 sync_heard_language(deps, text)
                 if detect_language_switch(text) is not None:

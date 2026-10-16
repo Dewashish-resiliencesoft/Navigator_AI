@@ -103,7 +103,11 @@ def test_require_live_settings_allows_empty_public_base_when_tunnel_bin_ok(
     monkeypatch.setattr(settings, "attendee_api_key", "tok")
     monkeypatch.setattr(settings, "meeting_platform", "zoom")
     monkeypatch.setattr(settings, "public_base_url", "")
-    monkeypatch.setattr(settings, "tunnel_bin", "cloudflared")
+    # A missing path, so this passes only because the stub says the binary is ok.
+    # _require_live_settings imports tunnel_binary_available inside the function
+    # (`from navigator.meeting.tunnel import ...`) at call time. That name is not
+    # bound on the live_demo module, so the lookup to patch is the tunnel module.
+    monkeypatch.setattr(settings, "tunnel_bin", "/no/such/cloudflared-binary")
     monkeypatch.setattr(
         "navigator.meeting.tunnel.tunnel_binary_available",
         lambda _binary="cloudflared": True,

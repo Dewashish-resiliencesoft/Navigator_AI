@@ -1,0 +1,4 @@
+# This-laptop overrides for the bundled Attendee fork
+# (vendor/attendee). A teammate fills the real compose content.
+# Do not put secrets in this file.
+services: {}

@@ -1,5 +1,5 @@
 # Canonical Attendee override for Navigator live demos.
-# Synced to ~/projects/attendee/local.docker-compose.yaml by scripts/sync-attendee-compose.sh
+# Synced to vendor/attendee/local.docker-compose.yaml by scripts/sync-attendee-compose.sh
 services:
   attendee-app-local:
     ports: !override

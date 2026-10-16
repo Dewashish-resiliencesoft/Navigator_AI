@@ -24,7 +24,7 @@ services:
     volumes:
       - navigator-data:/data
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${ATTENDEE_COMPOSE_DIR:-/home/akash-vaidya/projects/attendee}:/attendee
+      - ${ATTENDEE_COMPOSE_DIR:-./vendor/attendee}:/attendee
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: unless-stopped

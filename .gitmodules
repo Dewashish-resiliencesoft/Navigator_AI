@@ -1,0 +1,4 @@
+[submodule "vendor/attendee"]
+	path = vendor/attendee
+	url = https://github.com/Dewashish-resiliencesoft/attendee
+	branch = cursor/webpage-streamer-fps-70f1

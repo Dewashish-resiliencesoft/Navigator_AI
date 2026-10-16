@@ -8,6 +8,11 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def bundled_attendee_dir() -> Path:
+    """Attendee fork shipped with this repo (`vendor/attendee` submodule)."""
+    return Path(__file__).resolve().parents[2] / "vendor" / "attendee"
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -102,10 +107,10 @@ class Settings(BaseSettings):
     #: ``docker compose up -d`` local Attendee on Navigator startup when base URL
     #: is localhost and nothing answers yet. Off for cloud Attendee or pytest.
     attendee_autostart: bool = True
-    #: Attendee clone (separate repo). Override with NAVIGATOR_ATTENDEE_COMPOSE_DIR.
-    #: The webpage-streamer preflight also follows ATTENDEE_COMPOSE_DIR (the
-    #: variable the Attendee helper scripts already use) when this is unset.
-    attendee_compose_dir: Path = Path.home() / "projects" / "attendee"
+    #: Attendee fork. Defaults to the ``vendor/attendee`` submodule.
+    #: ``NAVIGATOR_ATTENDEE_COMPOSE_DIR`` overrides that. When this stays on
+    #: the default, ``ATTENDEE_COMPOSE_DIR`` does too.
+    attendee_compose_dir: Path = bundled_attendee_dir()
     #: Docker network whose gateway the local screenshare relay tries to bind.
     #: Stock ``docker compose`` project ``attendee`` creates
     #: ``attendee_attendee_network``. A checkout under another directory is

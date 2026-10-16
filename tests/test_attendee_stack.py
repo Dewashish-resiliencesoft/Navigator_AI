@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from navigator.core.settings import settings
+from navigator.core.settings import Settings, bundled_attendee_dir
 from navigator.meeting import attendee_stack
 
 
@@ -67,15 +68,34 @@ def test_ensure_skips_in_pytest(monkeypatch):
     docker.assert_not_called()
 
 
-def _force_stock_compose_dir(monkeypatch):
+def _force_default_compose_dir(monkeypatch):
     monkeypatch.delenv("NAVIGATOR_ATTENDEE_COMPOSE_DIR", raising=False)
-    monkeypatch.setattr(settings, "attendee_compose_dir", attendee_stack._stock_attendee_dir())
+    monkeypatch.delenv("ATTENDEE_COMPOSE_DIR", raising=False)
+    monkeypatch.setattr(settings, "attendee_compose_dir", bundled_attendee_dir())
+
+
+def test_attendee_compose_dir_defaults_to_vendor_submodule(monkeypatch):
+    _force_default_compose_dir(monkeypatch)
+    assert attendee_stack._compose_dir() == bundled_attendee_dir()
+    assert bundled_attendee_dir().name == "attendee"
+    assert bundled_attendee_dir().parent.name == "vendor"
 
 
 def test_compose_dir_follows_attendee_compose_dir(monkeypatch, tmp_path):
-    _force_stock_compose_dir(monkeypatch)
+    _force_default_compose_dir(monkeypatch)
     monkeypatch.setenv("ATTENDEE_COMPOSE_DIR", str(tmp_path))
     assert attendee_stack._compose_dir() == tmp_path
+
+
+def test_explicit_settings_compose_dir_beats_attendee_compose_dir(monkeypatch, tmp_path):
+    monkeypatch.delenv("NAVIGATOR_ATTENDEE_COMPOSE_DIR", raising=False)
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    other = tmp_path / "from-env"
+    other.mkdir()
+    monkeypatch.setattr(settings, "attendee_compose_dir", explicit)
+    monkeypatch.setenv("ATTENDEE_COMPOSE_DIR", str(other))
+    assert attendee_stack._compose_dir() == explicit
 
 
 def test_navigator_compose_dir_wins_over_attendee_compose_dir(monkeypatch, tmp_path):
@@ -86,8 +106,15 @@ def test_navigator_compose_dir_wins_over_attendee_compose_dir(monkeypatch, tmp_p
     assert attendee_stack._compose_dir() == tmp_path
 
 
+def test_settings_default_compose_dir_is_the_vendor_submodule(monkeypatch):
+    monkeypatch.delenv("NAVIGATOR_ATTENDEE_COMPOSE_DIR", raising=False)
+    monkeypatch.delenv("ATTENDEE_COMPOSE_DIR", raising=False)
+    fresh = Settings(_env_file=None)
+    assert fresh.attendee_compose_dir == bundled_attendee_dir()
+
+
 def test_webpage_streamer_cwd_follows_attendee_compose_dir(monkeypatch, tmp_path):
-    _force_stock_compose_dir(monkeypatch)
+    _force_default_compose_dir(monkeypatch)
     monkeypatch.setenv("ATTENDEE_COMPOSE_DIR", str(tmp_path))
     monkeypatch.setattr(attendee_stack, "_in_pytest", lambda: False)
     seen: dict = {}

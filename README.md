@@ -43,6 +43,29 @@ brand.
 20. [Docs pipeline (Fern)](#20-docs-pipeline-fern)
 21. [Costs & licensing](#21-costs--licensing)
 
+[New laptop setup](#new-laptop-setup)
+
+---
+
+## New laptop setup
+
+One clone of this repo, including the Attendee fork at `vendor/attendee`, stands up a laptop.
+
+```bash
+git clone --recurse-submodules -b agent_voice_engine- \
+  https://github.com/Dewashish-resiliencesoft/Navigator_AI.git
+cd Navigator_AI
+uv sync --all-extras
+./scripts/attendee_init_env.sh
+./scripts/attendee_up.sh
+```
+
+`attendee_init_env.sh` writes `vendor/attendee/.env` (gitignored). `attendee_up.sh` starts the stack with the webpage-streamer profile.
+
+Create an API key in the Attendee UI at `http://localhost:8002` and put it in Navigator's private `.env` as `NAVIGATOR_ATTENDEE_API_KEY`. Set `NAVIGATOR_RELAY_PUBLIC_HOST` to this laptop's LAN IP so Attendee containers can reach the screenshare relay. Copy a teammate's Navigator `.env` privately and never commit it.
+
+If `vendor/attendee` is empty after clone, run `git submodule update --init --recursive`.
+
 ---
 
 ## 1. What it does
@@ -167,6 +190,8 @@ Code is organized **by feature** under `navigator/` (not by layer dumps):
 | `navigator/docs/` | Docs generator (HTML + Fern) from live code |
 | `sdk/` | `@navigator/sdk` — authoring DSL + CLI |
 | `scripts/` | Attendee sync, Zoom bootstrap, docker helpers |
+| `vendor/attendee` | Attendee fork (git submodule) |
+| `deploy/attendee/` | Laptop compose overrides for that fork |
 | `docker/` | Compose overrides (e.g. Attendee voice agents) |
 | `fern/` | Generated Fern project — **do not hand-edit** |
 | `tests/` | pytest |
@@ -242,38 +267,10 @@ Set `NAVIGATOR_TUNNEL_BIN=cloudflared` (or an absolute path to the binary).
 
 ### 7.3 Attendee (required for live demos)
 
-Attendee is a **separate** repo — not vendored here.
-
-```bash
-git clone https://github.com/attendee-labs/attendee ~/projects/attendee
-cd ~/projects/attendee
-python3 init_env.py > .env
-# Edit: POSTGRES_SSL_REQUIRE=false, DISABLE_EMAIL=true, SITE_DOMAIN=localhost:8002
-# ALLOWED_HOSTS=*   (or include localhost,127.0.0.1)
-# CHARGE_CREDITS_FOR_BOTS=false
-# LAUNCH_BOT_METHOD must NOT be kubernetes for local compose screenshare
-```
-
-Sync Navigator’s voice-agent compose override, then bring the stack up:
-
-```bash
-cd /path/to/Navigator_AI
-./scripts/sync-attendee-compose.sh
-
-cd ~/projects/attendee
-docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml \
-  --profile webpage-streamer up -d --build
-# First build is slow (tens of minutes).
-
-docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml \
-  exec -T attendee-app-local python manage.py migrate --noinput
-
-# Bootstrap org + API key (prints NAVIGATOR_ATTENDEE_API_KEY=... once):
-docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml \
-  exec -T attendee-app-local bash -c 'python manage.py shell < bootstrap_local.py'
-```
-
-Paste the key into Navigator `.env` as `NAVIGATOR_ATTENDEE_API_KEY`.
+The Attendee fork ships in this repo as `vendor/attendee`. Follow
+[New laptop setup](#new-laptop-setup): `./scripts/attendee_init_env.sh`, then
+`./scripts/attendee_up.sh`. Create an API key in the Attendee UI and paste it
+into Navigator `.env` as `NAVIGATOR_ATTENDEE_API_KEY`.
 
 Optional Zoom path:
 
@@ -282,7 +279,7 @@ cd /path/to/Navigator_AI
 ./scripts/sync-attendee-zoom-credentials.sh
 ```
 
-Point Navigator at the clone if it is not `~/projects/attendee`:
+Point Navigator at a different checkout when it is not `vendor/attendee`:
 
 ```bash
 NAVIGATOR_ATTENDEE_COMPOSE_DIR=/absolute/path/to/attendee
@@ -379,12 +376,8 @@ Watch logs for:
 # Tests
 .venv/bin/python -m pytest -q
 
-# Attendee manual
-cd ~/projects/attendee
-alias adc='docker compose -f dev.docker-compose.yaml -f local.docker-compose.yaml'
-adc --profile webpage-streamer up -d
-adc --profile webpage-streamer ps
-adc logs -f attendee-worker-local
+# Attendee (vendored fork)
+./scripts/attendee_up.sh
 
 # Docs regen (after API changes)
 .venv/bin/python -m navigator.docs build
@@ -494,7 +487,7 @@ server still validates via `parse_site_graph`.
 ## 12. Self-hosting Attendee
 
 Cloud Attendee (`app.attendee.dev`) is paid; **self-host is free** and full
-featured. Clone `attendee-labs/attendee` **outside** this repo.
+featured. The fork used here is the `vendor/attendee` submodule.
 
 ```bash
 sudo apt-get install -y docker.io docker-compose-v2
@@ -515,7 +508,7 @@ Navigator.
 Navigator may autostart this stack when
 `NAVIGATOR_ATTENDEE_BASE_URL` is localhost and `NAVIGATOR_ATTENDEE_AUTOSTART=1`.
 The webpage-streamer preflight uses `NAVIGATOR_ATTENDEE_COMPOSE_DIR`, then
-`ATTENDEE_COMPOSE_DIR`, then `~/projects/attendee`.
+`ATTENDEE_COMPOSE_DIR`, then `vendor/attendee`.
 
 ### Rootless Docker (local screenshare)
 
@@ -784,7 +777,7 @@ Navigator   http://127.0.0.1:8000/client     workers=1
 API docs    http://127.0.0.1:8000/docs
 Attendee    http://localhost:8002            + streamer :8001
 Product law docs/PRODUCT_MODEL.md
-Compose     ~/projects/attendee  (or NAVIGATOR_ATTENDEE_COMPOSE_DIR)
+Compose     vendor/attendee  (or NAVIGATOR_ATTENDEE_COMPOSE_DIR)
 Tunnel      cloudflared on PATH
 ```
 

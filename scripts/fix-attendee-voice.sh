@@ -2,7 +2,7 @@
 # One-shot: enable Attendee voice agents and recreate containers.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ATTENDEE="${ATTENDEE_COMPOSE_DIR:-$HOME/projects/attendee}"
+ATTENDEE="${ATTENDEE_COMPOSE_DIR:-$ROOT/vendor/attendee}"
 
 "$ROOT/scripts/sync-attendee-compose.sh"
 

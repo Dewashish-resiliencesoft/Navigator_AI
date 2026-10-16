@@ -132,7 +132,7 @@ def execute_action(
 
         return (
             None,
-            ToolResult(ok=False, tool=action.tool, detail="could not resolve semantic target"),
+            ToolResult(ok=False, tool=action.tool, detail="could not resolve semantic target", duration_ms=0),
             page_id,
             None,
         )

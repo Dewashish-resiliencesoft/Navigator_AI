@@ -164,6 +164,11 @@ def _fallback_answer(state: CallState, deps: CallDeps) -> str:
                     utter,
                 )
                 text = " ".join((text or "").split())
+                from navigator.voice.live_agent import is_echo_of_heard
+
+                if is_echo_of_heard(text, [utter]):
+                    print("[graph] fallback reply just echoed the attendee — using a canned line", flush=True)
+                    text = ""
                 if text and len(text) < 400:
                     return text
         except Exception as exc:  # noqa: BLE001

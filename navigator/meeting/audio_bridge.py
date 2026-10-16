@@ -125,10 +125,31 @@ def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
     return np.clip(y, -32768, 32767).astype(np.int16).tobytes()
 
 
+ACTIVE: "AudioBridge | None" = None  # the meeting's bridge (for "fully heard" waits)
+
+
+def wait_heard(cap_s: float = 30.0, player_latency_s: float = 0.35) -> float:
+    """Block until everything sent to the meeting has been played out (plus the
+    Attendee player's own latency). Returns seconds waited."""
+    b = ACTIVE
+    t0 = time.monotonic()
+    if b is None:
+        return 0.0
+    while time.monotonic() - t0 < cap_s:
+        end = float(getattr(b, "out_play_end", 0.0) or 0.0) + player_latency_s
+        q = getattr(b, "_outbound", None)
+        if time.monotonic() >= end and (q is None or q.empty()):
+            break
+        time.sleep(0.05)
+    return time.monotonic() - t0
+
+
 class AudioBridge:
     """Receives Attendee realtime_audio chunks into ``inbound`` queue."""
 
     def __init__(self, host: str = "127.0.0.1", port: int = 0) -> None:
+        global ACTIVE
+        ACTIVE = self
         self.host = host
         self.port = port
         self.inbound: Queue[bytes] = Queue()
@@ -232,11 +253,16 @@ class AudioBridge:
         rx = getattr(self, "_line_rx_s", 0.0)
         elapsed = max(1e-3, now - getattr(self, "_line_t0", now))
         est = getattr(self, "_line_est_s", 6.0)
-        r = rx / elapsed if elapsed >= 0.35 else 1.5  # audio seconds per wall second
+        extra = float(getattr(self, "jitter_extra_s", 0.0) or 0.0)
+        if elapsed < 0.35:
+            # Rate unknown yet: Live's first chunks are bursty; starting on 250ms
+            # gave a 444ms underrun at the start of answers (13:23 run).
+            return 0.45 + extra
+        r = rx / elapsed  # audio seconds per wall second
         remaining = max(0.0, est - rx)
         if r >= 1.05:
-            return 0.25
-        return min(5.0, max(0.25, remaining * (1.0 - r) + 0.35))
+            return 0.25 + extra
+        return min(5.0, max(0.25, remaining * (1.0 - r) + 0.35) + extra)
 
     def mark_line_end(self) -> None:
         """Model finished a line. The silence before the next line's first chunk
@@ -245,6 +271,9 @@ class AudioBridge:
         self._tap_play_end = 0.0
         self._line_open = False
         self._line_ended = True
+        if not getattr(self, "_line_underran", False):  # clean line: shrink back slowly
+            self.jitter_extra_s = max(0.0, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) - 0.05)
+        self._line_underran = False
 
     def _tap_pcm(self, pcm: bytes, rate: int) -> None:
         """Underrun detector + optional WAV tap (NAVIGATOR_VOICE_WAV=/tmp/x.wav)."""
@@ -256,6 +285,9 @@ class AudioBridge:
             # Gemini chunk arrived after the previous audio already ran out.
             self.arrival_gaps = getattr(self, "arrival_gaps", 0) + 1
         self._tap_play_end = max(now, play_end) + len(pcm) / (2.0 * rate)
+        # Same estimate, but NOT reset at line end: when the meeting stops
+        # hearing everything sent so far (Q&A answers included).
+        self.out_play_end = max(now, getattr(self, "out_play_end", 0.0)) + len(pcm) / (2.0 * rate)
         path = os.environ.get("NAVIGATOR_VOICE_WAV")
         if not path:
             return
@@ -298,6 +330,7 @@ class AudioBridge:
         """
         dropped = self.clear_outbound()
         self._out_epoch += 1
+        self.out_play_end = time.monotonic()
         self._send_json({"trigger": "realtime_audio.bot_output_clear", "data": {}})
         print(f"[audio] bot output flushed (dropped {dropped} chunk(s))", flush=True)
 
@@ -378,6 +411,7 @@ class AudioBridge:
                 buf.clear()
                 buf_rate = 0
                 epoch = self._out_epoch
+                play_end = 0.0  # flushed audio never plays
             try:
                 pcm, rate = self._outbound.get(timeout=0.02)
                 if buf_rate and rate != buf_rate:
@@ -392,6 +426,10 @@ class AudioBridge:
                 continue
             now = time.monotonic()
             buffered = len(buf) / (2.0 * buf_rate)
+            # Real play-out end includes audio still held in the prebuffer: the
+            # push-time estimate ignored a 4.4s hold, so the flow clicked Login
+            # while 'this is the landing page' was still to be heard (17:38 run).
+            self.out_play_end = max(getattr(self, "out_play_end", 0.0), max(play_end, now) + buffered)
             holding = getattr(self, "_line_holding", False)
             if holding:
                 ended = getattr(self, "_line_ended", False) or not getattr(self, "_line_open", False)
@@ -402,7 +440,7 @@ class AudioBridge:
                 idle_rx = now - getattr(self, "_line_last_rx", now)
                 held = now - self._hold_since
                 if ended or buffered + ahead >= need or idle_rx > 0.4 or held > min(6.0, need + 1.0):
-                    if need > 0.3:
+                    if need > 0.6:  # 0.45 is the normal line-start prebuffer, not "slow"
                         print(f"[voice-out] prebuffer {buffered * 1000:.0f}ms (need {need * 1000:.0f}ms, "
                               f"slow generation) — starting", flush=True)
                     self._line_holding = False
@@ -432,10 +470,16 @@ class AudioBridge:
         if play_end and now > play_end + 0.02 and mid_line:
             self.underruns = getattr(self, "underruns", 0) + 1
             self.underrun_ms = getattr(self, "underrun_ms", 0.0) + (now - play_end) * 1000
-            print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns}", flush=True)
+            # Adaptive jitter buffer: grows only after real mid-line underruns.
+            self.jitter_extra_s = min(0.6, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) + 0.15)
+            self._line_underran = True
+            print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns} "
+                  f"jitter+={self.jitter_extra_s * 1000:.0f}ms", flush=True)
         self._line_sent_any = True
         self._send_pcm(pcm, rate)
-        return max(now, play_end) + len(pcm) / (2.0 * rate)
+        end = max(now, play_end) + len(pcm) / (2.0 * rate)
+        self.out_play_end = max(getattr(self, "out_play_end", 0.0), end)
+        return end
 
     def frames(self, *, timeout_s: float | None = None) -> Iterator[bytes]:
         while not self._stop.is_set():

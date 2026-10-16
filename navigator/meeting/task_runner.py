@@ -26,6 +26,31 @@ OPEN_VERBS = re.compile(r"\b(create|add|new|\+)\b", re.I)
 SINGLE_HINT = re.compile(r"\b(manual|single|one|add a|individual|form)\b", re.I)
 BULK_HINT = re.compile(r"\b(bulk|import|csv|upload|batch|file)\b", re.I)
 
+#: What the prospect actually said (Live transcripts). do_task 'do' may only type
+#: values that appear here: 15:15 audit Live invented "John / 1234567890".
+HEARD: list[str] = []
+
+
+def unspoken_values(vals: dict[str, str], heard: list[str]) -> list[str]:
+    """Keys whose value the prospect never said (digits compared without spaces)."""
+    said = " ".join(heard or []).lower()
+    said_digits = re.sub(r"\D", "", said)
+    bad = []
+    for k, v in (vals or {}).items():
+        v = str(v or "").strip()
+        if not v:
+            continue
+        d = re.sub(r"\D", "", v)
+        if len(d) >= 5:
+            ok = d[-8:] in said_digits
+        else:
+            toks = [t for t in re.findall(r"\w+", v.lower()) if len(t) > 1]
+            ok = bool(toks) and all(t in said for t in toks)
+        if not ok:
+            bad.append(k)
+    return bad
+
+
 #: The form a do_task filled and is waiting to submit (one at a time per demo).
 PENDING: dict[str, Any] = {}
 
@@ -207,6 +232,19 @@ def _click_text(page, text: str, *, in_dialog: bool = False):
     return None if in_dialog else _find_main(page, text)
 
 
+def _goal_control_here(page, words: set[str]) -> bool:
+    nouns = [w for w in words if len(w) > 3 and w not in {"create", "make", "new", "show", "open", "how"}]
+    for n in nouns:
+        try:
+            loc = page.get_by_role("button", name=re.compile(rf"\b{re.escape(n)}", re.I))
+            for i in range(min(loc.count(), 4)):
+                if loc.nth(i).is_visible() and OPEN_VERBS.search(loc.nth(i).inner_text() or ""):
+                    return True
+        except Exception:  # noqa: BLE001
+            continue
+    return False
+
+
 def _navigate_for(page, goal: str, push_frame) -> str:
     """Go to the screen the goal is about (nav inventory; LLM picks if needed)."""
     from urllib.parse import urljoin
@@ -217,6 +255,10 @@ def _navigate_for(page, goal: str, push_frame) -> str:
     if not inv:
         return ""
     words = _goal_words(goal)
+    if _goal_control_here(page, words):
+        # Already on the right screen (its own 'Create Contact' button is visible):
+        # skip the menu LLM pick, which cost 11s on /phonebook in the 13:57 audit.
+        return ""
     best = max(inv, key=lambda r: _score(r.get("label", "") + " " + r.get("href", "").replace("-", " "), words))
     if _score(best.get("label", "") + " " + best["href"].replace("-", " "), words) < 2:
         try:
@@ -413,9 +455,13 @@ def do_task(page, goal: str, details: Any = "", mode: str = "explain", confirmed
     url0 = page.url
     href = ""
     form = discover(page)
+    t_disc = time.monotonic() - t0
     if not (form["in_dialog"] and form["fields"]):
         href = _navigate_for(page, goal, push_frame)
+    t_nav = time.monotonic() - t0
     opened = _open_form(page, goal, push_frame) if mode in ("explain", "do") else []
+    print(f"[task] timing discover={t_disc:.1f}s navigate={t_nav - t_disc:.1f}s "
+          f"open_form={time.monotonic() - t0 - t_nav:.1f}s opened={opened!r}", flush=True)
     if opened:
         page.wait_for_timeout(800)  # let a freshly opened form finish mounting
     form = discover(page)
@@ -434,6 +480,15 @@ def do_task(page, goal: str, details: Any = "", mode: str = "explain", confirmed
         out["say_hint"] = "Explain each field in order as it lights up; do not submit."
         return out
     vals = parse_details(details)
+    invented = unspoken_values(vals, HEARD) if HEARD is not None else []
+    if invented:
+        print(f"[task] refusing invented details for {invented} (not said by the prospect)", flush=True)
+        vals = {k: v for k, v in vals.items() if k not in invented}
+    if not vals:
+        out.update(ok=False, status="need_details", missing=[f["label"].rstrip(" *") for f in fields if f["required"]],
+                   say_hint="The form is open on screen. Ask the prospect for the details to type "
+                            "(e.g. name and mobile). Never invent values.")
+        return out
     try:
         from navigator.knowledge.flow_authoring import default_llm
 

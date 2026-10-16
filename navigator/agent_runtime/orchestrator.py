@@ -204,6 +204,13 @@ class AgentOrchestrator:
 
         In both cases at most ONE worker thread exists at any time.
         """
+        if live_screen_tools_active():
+            # 13:24 run: this worker drove the page from its own thread while Live's
+            # do_task ran on the screen thread -> greenlet "cannot switch thread",
+            # do_task ok=False after 22s and later clicks timing out. Live's screen
+            # tools own the page during a Live demo.
+            print(f"[agent-runtime] skip goal {goal[:60]!r}: Live screen tools own the page", flush=True)
+            return
         with self._goal_lock:
             self._pending_goal = goal
 
@@ -497,3 +504,20 @@ class AgentOrchestrator:
             payload=payload or {},
         )
         self.events.emit(event)
+
+
+def live_screen_tools_active() -> bool:
+    try:
+        from navigator.meeting import ui_jobs
+
+        if ui_jobs.ACTIVE_SCREENS:
+            return True
+        cur = ui_jobs.CURRENT
+        if cur is None or getattr(cur, "page", None) is None:
+            return False
+        import threading
+
+        owner = getattr(cur, "owner", None)
+        return any(t.ident == owner and t.is_alive() for t in threading.enumerate())
+    except Exception:  # noqa: BLE001
+        return False

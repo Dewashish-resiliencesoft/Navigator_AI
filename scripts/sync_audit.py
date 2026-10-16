@@ -30,6 +30,7 @@ from navigator.voice.live_agent import LiveAgent, LiveAgentConfig
 graph = _registry.load_graph(A.product, A.rev)
 meta = getattr(graph, "meta", None) or {}
 ui_jobs.NAV_INVENTORY = meta.get("nav_inventory") or []
+ui_jobs.SCREEN_MAP = ui_jobs.build_screen_map(graph)
 NAV_LABELS = sorted({str(e.get("label") or "").strip() for e in ui_jobs.NAV_INVENTORY
                      if 3 <= len(str(e.get("label") or "").strip()) <= 30}, key=len, reverse=True)
 steps = list(graph.pages[A.page].flows[A.flow])
@@ -50,6 +51,8 @@ class Bridge:   # fake meeting output: arrival-timed playback clock
             EV.append(("audio_start", now, None))
             s.play_end = now
         s.play_end += d; s.audio_s_sent += d
+    @property
+    def out_play_end(s): return s.play_end
     def clear_outbound(s): s.play_end = time.monotonic(); return 0
     def flush_bot_output(s): pass
     def mark_line_end(s): pass
@@ -63,6 +66,7 @@ def synth(text):
     return resample_pcm16(bytes(c.buf), 24000, 16000)
 
 bridge = Bridge()
+from navigator.meeting import audio_bridge as _ab; _ab.ACTIVE = bridge
 SPEECH = queue.Queue()
 def feeder():
     while True:
@@ -77,7 +81,11 @@ QS = {}
 if A.questions:
     QS = {2: synth("Sorry, quick question. Does this dashboard update in real time?"),
           3: synth("Can you open the first chat in the inbox for me?"),
-          6: synth("Can you show me how to add a new contact here?")}
+          4: synth("Wait, sorry, does this also work on mobile?"),
+          5: synth("Can you open Local Seats?"),
+          6: synth("Can you show me how to add a new contact here?"),
+          9: synth("You create one."),
+          11: synth("First open the phone book and create a contact step by step. Show me the screen.")}
 
 ROWS = []
 def sentences(t): return [x for x in re.split(r"(?<=[.!?\u0964])\s+", (t or "").strip()) if x.strip()]
@@ -87,7 +95,7 @@ with sync_playwright() as p:
     b = p.chromium.launch(); ctx = b.new_context(viewport={"width": 1280, "height": 720}); page = ctx.new_page()
     jobs = ui_jobs.UiJobs(); jobs.bind(page)
     live = LiveAgent(LiveAgentConfig(
-        api_key=keys[0], language="en",
+        api_key=keys[0], language="en", fallback_keys=list(keys[1:]),
         system_instruction="You are Navigator, presenting a live product demo over Zoom. Read scripted lines when asked. Answer the prospect briefly." + ui_jobs.LIVE_TOOL_INSTRUCTION,
         tool_handler=jobs.handle_tool, tool_declarations=ui_jobs.TOOL_DECLARATIONS, ui_pump=jobs.pump,
         on_event=lambda e: e.kind == "heard" and log("heard:", e.text)), bridge)

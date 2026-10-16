@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
 
 from navigator.agent.demo_trace import emit_demo_trace, emit_sync_trace
 from navigator.agent.live_input import needs_live_input, resolve_demo_fill
@@ -118,7 +119,16 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
         name = deps.graph.page(page_id).name
     except Exception:  # noqa: BLE001
         return
-    live.add_context(f"The screen now shows: {name}.")
+    try:
+        from urllib.parse import urlparse
+
+        live.screen_hint = f"{name} ({urlparse(deps.page.url or '').path})"
+    except Exception:  # noqa: BLE001
+        live.screen_hint = name
+    # No add_context here: every context message made Live start a reply turn
+    # ('[Context: current page History]', 18:33 run) that collided with the
+    # next scripted line -> 10s silence + reconnect. screen_hint rides along
+    # with the next prompt instead.
 
 
 def executing(state: CallState, deps: CallDeps) -> CallState:
@@ -190,6 +200,9 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
     prior = state.get("pre_action_speech")
     if prior is not None and hasattr(prior, "wait"):
         prior.wait(timeout=120.0)
+        _step_log(state, deps, "completed(prev)")
+    _step_log(state, deps, "pending", tool=getattr(call, "tool", ""),
+              intended=expected_path(getattr(deps, "graph", None), call) or getattr(call, "selector", ""))
     _return_from_detour(deps, call)
     _restore_step_screen(deps, call)
     ran_on = state["page_id"]
@@ -218,6 +231,7 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             action_started_ns=action_started_ns,
         )
     skip_narration = False
+    _step_log(state, deps, "executing")
     if _is_login_call(call) and LOGIN_CREDS and not isinstance(call, FillField) \
             and _visible_password(deps.page):
         # The flow walks the real login: sign in visibly (password masked).
@@ -274,7 +288,9 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         result = result.model_copy(
             update={"detail": f"filled {call.selector} from vault"}
         )
-    _verify_step_screen(deps, call)
+    screen_ok = _verify_step_screen(deps, call)
+    _step_log(state, deps, "verified" if (result.ok and screen_ok is not False) else "failed",
+              detail="" if result.ok else str(result.detail)[:120])
     _sync_screen_to_narration(state, deps, call)
     if deps.push_frame is not None:
         deps.push_frame()
@@ -292,6 +308,10 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         print("[exec] login step skipped — its narration is skipped too", flush=True)
         speech_handle = None
     else:
+        if result.ok and not _is_login_call(call):
+            state = _run_narrated_actions(state, deps, call)
+        state = _drop_unseen_mentions(state, deps)
+        _step_log(state, deps, "narrating")
         speech_handle, _ = _start_pre_action_speech(state, deps)
         _component_tour(state, deps, call, speech_handle)
 
@@ -616,18 +636,33 @@ def _return_from_detour(deps: CallDeps, call) -> None:
         from navigator.meeting import task_runner, ui_jobs
 
         if not ui_jobs.DETOUR_FROM:
+            if getattr(call, "tool", "") == "navigate":
+                _close_leftover_dialog(deps.page)
             return
         back = ui_jobs.DETOUR_FROM.pop()
         ui_jobs.DETOUR_FROM.clear()
         ui_jobs.DEFERRED_TOURS.clear()
         task_runner.PENDING.clear()
         page = deps.page
-        if page is None or getattr(call, "tool", "") == "navigate" or not back:
+        if page is None:
             return
         try:
-            page.keyboard.press("Escape")  # close a form the detour left open
+            # close a form the detour left open — also before a navigate step:
+            # navigating to the SAME url keeps the modal (12:06 audit step 7)
+            page.keyboard.press("Escape")
         except Exception:  # noqa: BLE001
             pass
+        if getattr(call, "tool", "") == "navigate":
+            try:
+                dlg = page.locator("[role=dialog],[aria-modal=true],dialog[open]")
+                if dlg.count() and dlg.last.is_visible():
+                    page.reload(wait_until="domcontentloaded", timeout=15000)
+                    print("[exec] detour left a dialog open — reloaded before the scripted step", flush=True)
+            except Exception:  # noqa: BLE001
+                pass
+            return
+        if not back:
+            return
         if (page.url or "") != back:
             page.goto(back, wait_until="domcontentloaded", timeout=15000)
             page.wait_for_timeout(500)
@@ -789,6 +824,14 @@ def _speak_blocking(deps, text: str) -> None:
         deps.speaker.say(text)
     except Exception as exc:  # noqa: BLE001
         print(f"[sync] pre-action line failed: {exc}", flush=True)
+    try:  # act only after the line was fully HEARD (held prebuffer + player latency)
+        from navigator.meeting import audio_bridge as _ab
+
+        waited = _ab.wait_heard()
+        if waited > 0.2:
+            print(f"[sync] waited {waited:.2f}s for the line to finish playing before acting", flush=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _note_step_screen(deps) -> None:
@@ -841,10 +884,133 @@ def _verify_step_screen(deps, call) -> None:
     for attempt in range(2):
         cur = (urlparse(page.url or "").path or "/").rstrip("/") or "/"
         if cur == want or cur.startswith(want + "/"):
-            return
+            return True
         print(f"[sync] step screen mismatch: on {cur}, expected {want} — re-navigating", flush=True)
         try:
             page.goto(urljoin(deps.graph.base_url, want if want == "/" else want + "/"), wait_until="domcontentloaded", timeout=15000)
             page.wait_for_timeout(500)
         except Exception as exc:  # noqa: BLE001
             print(f"[sync] re-navigate failed: {exc}", flush=True)
+    cur = (urlparse(page.url or "").path or "/").rstrip("/") or "/"
+    return cur == want or cur.startswith(want + "/")
+
+
+def _step_log(state, deps, phase: str, **kv) -> None:
+    """One line per step lifecycle phase: pending -> executing -> verified|failed
+    -> narrating -> completed. URL path only (no query/fragment, no chat text)."""
+    try:
+        from urllib.parse import urlparse
+
+        url = urlparse(getattr(getattr(deps, "page", None), "url", "") or "").path or "-"
+    except Exception:  # noqa: BLE001
+        url = "-"
+    step = state.get("executing_step", state.get("walkthrough_step"))
+    extra = " ".join(f"{k}={v!r}" for k, v in kv.items() if v not in (None, ""))
+    print(f"[step] id={step} phase={phase} screen={url} t={time.monotonic():.2f}{' ' + extra if extra else ''}", flush=True)
+
+
+def _run_narrated_actions(state, deps, call):
+    """The line says it clicks/opens something: do it (verified) while narrating.
+    Returns state with the narration reduced to what is left to say."""
+    lines = list(state.get("narration") or [])
+    page = getattr(deps, "page", None)
+    if not lines or page is None:
+        return state
+    try:
+        from navigator.agent import narrated_actions as na
+        from navigator.agent.utterance import item_text
+
+        text = item_text(lines[0])
+        rest, results = na.run_line(
+            page, text, speak=lambda t: _speak_blocking(deps, t),
+            step=state.get("executing_step"), push_frame=deps.push_frame,
+            # only what THIS step clicks; a highlight is not a click (step 7
+            # "we click Create Contact" was skipped as if done)
+            skip_targets=[] if getattr(call, "tool", "") == "navigate" else _target_words(
+                {"executing_step": None}, SimpleNamespace(graph=None), call))
+        if not results:
+            return state
+        state = dict(state)
+        state["narration"] = ([rest] if rest.strip() else []) + lines[1:]
+        if deps.push_frame is not None:
+            deps.push_frame()
+        return state
+    except Exception as exc:  # noqa: BLE001
+        print(f"[step] narrated actions skipped: {exc}", flush=True)
+        return state
+
+
+def _close_leftover_dialog(page) -> None:
+    """A Q&A do_task (explain mode sets no DETOUR_FROM) or a narrated click left
+    a modal open; a navigate step to the SAME url keeps it (12:26 audit step 7:
+    'Create Contact' hidden behind the leftover form). Escape, else reload."""
+    if page is None:
+        return
+    try:
+        dlg = page.locator("[role=dialog],[aria-modal=true],dialog[open]")
+        if not (dlg.count() and dlg.last.is_visible()):
+            return
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(250)
+        if dlg.count() and dlg.last.is_visible():
+            page.reload(wait_until="domcontentloaded", timeout=15000)
+        print("[exec] closed a dialog left open before the scripted step", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[exec] dialog cleanup skipped: {exc}", flush=True)
+
+
+def unseen_mention_filter(text: str, labels: list[str], page_text: str,
+                          path: str = "") -> tuple[str, list[str]]:
+    """Drop sentences that name a product control/menu that is not on this
+    screen at all (14:54: Shopify Connect on the WordPress page; 'Tutorials' on
+    Phonebook). Uses the live DOM text, so it holds for every step at runtime."""
+    import re
+
+    low = " ".join((page_text or "").lower().split())
+    p = re.sub(r"[^a-z0-9]+", " ", (path or "").lower())
+
+    def here(lab: str) -> bool:
+        # the screen we are on: '/wordpress-connect/' is "WordPress Connect" even
+        # when its heading splits the words (16:20 run dropped it wrongly)
+        words = re.findall(r"[a-z0-9]+", lab.lower())
+        return bool(words) and all(w in p.split() for w in words)
+
+    keep, dropped = [], []
+    for sn in _sentences(text):
+        miss = next((lab for lab in labels if re.search(r"\b" + re.escape(lab) + r"\b", sn)
+                     and " ".join(lab.lower().split()) not in low and not here(lab)), None)
+        (dropped if miss else keep).append(miss if miss else sn)
+    return " ".join(keep), dropped
+
+
+def _drop_unseen_mentions(state, deps):
+    lines = list(state.get("narration") or [])
+    page = getattr(deps, "page", None)
+    if not lines or page is None:
+        return state
+    try:
+        from navigator.agent.utterance import item_text
+        from navigator.meeting import ui_jobs
+
+        labels = sorted({str(e.get("label") or "").strip() for e in (ui_jobs.NAV_INVENTORY or [])
+                         if 3 <= len(str(e.get("label") or "").strip()) <= 30}, key=len, reverse=True)
+        if not labels:
+            return state
+        text = item_text(lines[0])
+        from urllib.parse import urlparse
+
+        # main content only: a sidebar link ("Tutorials") is not that screen's control
+        main_text = page.evaluate("""() => { const b = document.body.cloneNode(true);
+            b.querySelectorAll('nav,aside,header,[role=navigation],[role=menubar],[class*=sidebar i],[class*=sidenav i]')
+             .forEach(e => e.remove()); return b.innerText || b.textContent || ''; }""")
+        kept, dropped = unseen_mention_filter(text, labels, main_text, urlparse(page.url or "").path)
+        if not dropped:
+            return state
+        print(f"[step] id={state.get('executing_step')} dropped {len(dropped)} sentence(s) naming "
+              f"controls not on this screen: {dropped}", flush=True)
+        state = dict(state)
+        state["narration"] = ([kept] if kept.strip() else []) + lines[1:]
+        return state
+    except Exception as exc:  # noqa: BLE001
+        print(f"[step] unseen-mention check skipped: {exc}", flush=True)
+        return state

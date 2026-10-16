@@ -91,6 +91,20 @@ LIVE_TOOL_INSTRUCTION = (
     "click_control with e.g. 'first chat' or the name: never ask the prospect to click anything and never "
     "say you cannot see the screen. Tools are only for the prospect's requests, never on your own "
     "while reading the script."
+    "\nACK FIRST: before any screen tool call, say a 2-5 word acknowledgement "
+    "('Sure, opening it now.') so the prospect never waits in silence. If a tool "
+    "fails or times out, say so honestly in one sentence and offer to explain instead."
+    "\nACT, DON'T INSTRUCT: when the prospect says 'show me', 'how do I', 'how to', 'can you', "
+    "'create', 'add' or 'open', your FIRST response is the tool call (do_task with mode 'explain' "
+    "for how-to, mode 'do' when they gave details or asked you to do it) - right after the short ack. Never "
+    "answer with step-by-step instructions like 'first click X, then click Y' and never ask which "
+    "option they want: pick the single/manual option (e.g. Create Contact > Manual Entry) and do it "
+    "visibly, then describe what is on screen in one or two sentences. Call each tool once per "
+    "request; do not repeat a call that is still running."
+    "\nHONESTY: never say you are filling, opening, clicking, showing or are 'already on' a "
+    "screen unless a tool result in THIS turn confirms it; you only know the screen from tool "
+    "results and context notes. Never invent details (names, numbers, emails): ask the prospect "
+    "for them. Never push the prospect to move on; stay on their question until they are done."
 )
 
 #: URL the scripted flow was on before a prospect's request moved the screen;
@@ -260,15 +274,122 @@ def _hidden_link_href(page, target: str) -> str:
         return ""
 
 
+_SEQ: dict[str, int] = {}
+#: tools where only the newest request matters (screen moves)
+_LATEST_WINS = {"show_feature", "click_control"}
+
+
+def _next_seq(name: str) -> int:
+    _SEQ[name] = _SEQ.get(name, 0) + 1
+    return _SEQ[name]
+
+
+def superseded(name: str, box: dict) -> dict | None:
+    """A newer show_feature arrived while this one waited behind a slow job:
+    running both just flips the screen twice. Skip the stale one."""
+    if name in _LATEST_WINS and int(box.get("seq", 0)) < _SEQ.get(name, 0):
+        return {"ok": False, "error": "superseded by a newer request", "skipped": True}
+    return None
+
+
+def _close_blocking_dialog(page, el) -> None:
+    try:
+        dlg = page.locator("[role=dialog],[aria-modal=true],dialog[open]")
+        if dlg.count() and dlg.last.is_visible() and not el.evaluate(
+                "e => !!e.closest('[role=dialog],[aria-modal=true],dialog')"):
+            page.keyboard.press("Escape")
+            page.wait_for_timeout(200)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+#: label -> known path, from the crawl's nav inventory and the flow's pages.
+SCREEN_MAP: dict[str, str] = {}
+SHOW_BUDGET_S = 8.0
+
+
+def build_screen_map(graph) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for e in NAV_INVENTORY or []:
+        lab, href = str(e.get("label") or "").strip(), str(e.get("href") or "")
+        if lab and href.startswith("/"):
+            out.setdefault(lab, href)
+    for pg in (getattr(graph, "pages", None) or {}).values():
+        name, url = str(getattr(pg, "name", "") or "").strip(), str(getattr(pg, "url", "") or "")
+        if name and url.startswith("/") and not any(c in url for c in "*{}<>"):
+            out.setdefault(name, url)
+    return out
+
+
+def resolve_screen(target: str, screens: dict[str, str] | None = None, strict: bool = False) -> tuple[str, str]:
+    """Fuzzy-match a spoken name to a known screen ('Local Seat' -> 'Local Sheets').
+    Returns (label, path) or ("", "")."""
+    import difflib
+
+    screens = SCREEN_MAP if screens is None else screens
+    t = " ".join((target or "").lower().split())
+    if not t or not screens:
+        return "", ""
+    by_low = {k.lower(): k for k in screens}
+    if t in by_low:
+        return by_low[t], screens[by_low[t]]
+    best = difflib.get_close_matches(t, list(by_low), n=1, cutoff=0.72)
+    if not best and not strict:
+        sub = [k for k in by_low if t in k or k in t]
+        best = sorted(sub, key=len, reverse=True)[:1]
+    if not best:
+        return "", ""
+    lab = by_low[best[0]]
+    return lab, screens[lab]
+
+
+def _fast_goto(page, path: str, push_frame) -> dict | None:
+    from urllib.parse import urljoin
+
+    try:
+        page.goto(urljoin(page.url, path), wait_until="commit", timeout=int(SHOW_BUDGET_S * 1000))
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=3000)
+        except Exception:  # noqa: BLE001
+            pass  # SPA still hydrating: the screen is already changing; good enough
+        page.wait_for_timeout(300)
+    except Exception as exc:  # noqa: BLE001
+        return {"ok": False, "error": f"could not open {path}: {str(exc).splitlines()[0][:120]}"}
+    if push_frame is not None:
+        try:
+            push_frame()
+        except Exception:  # noqa: BLE001
+            pass
+    return None
+
+
 def show_feature(page, target: str, push_frame: Callable[[], None] | None = None) -> dict:
     target = (target or "").strip()
     if not target:
         return {"ok": False, "error": "empty target", "visible_controls": visible_controls(page)}
+    # Known screen (crawl/flow map, fuzzy name): go straight there — bounded,
+    # never a guessed URL. 16:23 run: 'Integrations' searched for 34s and
+    # 'Local Sheets' 68s before failing.
+    lab, path = resolve_screen(target)
+    if path and not DESTRUCTIVE.search(lab):
+        from urllib.parse import urlparse
+
+        cur = (urlparse(page.url or "").path or "/").rstrip("/")
+        if cur != path.rstrip("/"):
+            err = _fast_goto(page, path, push_frame)
+            if err:
+                return {**err, "target": lab}
+        return {"ok": True, "action": "opened", "target": lab, "screen_title": page.title(),
+                "url_path": re.sub(r"^https?://[^/]+", "", page.url or ""),
+                "visible_controls": visible_controls(page)}
+    t_start = time.monotonic()
     el = _find(page, target)
     opened = ""
     if el is None:
         # Not on screen: try likely parent menus (Profile/Account/avatar/menu).
         for opener in ("Profile", "Account", "My account", "User", "Menu", "More", "Settings"):
+            if time.monotonic() - t_start > SHOW_BUDGET_S:
+                break
             if opener.lower() == target.lower():
                 continue
             o = _find(page, opener)
@@ -320,7 +441,17 @@ def show_feature(page, target: str, push_frame: Callable[[], None] | None = None
             el.evaluate("e => { e.style.outline = '3px solid #ff3b30'; e.style.outlineOffset = '2px'; }")
             action = "highlighted (not clicked: destructive)"
         else:
-            el.click(timeout=4000)
+            _close_blocking_dialog(page, el)
+            try:
+                el.click(timeout=2500)
+            except Exception:  # noqa: BLE001
+                # 13:24 run: 'Phonebook'/'Dashboard' clicks timed out 4s (covered by a
+                # leftover modal / collapsed label). Go to the link target instead.
+                href = _hidden_link_href(page, target)
+                if not href:
+                    raise
+                page.goto(href, wait_until="domcontentloaded", timeout=15000)
+                action = "opened from the menu"
             try:
                 page.wait_for_load_state("domcontentloaded", timeout=3000)
             except Exception:  # noqa: BLE001
@@ -381,12 +512,12 @@ class UiJobs:
         self.hold_until = time.monotonic() + 15.0
         key = (name, str(sorted((args or {}).items())))
         prev = getattr(self, "_recent", {}).get(key)
-        if prev and time.monotonic() - prev[0] < 3.0:
+        if prev and (not prev[1].is_set() or time.monotonic() - prev[0] < 6.0):
             # Gemini re-issued the same call while the first was still queued.
             prev[1].wait(timeout=25.0)
             return prev[2].get("result") or {"ok": False, "error": "screen busy"}
         done = threading.Event()
-        box: dict = {}
+        box: dict = {"seq": _next_seq(name)}
         self.__dict__.setdefault("_recent", {})[key] = (time.monotonic(), done, box)
         print(f"[ui-tool] queued {name} {args}", flush=True)
         st = getattr(self, "screen", None)
@@ -394,10 +525,16 @@ class UiJobs:
             st.submit(name, dict(args or {}), box, done)
         else:
             self._q.put((name, dict(args or {}), box, done))
-        if not done.wait(timeout=120.0 if name in ("do_task", "confirm_submit") else 30.0):
-            return {"ok": False, "error": "screen busy, try again in a moment"}
+        if not done.wait(timeout=45.0 if name in ("do_task", "confirm_submit") else 12.0):
+            return {"ok": False, "error": "that took too long on screen; say so honestly and offer to try "
+                    "again or explain it instead", "timed_out": True}
         self.hold_until = time.monotonic() + 8.0
         return box.get("result") or {"ok": False}
+
+    def jobs_pending(self) -> bool:
+        if not self._q.empty():
+            return True
+        return any(not v[1].is_set() for v in (getattr(self, "_recent", {}) or {}).values())
 
     def pump(self) -> int:
         if self.owner is None or threading.get_ident() != self.owner or self.page is None:
@@ -411,7 +548,7 @@ class UiJobs:
                 return n
             t0 = time.monotonic()
             try:
-                box["result"] = dispatch(self.page, name, args, self.push_frame)
+                box["result"] = superseded(name, box) or dispatch(self.page, name, args, self.push_frame)
             except Exception as exc:  # noqa: BLE001
                 box["result"] = {"ok": False, "error": str(exc)[:200]}
             print(f"[ui-tool] ran {name} {args} in {time.monotonic() - t0:.2f}s -> "
@@ -453,6 +590,10 @@ def new_current() -> UiJobs:
     return CURRENT
 
 
+#: seconds of silence (no tool, no audio, no prospect speech) before the flow resumes
+QUIET_S = 3.0
+
+
 def service_before_step(deps: Any, max_hold_s: float = 30.0) -> None:
     """Demo thread: run queued screen jobs and pause the script during Q&A."""
     ui = CURRENT
@@ -466,10 +607,24 @@ def service_before_step(deps: Any, max_hold_s: float = 30.0) -> None:
         return
     t0 = time.monotonic()
     print("[flow] paused for prospect Q&A", flush=True)
-    while ui.hold_active(live) and time.monotonic() - t0 < max_hold_s:
+    # Resume only once the question is fully handled: no tool job running, no
+    # answer audio playing, and QUIET_S of silence from both sides — not a fixed
+    # timer (14:54 run resumed after 30.0s mid-conversation).
+    quiet_since = None
+    cap = max(max_hold_s, 240.0)
+    while time.monotonic() - t0 < cap:
         ui.pump()
+        busy = ui.hold_active(live) or ui.jobs_pending()
+        now = time.monotonic()
+        if busy:
+            quiet_since = None
+        elif quiet_since is None:
+            quiet_since = now
+        elif now - quiet_since >= QUIET_S:
+            break
         time.sleep(0.1)
-    print(f"[flow] resumed after {time.monotonic() - t0:.1f}s Q&A", flush=True)
+    print(f"[flow] resumed after {time.monotonic() - t0:.1f}s Q&A "
+          f"({'question handled' if quiet_since else 'safety cap'})", flush=True)
 
 
 def free_port() -> int:
@@ -547,7 +702,7 @@ class ScreenThread:
                             break
                         t0 = time.monotonic()
                         try:
-                            box["result"] = dispatch(self.page, name, args, None)
+                            box["result"] = superseded(name, box) or dispatch(self.page, name, args, None)
                         except Exception as exc:  # noqa: BLE001
                             box["result"] = {"ok": False, "error": str(exc)[:200]}
                         print(f"[ui-tool] screen-thread ran {name} {args} in {time.monotonic() - t0:.2f}s -> "

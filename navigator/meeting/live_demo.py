@@ -246,6 +246,7 @@ def _start_live_agent(
                     tool_handler=_ui_bridge.handle_tool,
                     tool_declarations=_ui.TOOL_DECLARATIONS,
                     ui_pump=_ui_bridge.pump,
+                    fallback_keys=list(keys[i + 1:]),
                 ),
                 audio_bridge,
             )
@@ -1651,6 +1652,7 @@ def run_live_meet_demo(
             _screen = None
             try:
                 _uj_mod.NAV_INVENTORY = list(((getattr(graph_cfg, "meta", None) or {}).get("nav_inventory")) or [])
+                _uj_mod.SCREEN_MAP = _uj_mod.build_screen_map(graph_cfg)
             except Exception:  # noqa: BLE001
                 _uj_mod.NAV_INVENTORY = []
             try:
@@ -1727,15 +1729,16 @@ def run_live_meet_demo(
                         arm_screenshare(client=client, bot_id=bot.id, public_view=public_view)
                     except Exception as exc:  # noqa: BLE001
                         print(f"[live] tunnel screenshare re-arm failed: {exc}", flush=True)
+                    baseline_hits = relay.frame_hits  # count only the tunnel's own pulls
                 else:
                     print(f"[live] local screenshare pulling frames (+{relay.frame_hits - baseline_hits} in {time.monotonic() - _t0:.1f}s)", flush=True)
             live = wait_until_screenshare_live(
                 relay,
                 push_frame=_push,
                 baseline_frame_hits=baseline_hits,
-                min_frame_hits=4,
+                min_frame_hits=8,  # +5 in 62ms at 17:38 was not Zoom showing it yet
                 timeout_s=45.0,
-                settle_s=1.0,
+                settle_s=2.5,
             )
             if not live:
                 print("[live] screenshare slow — continuing demo anyway", flush=True)

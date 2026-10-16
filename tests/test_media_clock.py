@@ -6,7 +6,15 @@ import threading
 import time
 
 from navigator.core.settings import settings
-from navigator.meeting.media_clock import pack_audio, pack_frame, unpack_audio, unpack_frame
+import pytest
+
+from navigator.meeting.media_clock import (
+    pack_audio,
+    pack_clear,
+    pack_frame,
+    unpack_audio,
+    unpack_frame,
+)
 from navigator.meeting.relay import start_relay
 from navigator.voice.live_agent import LiveAgent, LiveAgentConfig, _Cmd
 from navigator.voice.stt import meeting_stt_mode
@@ -22,7 +30,33 @@ def test_audio_and_frame_payloads_share_an_increasing_stamp():
     assert pcm == b"\x01\x00\x02\x00"
     assert jpeg == b"\xff\xd8\xff"
     assert got_frame_ns >= got_audio_ns
-    assert audio[:1] == b"A" and frame[:1] == b"F"
+    assert audio[:1] == b"a" and frame[:1] == b"f"
+    assert audio[1:13] == (24000).to_bytes(4, "little") + audio_ns.to_bytes(8, "little")
+    assert frame[1:9] == (audio_ns + 1).to_bytes(8, "little")
+
+
+def test_legacy_tags_stay_untimestamped():
+    """``A`` and ``F`` have no stamp. Those bytes stay in the payload."""
+    pcm = (99).to_bytes(8, "little") + b"\x01\x00"
+    legacy_audio = b"A" + (16000).to_bytes(4, "little") + pcm
+    rate, stamp, body = unpack_audio(legacy_audio)
+    assert rate == 16000
+    assert stamp == 0
+    assert body == pcm
+
+    jpeg = b"\x00" * 8 + b"\xff\xd8\xff"
+    legacy_frame = b"F" + jpeg
+    frame_ns, got = unpack_frame(legacy_frame)
+    assert frame_ns == 0
+    assert got == jpeg
+
+
+def test_clear_is_its_own_tag():
+    assert pack_clear() == b"C"
+    with pytest.raises(ValueError):
+        unpack_audio(b"C")
+    with pytest.raises(ValueError):
+        unpack_frame(b"C")
 
 
 def test_bot_output_json_includes_monotonic_ns():

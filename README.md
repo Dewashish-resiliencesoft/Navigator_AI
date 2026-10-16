@@ -562,9 +562,13 @@ The video capture page reads `/screen.ws` binary messages:
 
 | Kind | Bytes |
 |---|---|
-| Audio | `A` + uint32le sample rate + uint64le `monotonic_ns` + int16le PCM |
-| Video | `F` + uint64le `monotonic_ns` + JPEG |
+| Timestamped audio | `a` + uint32le sample rate + uint64le `monotonic_ns` + int16le PCM |
+| Timestamped video | `f` + uint64le `monotonic_ns` + JPEG |
+| Audio | `A` + uint32le sample rate + int16le PCM |
+| Video | `F` + JPEG |
 | Clear | `C` (barge-in: drop queued audio and reset the page clock) |
+
+The tag selects the layout. `/view` does not guess whether a stamp is present.
 
 Pack and unpack live in `navigator/meeting/media_clock.py`. A barge-in flushes
 Attendee's queue and, when the capture page is connected, its PCM queue.

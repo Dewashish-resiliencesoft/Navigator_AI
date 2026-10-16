@@ -280,7 +280,12 @@ def test_spoken_priority_yaml_over_explore():
     assert steps[0]["spoken_source"] == "yaml"
 
 
-def test_spoken_falls_back_to_explore_when_yaml_empty():
+def test_recorded_line_wins_when_yaml_spoken_is_empty():
+    """An index-aligned narration line is the Client's words, not explore copy.
+
+    The old assertion expected source "explore". That let generated copy replace
+    a line the Client already recorded into narration_suggestions.
+    """
     raw = yaml.safe_load(_minimal_graph_yaml())
     raw["pages"]["home"]["flows"]["tour"][0].pop("spoken", None)
     raw["_meta"]["semantics"]["tour"]["steps"] = []
@@ -288,23 +293,69 @@ def test_spoken_falls_back_to_explore_when_yaml_empty():
     script = compose_full_demo_script(graph, intake_enabled=False)
     steps = [b for b in script["beats"] if b["kind"] == "flow_step"]
     assert steps[0]["spoken"] == "Explore line one"
-    assert steps[0]["spoken_source"] == "explore"
+    assert steps[0]["spoken_source"] == "recorded"
 
 
-def test_spoken_prefers_semantics_over_misaligned_explore():
+def test_recorded_narration_wins_over_semantics():
+    """Semantics must not replace a recorded line, or be labelled recorded."""
     raw = yaml.safe_load(_minimal_graph_yaml())
     raw["pages"]["home"]["flows"]["tour"][0].pop("spoken", None)
     raw["pages"]["home"]["flows"]["tour"][1].pop("spoken", None)
-    # narration count matches but semantics should win when idx present
     raw["_meta"]["semantics"]["tour"]["steps"] = [
         {"idx": 0, "description": "Opens the home screen."},
         {"idx": 1, "description": "Collects visitor email."},
     ]
     graph = parse_site_graph(yaml.safe_dump(raw))
     script = compose_full_demo_script(graph, intake_enabled=False)
-    steps = [b for b in script["beats"] if b["kind"] == "flow_step"]
-    assert steps[0]["spoken"] == "Opens the home screen."
-    assert steps[0]["spoken_source"] == "semantics"
+    by_index = {b["step_index"]: b for b in script["beats"] if "step_index" in b}
+    assert by_index[0]["spoken"] == "Explore line one"
+    assert by_index[0]["spoken_source"] == "recorded"
+    assert by_index[1]["spoken"] == "Explore line two"
+    assert by_index[1]["spoken_source"] == "recorded"
+
+
+def test_blank_narration_line_keeps_later_steps_aligned():
+    """A silent step stays silent. The filtered suggestion list must not shift it."""
+    from navigator.knowledge.demo_script import resolve_flow_step_spoken
+
+    raw = yaml.safe_load(_minimal_graph_yaml())
+    for step in raw["pages"]["home"]["flows"]["tour"]:
+        step.pop("spoken", None)
+    raw["_meta"]["narration_suggestions"]["tour"] = ["", "Client line for step 1"]
+    raw["_meta"]["semantics"]["tour"]["steps"] = [
+        {"idx": 0, "description": "Semantics for the silent step."},
+        {"idx": 1, "description": "Semantics must not replace the client line."},
+    ]
+    graph = parse_site_graph(yaml.safe_dump(raw))
+    calls = graph.pages["home"].flows["tour"]
+
+    assert graph.flow_narration_lines("tour") == ["", "Client line for step 1"]
+    # Blanks are dropped, so this list's index 0 is step 1's words.
+    assert graph.flow_narration_suggestions("tour") == ["Client line for step 1"]
+
+    spoken0, source0 = resolve_flow_step_spoken(
+        graph=graph,
+        flow_id="tour",
+        step_index=0,
+        step_count=2,
+        page_id="home",
+        page_name="Home",
+        call=calls[0],
+    )
+    spoken1, source1 = resolve_flow_step_spoken(
+        graph=graph,
+        flow_id="tour",
+        step_index=1,
+        step_count=2,
+        page_id="home",
+        page_name="Home",
+        call=calls[1],
+    )
+    assert spoken0 == "Semantics for the silent step."
+    assert source0 == "semantics"
+    assert spoken0 != graph.flow_narration_suggestions("tour")[0]
+    assert spoken1 == "Client line for step 1"
+    assert source1 == "recorded"
 
 
 def test_resolve_flow_step_spoken_fallback_is_pair():

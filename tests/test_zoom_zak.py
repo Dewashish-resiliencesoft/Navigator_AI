@@ -91,14 +91,27 @@ def test_zoom_zak_callback_url_embeds_secret(monkeypatch):
 def test_require_live_settings_allows_empty_public_base_when_tunnel_bin_ok(
     monkeypatch,
 ):
-    """Local Zoom can auto-tunnel; empty PUBLIC_BASE_URL is fine if tunnel_bin works."""
+    """Local Zoom can auto-tunnel; empty PUBLIC_BASE_URL is fine if tunnel_bin works.
+
+    The binary check is stubbed so CI still covers this allow-path when
+    cloudflared is not installed. The production check is unchanged; the
+    sibling test below still runs it against a missing path.
+    """
     from navigator.meeting.live_demo import _require_live_settings
 
     monkeypatch.setattr(settings, "attendee_base_url", "https://app.attendee.dev/api/v1")
     monkeypatch.setattr(settings, "attendee_api_key", "tok")
     monkeypatch.setattr(settings, "meeting_platform", "zoom")
     monkeypatch.setattr(settings, "public_base_url", "")
-    monkeypatch.setattr(settings, "tunnel_bin", "cloudflared")
+    # A missing path, so this passes only because the stub says the binary is ok.
+    # _require_live_settings imports tunnel_binary_available inside the function
+    # (`from navigator.meeting.tunnel import ...`) at call time. That name is not
+    # bound on the live_demo module, so the lookup to patch is the tunnel module.
+    monkeypatch.setattr(settings, "tunnel_bin", "/no/such/cloudflared-binary")
+    monkeypatch.setattr(
+        "navigator.meeting.tunnel.tunnel_binary_available",
+        lambda _binary="cloudflared": True,
+    )
     _require_live_settings("https://zoom.us/j/1")  # no raise
 
 

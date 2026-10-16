@@ -238,24 +238,16 @@ def resolve_flow_step_spoken(
     if spoken:
         return spoken, "yaml"
 
-    # Prefer the Client's recorded narration (their own words) over generated copy.
+    # Client's own words live in the step-aligned list. A non-blank slot wins
+    # over generated semantics. Do not read flow_narration_suggestions here:
+    # that view drops blanks, so its index 0 is not step 0 once a step is silent.
     narr = graph.flow_narration_lines(flow_id)
     if narr and step_index < len(narr) and str(narr[step_index] or "").strip():
         return str(narr[step_index]).strip(), "recorded"
 
-    narrated = step_index in graph.flow_step_timing(flow_id)
-
     sem_labels = _semantics_step_labels(graph, flow_id)
     if step_index in sem_labels:
-        return sem_labels[step_index], "recorded" if narrated else "semantics"
-
-    suggestions = graph.flow_narration_suggestions(flow_id)
-    if (
-        suggestions
-        and step_index < len(suggestions)
-        and suggestions[step_index]
-    ):
-        return suggestions[step_index], "recorded" if narrated else "explore"
+        return sem_labels[step_index], "semantics"
 
     derived = spoken_from_action(graph, page_id, call)
     if derived:

@@ -95,7 +95,12 @@ class SiteGraph(BaseModel):
         return entry if isinstance(entry, dict) else {}
 
     def flow_narration_suggestions(self, flow_id: str) -> list[str]:
-        """Explore-generated narration lines per step, or empty."""
+        """Non-empty narration lines, in order, with blanks removed.
+
+        Not aligned with step indexes once any step is silent: index 0 is the
+        first line that has text, not step 0. Per-step text is
+        ``flow_narration_lines``.
+        """
         section = self.meta.get("narration_suggestions")
         if not isinstance(section, dict):
             return []
@@ -123,7 +128,12 @@ class SiteGraph(BaseModel):
         return out
 
     def flow_narration_lines(self, flow_id: str) -> list[str]:
-        """Per-step narration lines indexed by step (empty string when silent)."""
+        """Per-step narration. Index i is step i; "" means that step was silent.
+
+        A non-blank entry is the Client's own words for that step. Same
+        ``_meta.narration_suggestions`` list as ``flow_narration_suggestions``,
+        which drops blanks and therefore does not keep step indexes.
+        """
         section = self.meta.get("narration_suggestions")
         if not isinstance(section, dict):
             return []

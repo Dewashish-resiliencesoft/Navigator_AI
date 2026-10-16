@@ -72,3 +72,7 @@ docs/**/*.html
 # Test fixtures may use HTML/MD
 !tests/**/*.html
 !tests/**/*.md
+
+# Sample-tenant knowledge brief. The global *.md ignore otherwise drops it,
+# and load_product_brief reads this file. Generated *.user.md stays ignored.
+!navigator/knowledge/products/resiliohub.md

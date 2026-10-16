@@ -238,24 +238,20 @@ def resolve_flow_step_spoken(
     if spoken:
         return spoken, "yaml"
 
-    # Prefer the Client's recorded narration (their own words) over generated copy.
-    narr = graph.flow_narration_lines(flow_id)
-    if narr and step_index < len(narr) and str(narr[step_index] or "").strip():
-        return str(narr[step_index]).strip(), "recorded"
-
+    # step_timing is what marks a line as the Client's own recording.
+    # narration_suggestions is explore copy (or STT text saved into that same
+    # list). Semantics are keyed by step idx and beat that copy. A blank
+    # suggestion must not shift later lines onto earlier steps, so read the
+    # index-aligned list rather than the filtered one.
     narrated = step_index in graph.flow_step_timing(flow_id)
 
     sem_labels = _semantics_step_labels(graph, flow_id)
     if step_index in sem_labels:
         return sem_labels[step_index], "recorded" if narrated else "semantics"
 
-    suggestions = graph.flow_narration_suggestions(flow_id)
-    if (
-        suggestions
-        and step_index < len(suggestions)
-        and suggestions[step_index]
-    ):
-        return suggestions[step_index], "recorded" if narrated else "explore"
+    narr = graph.flow_narration_lines(flow_id)
+    if narr and step_index < len(narr) and str(narr[step_index] or "").strip():
+        return str(narr[step_index]).strip(), "recorded" if narrated else "explore"
 
     derived = spoken_from_action(graph, page_id, call)
     if derived:

@@ -19,6 +19,9 @@ def test_login_detection():
 def _page(url, pw_visible=False):
     pg = MagicMock()
     pg.url = url
+    # _already_authenticated treats a truthy evaluate() as a visible Log in
+    # button. A bare MagicMock is truthy, so every page looked signed out.
+    pg.evaluate.return_value = False
     loc = MagicMock(); loc.count.return_value = 1 if pw_visible else 0
     loc.nth.return_value.is_visible.return_value = pw_visible
     pg.locator.return_value = loc

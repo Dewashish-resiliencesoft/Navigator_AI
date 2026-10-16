@@ -7,17 +7,32 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from cryptography.fernet import Fernet
+
 from navigator.app import main as app_module
 from navigator.app.auth_store import AuthStore
 from navigator.app.credential_vault import CredentialVault
 from navigator.app.registry import Registry
 from navigator.app.runner import DemoRunner
 from navigator.client.provider_models import list_gemini_models, list_groq_models, list_provider_models
+from navigator.core.settings import settings
 from navigator.logs.store import ActionLog
 
 
-def _app(tmp_path, monkeypatch):
-    monkeypatch.setenv("NAVIGATOR_CREDENTIAL_KEY", "test-credential-key-32bytes-long!!")
+@pytest.fixture
+def navigator_credential_key(monkeypatch):
+    """Test-only Fernet key. Production stays unset.
+
+    The vault reads settings.credential_key, which is loaded once at import, so
+    the env var is mirrored onto that object for this test only.
+    """
+    key = Fernet.generate_key().decode()
+    monkeypatch.setenv("NAVIGATOR_CREDENTIAL_KEY", key)
+    monkeypatch.setattr(settings, "credential_key", key)
+    return key
+
+
+def _app(tmp_path):
     registry = Registry(tmp_path / "registry.db")
     log = ActionLog(tmp_path / "actions.db")
     auth = AuthStore(tmp_path / "auth.db")
@@ -129,8 +144,9 @@ def test_list_provider_models_requires_key():
         list_provider_models("gemini", "")
 
 
-def test_agent_provider_models_api(tmp_path, monkeypatch):
-    client, _registry, vault = _app(tmp_path, monkeypatch)
+def test_agent_provider_models_api(tmp_path, navigator_credential_key):
+    client, _registry, vault = _app(tmp_path)
+    assert settings.credential_key == navigator_credential_key
     try:
         token, product_id = _signup(client)
         headers = {"Host": "localhost", "Authorization": f"Bearer {token}"}

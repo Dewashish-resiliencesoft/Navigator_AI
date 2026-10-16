@@ -54,6 +54,31 @@ def test_build_is_deterministic():
     assert build_mod.artifacts() == build_mod.artifacts()
 
 
+def test_openapi_yaml_is_stable_across_hash_seeds():
+    """Method sets must not reshuffle operationIds between processes."""
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "from navigator.docs.build import OPENAPI_OUT, artifacts\n"
+        "import sys\n"
+        "sys.stdout.buffer.write(artifacts()[OPENAPI_OUT].encode())\n"
+    )
+
+    def run(seed: str) -> bytes:
+        env = os.environ.copy()
+        env["PYTHONHASHSEED"] = seed
+        env["NAVIGATOR_DEMO_SYNC_ENABLED"] = "0"
+        return subprocess.check_output(
+            [sys.executable, "-c", code],
+            env=env,
+            cwd=build_mod.REPO_ROOT,
+        )
+
+    assert run("1") == run("2")
+
+
 def test_stale_detects_a_hand_edit(tmp_path):
     for rel, content in build_mod.committed_artifacts().items():
         path = tmp_path / rel

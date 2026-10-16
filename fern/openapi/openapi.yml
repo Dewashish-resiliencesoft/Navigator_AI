@@ -2522,6 +2522,147 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/discard:
+    post:
+      summary: Client Record Discard
+      description: Stop and throw away the active recording. Writes no revision.
+      operationId: client_record_discard_client_api_record_discard_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Record Discard Client Api Record Discard Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/surf-discard:
+    post:
+      summary: Client Record Surf Discard
+      description: Discard from the record-surf toolbar. Recording token, not JWT.
+      operationId: client_record_surf_discard_client_api_record_surf_discard_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Body
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Record Surf Discard Client Api Record Surf Discard Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/surf-control:
+    post:
+      summary: Client Record Surf Control
+      description: Record-surf toolbar (start/pause/resume/status). Recording token, not JWT.
+      operationId: client_record_surf_control_client_api_record_surf_control_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Body
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Record Surf Control Client Api Record Surf Control Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/surf-stop:
+    post:
+      summary: Client Record Surf Stop
+      description: 'Finish from the record-surf toolbar: merge into the *draft* site graph only.'
+      operationId: client_record_surf_stop_client_api_record_surf_stop_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Body
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Record Surf Stop Client Api Record Surf Stop Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/surf-audio:
+    post:
+      summary: Client Record Surf Audio
+      description: Narration audio chunk from the record-surf page. Recording token, not JWT.
+      operationId: client_record_surf_audio_client_api_record_surf_audio_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              additionalProperties: true
+              type: object
+              title: Body
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Client Record Surf Audio Client Api Record Surf Audio Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /client/api/record/capture:
     post:
       summary: Client Record Capture
@@ -2906,6 +3047,41 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/record/retranscribe:
+    post:
+      summary: Client Record Retranscribe
+      description: Re-run speech-to-text on a flow's saved audio. Writes a new *draft* revision.
+      operationId: client_record_retranscribe_client_api_record_retranscribe_post
+      parameters:
+      - name: flow_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Record Retranscribe Client Api Record Retranscribe Post
         '422':
           description: Validation Error
           content:
@@ -3329,6 +3505,277 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/step-name:
+    post:
+      summary: Client Set Step Name
+      description: Rename a step (display label only; selector/action untouched). Draft only.
+      operationId: client_set_step_name_client_api_flows_step_name_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StepNameBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Set Step Name Client Api Flows Step Name Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/script/distribute:
+    post:
+      summary: Client Distribute Script
+      description: Split one full script across a flow's steps. apply=False -> preview only.
+      operationId: client_distribute_script_client_api_flows_script_distribute_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ScriptDistributeBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Distribute Script Client Api Flows Script Distribute Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/align:
+    post:
+      summary: Client Flow Align
+      description: 'Script-to-screen sync: point each step at the screen its narration talks
+
+        about. apply=False -> preview. apply=True saves a DRAFT only (never publishes).'
+      operationId: client_flow_align_client_api_flows_align_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowAlignBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Flow Align Client Api Flows Align Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/expand:
+    post:
+      summary: Client Flow Expand
+      description: 'Expand narration: append 1-2 screen-grounded sentences to each step line.
+
+        Precomputed at authoring time (no live latency). apply=True saves a DRAFT only.'
+      operationId: client_flow_expand_client_api_flows_expand_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowExpandBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Flow Expand Client Api Flows Expand Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/steps:
+    get:
+      summary: Client Flow Steps
+      description: Editable view of a flow's steps (kind/value/narration/name).
+      operationId: client_flow_steps_client_api_flows_steps_get
+      parameters:
+      - name: flow_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Flow Id
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Flow Steps Client Api Flows Steps Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/steps/edit:
+    post:
+      summary: Client Flow Step Edit
+      description: Insert/update/delete/reorder one step. Saves a DRAFT revision only.
+      operationId: client_flow_step_edit_client_api_flows_steps_edit_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StepEditBody'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Flow Step Edit Client Api Flows Steps Edit Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/ai-draft/start:
+    post:
+      summary: Client Ai Draft Start
+      description: Explore the live product and save a NEW draft flow (never published).
+      operationId: client_ai_draft_start_client_api_flows_ai_draft_start_post
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Ai Draft Start Client Api Flows Ai Draft Start Post
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /client/api/flows/ai-draft:
+    get:
+      summary: Client Ai Draft Status
+      operationId: client_ai_draft_status_client_api_flows_ai_draft_get
+      parameters:
+      - name: authorization
+        in: header
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Authorization
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Client Ai Draft Status Client Api Flows Ai Draft Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /:
     get:
       summary: Root
@@ -3376,97 +3823,39 @@ paths:
             application/json:
               schema: {}
   /client/record-surf/{token}/{path}:
-    post:
-      summary: Client Record Surf
-      description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token___path__post
-      parameters:
-      - name: token
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Token
-      - name: path
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Path
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      summary: Client Record Surf
-      description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token___path__post
-      parameters:
-      - name: token
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Token
-      - name: path
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Path
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    patch:
-      summary: Client Record Surf
-      description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token___path__post
-      parameters:
-      - name: token
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Token
-      - name: path
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Path
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
     get:
       summary: Client Record Surf
       description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token___path__post
+      operationId: client_record_surf_client_record_surf__token___path__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token___path__get
       parameters:
       - name: token
         in: path
@@ -3495,7 +3884,123 @@ paths:
     put:
       summary: Client Record Surf
       description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token___path__post
+      operationId: client_record_surf_client_record_surf__token___path__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token___path__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token___path__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    head:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token___path__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    options:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token___path__get
       parameters:
       - name: token
         in: path
@@ -3522,100 +4027,40 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /client/record-surf/{token}:
-    post:
-      summary: Client Record Surf
-      description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token__post
-      parameters:
-      - name: token
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Token
-      - name: path
-        in: query
-        required: false
-        schema:
-          type: string
-          default: ''
-          title: Path
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      summary: Client Record Surf
-      description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token__post
-      parameters:
-      - name: token
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Token
-      - name: path
-        in: query
-        required: false
-        schema:
-          type: string
-          default: ''
-          title: Path
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    patch:
-      summary: Client Record Surf
-      description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token__post
-      parameters:
-      - name: token
-        in: path
-        required: true
-        schema:
-          type: string
-          title: Token
-      - name: path
-        in: query
-        required: false
-        schema:
-          type: string
-          default: ''
-          title: Path
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema: {}
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
     get:
       summary: Client Record Surf
       description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token__post
+      operationId: client_record_surf_client_record_surf__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token__get
       parameters:
       - name: token
         in: path
@@ -3645,7 +4090,127 @@ paths:
     put:
       summary: Client Record Surf
       description: Product page for manual record, shown in the dashboard user's browser.
-      operationId: client_record_surf_client_record_surf__token__post
+      operationId: client_record_surf_client_record_surf__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    head:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token__get
+      parameters:
+      - name: token
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Token
+      - name: path
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Path
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    options:
+      summary: Client Record Surf
+      description: Product page for manual record, shown in the dashboard user's browser.
+      operationId: client_record_surf_client_record_surf__token__get
       parameters:
       - name: token
         in: path
@@ -4303,6 +4868,23 @@ components:
       - selector
       - value
       title: FillField
+    FlowAlignBody:
+      properties:
+        flow_id:
+          type: string
+          title: Flow Id
+        apply:
+          type: boolean
+          title: Apply
+          default: false
+        recrawl:
+          type: boolean
+          title: Recrawl
+          default: false
+      type: object
+      required:
+      - flow_id
+      title: FlowAlignBody
     FlowDeleteBody:
       properties:
         flow_id:
@@ -4318,6 +4900,23 @@ components:
       required:
       - flow_id
       title: FlowDeleteBody
+    FlowExpandBody:
+      properties:
+        flow_id:
+          type: string
+          title: Flow Id
+        apply:
+          type: boolean
+          title: Apply
+          default: false
+        recrawl:
+          type: boolean
+          title: Recrawl
+          default: false
+      type: object
+      required:
+      - flow_id
+      title: FlowExpandBody
     FlowSemanticsBody:
       properties:
         flow_id:
@@ -4837,6 +5436,50 @@ components:
       - api_key
       title: RegisteredProduct
       description: Registration response. The API key is shown exactly once.
+    ScriptDistributeBody:
+      properties:
+        flow_id:
+          type: string
+          minLength: 1
+          title: Flow Id
+        text:
+          type: string
+          title: Text
+          default: ''
+        apply:
+          type: boolean
+          title: Apply
+          default: false
+        lines:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Lines
+        names:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Names
+        create_extras:
+          type: boolean
+          title: Create Extras
+          default: false
+        extras:
+          anyOf:
+          - items:
+              additionalProperties: true
+              type: object
+            type: array
+          - type: 'null'
+          title: Extras
+      type: object
+      required:
+      - flow_id
+      title: ScriptDistributeBody
     ScrollPage:
       properties:
         expects:
@@ -5037,6 +5680,62 @@ components:
           default: true
       type: object
       title: StartLiveDemo
+    StepEditBody:
+      properties:
+        flow_id:
+          type: string
+          minLength: 1
+          title: Flow Id
+        op:
+          type: string
+          pattern: ^(insert|update|delete|up|down)$
+          title: Op
+        index:
+          type: integer
+          minimum: -1.0
+          title: Index
+        kind:
+          type: string
+          title: Kind
+          default: narration
+        value:
+          type: string
+          title: Value
+          default: ''
+        narration:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Narration
+        name:
+          type: string
+          title: Name
+          default: ''
+      type: object
+      required:
+      - flow_id
+      - op
+      - index
+      title: StepEditBody
+    StepNameBody:
+      properties:
+        flow_id:
+          type: string
+          minLength: 1
+          title: Flow Id
+        step_index:
+          type: integer
+          minimum: 0.0
+          title: Step Index
+        name:
+          type: string
+          title: Name
+          default: ''
+      type: object
+      required:
+      - flow_id
+      - step_index
+      title: StepNameBody
     SystemMetrics:
       properties:
         host_label:

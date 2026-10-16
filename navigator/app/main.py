@@ -16,6 +16,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from navigator.app.api_models import *  # noqa: F403
+from navigator.app.openapi import install_stable_openapi, stable_unique_id
 from navigator.app.deps import (  # noqa: F401
     AuthedOrSession,
     AuthedProduct,
@@ -63,6 +64,7 @@ app = FastAPI(
     version="0.1.0",
     description="Live interactive demo agent for any web product.",
     lifespan=_lifespan,
+    generate_unique_id_function=stable_unique_id,
 )
 
 app.include_router(
@@ -93,3 +95,4 @@ async def _record_surf_stray_paths(request, call_next):
         return response
     return RedirectResponse(url=target, status_code=307)
 public.mount_client_assets(app)
+install_stable_openapi(app)

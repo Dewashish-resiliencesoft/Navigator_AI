@@ -873,7 +873,8 @@ def expected_path(graph, call) -> str:
     # Relative page urls (fixture files, site-relative paths) must be compared
     # to the document the browser actually loaded, not the raw graph string.
     if not urlparse(u).scheme and graph is not None:
-        u = urljoin(getattr(graph, "base_url", "") or "", u)
+        # An empty base makes urljoin drop a leading slash ("inbox" not "/inbox").
+        u = urljoin(getattr(graph, "base_url", "") or "/", u)
     return (urlparse(u).path or "/").rstrip("/") or "/"
 
 

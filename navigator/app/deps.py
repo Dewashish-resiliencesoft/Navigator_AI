@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Annotated, Callable
@@ -27,57 +28,61 @@ from navigator.meeting.providers import (
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
-    from navigator.automation.playwright_env import ensure_playwright_browsers
-    from navigator.meeting.attendee_stack import ensure_attendee_stack
-    from navigator.storage.env_load import load_cloud_env
-    from navigator.storage.mongo import mongo_enabled, ping
-    from navigator.storage.media import cloudinary_enabled
-
-    load_cloud_env()
-    if mongo_enabled():
-        try:
-            ping()
-            print("[storage] MongoDB Atlas connected", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[storage] MongoDB ping failed: {exc}", flush=True)
-    else:
-        print("[storage] MongoDB URI not set — auth uses SQLite", flush=True)
-    if cloudinary_enabled():
-        print("[storage] Cloudinary configured", flush=True)
-    else:
-        print("[storage] Cloudinary not configured", flush=True)
-
-    ensure_playwright_browsers()
-    ensure_attendee_stack()
-    # Keep infra warm (attendee, Cloudflare base URL, parked product browser) so
-    # "Show me the demo" skips cold starts. Best-effort; never blocks startup.
-    # Bring the ZAK quick tunnel up now, not inside the first demo: at 18:27 the
-    # demo spent 160s on "public base missing/dead — tunneling" + edge wait.
-    def _warm_tunnel() -> None:
-        try:
-            from navigator.meeting.zoom_host import ensure_public_base_url
-
-            print(f"[warm] public base ready: {ensure_public_base_url()}", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[warm] public base warm-up failed: {exc}", flush=True)
-
-    import threading as _th
-
-    _th.Thread(target=_warm_tunnel, daemon=True, name="warm-tunnel").start()
     try:
-        from navigator.meeting.warm_pool import start_warm_pool
+        from navigator.automation.playwright_env import ensure_playwright_browsers
+        from navigator.meeting.attendee_stack import ensure_attendee_stack
+        from navigator.storage.env_load import load_cloud_env
+        from navigator.storage.mongo import mongo_enabled, ping
+        from navigator.storage.media import cloudinary_enabled
 
-        start_warm_pool()
-    except Exception as exc:  # noqa: BLE001
-        print(f"[warm] pool start skipped: {exc}", flush=True)
-    yield
-    _runner.stop_sync()
-    try:
-        from navigator.meeting.warm_pool import get_warm_pool
+        load_cloud_env()
+        if mongo_enabled():
+            try:
+                ping()
+                print("[storage] MongoDB Atlas connected", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[storage] MongoDB ping failed: {exc}", flush=True)
+        else:
+            print("[storage] MongoDB URI not set — auth uses SQLite", flush=True)
+        if cloudinary_enabled():
+            print("[storage] Cloudinary configured", flush=True)
+        else:
+            print("[storage] Cloudinary not configured", flush=True)
 
-        get_warm_pool().stop()
-    except Exception:  # noqa: BLE001
-        pass
+        ensure_playwright_browsers()
+        ensure_attendee_stack()
+        # Keep infra warm (attendee, Cloudflare base URL, parked product browser) so
+        # "Show me the demo" skips cold starts. Best-effort; never blocks startup.
+        # Bring the ZAK quick tunnel up now, not inside the first demo: at 18:27 the
+        # demo spent 160s on "public base missing/dead — tunneling" + edge wait.
+        def _warm_tunnel() -> None:
+            try:
+                from navigator.meeting.zoom_host import ensure_public_base_url
+
+                print(f"[warm] public base ready: {ensure_public_base_url()}", flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[warm] public base warm-up failed: {exc}", flush=True)
+
+        import threading as _th
+
+        _th.Thread(target=_warm_tunnel, daemon=True, name="warm-tunnel").start()
+        try:
+            from navigator.meeting.warm_pool import start_warm_pool
+
+            start_warm_pool()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[warm] pool start skipped: {exc}", flush=True)
+        yield
+    finally:
+        # join() waits up to 2s; keep that off the event loop. finally so a
+        # crash during startup or the running app still stops the loop.
+        await asyncio.to_thread(_runner.stop_sync)
+        try:
+            from navigator.meeting.warm_pool import get_warm_pool
+
+            get_warm_pool().stop()
+        except Exception:  # noqa: BLE001
+            pass
 
 def get_registry() -> Registry:
     return _registry

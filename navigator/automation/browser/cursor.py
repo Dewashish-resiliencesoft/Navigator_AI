@@ -477,16 +477,38 @@ def replay_mouse_path(
     return x1, y1
 
 
+def _live_viewport(page: Page) -> dict[str, float]:
+    """Viewport in CSS pixels. Prefer the live window over a launch default.
+
+    A teammate may launch at 1920x1080. Reading ``window.innerWidth`` here
+    keeps scroll-into-view correct for either size. 1280x720 is only the
+    last resort when the page cannot be asked.
+    """
+    vp = getattr(page, "viewport_size", None)
+    if callable(vp):
+        try:
+            vp = vp()
+        except Exception:  # noqa: BLE001
+            vp = None
+    if isinstance(vp, dict) and vp.get("width") and vp.get("height"):
+        return {"width": float(vp["width"]), "height": float(vp["height"])}
+    try:
+        live = page.evaluate(
+            "() => ({width: window.innerWidth || 0, height: window.innerHeight || 0})"
+        )
+    except Exception:  # noqa: BLE001
+        live = None
+    if isinstance(live, dict) and live.get("width") and live.get("height"):
+        return {"width": float(live["width"]), "height": float(live["height"])}
+    return {"width": 1280.0, "height": 720.0}
+
+
 def _box_in_viewport(
     page: Page, box: dict[str, float] | None, *, margin: float = 8.0
 ) -> bool:
     if not box:
         return False
-    vp = page.viewport_size
-    if not vp:
-        from navigator.automation.browser.viewport import viewport_dict
-
-        vp = viewport_dict()
+    vp = _live_viewport(page)
     return (
         box["y"] + box["height"] > margin
         and box["y"] < vp["height"] - margin
@@ -515,28 +537,29 @@ def _smooth_scroll_into_view(
         return
     if MOTION_SCALE <= 0:
         try:
-            loc.scroll_into_view_if_needed(timeout=timeout)
+            loc.scroll_into_view_if_needed(timeout=min(timeout, 1500))
         except Exception:  # noqa: BLE001
             pass
         return
+    # Instant scroll into the live viewport. Smooth scrollIntoView follows a
+    # CSS animation that sticks (the 2s poll used to end with the box still
+    # off-screen) and does not move an inner overflow container.
     try:
-        loc.evaluate(
-            "el => el.scrollIntoView({behavior:'smooth', block:'center', inline:'nearest'})"
-        )
+        from navigator.automation.browser.page_snapshot import scroll_locator_into_view
+
+        scroll_locator_into_view(page, loc)
     except Exception:  # noqa: BLE001
-        try:
-            loc.scroll_into_view_if_needed(timeout=timeout)
-        except Exception:  # noqa: BLE001
-            return
-    deadline = time.monotonic() + 2.0
-    while time.monotonic() < deadline:
-        _paced_wait(page, 50, on_frame)
-        try:
-            box = loc.bounding_box(timeout=500)
-        except Exception:  # noqa: BLE001
-            box = None
-        if _box_in_viewport(page, box, margin=40):
-            break
+        pass
+    try:
+        box = loc.bounding_box(timeout=500)
+    except Exception:  # noqa: BLE001
+        box = None
+    if _box_in_viewport(page, box, margin=40):
+        return
+    try:
+        loc.scroll_into_view_if_needed(timeout=min(float(timeout), 1500))
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def guide_to(

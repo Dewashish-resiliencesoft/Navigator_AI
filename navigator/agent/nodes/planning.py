@@ -808,7 +808,9 @@ def _decide_live_turn(
     enriched = utterance
     if deps.screen_context is not None:
         try:
-            screen = (deps.screen_context() or "")[:400]
+            from navigator.automation.browser.page_snapshot import attach_snapshot
+
+            screen = attach_snapshot(deps.page, deps.screen_context() or "", limit=400)
             if screen.strip():
                 enriched = f"{utterance} {screen}"
         except Exception:  # noqa: BLE001
@@ -1105,7 +1107,9 @@ def _try_turn_brain(
     screen = ""
     if deps.screen_context is not None:
         try:
-            screen = deps.screen_context() or ""
+            from navigator.automation.browser.page_snapshot import attach_snapshot
+
+            screen = attach_snapshot(deps.page, deps.screen_context() or "")
         except Exception as exc:  # noqa: BLE001
             print(f"[plan] screen_context skipped: {exc}", flush=True)
     try:
@@ -1764,7 +1768,9 @@ def _resolve_flow_choice(
     screen = ""
     if deps.screen_context is not None:
         try:
-            screen = deps.screen_context() or ""
+            from navigator.automation.browser.page_snapshot import attach_snapshot
+
+            screen = attach_snapshot(deps.page, deps.screen_context() or "")
         except Exception as exc:  # noqa: BLE001
             print(f"[plan] screen_context skipped: {exc}", flush=True)
     chooser_kwargs = dict(

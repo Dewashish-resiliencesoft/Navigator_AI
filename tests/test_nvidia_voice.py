@@ -347,8 +347,10 @@ def test_pump_cmd_nvidia_does_not_send_text_to_gemini(monkeypatch):
             sent.append(text)
             agent._stop.set()
 
-    def fake_tts(bridge_arg, text, *, language):
+    def fake_tts(bridge_arg, text, *, language, cancel=None, on_first_audio=None):
         bridge_arg.push_outbound_pcm(b"\x01\x00" * 8, sample_rate=24000, writer="nvidia-tts")
+        if on_first_audio is not None:
+            on_first_audio()
         return 0.4
 
     monkeypatch.setattr("navigator.voice.tts.try_nvidia_tts", fake_tts)

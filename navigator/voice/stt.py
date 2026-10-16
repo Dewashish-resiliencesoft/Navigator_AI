@@ -9,8 +9,14 @@ Silero VAD v5 wants fixed 512-sample windows @ 16 kHz (32 ms).
 from __future__ import annotations
 
 import io
+import threading
 import wave
 from collections.abc import Callable, Iterator
+
+# One partial transcript after this much speech, while the utterance continues.
+# The final segment is still yielded after silence. Hosted ASR is request/response;
+# this is the streaming hook those endpoints actually support.
+PARTIAL_AFTER_MS = 400
 
 SAMPLE_RATE = 16_000
 # Silero VAD v5 requires exactly 512 samples @ 16 kHz (32 ms). Not 200 ms.
@@ -33,12 +39,27 @@ class VoiceSegmenter:
         self.min_silence_ms = min_silence_ms
         self._score = score_frame
 
-    def segments(self, frames: Iterator[bytes]) -> Iterator[bytes]:
+    def segments(
+        self,
+        frames: Iterator[bytes],
+        *,
+        on_partial: Callable[[bytes], None] | None = None,
+        partial_after_ms: int = PARTIAL_AFTER_MS,
+    ) -> Iterator[bytes]:
+        """Yield one complete utterance after silence.
+
+        ``on_partial`` is called once per utterance after ``partial_after_ms``
+        of speech, with the audio so far. It must return quickly (callers
+        transcribe on a background thread). The final yield is unchanged.
+        """
         score = self._score or _silero_scorer()
         silence_needed = max(1, self.min_silence_ms // FRAME_MS)
+        partial_frames = max(1, int(partial_after_ms) // FRAME_MS)
         buf = bytearray()
         in_speech = False
         silent_frames = 0
+        speech_frames = 0
+        partial_sent = False
 
         for frame in _fixed_frames(frames, BYTES_PER_FRAME):
             if len(frame) == 0:
@@ -48,7 +69,18 @@ class VoiceSegmenter:
             if speaking:
                 in_speech = True
                 silent_frames = 0
+                speech_frames += 1
                 buf.extend(frame)
+                if (
+                    on_partial is not None
+                    and not partial_sent
+                    and speech_frames >= partial_frames
+                ):
+                    partial_sent = True
+                    try:
+                        on_partial(bytes(buf))
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[stt] partial hook failed: {exc}", flush=True)
                 continue
             if in_speech:
                 buf.extend(frame)
@@ -58,6 +90,8 @@ class VoiceSegmenter:
                     buf.clear()
                     in_speech = False
                     silent_frames = 0
+                    speech_frames = 0
+                    partial_sent = False
         if in_speech and buf:
             yield bytes(buf)
 
@@ -117,6 +151,40 @@ def pcm16_to_wav_bytes(pcm: bytes, *, sample_rate: int = SAMPLE_RATE) -> bytes:
         wf.setframerate(sample_rate)
         wf.writeframes(pcm)
     return buf.getvalue()
+
+
+def spawn_partial_transcript(
+    pcm: bytes,
+    transcribe_fn: Callable[[bytes], str],
+    on_text: Callable[[str], None],
+) -> None:
+    """Transcribe a mid-utterance buffer on a background thread.
+
+    Skipped when NVIDIA STT is selected: that hosted tier is about 40
+    requests per minute, and the final utterance is already one request.
+    Default Groq STT fires one extra call so the brain can prefetch before
+    silence closes the utterance.
+    """
+    from navigator.voice.nvidia import stt_selected
+
+    if stt_selected() or not pcm:
+        return
+
+    def _run() -> None:
+        try:
+            text = (transcribe_fn(pcm) or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[stt] partial skipped: {exc}", flush=True)
+            return
+        if not text:
+            return
+        print(f"[stt] partial {text[:80]!r}", flush=True)
+        try:
+            on_text(text)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[stt] partial handler failed: {exc}", flush=True)
+
+    threading.Thread(target=_run, name="stt-partial", daemon=True).start()
 
 
 def transcribe(

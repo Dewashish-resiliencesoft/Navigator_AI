@@ -93,6 +93,11 @@ def build_prompt(
         lines.extend(
             ["What is on screen right now:", screen_context.strip()[:1200]]
         )
+        if "below the fold" in screen_context or "viewport=" in screen_context:
+            lines.append(
+                "Narrate only the controls listed as visible. When the target is "
+                "below the fold, scroll it into view before describing it."
+            )
     lines.extend(
         [
             "Transcript:",

@@ -134,6 +134,23 @@ def pieces(text: str, max_chars: int = 220) -> list[str]:
     return out or ([text.strip()] if text.strip() else [])
 
 
+def lead_and_rest(text: str, max_chars: int = 220) -> list[str]:
+    """First sentence alone, then the rest in ``pieces``.
+
+    The first piece can be spoken while later sentences are still translated
+    or synthesized. A single sentence stays one piece (long ones still split
+    only past ``max_chars``).
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    sents = [s.strip() for s in _SENT.split(raw) if s.strip()]
+    if len(sents) <= 1:
+        return pieces(raw, max_chars) if len(raw) > max_chars else [raw]
+    rest = pieces(" ".join(sents[1:]), max_chars)
+    return [sents[0], *rest]
+
+
 def est_seconds(text: str, lang: str = "en") -> float:
     """Rough spoken length: ~2.6 words/s English, ~2.2 Hindi."""
     words = len((text or "").split())

@@ -96,11 +96,16 @@ def synthesize_pcm(
     *,
     language: str,
     on_chunk: Callable[[bytes, int], None],
+    cancel: Callable[[], bool] | None = None,
 ) -> float:
     """Synthesize ``text`` and deliver 16-bit mono PCM via ``on_chunk``.
 
-    Returns seconds of audio pushed. Raises ``NvidiaVoiceError`` on 429,
-    transport errors, or an empty body — no retries.
+    Returns seconds of audio pushed. ``cancel`` is checked between chunks so
+    a barge-in stops the stream instead of playing out the rest of the line.
+    A cancel returns the audio already pushed (possibly 0) and does not raise,
+    so the caller does not also speak the line through Gemini.
+    Raises ``NvidiaVoiceError`` on 429, transport errors, or an empty body
+    when nothing was cancelled — no retries.
     """
     from navigator.core.settings import settings
 
@@ -119,7 +124,11 @@ def synthesize_pcm(
     url = _tts_url(settings.nvidia_tts_base_url)
     rate = int(settings.nvidia_tts_sample_rate or 24_000)
     total = 0.0
+    stopped = False
     for piece in _chunks(cleaned):
+        if cancel is not None and cancel():
+            stopped = True
+            break
         started = time.monotonic()
         pushed = 0
         got_rate = rate
@@ -135,12 +144,19 @@ def synthesize_pcm(
             api_key=settings.nvidia_api_key,
             timeout=_TTS_TIMEOUT_S,
             fallback_rate=rate,
+            cancel=cancel,
         ):
+            if cancel is not None and cancel():
+                stopped = True
+                break
             if not pcm:
                 continue
             on_chunk(pcm, got_rate)
             pushed += len(pcm)
             total += len(pcm) / float(got_rate * 2)
+        if stopped:
+            print("[nvidia-tts] stopped: barge-in", flush=True)
+            return total
         if pushed == 0:
             raise NvidiaVoiceError("empty audio")
         elapsed_ms = (time.monotonic() - started) * 1000.0
@@ -243,6 +259,7 @@ def _stream_tts(
     api_key: str,
     timeout: float,
     fallback_rate: int,
+    cancel: Callable[[], bool] | None = None,
 ):
     """Yield ``(pcm, sample_rate)`` as the HTTP body arrives.
 
@@ -255,6 +272,8 @@ def _stream_tts(
         is_wav: bool | None = None
         wav_buf = b""
         while True:
+            if cancel is not None and cancel():
+                break
             chunk = resp.read(4800)
             if not chunk:
                 break

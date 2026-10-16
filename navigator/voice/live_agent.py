@@ -341,9 +341,19 @@ class LiveAgent:
             d["_vad_run_start"] = 0.0
             return
         start = d.get("_vad_run_start") or 0.0
-        if (start and now - start >= self.VAD_MIN_S and getattr(self, "_in_say", False)
-                and self.speaking and not self.interrupted
-                and d.get("_vad_cut_at", 0.0) < getattr(self, "_say_queued_at", 0.0)):
+        playing = (
+            (getattr(self, "_in_say", False) or self.speaking)
+            and self.playback_phase not in {"interrupted", "stopped", "cleanup", "ready"}
+        )
+        anchor = max(
+            float(getattr(self, "_say_queued_at", 0.0) or 0.0),
+            float(getattr(self, "_audio_rx_at", 0.0) or 0.0),
+        )
+        # Scripted lines and Q&A answers both stop. The old gate required
+        # ``_in_say``, so a prospect talking over a Live answer waited for a
+        # transcript that never confirmed the interrupt.
+        if (start and now - start >= self.VAD_MIN_S and playing and not self.interrupted
+                and d.get("_vad_cut_at", 0.0) < anchor):
             d["_vad_cut_at"] = now
             print(f"[barge] voice energy {rms:.0f} for {now - start:.2f}s — stopping playback now", flush=True)
             self._confirm_barge_in(reason="vad")
@@ -448,6 +458,7 @@ class LiveAgent:
         except Exception:  # noqa: BLE001
             pass
         self.audio_flush_count += 1
+        self._drop_inflight_audio = True
         self._turn_done.set()
         self._set_playback("stopped", uid, reason=reason)
         self._set_playback("cleanup", uid, reason=reason)
@@ -497,10 +508,17 @@ class LiveAgent:
             return
         spoken.add(key)
         _lang0 = str(getattr(self.cfg, "language", "en") or "en")
+        from navigator.voice.line_prep import lead_and_rest as _lead_and_rest
+
+        _raw_parts = _lead_and_rest(text)
         if _lang0 != "en" and mode in ("verbatim", "natural"):
             from navigator.voice import line_prep
 
-            line_prep.prefetch(text, _lang0)  # translate while we wait for the floor
+            # Translate sentence by sentence while waiting for the floor.
+            # The first sentence is ready when we start; the rest finish
+            # while that sentence is already being spoken.
+            for _piece in _raw_parts:
+                line_prep.prefetch(_piece, _lang0)
         if not self.can_start_utterance():
             print(
                 f"[utterance] id={uid} wait_idle phase={self.playback_phase} "
@@ -528,23 +546,15 @@ class LiveAgent:
             while time.monotonic() < end and not self._stop.is_set():
                 self._pump_ui()
                 self._stop.wait(min(0.1, max(0.0, end - time.monotonic())))
-        lang = str(getattr(self.cfg, "language", "en") or "en")
-        say_text = text
-        if lang != "en" and mode in ("verbatim", "natural"):
-            # Pre-translate: Live translating a long line on the fly delivered audio
-            # slower than realtime (17:38 Hindi line: ~30 underruns).
-            from navigator.voice import line_prep
-
-            t0 = time.monotonic()
-            say_text = line_prep.translate(text, lang)
-            if say_text != text:
-                print(f"[speak] pre-translated to {lang} in {time.monotonic() - t0:.1f}s", flush=True)
-        from navigator.voice.line_prep import est_seconds, pieces as _pieces
+        lang = _lang0
+        from navigator.voice.line_prep import est_seconds, translate as _translate
 
         self._rotate_before_line(uid)
 
-        parts = _pieces(say_text) if len(say_text) > 240 else [say_text]
-        self.last_spoken = say_text
+        # Always lead with the first sentence. Waiting to translate or
+        # synthesize the whole paragraph is what made the first audio late.
+        parts = _raw_parts or [text]
+        self.last_spoken = text
         self.interrupted = False
         self.speaking = True
         self._set_playback("synthesizing", uid or None)
@@ -553,7 +563,18 @@ class LiveAgent:
         self._in_say = True
         self._say_queued_at = time.monotonic()
         print(f"[speak] {text}", flush=True)
-        for i, part in enumerate(parts):
+        for i, raw_part in enumerate(parts):
+            part = raw_part
+            if lang != "en" and mode in ("verbatim", "natural"):
+                # Only this sentence blocks. Later ones were prefetched above.
+                t0 = time.monotonic()
+                part = _translate(raw_part, lang)
+                if part != raw_part:
+                    print(
+                        f"[speak] pre-translated piece {i + 1}/{len(parts)} "
+                        f"to {lang} in {time.monotonic() - t0:.1f}s",
+                        flush=True,
+                    )
             self._turn_done.clear()
             self._turn_said = []
             self._last_turn_audio_s = 0.0
@@ -743,15 +764,19 @@ class LiveAgent:
         jit = 250.0  # Attendee jitter buffer (patch) — audio heard ~this much later
         q = getattr(self, "_say_queued_at", 0.0)
         if q and getattr(self, "_in_say", False):
+            ms = (now - q) * 1000
             self._say_queued_at = 0.0
-            logtime.record("text_queued->first_audio", (now - q) * 1000)
+            logtime.record("text_queued->first_audio", ms)
             logtime.record("first_audio->heard_in_zoom_est", jit + 40)
+            print(f"[voice] ttfa_ms={ms:.0f} path=scripted", flush=True)
             return
         u = getattr(self, "_await_answer_from", 0.0)
         if u and not getattr(self, "_in_say", False):
+            ms = (now - u) * 1000
             self._await_answer_from = 0.0
-            logtime.record("user_end->first_audio", (now - u) * 1000)
+            logtime.record("user_end->first_audio", ms)
             logtime.record("first_audio->heard_in_zoom_est", jit + 40)
+            print(f"[voice] ttfa_ms={ms:.0f} path=answer", flush=True)
 
     def _pump_ui(self) -> None:
         pump = self.cfg.ui_pump
@@ -1353,6 +1378,16 @@ class LiveAgent:
                 return
             if self._barge_state != "probable":
                 self._note_probable_barge()
+            voice_at = float(getattr(self, "_last_voice_at", 0.0) or 0.0)
+            # Inbound energy in the last 0.8s is the prospect, not our own
+            # next-piece send. Stop playback now; do not wait for the transcript
+            # (that path used to return and never call _confirm_barge_in).
+            if (
+                voice_at
+                and now - voice_at < 0.8
+                and (self.speaking or getattr(self, "_in_say", False))
+            ):
+                self._confirm_barge_in(reason="voice")
                 return
             if now - self._barge_probable_at < self._barge_confirm_s:
                 print(
@@ -1361,7 +1396,7 @@ class LiveAgent:
                     flush=True,
                 )
                 return
-            # VAD alone (noise, 'e') never confirms; wait for a real transcript.
+            # No recent voice energy: hold until a real transcript confirms.
             print("[live] barge-in held: waiting for real STT speech", flush=True)
             return
 
@@ -1371,7 +1406,9 @@ class LiveAgent:
             inline = getattr(part, "inline_data", None)
             data = getattr(inline, "data", None) if inline is not None else None
             if data and not self.listen_only:
-                if self.playback_phase in {"interrupted", "stopped", "cleanup"}:
+                if getattr(self, "_drop_inflight_audio", False) or self.playback_phase in {
+                    "interrupted", "stopped", "cleanup"
+                }:
                     continue
                 if getattr(self, "_mute_reply", False) or self._unsolicited_audio():
                     # not voiced, but the model IS generating: not a stall
@@ -1405,6 +1442,7 @@ class LiveAgent:
             not self.listen_only
             and not (getattr(model_turn, "parts", None) or [])
             and getattr(msg, "data", None)
+            and not getattr(self, "_drop_inflight_audio", False)
             and self.playback_phase not in {"interrupted", "stopped", "cleanup"}
         ):
             if self._barge_state == "probable":
@@ -1487,6 +1525,7 @@ class LiveAgent:
             if ended:
                 self._turn_closed = True
             if done_now:
+                self._drop_inflight_audio = False
                 self._last_turn_audio_s = getattr(self, "_turn_audio_s", 0.0)
                 self.speaking = False
                 mark = getattr(self.bridge, "mark_line_end", None)
@@ -1523,15 +1562,26 @@ class LiveAgent:
                     from navigator.voice.tts import try_nvidia_tts
 
                     self._nvidia_synth = True
+
+                    def _cancel() -> bool:
+                        return bool(self.interrupted or self._stop.is_set())
+
+                    def _first_audio() -> None:
+                        self._note_first_audio()
+
                     try:
                         audio_s = await asyncio.to_thread(
                             try_nvidia_tts,
                             self.bridge,
                             cmd.text,
                             language=str(self.cfg.language or "en"),
+                            cancel=_cancel,
+                            on_first_audio=_first_audio,
                         )
                     finally:
                         self._nvidia_synth = False
+                    # 0.0 is a barge-in before the first byte, not a failure.
+                    # Falling through to Gemini would speak the line again.
                     if audio_s is not None:
                         self._finish_nvidia_turn(cmd.text, audio_s)
                         continue
@@ -1564,6 +1614,7 @@ class LiveAgent:
         self._gen_done_at = now
         self._drain_until = now + min(MAX_DRAIN_S, max(0.0, float(audio_s or 0.0))) + 0.3
         self._audio_rx_at = now
+        self._drop_inflight_audio = False
         self._turn_done.set()
         self._emit(LiveEvent(kind="said", text=text))
         self._emit(LiveEvent(kind="turn_complete"))

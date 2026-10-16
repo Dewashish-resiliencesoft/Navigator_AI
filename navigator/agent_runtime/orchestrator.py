@@ -151,6 +151,7 @@ class AgentOrchestrator:
             task_status=self.store.state.task.status.value if self.store.state.task else "",
             task_goal=self.store.state.task.goal if self.store.state.task else "",
             browser_ready=True,
+            snapshot=str(dom.get("snapshot") or ""),
         )
 
     def handle_utterance(self, text: str) -> RouteDecision:

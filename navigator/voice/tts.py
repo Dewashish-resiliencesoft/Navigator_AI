@@ -7,6 +7,7 @@ speaks the same phrased text through :class:`NvidiaSpeaker`, which pushes
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from navigator.voice.nvidia import NvidiaVoiceError, synthesize_pcm, voice_selected
@@ -74,26 +75,52 @@ class NvidiaSpeaker:
             except TypeError:
                 self.fallback.say(text)
 
-    def speak_pcm(self, text: str, *, language: str) -> float:
+    def speak_pcm(
+        self,
+        text: str,
+        *,
+        language: str,
+        cancel: Callable[[], bool] | None = None,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> float:
         """Push PCM for ``text``. Returns seconds of audio. Raises on failure."""
+        first = {"done": False}
 
         def _push(pcm: bytes, rate: int) -> None:
+            if not first["done"]:
+                first["done"] = True
+                if on_first_audio is not None:
+                    try:
+                        on_first_audio()
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[nvidia-tts] ttfa hook failed: {exc}", flush=True)
             self.bridge.push_outbound_pcm(pcm, sample_rate=rate, writer="nvidia-tts")
 
-        return synthesize_pcm(text, language=language, on_chunk=_push)
+        return synthesize_pcm(text, language=language, on_chunk=_push, cancel=cancel)
 
 
-def try_nvidia_tts(bridge: Any, text: str, *, language: str) -> float | None:
+def try_nvidia_tts(
+    bridge: Any,
+    text: str,
+    *,
+    language: str,
+    cancel: Callable[[], bool] | None = None,
+    on_first_audio: Callable[[], None] | None = None,
+) -> float | None:
     """Speak ``text`` on NVIDIA when that provider is selected.
 
     Returns seconds of audio, or ``None`` when the caller should use the
-    Gemini Live path (provider is not nvidia, or NVIDIA failed).
+    Gemini Live path (provider is not nvidia, or NVIDIA failed). A barge-in
+    cancel returns the seconds already pushed (possibly 0) so the line is
+    not spoken a second time through Gemini.
     """
     if not voice_selected():
         return None
     speaker = NvidiaSpeaker(bridge, language=language)
     try:
-        return speaker.speak_pcm(text, language=language)
+        return speaker.speak_pcm(
+            text, language=language, cancel=cancel, on_first_audio=on_first_audio
+        )
     except NvidiaVoiceError as exc:
         print(f"[nvidia-tts] falling back to Gemini ({exc})", flush=True)
         return None

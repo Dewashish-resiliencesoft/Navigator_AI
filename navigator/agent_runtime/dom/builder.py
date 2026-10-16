@@ -33,8 +33,14 @@ def _element_record(el: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_dom_state(page: Any, *, page_id: str = "", detailed: bool = False) -> dict[str, Any]:
-    """Two representations: compact for Live, detailed for Flash."""
+def build_dom_state(
+    page: Any,
+    *,
+    page_id: str = "",
+    detailed: bool = False,
+    graph: Any = None,
+) -> dict[str, Any]:
+    """Compact viewport awareness. Detailed mode adds on-screen elements only."""
     url = ""
     title = ""
     try:
@@ -42,6 +48,41 @@ def build_dom_state(page: Any, *, page_id: str = "", detailed: bool = False) -> 
         title = page.title() or ""
     except Exception:  # noqa: BLE001
         pass
+
+    from navigator.automation.browser.viewport_awareness import measure_viewport
+
+    awareness = measure_viewport(page, graph=graph, page_id=page_id)
+    if awareness.placements or awareness.current_section:
+        visible = [
+            p for p in awareness.placements if p.relation in {"visible", "partial"}
+        ]
+        labels = [p.name for p in visible if p.name][:12]
+        live_context = {
+            "page": page_id or awareness.current_section_id or "unknown",
+            "url": url,
+            "title": title,
+            "currently_on_screen": awareness.current_section,
+            "nearby_offscreen": awareness.nearby_payload(),
+            "visible_elements": labels,
+            "active_element": labels[0] if labels else "",
+        }
+        if detailed:
+            cap = 40
+            live_context["elements"] = [
+                {
+                    "id": p.id,
+                    "type": p.kind,
+                    "text": p.name[:80],
+                    "visible": p.relation == "visible",
+                    "relation": p.relation,
+                    "distance_px": p.distance_px,
+                    "enabled": True,
+                    "fillable": False,
+                    "tag": p.kind,
+                }
+                for p in visible[:cap]
+            ]
+        return live_context
 
     elements: list[dict[str, Any]] = []
     try:
@@ -76,6 +117,8 @@ def build_dom_state(page: Any, *, page_id: str = "", detailed: bool = False) -> 
         "page": page_id or "unknown",
         "url": url,
         "title": title,
+        "currently_on_screen": "",
+        "nearby_offscreen": [],
         "visible_elements": visible_labels,
         "active_element": visible_labels[0] if visible_labels else "",
         "viewport": viewport,

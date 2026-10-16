@@ -145,6 +145,9 @@ def click_element(
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
     timeout = _action_timeout(call.expects.timeout_ms)
+    from navigator.automation.browser.viewport_awareness import bring_alias_into_view
+
+    bring_alias_into_view(page, graph, page_id, call.selector)
     from navigator.automation.browser.cursor import click_with_cursor
 
     click_with_cursor(
@@ -164,6 +167,9 @@ def fill_field(
 ) -> tuple[str, str]:
     css = graph.selector(page_id, call.selector)
     timeout = _action_timeout(call.expects.timeout_ms)
+    from navigator.automation.browser.viewport_awareness import bring_alias_into_view
+
+    bring_alias_into_view(page, graph, page_id, call.selector)
     from navigator.automation.browser.cursor import (
         PAUSE_AFTER_CLICK_MS,
         _clear_highlight,
@@ -233,6 +239,7 @@ def navigate(
     except Exception:  # noqa: BLE001
         current = ""
     if current and same_page_path(current, url):
+        _note_navigation(page, graph, call.page_id)
         return f"already on {call.page_id}", call.page_id
     page.goto(url, timeout=call.expects.timeout_ms, wait_until="domcontentloaded")
     try:
@@ -244,6 +251,7 @@ def navigate(
     except Exception:  # noqa: BLE001
         if on_frame is not None:
             on_frame()
+    _note_navigation(page, graph, call.page_id)
     return f"navigated to {call.page_id} ({url})", call.page_id
 
 
@@ -299,7 +307,14 @@ def scroll_page(
         if on_frame is not None:
             on_frame()
     where = alias or "window"
+    _note_navigation(page, graph, page_id, why="scroll")
     return f"scrolled {where} to ({x},{y})", page_id
+
+
+def _note_navigation(page: Page, graph: SiteGraph, page_id: str, *, why: str = "navigation") -> None:
+    from navigator.automation.browser.viewport_awareness import note_viewport_change
+
+    note_viewport_change(page, graph, page_id, why=why)
 
 
 _HANDLERS: dict[str, Callable[..., tuple[str, str]]] = {

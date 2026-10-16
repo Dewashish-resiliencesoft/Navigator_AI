@@ -31,7 +31,8 @@ from navigator.agent.state import CallDeps, initial_state
 from navigator.automation.browser.cursor import install_cursor, set_screencast_mode
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
 from navigator.automation.browser.product_login import login_product, open_login_page
-from navigator.automation.browser.page_snapshot import planner_screen
+from navigator.automation.browser.page_snapshot import attach_snapshot
+from navigator.automation.browser.screen_context import planner_screen
 from navigator.automation.external_links import url_origin
 from navigator.knowledge.product_brief import load_agent_context
 from navigator.knowledge.site_graph import load_site_graph
@@ -1957,7 +1958,10 @@ def run_live_meet_demo(
                 set_status=lambda mode, label=None: relay.set_status(mode, label),
                 set_avatar_state=relay.set_avatar_state,
                 on_speech=on_speech,
-                screen_context=lambda: planner_screen(page),
+                screen_context=lambda: attach_snapshot(
+                    page,
+                    planner_screen(page, graph=graph_cfg, page_id=page_id),
+                ),
                 product_brief=load_agent_context(
                     product_id or graph_cfg.site,
                     site=getattr(graph_cfg, "site", "") or "",

@@ -14,7 +14,7 @@ speak_error(text)   → recovery or failure message.
                       Used for retries and unrecoverable failures.
 
 push_world_state()  → lightweight JSON nudge so Live has current page context.
-push_dom_context()  → full DOM snapshot (for Flash; Live gets the lightweight path).
+push_dom_context()  → on-screen section plus nearby offscreen (for Flash).
 
 Do NOT call acknowledge() to deliver results.
 Do NOT call speak_result() before the task is verified.
@@ -61,11 +61,11 @@ class LiveAdapter:
 
     # ── context / state nudges ────────────────────────────────────────────
 
-    def push_dom_context(self, page: Any, *, page_id: str) -> None:
-        """Full DOM snapshot for Flash reasoning (not for Live voice path)."""
+    def push_dom_context(self, page: Any, *, page_id: str, graph: Any = None) -> None:
+        """Viewport section snapshot for Flash (not a full-page element dump)."""
         if self._live is None:
             return
-        ctx = build_dom_state(page, page_id=page_id, detailed=False)
+        ctx = build_dom_state(page, page_id=page_id, detailed=False, graph=graph)
         # State lines are context only: nudge() SPEAKS ("User Dashboard updated").
         nudge = getattr(self._live, "add_context", None)
         if callable(nudge):
@@ -80,17 +80,20 @@ class LiveAdapter:
         task_goal: str = "",
         browser_ready: bool = True,
         snapshot: str = "",
+        on_screen: str = "",
     ) -> None:
         """Push a compact one-line world-state hint so Live has current context.
 
-        Intentionally lightweight — Live gets page identity and task status,
-        not full DOM.  Flash gets full DOM when it needs to plan.
+        Intentionally lightweight — Live gets the page and the section on screen.
+        Flash gets that same viewport view, not every element on the page.
         """
         if self._live is None:
             return
         parts: list[str] = []
         if page:
             parts.append(f"page={page}")
+        if on_screen:
+            parts.append(f"on_screen={on_screen}")
         if url:
             parts.append(f"url={url}")
         if task_status:

@@ -119,12 +119,21 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
         name = deps.graph.page(page_id).name
     except Exception:  # noqa: BLE001
         return
+    shown = name
+    try:
+        from navigator.automation.browser.viewport_awareness import measure_viewport
+
+        awareness = measure_viewport(deps.page, graph=deps.graph, page_id=page_id)
+        if awareness.current_section:
+            shown = awareness.current_section
+    except Exception:  # noqa: BLE001
+        shown = name
     try:
         from urllib.parse import urlparse
 
-        live.screen_hint = f"{name} ({urlparse(deps.page.url or '').path})"
+        live.screen_hint = f"{shown} ({urlparse(deps.page.url or '').path})"
     except Exception:  # noqa: BLE001
-        live.screen_hint = name
+        live.screen_hint = shown
     try:
         from navigator.automation.browser.page_snapshot import measure_page
 
@@ -773,6 +782,32 @@ def _tour_for_step(state: CallState, deps: CallDeps, call) -> list[dict]:
         return []
 
 
+def _narration_offscreen(deps: CallDeps, page_id: str, item: dict) -> bool:
+    """Skip a tour label that is still above or below after one informed scroll."""
+    label = str(item.get("label") or "").strip()
+    if not label or deps.page is None:
+        return False
+    try:
+        from navigator.automation.browser.viewport_awareness import (
+            label_still_offscreen,
+            relation_for_label,
+            measure_viewport,
+            scroll_toward_label,
+        )
+
+        awareness = measure_viewport(deps.page, graph=deps.graph, page_id=page_id)
+        rel = relation_for_label(awareness, label)
+        if rel is None or rel in {"visible", "partial"}:
+            return False
+        scroll_toward_label(deps.page, deps.graph, page_id, label)
+        if label_still_offscreen(deps.page, deps.graph, page_id, label):
+            print(f"[viewport] skip narration for offscreen {label!r}", flush=True)
+            return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[viewport] narration check skipped: {exc}", flush=True)
+    return False
+
+
 def _component_tour(state: CallState, deps: CallDeps, call, handle) -> None:
     """Outline each screen component as the line names it (hover/outline only,
     never a click). Targets are precomputed in ``_meta.step_tour``; timing
@@ -782,6 +817,10 @@ def _component_tour(state: CallState, deps: CallDeps, call, handle) -> None:
     if page is None or handle is None:
         return
     tour = _tour_for_step(state, deps, call)
+    if not tour:
+        return
+    page_id = str(state.get("page_id") or "")
+    tour = [item for item in tour if not _narration_offscreen(deps, page_id, item)]
     if not tour:
         return
     from navigator.meeting.ui_jobs import highlight_text

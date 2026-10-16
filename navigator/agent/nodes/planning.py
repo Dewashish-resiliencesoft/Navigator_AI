@@ -150,6 +150,7 @@ def _say(
     """One spoken line via the phrasing layer, falling back to a template."""
     phrase = deps.phrase or phrase_turn
     api_key = deps.groq_api_key if deps.groq_api_key is not None else settings.groq_api_key
+    context = _with_visible_section(deps, context)
     try:
         line = phrase(
             intent=intent,
@@ -170,6 +171,26 @@ def _say(
     line = (line or fallback).strip() or fallback
     _memory(deps).note_spoken(line)
     return line
+
+
+def _with_visible_section(deps: CallDeps, context: str) -> str:
+    """Tell phrasing which section is on screen so it does not narrate the rest."""
+    if getattr(deps, "page", None) is None:
+        return context
+    try:
+        from navigator.automation.browser.screen_context import planner_screen
+
+        viewed = planner_screen(deps.page, graph=deps.graph, page_id="")
+    except Exception:  # noqa: BLE001
+        return context
+    if "currently on screen:" not in viewed:
+        return context
+    note = (
+        viewed
+        + "\nNarrate only the section currently on screen. "
+        "Mention a nearby offscreen section only as the next scroll, with its direction."
+    )
+    return f"{note}\n{context}" if context else note
 
 
 def _guide_page_id(state: CallState) -> str:
@@ -806,15 +827,15 @@ def _decide_live_turn(
     )
 
     enriched = utterance
-    if deps.screen_context is not None:
-        try:
-            from navigator.automation.browser.page_snapshot import attach_snapshot
+    screen = _viewport_screen(deps, page_id, limit=400)
+    try:
+        from navigator.automation.browser.page_snapshot import attach_snapshot
 
-            screen = attach_snapshot(deps.page, deps.screen_context() or "", limit=400)
-            if screen.strip():
-                enriched = f"{utterance} {screen}"
-        except Exception:  # noqa: BLE001
-            pass
+        screen = attach_snapshot(deps.page, screen, limit=400)
+    except Exception:  # noqa: BLE001
+        pass
+    if screen.strip():
+        enriched = f"{utterance} {screen}"
 
     try:
         ruled = route_turn(
@@ -1092,6 +1113,28 @@ def _use_turn_brain(deps: CallDeps) -> bool:
     return bool(settings.gemini_api_key)
 
 
+def _viewport_screen(deps: CallDeps, page_id: str, *, limit: int | None = None) -> str:
+    """On-screen section and nearby off-screen items for the planner. No model call."""
+    text = ""
+    if deps.screen_context is not None:
+        try:
+            text = deps.screen_context() or ""
+        except Exception as exc:  # noqa: BLE001
+            print(f"[plan] screen_context skipped: {exc}", flush=True)
+    if "currently on screen:" not in text and getattr(deps, "page", None) is not None:
+        try:
+            from navigator.automation.browser.screen_context import planner_screen
+
+            viewed = planner_screen(deps.page, graph=deps.graph, page_id=page_id)
+            if "currently on screen:" in viewed:
+                text = viewed
+        except Exception as exc:  # noqa: BLE001
+            print(f"[plan] viewport screen skipped: {exc}", flush=True)
+    if limit is not None:
+        return text[:limit]
+    return text
+
+
 def _try_turn_brain(
     state: CallState, deps: CallDeps, *, utterance: str
 ) -> CallState | None:
@@ -1104,14 +1147,13 @@ def _try_turn_brain(
 
     walkthrough_step = int(state.get("walkthrough_step") or 0)
     allowed = set(deps.graph.pages.keys())
-    screen = ""
-    if deps.screen_context is not None:
-        try:
-            from navigator.automation.browser.page_snapshot import attach_snapshot
+    screen = _viewport_screen(deps, _guide_page_id(state))
+    try:
+        from navigator.automation.browser.page_snapshot import attach_snapshot
 
-            screen = attach_snapshot(deps.page, deps.screen_context() or "")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[plan] screen_context skipped: {exc}", flush=True)
+        screen = attach_snapshot(deps.page, screen)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] screen_context skipped: {exc}", flush=True)
     try:
         png = capture_screenshot_png(deps.page)
     except Exception as exc:  # noqa: BLE001
@@ -1765,14 +1807,13 @@ def _resolve_flow_choice(
         deps.product_id, query, path=chroma_path
     )
     persona = deps.graph.effective_persona()
-    screen = ""
-    if deps.screen_context is not None:
-        try:
-            from navigator.automation.browser.page_snapshot import attach_snapshot
+    screen = _viewport_screen(deps, page_id)
+    try:
+        from navigator.automation.browser.page_snapshot import attach_snapshot
 
-            screen = attach_snapshot(deps.page, deps.screen_context() or "")
-        except Exception as exc:  # noqa: BLE001
-            print(f"[plan] screen_context skipped: {exc}", flush=True)
+        screen = attach_snapshot(deps.page, screen)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[plan] screen_context skipped: {exc}", flush=True)
     chooser_kwargs = dict(
         page_id=page_id,
         flow_ids=flow_ids,

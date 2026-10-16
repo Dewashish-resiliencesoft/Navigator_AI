@@ -98,6 +98,12 @@ def build_prompt(
                 "Narrate only the controls listed as visible. When the target is "
                 "below the fold, scroll it into view before describing it."
             )
+        if "currently on screen:" in screen_context:
+            lines.append(
+                "Narrate only the section currently on screen. "
+                "Mention a nearby offscreen section only as the next scroll, "
+                "with its direction and distance. Do not describe the rest of the page."
+            )
     lines.extend(
         [
             "Transcript:",

@@ -1522,7 +1522,9 @@ class LiveAgent:
             heard = getattr(sc, "input_transcription", None)
             if heard is not None and getattr(heard, "text", ""):
                 text = heard.text
-                if self.director_only:
+                # Scripted director mode ignores meeting audio. Listen-only is the
+                # intake window: the mouth stays shut, but the transcript must land.
+                if self.director_only and not self.listen_only:
                     pass
                 elif not _is_real_speech(text):
                     print(f"[live] ignoring noise transcript: {text!r}", flush=True)
@@ -1726,11 +1728,12 @@ def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
         )
     if cmd.mode == "natural":
         return (
-            f"[Say the following to the person{lang_hint}, naturally and conversationally, "
-            f"then stop. Do not add extra commentary or questions after. Do not call any tools.] {cmd.text}"
+            f"[Say the following to the person{lang_hint}, in your own words, "
+            f"naturally and conversationally, then stop. Do not add extra commentary "
+            f"or questions after. Do not call any tools.] {cmd.text}"
         )
-    # verbatim — used only for intake questions where rephrasing would change meaning
+    # verbatim — intake questions, where rephrasing would change the meaning
     return (
-        f"[Say the following to the person now{lang_hint}, exactly as written, then stop. Do not call any tools.] "
-        f"{cmd.text}"
+        f"[Say the following to the person now{lang_hint}, word for word, exactly as written, "
+        f"then stop. Do not call any tools.] {cmd.text}"
     )

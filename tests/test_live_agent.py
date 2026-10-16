@@ -268,6 +268,9 @@ def test_resumption_handle_is_kept():
 
 def test_wait_for_heard_returns_input_transcription():
     agent = _agent(FakeBridge())
+    # Scripted mode starts director-only and drops meeting audio. This test is
+    # the open-mic path intake uses before wait_for_heard.
+    agent.set_director_only(False)
     sc = SimpleNamespace(
         interrupted=False,
         model_turn=None,

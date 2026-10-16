@@ -172,7 +172,10 @@ def assess_demo_readiness(
             )
         )
 
-    gemini_ok = bool(settings.gemini_api_key)
+    # Voice tries NAVIGATOR_GEMINI_LIVE_API_KEY first, then the general Gemini pool.
+    from navigator.core.gemini_keys import gemini_live_key_candidates
+
+    gemini_ok = bool(gemini_live_key_candidates())
     checks.append(
         ReadinessCheck(
             id="live",
@@ -180,7 +183,10 @@ def assess_demo_readiness(
             message=(
                 "Gemini key set — Live audio can start."
                 if gemini_ok
-                else "Set NAVIGATOR_GEMINI_API_KEY — Meet voice is Gemini Live only."
+                else (
+                    "Set NAVIGATOR_GEMINI_LIVE_API_KEY or NAVIGATOR_GEMINI_API_KEY "
+                    "— Meet voice is Gemini Live only."
+                )
             ),
             blocking=True,
         )

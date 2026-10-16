@@ -151,6 +151,7 @@ class AgentOrchestrator:
             task_status=self.store.state.task.status.value if self.store.state.task else "",
             task_goal=self.store.state.task.goal if self.store.state.task else "",
             browser_ready=True,
+            snapshot=str(dom.get("snapshot") or ""),
         )
 
     def handle_utterance(self, text: str) -> RouteDecision:
@@ -503,7 +504,16 @@ class AgentOrchestrator:
             latency_ms=latency_ms,
             payload=payload or {},
         )
+        stamped = dict(event.payload)
+        stamped.setdefault("monotonic_ns", event.monotonic_ns)
+        event = event.model_copy(update={"payload": stamped})
         self.events.emit(event)
+        try:
+            from navigator.agent_runtime.sync_clock import forward_event
+
+            forward_event(event)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[runtime] sync clock forward failed: {exc}", flush=True)
 
 
 def live_screen_tools_active() -> bool:

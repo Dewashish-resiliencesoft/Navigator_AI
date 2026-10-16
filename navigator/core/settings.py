@@ -29,11 +29,52 @@ class Settings(BaseSettings):
     db_path: Path = Path("navigator.db")
     #: Warm female voice for English + Hindi (Gemini Live prebuilt).
     gemini_live_voice: str = "Sulafat"
+    #: Who speaks scripted lines. ``gemini_live`` is the current mouth.
+    #: ``nvidia`` synthesizes the same phrased text on NVIDIA's hosted
+    #: Magpie TTS and pushes PCM into the Attendee bridge; 429/errors
+    #: fall back to Gemini Live. ``fish`` does the same with Fish Audio's
+    #: free streaming model (``s2.1-pro-free``).
+    voice_provider: Literal["gemini_live", "nvidia", "fish"] = "gemini_live"
+    #: Who transcribes meeting audio on the Groq Whisper path.
+    #: ``nvidia`` uses the hosted Parakeet ASR (English). Hindi and
+    #: NVIDIA errors fall back to Groq.
+    stt_provider: Literal["groq", "nvidia"] = "groq"
+    #: build.nvidia.com API key. Empty unless voice or STT provider is nvidia.
+    nvidia_api_key: str = ""
+    #: Catalog model the TTS base URL is expected to serve.
+    nvidia_tts_model: str = "magpie-tts-multilingual"
+    #: Magpie multilingual voices. Hindi has no Aria; Sofia is the female hi-IN voice.
+    nvidia_tts_voice: str = "Magpie-Multilingual.EN-US.Aria"
+    nvidia_tts_voice_hi: str = "Magpie-Multilingual.HI-IN.Sofia"
+    #: Hosted Magpie multilingual function (build.nvidia.com API reference),
+    #: or a self-hosted NIM origin (http://host:9000).
+    nvidia_tts_base_url: str = (
+        "https://877104f7-e885-42b9-8de8-f6e4c6303969.invocation.api.nvcf.nvidia.com"
+    )
+    #: Requested PCM rate. 24 kHz matches Gemini Live into Attendee.
+    nvidia_tts_sample_rate: int = 24_000
+    #: Catalog model the STT base URL is expected to serve (English Parakeet).
+    nvidia_stt_model: str = "parakeet-ctc-1.1b-asr"
+    #: Hosted Parakeet CTC function, or a self-hosted ASR NIM origin.
+    nvidia_stt_base_url: str = (
+        "https://1598d209-5e27-4d3c-8079-4751568b1081.invocation.api.nvcf.nvidia.com"
+    )
+    #: Fish Audio key from the operator env. Empty unless voice_provider is fish.
+    #: Not the removed WAV-stack ``fish_api_key`` and not a vault provider.
+    fish_audio_api_key: str = ""
+    #: Free Fish model. The HTTP client always sends this header; a blank or
+    #: other value must not fall through to the paid ``s2.1-pro`` model.
+    fish_audio_model: str = "s2.1-pro-free"
+    #: Streaming TTS endpoint. Response body is raw PCM when format=pcm.
+    fish_audio_base_url: str = "https://api.fish.audio/v1/tts"
+    #: PCM rate into Attendee. Fish accepts 24000 for 16-bit mono.
+    fish_audio_sample_rate: int = 24_000
     #: Gemini Live model. Audio in/out, native VAD, sync tools only.
     live_conversational_model: str = "gemini-3.1-flash-live-preview"
     #: Silence before Live ends the human's turn. Google's default is ~800ms;
-    #: under ~300ms a mid-sentence pause reads as end-of-turn.
-    live_vad_silence_ms: int = 800
+    #: under ~300ms a mid-sentence pause reads as end-of-turn. 500ms is the
+    #: low-latency endpoint that still survives a breath.
+    live_vad_silence_ms: int = 500
     #: Quiet time after an interruption before the walkthrough resumes.
     live_resume_silence_s: float = 0.8
     default_spoken_language: Literal["en", "hi"] = "en"
@@ -145,7 +186,9 @@ class Settings(BaseSettings):
     #: VAD end-of-utterance silence for live Meet STT (ms).
     #: 800ms matches Gemini Live's own VAD — prevents false barge-ins from
     #: mid-sentence pauses being misread as turn-end.
-    live_stt_min_silence_ms: int = 800
+    #: Groq/segmenter end-of-utterance. Gemini Live uses ``live_vad_silence_ms``.
+    #: NVIDIA STT is one batch request per finished utterance (no stream).
+    live_stt_min_silence_ms: int = 400
     #: Max wait for Attendee audio websocket before starting demo anyway. Zoom
     #: can delay this until the host grants recording permission.
     live_audio_ws_wait_s: float = 120.0

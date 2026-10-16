@@ -100,17 +100,24 @@ def test_gemini_live_turn_uses_shared_low_gap_execution_trace() -> None:
     assert 0 <= sync[0]["gap_ms"] < 150
 
 
-def test_action_starts_while_prior_speech_still_playing() -> None:
-    """Hands must not wait for mouth — navigate while prior line is still speaking."""
+def test_next_action_waits_until_prior_line_is_heard() -> None:
+    """The next click waits until the previous line has been heard.
+
+    Same-step narration still starts with that step's cursor move. What waits
+    is the following step: VERIFYING has already run, then this wait keeps the
+    next action from landing while the previous sentence is still playing.
+    """
     import threading
 
     from navigator.meeting.playback_handle import PlaybackHandle
 
     events: list[tuple[str, float]] = []
+    finished: list[float] = []
     prior = PlaybackHandle()
 
     def _prior_hold() -> None:
         time.sleep(0.35)
+        finished.append(time.monotonic())
         prior._finish()
 
     threading.Thread(target=_prior_hold, name="prior-speech", daemon=True).start()
@@ -132,11 +139,10 @@ def test_action_starts_while_prior_speech_still_playing() -> None:
         events.append(("action", time.monotonic()))
         return ToolResult(ok=True, tool="click_element", detail="ok", duration_ms=1), "home"
 
-    t0 = time.monotonic()
     with patch("navigator.agent.nodes.executing.run_tool", side_effect=run_tool):
         executing(state, deps)
     action_at = next(t for k, t in events if k == "action")
-    assert action_at - t0 < 0.2, "must not block Playwright on prior speech"
+    assert finished and action_at >= finished[0], "next action started while the previous line was still playing"
 
 
 def test_speaking_with_pending_calls_never_hits_live_say() -> None:

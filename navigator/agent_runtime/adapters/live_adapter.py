@@ -79,6 +79,7 @@ class LiveAdapter:
         task_status: str = "",
         task_goal: str = "",
         browser_ready: bool = True,
+        snapshot: str = "",
     ) -> None:
         """Push a compact one-line world-state hint so Live has current context.
 
@@ -98,6 +99,8 @@ class LiveAdapter:
             parts.append(f"goal={task_goal[:60]}")
         if not browser_ready:
             parts.append("browser=loading")
+        if snapshot:
+            parts.append(" ".join(snapshot.split())[:240])
         line = " | ".join(parts) if parts else "ready"
         # State lines are context only: nudge() SPEAKS ("User Dashboard updated").
         nudge = getattr(self._live, "add_context", None)

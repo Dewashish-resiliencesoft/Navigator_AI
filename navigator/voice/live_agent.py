@@ -326,7 +326,9 @@ class LiveAgent:
             self._playback_idle.clear()
 
     VAD_RMS = 1200.0
-    VAD_MIN_S = 0.35
+    #: Sustained inbound voice before playback is cut. Short enough to feel
+    #: instant, long enough that one noise spike does not flush the line.
+    VAD_MIN_S = 0.12
 
     def _vad_feed(self, rms: float, now: float) -> None:
         """Prospect's own track (no bot echo): ~0.35s of sustained voice during a
@@ -341,9 +343,20 @@ class LiveAgent:
             d["_vad_run_start"] = 0.0
             return
         start = d.get("_vad_run_start") or 0.0
-        if (start and now - start >= self.VAD_MIN_S and getattr(self, "_in_say", False)
-                and self.speaking and not self.interrupted
-                and d.get("_vad_cut_at", 0.0) < getattr(self, "_say_queued_at", 0.0)):
+        phase = getattr(self, "playback_phase", "playing")
+        playing = (
+            (getattr(self, "_in_say", False) or self.speaking)
+            and phase not in {"interrupted", "stopped", "cleanup", "ready"}
+        )
+        anchor = max(
+            float(getattr(self, "_say_queued_at", 0.0) or 0.0),
+            float(getattr(self, "_audio_rx_at", 0.0) or 0.0),
+        )
+        # Scripted lines and Q&A answers both stop. The old gate required
+        # ``_in_say``, so a prospect talking over a Live answer waited for a
+        # transcript that never confirmed the interrupt.
+        if (start and now - start >= self.VAD_MIN_S and playing and not self.interrupted
+                and d.get("_vad_cut_at", 0.0) < anchor):
             d["_vad_cut_at"] = now
             print(f"[barge] voice energy {rms:.0f} for {now - start:.2f}s — stopping playback now", flush=True)
             self._confirm_barge_in(reason="vad")
@@ -434,6 +447,31 @@ class LiveAgent:
 
         threading.Thread(target=run, daemon=True, name="open-backstop").start()
 
+    def _drop_queued_speech(self) -> None:
+        """Drop say/nudge commands still waiting so the next clause does not start."""
+        kept: list[_Cmd] = []
+        while True:
+            try:
+                cmd = self._cmds.get_nowait()
+            except queue.Empty:
+                break
+            if cmd.kind in ("say", "nudge"):
+                continue
+            kept.append(cmd)
+        for cmd in kept:
+            self._cmds.put(cmd)
+
+    def _clear_capture_audio(self) -> None:
+        """Tell the /view page to drop queued PCM when that page is connected."""
+        try:
+            from navigator.meeting.relay import LAST_HANDLE
+
+            clear = getattr(LAST_HANDLE, "clear_pcm", None)
+            if callable(clear):
+                clear()
+        except Exception:  # noqa: BLE001
+            pass
+
     def _confirm_barge_in(self, reason: str = "user") -> None:
         """Confirmed barge-in: flush Attendee audio, then allow a new utterance."""
         uid = self._active_utterance_id
@@ -443,11 +481,16 @@ class LiveAgent:
         self.barge_in_confirmed += 1
         self._last_interrupt_time = time.monotonic()
         self._set_playback("interrupted", uid, reason=reason)
+        self._drop_queued_speech()
         try:
             self.bridge.flush_bot_output()
         except Exception:  # noqa: BLE001
             pass
+        self._clear_capture_audio()
         self.audio_flush_count += 1
+        self._drop_inflight_audio = True
+        # A line that never produced PCM must not stamp the next answer.
+        self._narration_chunk_open = False
         self._turn_done.set()
         self._set_playback("stopped", uid, reason=reason)
         self._set_playback("cleanup", uid, reason=reason)
@@ -497,10 +540,17 @@ class LiveAgent:
             return
         spoken.add(key)
         _lang0 = str(getattr(self.cfg, "language", "en") or "en")
+        from navigator.voice.line_prep import speak_chunks as _speak_chunks
+
+        _raw_parts = _speak_chunks(text)
         if _lang0 != "en" and mode in ("verbatim", "natural"):
             from navigator.voice import line_prep
 
-            line_prep.prefetch(text, _lang0)  # translate while we wait for the floor
+            # Translate sentence by sentence while waiting for the floor.
+            # The first sentence is ready when we start; the rest finish
+            # while that sentence is already being spoken.
+            for _piece in _raw_parts:
+                line_prep.prefetch(_piece, _lang0)
         if not self.can_start_utterance():
             print(
                 f"[utterance] id={uid} wait_idle phase={self.playback_phase} "
@@ -528,23 +578,15 @@ class LiveAgent:
             while time.monotonic() < end and not self._stop.is_set():
                 self._pump_ui()
                 self._stop.wait(min(0.1, max(0.0, end - time.monotonic())))
-        lang = str(getattr(self.cfg, "language", "en") or "en")
-        say_text = text
-        if lang != "en" and mode in ("verbatim", "natural"):
-            # Pre-translate: Live translating a long line on the fly delivered audio
-            # slower than realtime (17:38 Hindi line: ~30 underruns).
-            from navigator.voice import line_prep
-
-            t0 = time.monotonic()
-            say_text = line_prep.translate(text, lang)
-            if say_text != text:
-                print(f"[speak] pre-translated to {lang} in {time.monotonic() - t0:.1f}s", flush=True)
-        from navigator.voice.line_prep import est_seconds, pieces as _pieces
+        lang = _lang0
+        from navigator.voice.line_prep import est_seconds, translate as _translate
 
         self._rotate_before_line(uid)
 
-        parts = _pieces(say_text) if len(say_text) > 240 else [say_text]
-        self.last_spoken = say_text
+        # Always lead with the first clause. Waiting to translate or
+        # synthesize the whole sentence is what made the first audio late.
+        parts = _raw_parts or [text]
+        self.last_spoken = text
         self.interrupted = False
         self.speaking = True
         self._set_playback("synthesizing", uid or None)
@@ -553,7 +595,18 @@ class LiveAgent:
         self._in_say = True
         self._say_queued_at = time.monotonic()
         print(f"[speak] {text}", flush=True)
-        for i, part in enumerate(parts):
+        for i, raw_part in enumerate(parts):
+            part = raw_part
+            if lang != "en" and mode in ("verbatim", "natural"):
+                # Only this sentence blocks. Later ones were prefetched above.
+                t0 = time.monotonic()
+                part = _translate(raw_part, lang)
+                if part != raw_part:
+                    print(
+                        f"[speak] pre-translated piece {i + 1}/{len(parts)} "
+                        f"to {lang} in {time.monotonic() - t0:.1f}s",
+                        flush=True,
+                    )
             self._turn_done.clear()
             self._turn_said = []
             self._last_turn_audio_s = 0.0
@@ -736,22 +789,49 @@ class LiveAgent:
                 self._pump_ui()
                 self._stop.wait(min(0.1, max(0.0, end - time.monotonic())))
 
+    def _arm_narration_chunk(self, text: str, *, provider: str) -> None:
+        """Remember the sentence whose first PCM should share the sync clock."""
+        self._narration_chunk_text = text
+        self._narration_provider = provider
+        self._narration_chunk_open = True
+
+    def _emit_narration_chunk(self) -> None:
+        """One monotonic stamp per sentence, at the first audible buffer."""
+        if not getattr(self, "_narration_chunk_open", False):
+            return
+        self._narration_chunk_open = False
+        text = str(getattr(self, "_narration_chunk_text", "") or "")
+        if not text:
+            return
+        provider = str(getattr(self, "_narration_provider", "gemini_live") or "gemini_live")
+        try:
+            from navigator.agent_runtime.sync_clock import emit_narration_chunk
+
+            emit_narration_chunk(text, provider)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[voice] narration clock failed: {exc}", flush=True)
+
     def _note_first_audio(self) -> None:
         from navigator.core import logtime
 
+        self._emit_narration_chunk()
         now = time.monotonic()
         jit = 250.0  # Attendee jitter buffer (patch) — audio heard ~this much later
         q = getattr(self, "_say_queued_at", 0.0)
         if q and getattr(self, "_in_say", False):
+            ms = (now - q) * 1000
             self._say_queued_at = 0.0
-            logtime.record("text_queued->first_audio", (now - q) * 1000)
+            logtime.record("text_queued->first_audio", ms)
             logtime.record("first_audio->heard_in_zoom_est", jit + 40)
+            print(f"[voice] ttfa_ms={ms:.0f} path=scripted", flush=True)
             return
         u = getattr(self, "_await_answer_from", 0.0)
         if u and not getattr(self, "_in_say", False):
+            ms = (now - u) * 1000
             self._await_answer_from = 0.0
-            logtime.record("user_end->first_audio", (now - u) * 1000)
+            logtime.record("user_end->first_audio", ms)
             logtime.record("first_audio->heard_in_zoom_est", jit + 40)
+            print(f"[voice] ttfa_ms={ms:.0f} path=answer", flush=True)
 
     def _pump_ui(self) -> None:
         pump = self.cfg.ui_pump
@@ -818,7 +898,10 @@ class LiveAgent:
             if not user_turn:
                 # Scripted line in progress: the flow executor owns the screen.
                 # A model-initiated click here raced the flow and cut the line.
-                mid_line = bool(getattr(self, "_in_say", False)) and not self._turn_done.is_set()
+                turn_done = getattr(self, "_turn_done", None)
+                mid_line = bool(getattr(self, "_in_say", False)) and not (
+                    turn_done.is_set() if turn_done is not None else True
+                )
                 print(f"[live] tool_call {name} refused: not the user's turn (spontaneous)"
                       f"{'' if mid_line else ' — line already done, reply muted'}", flush=True)
                 # 11:18 / 16:21:15 runs: the reply after a refusal repeated the
@@ -1205,6 +1288,12 @@ class LiveAgent:
             cur = self._audio_s_sent()
             if cur > last_audio + 1e-3:
                 last_audio, last_progress = cur, now
+            # Hosted TTS blocks in another thread before the first PCM byte.
+            # Don't treat that wait as a dead Gemini session and reconnect.
+            if (
+                getattr(self, "_nvidia_synth", False) or getattr(self, "_external_synth", False)
+            ) and now - start < 25.0:
+                last_progress = now
             quiet = now - last_progress
             started_audio = cur > self._inflight_audio0() + 1e-3
             limit = 8.0 if started_audio else 10.0
@@ -1349,6 +1438,16 @@ class LiveAgent:
                 return
             if self._barge_state != "probable":
                 self._note_probable_barge()
+            voice_at = float(getattr(self, "_last_voice_at", 0.0) or 0.0)
+            # Inbound energy in the last 0.8s is the prospect, not our own
+            # next-piece send. Stop playback now; do not wait for the transcript
+            # (that path used to return and never call _confirm_barge_in).
+            if (
+                voice_at
+                and now - voice_at < 0.8
+                and (self.speaking or getattr(self, "_in_say", False))
+            ):
+                self._confirm_barge_in(reason="voice")
                 return
             if now - self._barge_probable_at < self._barge_confirm_s:
                 print(
@@ -1357,7 +1456,7 @@ class LiveAgent:
                     flush=True,
                 )
                 return
-            # VAD alone (noise, 'e') never confirms; wait for a real transcript.
+            # No recent voice energy: hold until a real transcript confirms.
             print("[live] barge-in held: waiting for real STT speech", flush=True)
             return
 
@@ -1367,7 +1466,9 @@ class LiveAgent:
             inline = getattr(part, "inline_data", None)
             data = getattr(inline, "data", None) if inline is not None else None
             if data and not self.listen_only:
-                if self.playback_phase in {"interrupted", "stopped", "cleanup"}:
+                if getattr(self, "_drop_inflight_audio", False) or self.playback_phase in {
+                    "interrupted", "stopped", "cleanup"
+                }:
                     continue
                 if getattr(self, "_mute_reply", False) or self._unsolicited_audio():
                     # not voiced, but the model IS generating: not a stall
@@ -1401,6 +1502,7 @@ class LiveAgent:
             not self.listen_only
             and not (getattr(model_turn, "parts", None) or [])
             and getattr(msg, "data", None)
+            and not getattr(self, "_drop_inflight_audio", False)
             and self.playback_phase not in {"interrupted", "stopped", "cleanup"}
         ):
             if self._barge_state == "probable":
@@ -1424,7 +1526,9 @@ class LiveAgent:
             heard = getattr(sc, "input_transcription", None)
             if heard is not None and getattr(heard, "text", ""):
                 text = heard.text
-                if self.director_only:
+                # Scripted director mode ignores meeting audio. Listen-only is the
+                # intake window: the mouth stays shut, but the transcript must land.
+                if self.director_only and not self.listen_only:
                     pass
                 elif not _is_real_speech(text):
                     print(f"[live] ignoring noise transcript: {text!r}", flush=True)
@@ -1483,6 +1587,9 @@ class LiveAgent:
             if ended:
                 self._turn_closed = True
             if done_now:
+                self._drop_inflight_audio = False
+                if getattr(self, "_narration_chunk_open", False):
+                    self._narration_chunk_open = False
                 self._last_turn_audio_s = getattr(self, "_turn_audio_s", 0.0)
                 self.speaking = False
                 mark = getattr(self.bridge, "mark_line_end", None)
@@ -1510,6 +1617,44 @@ class LiveAgent:
                 continue
             if cmd.kind == "close":
                 return
+            if cmd.kind in ("say", "nudge"):
+                # Hosted TTS speaks the phrased line. Gemini is the fallback
+                # and still hears the room. gemini_live skips the HTTP path.
+                from navigator.core.settings import settings as voice_settings
+                from navigator.voice.tts import try_hosted_tts
+
+                provider = voice_settings.voice_provider
+                self._arm_narration_chunk(cmd.text, provider="gemini_live")
+                if provider in ("nvidia", "fish"):
+                    self._narration_provider = provider
+                    self._nvidia_synth = True
+                    self._external_synth = True
+
+                    def _cancel() -> bool:
+                        return bool(self.interrupted or self._stop.is_set())
+
+                    def _first_audio() -> None:
+                        self._note_first_audio()
+
+                    try:
+                        audio_s = await asyncio.to_thread(
+                            try_hosted_tts,
+                            self.bridge,
+                            cmd.text,
+                            language=str(self.cfg.language or "en"),
+                            cancel=_cancel,
+                            on_first_audio=_first_audio,
+                        )
+                    finally:
+                        self._nvidia_synth = False
+                        self._external_synth = False
+                    # 0.0 is a barge-in before the first byte, not a failure.
+                    # Falling through to Gemini would speak the line again.
+                    if audio_s is not None:
+                        self._finish_nvidia_turn(cmd.text, audio_s)
+                        continue
+                    self._narration_provider = "gemini_live"
+                    self._narration_chunk_open = True
             if cmd.kind == "nudge":
                 self._nudge_sent_at = time.monotonic()
             try:
@@ -1520,6 +1665,32 @@ class LiveAgent:
                 self._emit(LiveEvent(kind="error", text=f"send text: {exc}"))
                 self._turn_done.set()
                 return
+
+    def _finish_nvidia_turn(self, text: str, audio_s: float) -> None:
+        """A phrased line was spoken by hosted TTS, not Gemini Live.
+
+        Mark the words as said so say() does not replay a tail through Gemini,
+        and unblock the walkthrough the same way generation_complete does.
+        """
+        self.__dict__.setdefault("_turn_said", []).append(text)
+        self._last_turn_audio_s = float(audio_s or 0.0)
+        self._turn_audio_s = 0.0
+        self.speaking = False
+        self._turn_closed = True
+        mark = getattr(self.bridge, "mark_line_end", None)
+        if callable(mark):
+            mark()
+        now = time.monotonic()
+        self._gen_done_at = now
+        self._drain_until = now + min(MAX_DRAIN_S, max(0.0, float(audio_s or 0.0))) + 0.3
+        self._audio_rx_at = now
+        self._drop_inflight_audio = False
+        if getattr(self, "_narration_chunk_open", False):
+            # Barge-in before the first byte: nothing to align on video.
+            self._narration_chunk_open = False
+        self._turn_done.set()
+        self._emit(LiveEvent(kind="said", text=text))
+        self._emit(LiveEvent(kind="turn_complete"))
 
     def _emit(self, event: LiveEvent) -> None:
         if self.cfg.on_event is None:
@@ -1561,11 +1732,12 @@ def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
         )
     if cmd.mode == "natural":
         return (
-            f"[Say the following to the person{lang_hint}, naturally and conversationally, "
-            f"then stop. Do not add extra commentary or questions after. Do not call any tools.] {cmd.text}"
+            f"[Say the following to the person{lang_hint}, in your own words, "
+            f"naturally and conversationally, then stop. Do not add extra commentary "
+            f"or questions after. Do not call any tools.] {cmd.text}"
         )
-    # verbatim — used only for intake questions where rephrasing would change meaning
+    # verbatim — intake questions, where rephrasing would change the meaning
     return (
-        f"[Say the following to the person now{lang_hint}, exactly as written, then stop. Do not call any tools.] "
-        f"{cmd.text}"
+        f"[Say the following to the person now{lang_hint}, word for word, exactly as written, "
+        f"then stop. Do not call any tools.] {cmd.text}"
     )

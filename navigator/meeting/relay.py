@@ -182,6 +182,8 @@ class RelayHandle:
     status_label: str = "Demo"
     avatar_state: str = "idle"
     last_frame_at: float = 0.0
+    #: ``time.monotonic_ns()`` when ``_frame`` was captured. Same clock as audio.
+    frame_monotonic_ns: int = 0
     _seq: int = 0
     _cond: threading.Condition = field(default_factory=threading.Condition)
     _closed: bool = False
@@ -199,8 +201,12 @@ class RelayHandle:
 
     def set_frame(self, data: bytes) -> None:
         """Replace the latest frame and wake MJPEG streams (no queue)."""
+        from navigator.meeting.media_clock import now_ns
+
+        stamp = now_ns()
         with self._lock:
             self._frame = data
+            self.frame_monotonic_ns = stamp
             self.last_frame_at = time.time()
         with self._cond:
             self._seq += 1
@@ -367,7 +373,11 @@ def start_relay(
                 return
             if path.startswith("/status"):
                 payload = json.dumps(
-                    {"mode": handle.status_mode, "label": handle.status_label}
+                    {
+                        "mode": handle.status_mode,
+                        "label": handle.status_label,
+                        "frame_monotonic_ns": int(handle.frame_monotonic_ns or 0),
+                    }
                 ).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -394,8 +404,10 @@ def start_relay(
                         if not data or seq == seen:
                             continue
                         seen = seq
+                        stamp = str(int(handle.frame_monotonic_ns or 0)).encode()
                         self.wfile.write(
-                            b"--navframe\r\nContent-Type: image/jpeg\r\nContent-Length: "
+                            b"--navframe\r\nContent-Type: image/jpeg\r\n"
+                            b"X-Navigator-Monotonic-Ns: " + stamp + b"\r\nContent-Length: "
                             + str(len(data)).encode() + b"\r\n\r\n" + data + b"\r\n"
                         )
                         self.wfile.flush()
@@ -410,6 +422,7 @@ def start_relay(
                 handle.frame_hits += 1
                 with handle._lock:
                     data = handle._frame
+                    stamp = int(handle.frame_monotonic_ns or 0)
                 if not data:
                     self.send_response(204)
                     self.end_headers()
@@ -418,6 +431,7 @@ def start_relay(
                 self.send_header("Content-Type", "image/jpeg")
                 self.send_header("Content-Length", str(len(data)))
                 self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Navigator-Monotonic-Ns", str(stamp))
                 self.end_headers()
                 self.wfile.write(data)
                 return

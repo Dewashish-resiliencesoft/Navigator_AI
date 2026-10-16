@@ -125,6 +125,14 @@ def _tell_live_where_we_are(deps: CallDeps, page_id: str, result) -> None:
         live.screen_hint = f"{name} ({urlparse(deps.page.url or '').path})"
     except Exception:  # noqa: BLE001
         live.screen_hint = name
+    try:
+        from navigator.automation.browser.page_snapshot import measure_page
+
+        summary = measure_page(deps.page).summary()
+        if summary and not summary.startswith("viewport=0x0"):
+            live.screen_hint = f"{live.screen_hint}\n{summary}"
+    except Exception:  # noqa: BLE001
+        pass
     # No add_context here: every context message made Live start a reply turn
     # ('[Context: current page History]', 18:33 run) that collided with the
     # next scripted line -> 10s silence + reconnect. screen_hint rides along
@@ -213,23 +221,15 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         _speak_blocking(deps, pre_text)
         state = dict(state)
         state["narration"] = post_items
-    # Narrate AFTER the action and a fresh frame (sync: words match the screen).
+    # Narration starts with the cursor, not after the relay's next JPEG.
+    # The next step waits on this handle, and VERIFYING runs before that
+    # step, so the following line does not begin until this page has settled.
     speech_handle, narration_started_ns = None, None
+    action_started_ns = None
+    narration_prepared = False
     # Frames pushed *during* the action, not just after it: the screenshare is a
     # JPEG poll, so cursor motion is only visible if we push through the move.
     _nudge_working(deps)
-    action_started_ns = time.monotonic_ns()
-    if narration_started_ns is not None:
-        emit_sync_trace(
-            deps.trace,
-            session_id=state.get("session_id", ""),
-            product_id=deps.product_id,
-            engine="gemini_live" if deps.live_agent is not None else "langgraph",
-            flow_id=state.get("walkthrough_flow_id", "") or "",
-            step=int(state.get("executing_step") or state.get("walkthrough_step") or 0),
-            narration_started_ns=narration_started_ns,
-            action_started_ns=action_started_ns,
-        )
     skip_narration = False
     _step_log(state, deps, "executing")
     if _is_login_call(call) and LOGIN_CREDS and not isinstance(call, FillField) \
@@ -256,6 +256,24 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             deps, ran_on, call, RuntimeError("element not on page (3s check)")
         )
     else:
+        _scroll_call_target(deps, ran_on, call)
+        state = _drop_unseen_mentions(state, deps)
+        if not _is_login_call(call):
+            state = _run_narrated_actions(state, deps, call)
+        narration_prepared = True
+        speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
+        action_started_ns = time.monotonic_ns()
+        if narration_started_ns is not None:
+            emit_sync_trace(
+                deps.trace,
+                session_id=state.get("session_id", ""),
+                product_id=deps.product_id,
+                engine="gemini_live" if deps.live_agent is not None else "langgraph",
+                flow_id=state.get("walkthrough_flow_id", "") or "",
+                step=int(state.get("executing_step") or state.get("walkthrough_step") or 0),
+                narration_started_ns=narration_started_ns,
+                action_started_ns=action_started_ns,
+            )
         try:
             _st0 = time.monotonic()
             result, next_page_id = run_tool(
@@ -292,27 +310,44 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
     _step_log(state, deps, "verified" if (result.ok and screen_ok is not False) else "failed",
               detail="" if result.ok else str(result.detail)[:120])
     _sync_screen_to_narration(state, deps, call)
+    if (
+        not result.ok
+        and getattr(call, "tool", "") in {"click_element", "fill_field"}
+        and not str(result.detail or "").startswith("skipped")
+    ):
+        # The action timed out or failed after its retry. Say so — a silent
+        # ok=False used to leave the visitor watching a frozen cursor.
+        if speech_handle is not None and hasattr(speech_handle, "wait"):
+            speech_handle.wait(timeout=8)
+        _speak_recovery(deps)
+        speech_handle = None
     if deps.push_frame is not None:
         deps.push_frame()
-        try:
-            from navigator.meeting.relay import wait_frame_sent
-
-            # Narration starts only once a frame showing this screen went out.
-            if not wait_frame_sent(0.7):
-                time.sleep(0.12)
-        except Exception:  # noqa: BLE001
-            time.sleep(0.12)
     if skip_narration:
         # A login step we did not perform must not be narrated ("enter email and
         # password" over the dashboard was spoken twice in the 17:30 run).
         print("[exec] login step skipped — its narration is skipped too", flush=True)
         speech_handle = None
-    else:
+    elif speech_handle is None and not narration_prepared:
         if result.ok and not _is_login_call(call):
             state = _run_narrated_actions(state, deps, call)
         state = _drop_unseen_mentions(state, deps)
         _step_log(state, deps, "narrating")
-        speech_handle, _ = _start_pre_action_speech(state, deps)
+        speech_handle, narration_started_ns = _start_pre_action_speech(state, deps)
+        if narration_started_ns is not None and action_started_ns is not None:
+            emit_sync_trace(
+                deps.trace,
+                session_id=state.get("session_id", ""),
+                product_id=deps.product_id,
+                engine="gemini_live" if deps.live_agent is not None else "langgraph",
+                flow_id=state.get("walkthrough_flow_id", "") or "",
+                step=int(state.get("executing_step") or state.get("walkthrough_step") or 0),
+                narration_started_ns=narration_started_ns,
+                action_started_ns=action_started_ns,
+            )
+        _component_tour(state, deps, call, speech_handle)
+    else:
+        _step_log(state, deps, "narrating")
         _component_tour(state, deps, call, speech_handle)
 
     _tell_live_where_we_are(deps, next_page_id, result)
@@ -540,6 +575,41 @@ def _recover_failed_step(deps, ran_on, call, exc):
     return ToolResult(ok=True, tool=tool, detail=f"skipped: {first}", duration_ms=0), ran_on
 
 
+RECOVERY_LINE = "One moment — that didn't land, I'll move on."
+
+
+def _speak_recovery(deps) -> None:
+    """Spoken line when a click or fill fails after its retry. Never jargon."""
+    try:
+        deps.speaker.say(RECOVERY_LINE)
+        print(f"[exec] recovery: {RECOVERY_LINE}", flush=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[exec] recovery line failed: {exc}", flush=True)
+
+
+def _scroll_call_target(deps, page_id, call) -> None:
+    """Bring the step's element into the live viewport before the cursor moves."""
+    if getattr(call, "tool", "") not in {"click_element", "fill_field"}:
+        return
+    page = getattr(deps, "page", None)
+    if page is None:
+        return
+    raw = str(getattr(call, "selector", "") or "")
+    if not raw:
+        return
+    try:
+        pages = getattr(getattr(deps, "graph", None), "pages", None)
+        page_spec = pages.get(page_id) if hasattr(pages, "get") else None
+        elements = getattr(page_spec, "elements", None) if page_spec is not None else None
+        el = elements.get(raw) if isinstance(elements, dict) else None
+        sel = str(getattr(el, "selector", "") or el or raw) if el else raw
+        from navigator.automation.browser.page_snapshot import scroll_locator_into_view
+
+        scroll_locator_into_view(page, page.locator(sel).first)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[page] scroll-into-view skipped: {exc}", flush=True)
+
+
 def _target_visible(deps, page_id, call) -> bool:
     """True when the step's element is actually on screen (then never skip it)."""
     raw = str(getattr(call, "selector", "") or "")
@@ -571,12 +641,17 @@ def _missing_fast(deps, page_id, call, wait_ms: int = 3000) -> bool:
         sel = str(getattr(el, "selector", "") or el or raw) if el else raw
         loc = deps.page.locator(sel)
         deadline = time.monotonic() + wait_ms / 1000.0
+        scrolled = False
         while True:
             # Attached-but-hidden (duplicate hidden inputs, closed modal) used to
             # pass this check and then burn 2x15s in the click: require visible.
             for i in range(min(loc.count(), 5)):
                 if loc.nth(i).is_visible():
                     return False
+            if not scrolled:
+                scrolled = True
+                _scroll_call_target(deps, page_id, call)
+                continue
             if time.monotonic() >= deadline:
                 break
             time.sleep(0.2)

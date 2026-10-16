@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Literal
@@ -292,11 +293,17 @@ class AgentEventKind(str, Enum):
     SESSION_PARTIAL = "SESSION_PARTIAL"
     SESSION_HANDOFF = "SESSION_HANDOFF"
     SESSION_FAILED = "SESSION_FAILED"
+    # Shared clock for a future video-capture pipeline.
+    NARRATION_CHUNK = "NARRATION_CHUNK"
+    BROWSER_ACTION = "BROWSER_ACTION"
 
 
 class AgentEvent(BaseModel):
     event: AgentEventKind
     timestamp: datetime = Field(default_factory=utc_now)
+    #: Process-monotonic nanoseconds. Narration chunks and browser actions
+    #: share this clock so a video pipeline can align them without wall time.
+    monotonic_ns: int = Field(default_factory=time.monotonic_ns)
     session_id: UUID
     task_id: UUID | None = None
     action_id: UUID | None = None

@@ -36,6 +36,71 @@ def _fast_cursor_motion(monkeypatch):
     )
 
 
+@pytest.fixture
+def voice_keys_ready(monkeypatch):
+    """Satisfy demo-start readiness without changing the production checks.
+
+    Live voice is ready when a Gemini key is set, Groq is required for
+    conversational interrupts, and a public demo also needs Attendee. These
+    tests do not call those services. The production readiness checks stay in place.
+    """
+    from navigator.core.settings import settings
+
+    monkeypatch.setattr(settings, "gemini_live_api_key", "", raising=False)
+    monkeypatch.setattr(settings, "gemini_live_api_keys", "", raising=False)
+    monkeypatch.setattr(settings, "gemini_api_key", "test-gemini-key", raising=False)
+    monkeypatch.setattr(settings, "groq_api_key", "test-groq-key", raising=False)
+    monkeypatch.setattr(
+        "navigator.meeting.attendee_stack.attendee_reachable",
+        lambda _url: True,
+    )
+
+
+def _run_coroutine(coro):
+    """Run ``coro`` on a private loop.
+
+    Playwright's sync driver already has a loop marked running on this thread,
+    so ``asyncio.run`` raises. A worker thread has no such loop.
+    """
+    import asyncio
+    import threading
+
+    box: dict = {}
+
+    def _go() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            asyncio.set_event_loop(loop)
+            box["value"] = loop.run_until_complete(coro)
+        except BaseException as exc:  # noqa: BLE001
+            box["error"] = exc
+        finally:
+            loop.close()
+            asyncio.set_event_loop(None)
+
+    worker = threading.Thread(target=_go)
+    worker.start()
+    worker.join()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem):
+    """Await async tests without nesting ``asyncio.run`` on Playwright's loop."""
+    import inspect
+
+    func = pyfuncitem.obj
+    if not inspect.iscoroutinefunction(func):
+        return None
+    kwargs = {
+        name: pyfuncitem.funcargs[name] for name in pyfuncitem._fixtureinfo.argnames
+    }
+    _run_coroutine(func(**kwargs))
+    return True
+
+
 @pytest.fixture(autouse=True)
 def _clear_semantic_cache():
     from navigator.agent.brain_router import get_semantic_cache

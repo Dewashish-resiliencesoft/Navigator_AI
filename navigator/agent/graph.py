@@ -25,8 +25,10 @@ narration can't be spoken twice or dropped. `after_speaking` decides where to go
 based on why SPEAKING was reached.
 
 Speak∥act: when ``pending_calls`` is set, SPEAKING skips TTS and EXECUTING
-starts ``say_async`` then Playwright immediately (overlap). Do not wait for
-prior speech before ``run_tool`` — Live serializes audio in the worker thread.
+starts the narration line as the cursor moves, then waits for that line
+before the next action. VERIFYING runs before the next line, so speech does
+not get ahead of a page that has not settled. The previous line is still
+waited out before ``run_tool``.
 
 Every node is a plain function of (CallState, CallDeps) returning a partial state,
 so each is testable on its own with a dict and a fake CallDeps -- no graph, no

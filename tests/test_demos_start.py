@@ -20,6 +20,8 @@ from navigator.logs.store import ActionLog
 from navigator.meeting.providers import MeetingInfo, MeetingProviderError
 from test_api import ACME_LIVE as ACME, GLOBEX_LIVE as GLOBEX, register
 
+pytestmark = pytest.mark.usefixtures("voice_keys_ready")
+
 
 class FakeProvider:
     """Mints predictable links and records what it was asked for."""

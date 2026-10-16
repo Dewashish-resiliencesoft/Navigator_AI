@@ -123,21 +123,25 @@ def test_show_feature_closes_blocking_modal_and_falls_back_to_href():
     pw = pytest.importorskip("playwright.sync_api")
     import asyncio
 
+    saved = asyncio.events._get_running_loop()
     asyncio.events._set_running_loop(None)
-    from navigator.meeting import ui_jobs
-    with pw.sync_playwright() as p:
-        try:
-            b = p.chromium.launch()
-        except Exception as exc:  # noqa: BLE001
-            pytest.skip(str(exc))
-        pg = b.new_page()
-        pg.set_content("""<body><nav><a href="#phonebook" id=pb>Phonebook</a></nav>
+    try:
+        from navigator.meeting import ui_jobs
+        with pw.sync_playwright() as p:
+            try:
+                b = p.chromium.launch()
+            except Exception as exc:  # noqa: BLE001
+                pytest.skip(str(exc))
+            pg = b.new_page()
+            pg.set_content("""<body><nav><a href="#phonebook" id=pb>Phonebook</a></nav>
           <div role=dialog id=d style="position:fixed;inset:0;background:#0008">form</div>
           <script>document.addEventListener('keydown',e=>{if(e.key==='Escape')d.remove()})</script></body>""")
-        res = ui_jobs.show_feature(pg, "Phonebook")
-        assert res["ok"], res
-        assert pg.url.endswith("#phonebook")
-        b.close()
+            res = ui_jobs.show_feature(pg, "Phonebook")
+            assert res["ok"], res
+            assert pg.url.endswith("#phonebook")
+            b.close()
+    finally:
+        asyncio.events._set_running_loop(saved)
 
 
 def test_do_task_skips_menu_llm_when_create_button_is_here(monkeypatch):
@@ -145,20 +149,24 @@ def test_do_task_skips_menu_llm_when_create_button_is_here(monkeypatch):
     pw = pytest.importorskip("playwright.sync_api")
     import asyncio
 
+    saved = asyncio.events._get_running_loop()
     asyncio.events._set_running_loop(None)
-    from navigator.meeting import task_runner, ui_jobs
-    import navigator.knowledge.flow_authoring as fa
+    try:
+        from navigator.meeting import task_runner, ui_jobs
+        import navigator.knowledge.flow_authoring as fa
 
-    called = []
-    monkeypatch.setattr(fa, "default_llm", lambda: (lambda *a: called.append(a) or "/x"))
-    monkeypatch.setattr(ui_jobs, "NAV_INVENTORY", [{"label": "Phonebook", "href": "/phonebook"}])
-    with pw.sync_playwright() as p:
-        b = p.chromium.launch()
-        pg = b.new_page()
-        pg.set_content("<body><button>Create Contact</button></body>")
-        assert task_runner._navigate_for(pg, "add a new contact", None) == ""
-        assert not called
-        b.close()
+        called = []
+        monkeypatch.setattr(fa, "default_llm", lambda: (lambda *a: called.append(a) or "/x"))
+        monkeypatch.setattr(ui_jobs, "NAV_INVENTORY", [{"label": "Phonebook", "href": "/phonebook"}])
+        with pw.sync_playwright() as p:
+            b = p.chromium.launch()
+            pg = b.new_page()
+            pg.set_content("<body><button>Create Contact</button></body>")
+            assert task_runner._navigate_for(pg, "add a new contact", None) == ""
+            assert not called
+            b.close()
+    finally:
+        asyncio.events._set_running_loop(saved)
 
 
 def test_tail_is_matched_in_order_not_as_bag_of_words():

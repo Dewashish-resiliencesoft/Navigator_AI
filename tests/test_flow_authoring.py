@@ -162,8 +162,7 @@ def test_title_line_is_name_not_narration():
     assert strip_leading_title("Now we open the Inbox and see chats.")[0] == ""
 
 
-def test_scripted_say_refuses_tool_calls():
-    import asyncio
+async def test_scripted_say_refuses_tool_calls():
     from types import SimpleNamespace
     from navigator.voice.live_agent import LiveAgent
 
@@ -177,5 +176,5 @@ def test_scripted_say_refuses_tool_calls():
             sent["r"] = function_responses
     agent._session = _S()
     agent._emit = lambda e: None
-    asyncio.run(agent._run_tools([SimpleNamespace(name="show_feature", args={"target": "Inbox"}, id="1")]))
+    await agent._run_tools([SimpleNamespace(name="show_feature", args={"target": "Inbox"}, id="1")])
     assert sent["r"][0].response["ok"] is False

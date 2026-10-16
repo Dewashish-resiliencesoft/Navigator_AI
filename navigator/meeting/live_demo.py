@@ -31,7 +31,7 @@ from navigator.agent.state import CallDeps, initial_state
 from navigator.automation.browser.cursor import install_cursor, set_screencast_mode
 from navigator.automation.browser.login_gate import LoginGateResult, run_login_gate
 from navigator.automation.browser.product_login import login_product, open_login_page
-from navigator.automation.browser.screen_context import screen_snapshot
+from navigator.automation.browser.page_snapshot import planner_screen
 from navigator.automation.external_links import url_origin
 from navigator.knowledge.product_brief import load_agent_context
 from navigator.knowledge.site_graph import load_site_graph
@@ -56,7 +56,7 @@ from navigator.meeting.tunnel import verify_attendee_docker_dns
 from navigator.meeting.zoom_host import is_zoom_meeting, zoom_zak_callback_url
 from navigator.core.settings import settings
 from navigator.core.usage_context import bind_demo_usage, clear_demo_usage
-from navigator.voice.stt import VoiceSegmenter, transcribe
+from navigator.voice.stt import VoiceSegmenter, spawn_partial_transcript, transcribe
 from navigator.voice.tts import PrintSpeaker
 from navigator.voice.conversation_language import ConversationLanguage
 
@@ -454,7 +454,11 @@ def _wait_meet_utterance(
                 continue
 
     segmenter = VoiceSegmenter(min_silence_ms=settings.live_stt_min_silence_ms)
-    for pcm in segmenter.segments(frames()):
+
+    def _on_partial(pcm: bytes) -> None:
+        spawn_partial_transcript(pcm, lambda buf: transcribe(buf, api_key) or "", lambda text: None)
+
+    for pcm in segmenter.segments(frames(), on_partial=_on_partial):
         text = (transcribe(pcm, api_key) or "").strip()
         if not text:
             continue
@@ -1953,7 +1957,7 @@ def run_live_meet_demo(
                 set_status=lambda mode, label=None: relay.set_status(mode, label),
                 set_avatar_state=relay.set_avatar_state,
                 on_speech=on_speech,
-                screen_context=lambda: screen_snapshot(page),
+                screen_context=lambda: planner_screen(page),
                 product_brief=load_agent_context(
                     product_id or graph_cfg.site,
                     site=getattr(graph_cfg, "site", "") or "",

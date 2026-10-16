@@ -49,23 +49,60 @@ def execute(
     """
     handler = _HANDLERS[call.tool]
     started = time.perf_counter()
+    attempts = 2 if call.tool in _RETRYABLE_TOOLS else 1
+    detail, next_page_id, ok = "", page_id, False
+    _emit_browser_clock(call.tool, "start")
     try:
-        detail, next_page_id = handler(
-            page, graph, page_id, call, on_frame=on_frame, mouse_path=mouse_path
-        )
-        ok = True
-    except (PlaywrightError, SiteGraphError) as exc:
-        detail, next_page_id, ok = _describe(exc), page_id, False
+        for attempt in range(attempts):
+            try:
+                detail, next_page_id = handler(
+                    page, graph, page_id, call, on_frame=on_frame, mouse_path=mouse_path
+                )
+                ok = True
+                break
+            except SiteGraphError as exc:
+                detail, next_page_id, ok = _describe(exc), page_id, False
+                break
+            except PlaywrightError as exc:
+                detail = _describe(exc)
+                if attempt + 1 < attempts and _retryable_action(exc):
+                    print(
+                        f"[tool] {call.tool} retry {attempt + 1}: {detail[:140]}",
+                        flush=True,
+                    )
+                    continue
+                if attempt:
+                    detail = f"retry exhausted: {detail}"
+                next_page_id, ok = page_id, False
+                break
 
-    return (
-        ToolResult(
-            ok=ok,
-            tool=call.tool,
-            detail=detail,
-            duration_ms=int((time.perf_counter() - started) * 1000),
-        ),
-        next_page_id,
-    )
+        return (
+            ToolResult(
+                ok=ok,
+                tool=call.tool,
+                detail=detail,
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            ),
+            next_page_id,
+        )
+    finally:
+        _emit_browser_clock(call.tool, "end", ok=ok, detail=detail)
+
+
+def _emit_browser_clock(
+    tool: str,
+    phase: str,
+    *,
+    ok: bool | None = None,
+    detail: str = "",
+) -> None:
+    """Stamp this action on the shared monotonic clock. Never fails the tool."""
+    try:
+        from navigator.agent_runtime.sync_clock import emit_browser_action
+
+        emit_browser_action(tool, phase, ok=ok, detail=detail)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[tool] sync clock failed: {exc}", flush=True)
 
 
 def _describe(exc: Exception) -> str:
@@ -77,11 +114,24 @@ def _describe(exc: Exception) -> str:
 # Each returns (detail, next_page_id) and lets exceptions escape to execute().
 
 
+# Cap a single Playwright action. The schema default is 15s, and raising every
+# call to at least 15s is how a missing control froze the demo. A future
+# browser worker can wrap this same helper. Sub-second values stay exact so
+# unit tests can still use a short timeout.
+ACTION_TIMEOUT_CAP_MS = 6000
+_RETRYABLE_TOOLS = frozenset({"click_element", "fill_field"})
+
+
 def _action_timeout(ms: int) -> int:
-    """Real product UIs often need >5s; keep sub-1s timeouts for unit tests."""
+    """Caller timeout, capped. Sub-1s values are returned unchanged."""
     if ms < 1000:
         return ms
-    return max(ms, 15000)
+    return min(int(ms), ACTION_TIMEOUT_CAP_MS)
+
+
+def _retryable_action(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(bit in msg for bit in ("timeout", "not visible", "detached", "intercept"))
 
 
 def click_element(

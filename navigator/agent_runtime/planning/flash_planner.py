@@ -35,6 +35,8 @@ Rules:
 - Keep plans short (1-6 steps).
 - Include verification expectations for navigation and major clicks.
 - Prefer relevant values in demo_session over asking the visitor again or inventing placeholders.
+- DOM may include viewport, scroll, cursor, and below_fold. Scroll to a target
+  that is below the fold before clicking it. Narrate what is visible.
 """
 
 

@@ -18,7 +18,7 @@ from navigator.agent.end_policy import SILENCE_S
 from navigator.agent.nodes.reflecting import classify_correction
 from navigator.agent.state import CallDeps, CallState
 from navigator.core.settings import settings
-from navigator.voice.stt import VoiceSegmenter, transcribe
+from navigator.voice.stt import VoiceSegmenter, spawn_partial_transcript, transcribe
 from navigator.voice.conversation_language import sync_heard_language
 
 SCRIPTED_UTTERANCE = "Can you show me how sending a message works?"
@@ -178,7 +178,11 @@ def _capture_utterance(state: CallState, deps: CallDeps) -> str:
             return ""
         poll_barge_in_language_switch(deps)
         if deps.audio_frames is not None:
-            text = _from_audio(deps, silence_timeout=2.5)
+            try:
+                text = _from_audio(deps, silence_timeout=2.5)
+            except RuntimeError:
+                # Auto-advance must not stall when local VAD is not installed.
+                text = ""
             if text:
                 sync_heard_language(deps, text)
                 if detect_language_switch(text) is not None:
@@ -290,7 +294,24 @@ def _from_audio(deps: CallDeps, *, silence_timeout: float | None = None) -> str:
     if silence_timeout is not None:
         frames = _frames_until_deadline(deps.audio_frames, silence_timeout)
     segmenter = VoiceSegmenter(min_silence_ms=settings.live_stt_min_silence_ms)
-    for pcm in segmenter.segments(frames):
+
+    def _on_partial(pcm: bytes) -> None:
+        def _text_of(buf: bytes) -> str:
+            if deps.transcribe_audio is not None:
+                return deps.transcribe_audio(buf) or ""
+            api_key = deps.groq_api_key if deps.groq_api_key is not None else settings.groq_api_key
+            if not api_key:
+                return ""
+            return transcribe(buf, api_key) or ""
+
+        def _use(text: str) -> None:
+            cb = deps.on_user_utterance
+            if cb is not None:
+                cb(text)
+
+        spawn_partial_transcript(pcm, _text_of, _use)
+
+    for pcm in segmenter.segments(frames, on_partial=_on_partial):
         if _aborted(deps) or getattr(deps.speaker, "bot_ended", False):
             return ""
         if deps.transcribe_audio is not None:

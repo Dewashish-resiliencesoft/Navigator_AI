@@ -19,6 +19,8 @@ from test_action_log import METRICS_NOW, TS, entry
 from test_api import ACME_LIVE as ACME, register
 from test_client_dashboard import _client, _cleanup
 
+pytestmark = pytest.mark.usefixtures("voice_keys_ready")
+
 
 @pytest.fixture
 def bundle(tmp_path):

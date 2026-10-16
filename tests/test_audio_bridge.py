@@ -9,7 +9,7 @@ import json
 from navigator.meeting.audio_bridge import AudioBridge
 
 
-def test_audio_bridge_accepts_and_queues_pcm():
+async def test_audio_bridge_accepts_and_queues_pcm():
     bridge = AudioBridge().start()
     try:
 
@@ -30,7 +30,7 @@ def test_audio_bridge_accepts_and_queues_pcm():
                 )
                 await asyncio.sleep(0.2)
 
-        asyncio.run(client())
+        await client()
         assert bridge.clients_connected >= 1
         assert bridge.chunks_received >= 1
         assert bridge.inbound.get(timeout=1)[:2] == b"\x00\x01"
@@ -38,7 +38,7 @@ def test_audio_bridge_accepts_and_queues_pcm():
         bridge.stop()
 
 
-def test_outbound_pcm_sends_without_any_inbound_traffic():
+async def test_outbound_pcm_sends_without_any_inbound_traffic():
     """Bot audio must go out on its own, not only when the meeting sends us something.
 
     The old handler flushed _outbound inside the inbound read loop, so a silent
@@ -59,7 +59,7 @@ def test_outbound_pcm_sends_without_any_inbound_traffic():
                 raw = await asyncio.wait_for(ws.recv(), timeout=5)
                 got.append(json.loads(raw))
 
-        asyncio.run(client())
+        await client()
         assert got, "no bot_output frame received"
         assert got[0]["trigger"] == "realtime_audio.bot_output"
         # Native 24 kHz: Attendee upsamples itself (pre-upsampled 48k crashed it).
@@ -71,7 +71,7 @@ def test_outbound_pcm_sends_without_any_inbound_traffic():
         bridge.stop()
 
 
-def test_flush_bot_output_drops_queue_and_signals_attendee():
+async def test_flush_bot_output_drops_queue_and_signals_attendee():
     bridge = AudioBridge().start()
     got: list[dict] = []
     try:
@@ -87,7 +87,7 @@ def test_flush_bot_output_drops_queue_and_signals_attendee():
                 raw = await asyncio.wait_for(ws.recv(), timeout=5)
                 got.append(json.loads(raw))
 
-        asyncio.run(client())
+        await client()
         assert got[0]["trigger"] == "realtime_audio.bot_output_clear"
     finally:
         bridge.stop()
@@ -101,7 +101,7 @@ def test_clear_outbound_drops_pending_chunks():
     assert bridge.clear_outbound() == 0
 
 
-def test_audio_s_sent_counts_playback_seconds():
+async def test_audio_s_sent_counts_playback_seconds():
     """Callers time actions against this, so it must be real playback seconds."""
     bridge = AudioBridge().start()
     try:
@@ -122,7 +122,7 @@ def test_audio_s_sent_counts_playback_seconds():
                     except TimeoutError:
                         pass
 
-        asyncio.run(client())
+        await client()
         assert abs(bridge.audio_s_sent - 1.0) < 0.05
     finally:
         bridge.stop()
@@ -136,7 +136,7 @@ def test_dropped_audio_is_never_counted():
     assert bridge.audio_s_sent == 0.0
 
 
-def test_outbound_holds_until_attendee_ws_connects():
+async def test_outbound_holds_until_attendee_ws_connects():
     """Zoom ZAK join often connects tens of seconds after Gemini starts speaking."""
     bridge = AudioBridge().start()
     got: list[dict] = []
@@ -157,7 +157,7 @@ def test_outbound_holds_until_attendee_ws_connects():
             bridge.push_outbound_pcm(b"\x04\x05" * 40, sample_rate=16000)
             await client()
 
-        asyncio.run(run())
+        await run()
         assert got, "late Attendee WS never received queued bot audio"
         assert got[0]["trigger"] == "realtime_audio.bot_output"
         assert got[0]["data"]["sample_rate"] == 16000

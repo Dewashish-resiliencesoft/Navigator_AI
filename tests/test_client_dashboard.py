@@ -116,7 +116,7 @@ def test_client_page_ok_on_private_lan_host(tmp_path):
         _cleanup(bundle, prev)
 
 
-def test_client_api_start_uses_server_key(tmp_path):
+def test_client_api_start_uses_server_key(tmp_path, voice_keys_ready):
     bundle = _client(tmp_path, client_api_key="")
     client, prev, registry, log, auth_store = bundle
     try:

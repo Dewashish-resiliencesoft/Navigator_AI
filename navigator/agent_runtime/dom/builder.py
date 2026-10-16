@@ -51,6 +51,26 @@ def build_dom_state(page: Any, *, page_id: str = "", detailed: bool = False) -> 
         print(f"[dom] inventory failed: {exc}", flush=True)
 
     visible_labels = [e["text"] for e in elements if e.get("text")][:12]
+    snapshot = ""
+    viewport: dict[str, int] = {}
+    scroll: dict[str, int] = {}
+    cursor: dict[str, int] = {}
+    below_fold: list[dict[str, object]] = []
+    try:
+        from navigator.automation.browser.page_snapshot import measure_page
+
+        snap = measure_page(page)
+        if snap.viewport_w or snap.visible or snap.below:
+            snapshot = snap.summary()
+            viewport = {"w": snap.viewport_w, "h": snap.viewport_h}
+            scroll = {"x": snap.scroll_x, "y": snap.scroll_y}
+            if snap.cursor_x is not None and snap.cursor_y is not None:
+                cursor = {"x": snap.cursor_x, "y": snap.cursor_y}
+            below_fold = [{"label": name, "distance_px": dist} for name, dist in snap.below]
+            if snap.visible:
+                visible_labels = snap.visible
+    except Exception as exc:  # noqa: BLE001
+        print(f"[dom] snapshot failed: {exc}", flush=True)
 
     live_context = {
         "page": page_id or "unknown",
@@ -58,6 +78,11 @@ def build_dom_state(page: Any, *, page_id: str = "", detailed: bool = False) -> 
         "title": title,
         "visible_elements": visible_labels,
         "active_element": visible_labels[0] if visible_labels else "",
+        "viewport": viewport,
+        "scroll": scroll,
+        "cursor": cursor,
+        "below_fold": below_fold,
+        "snapshot": snapshot,
     }
 
     if detailed:

@@ -21,7 +21,9 @@ class FakeBridge:
         self.sent: list[tuple[bytes, int]] = []
         self.flushes = 0
 
-    def push_outbound_pcm(self, pcm: bytes, *, sample_rate: int = 16000) -> None:
+    def push_outbound_pcm(
+        self, pcm: bytes, *, sample_rate: int = 16000, writer: str = ""
+    ) -> None:
         self.sent.append((pcm, sample_rate))
 
     def flush_bot_output(self) -> None:
@@ -147,6 +149,10 @@ def test_director_only_rejects_inbound_and_ignores_interrupt():
     bridge = FakeBridge()
     events: list = []
     agent = _agent(bridge, events)
+    # Scripted speech starts director-only so Meet audio cannot barge in.
+    assert agent.director_only is True
+    assert agent.accept_inbound() is False
+    agent.set_director_only(False)
     assert agent.accept_inbound() is True
     agent.set_director_only(True)
     assert agent.accept_inbound() is False
@@ -178,6 +184,7 @@ def test_director_only_rejects_inbound_and_ignores_interrupt():
 
 def test_half_duplex_mutes_inbound_while_speaking():
     agent = _agent(FakeBridge())
+    agent.set_director_only(False)
     assert agent.accept_inbound() is True
     agent.speaking = True
     assert agent.accept_inbound() is False
@@ -261,6 +268,9 @@ def test_resumption_handle_is_kept():
 
 def test_wait_for_heard_returns_input_transcription():
     agent = _agent(FakeBridge())
+    # Scripted mode starts director-only and drops meeting audio. This test is
+    # the open-mic path intake uses before wait_for_heard.
+    agent.set_director_only(False)
     sc = SimpleNamespace(
         interrupted=False,
         model_turn=None,

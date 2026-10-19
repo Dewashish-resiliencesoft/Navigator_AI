@@ -46,7 +46,8 @@ def _in_pytest() -> bool:
 
 
 def _stock_attendee_dir() -> Path:
-    return Path.home() / "projects" / "attendee"
+    """Default Attendee checkout: ``<Navigator_AI>/attendee``."""
+    return Path(__file__).resolve().parents[2] / "attendee"
 
 
 def _compose_dir() -> Path:
@@ -55,7 +56,7 @@ def _compose_dir() -> Path:
     ``NAVIGATOR_ATTENDEE_COMPOSE_DIR`` (process env, then the value Settings
     loaded from ``.env``) wins. Otherwise follow ``ATTENDEE_COMPOSE_DIR``, the
     same variable ``scripts/sync-attendee-compose.sh`` and ``docker-up.sh``
-    use, instead of always assuming ``~/projects/attendee``.
+    use, instead of always assuming ``<Navigator_AI>/attendee``.
     """
     raw = os.environ.get("NAVIGATOR_ATTENDEE_COMPOSE_DIR", "").strip()
     if raw:

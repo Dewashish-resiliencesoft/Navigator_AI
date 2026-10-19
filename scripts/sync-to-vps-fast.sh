@@ -40,6 +40,7 @@ LOG="${NAVIGATOR_VPS_SYNC_LOG:-/tmp/navigator-vps-sync.log}"
     --exclude '.pytest_cache/' \
     --exclude '.mypy_cache/' \
     --exclude '*.egg-info/' \
+    --exclude 'attendee/' \
     "$ROOT/" "$REMOTE:$NAVIGATOR_VPS_PATH/"
 
   if [[ -f "$ROOT/.env" ]]; then

@@ -2,11 +2,11 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ATTENDEE="${ATTENDEE_COMPOSE_DIR:-$HOME/projects/attendee}"
+ATTENDEE="${NAVIGATOR_ATTENDEE_COMPOSE_DIR:-${ATTENDEE_COMPOSE_DIR:-$ROOT/attendee}}"
 
 if [[ ! -f "$ATTENDEE/dev.docker-compose.yaml" ]]; then
   echo "Attendee clone missing at $ATTENDEE"
-  echo "  git clone https://github.com/attendee-labs/attendee $ATTENDEE"
+  echo "  git clone https://github.com/Dewashish-resiliencesoft/attendee $ATTENDEE"
   exit 1
 fi
 

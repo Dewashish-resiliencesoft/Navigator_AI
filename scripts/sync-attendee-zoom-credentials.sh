@@ -3,7 +3,8 @@
 # Do not pass Server-to-Server NAVIGATOR_ZOOM_CLIENT_ID — Zoom 3712s that JWT.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ATTENDEE="${NAVIGATOR_ATTENDEE_COMPOSE_DIR:-$HOME/projects/attendee}"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ATTENDEE="${NAVIGATOR_ATTENDEE_COMPOSE_DIR:-${ATTENDEE_COMPOSE_DIR:-$ROOT/attendee}}"
 
 if [[ -f "$ROOT/.env" ]]; then
   set -a

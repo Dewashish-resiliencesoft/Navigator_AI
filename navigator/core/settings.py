@@ -102,10 +102,10 @@ class Settings(BaseSettings):
     #: ``docker compose up -d`` local Attendee on Navigator startup when base URL
     #: is localhost and nothing answers yet. Off for cloud Attendee or pytest.
     attendee_autostart: bool = True
-    #: Attendee clone (separate repo). Override with NAVIGATOR_ATTENDEE_COMPOSE_DIR.
-    #: The webpage-streamer preflight also follows ATTENDEE_COMPOSE_DIR (the
-    #: variable the Attendee helper scripts already use) when this is unset.
-    attendee_compose_dir: Path = Path.home() / "projects" / "attendee"
+    #: Attendee clone (separate repo). Default: ``<Navigator_AI>/attendee``.
+    #: Override with NAVIGATOR_ATTENDEE_COMPOSE_DIR. The webpage-streamer
+    #: preflight also follows ATTENDEE_COMPOSE_DIR when this is unset.
+    attendee_compose_dir: Path = Path(__file__).resolve().parents[2] / "attendee"
     #: Docker network whose gateway the local screenshare relay tries to bind.
     #: Stock ``docker compose`` project ``attendee`` creates
     #: ``attendee_attendee_network``. A checkout under another directory is

@@ -38,6 +38,7 @@ rsync -az -e "$RSYNC_SSH" \
   --exclude '.pytest_cache/' \
   --exclude '.mypy_cache/' \
   --exclude '*.egg-info/' \
+  --exclude 'attendee/' \
   "$ROOT/" "$REMOTE:$NAVIGATOR_VPS_PATH/"
 
 if [[ -f "$ROOT/.env" ]]; then

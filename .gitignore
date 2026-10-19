@@ -48,6 +48,10 @@ fern/openapi/ai_examples_override.yml
 
 
 
+# Self-hosted Attendee checkout (separate repo / Elastic License). Clone into
+# ./attendee — see scripts/sync-attendee-compose.sh. Do not vendor into git.
+/attendee/
+
 # graphify local knowledge graph (never commit)
 graphify-out/
 graphify/

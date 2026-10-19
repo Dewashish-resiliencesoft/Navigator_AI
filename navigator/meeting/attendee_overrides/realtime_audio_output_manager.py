@@ -41,7 +41,7 @@ class RealtimeAudioOutputManager:
 
         self.output_sample_rate = output_sample_rate
         self.bytes_per_sample = 2
-        self.chunk_length_seconds = 0.1
+        self.chunk_length_seconds = 0.2  # navigator: half the chromedriver execute_script calls
         self.inner_chunk_buffer = b""
         self.last_chunk_time = time.time()
         self._buf_lock = threading.RLock()
@@ -102,7 +102,7 @@ class RealtimeAudioOutputManager:
         # Zoom) plus ~10-60ms of chromedriver execute_script per chunk delivered
         # audio at <= real time, so the browser buffer drained and underran.
         # Now: send as fast as possible until LEAD seconds ahead of real time.
-        lead_s = 0.5
+        lead_s = 1.0  # navigator: pacing v3 (0.5s lead capped the browser buffer: player underruns while ours had 750ms)
         while not self.stop_audio_thread:
             try:
                 chunk, sample_rate = self.audio_queue.get(timeout=0.05)

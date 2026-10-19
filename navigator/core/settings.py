@@ -159,9 +159,9 @@ class Settings(BaseSettings):
     jwt_secret: str = "unsafe-default-secret-change-in-prod"
     #: Screenshare /view JPEG poll rate through the public tunnel.
     #: 20fps balances motion smoothness vs Cloudflare bandwidth; keep ≤24.
-    target_fps: int = 20
+    target_fps: int = 15  # round 12: 20fps share cost the bot Chrome ~110% CPU during speech
     #: JPEG quality for Meet/Zoom screenshare frames (1–100).
-    screenshot_quality: int = 80
+    screenshot_quality: int = 72
     #: Cap CDP screencast width (height scales). 960 cuts tunnel bytes ~40%
     #: vs 1280 while staying sharp enough for product demos.
     screenshot_max_width: int = 1280

@@ -58,7 +58,11 @@ _FIELDS_JS = r"""() => {
   const vis = (e) => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
     return r.width > 2 && r.height > 2 && s.visibility !== 'hidden' && s.display !== 'none'; };
   const dlgs = Array.from(document.querySelectorAll('[role=dialog],[aria-modal=true],dialog[open]')).filter(vis);
-  const root = dlgs.length ? dlgs[dlgs.length - 1] : (document.querySelector('main') || document.body);
+  let root = dlgs.length ? dlgs[dlgs.length - 1] : (document.querySelector('main') || document.body);
+  // auth pages often put the form outside <main> (10:33 run: Forgot Password -> 'no field')
+  const hasField = (r) => Array.from(r.querySelectorAll('input,textarea,select')).some(e =>
+    !['hidden','submit','button','checkbox','radio','file','image','reset'].includes((e.type || '').toLowerCase()) && vis(e));
+  if (!dlgs.length && root !== document.body && !hasField(root)) root = document.body;
   // ids are per-discovery: drop tags left on fields outside this form (e.g. a page search box)
   document.querySelectorAll('[data-nav-field]').forEach(e => { if (!root.contains(e)) e.removeAttribute('data-nav-field'); });
   const txt = (e) => (e && (e.innerText || e.textContent) || '').trim().replace(/\s+/g, ' ');
@@ -69,6 +73,7 @@ _FIELDS_JS = r"""() => {
     if (lb) { const t = lb.split(' ').map(id => txt(document.getElementById(id))).join(' ').trim(); if (t) return t; }
     let p = e.parentElement;
     for (let i = 0; i < 4 && p && p !== root.parentElement; i++, p = p.parentElement) {
+      if (p.querySelectorAll('input:not([type=hidden]),textarea,select').length > 1) break;
       const l = p.querySelector('label'); if (l && txt(l) && !l.contains(e)) return txt(l);
     }
     return e.placeholder || e.name || '';
@@ -82,6 +87,7 @@ _FIELDS_JS = r"""() => {
     const id = 'navf' + (i++); e.setAttribute('data-nav-field', id);
     const label = labelOf(e).slice(0, 60);
     out.push({id, label, type: t || e.tagName.toLowerCase(), name: e.name || '', placeholder: e.placeholder || '',
+      aria: e.getAttribute('aria-label') || '', autocomplete: e.getAttribute('autocomplete') || '',
       required: !!e.required || /\*\s*$/.test(label), value: t === 'password' ? '' : (e.value || '')});
   }
   const buttons = Array.from(root.querySelectorAll('button,[role=button],input[type=submit]')).filter(vis)
@@ -438,10 +444,40 @@ def _validate(page, probe: str, before_dialog: bool) -> dict:
 
 # ------------------------------------------------------------------ tools
 
+def _open_forgot_password(page, push_frame=None) -> dict | None:
+    pat = re.compile(r"forgot|reset\s+password|trouble\s+(signing|logging)", re.I)
+    for loc in (page.get_by_role("link", name=pat), page.get_by_role("button", name=pat), page.get_by_text(pat)):
+        try:
+            for i in range(min(loc.count(), 3)):
+                el = loc.nth(i)
+                if el.is_visible():
+                    label = (el.inner_text() or "Forgot password").strip()[:40]
+                    el.click(timeout=4000)
+                    try:
+                        page.wait_for_load_state("domcontentloaded", timeout=4000)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    page.wait_for_timeout(400)
+                    if push_frame is not None:
+                        push_frame()
+                    return {"ok": True, "action": "opened", "target": label,
+                            "fields": [f.get("label") or f.get("placeholder") for f in discover(page)["fields"]],
+                            "next": "ask the prospect for the email to type; sending the reset link is not done in a demo"}
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
 def do_task(page, goal: str, details: Any = "", mode: str = "explain", confirmed: bool = False,
             push_frame: Callable[[], None] | None = None) -> dict:
     goal = (goal or "").strip()
     mode = (mode or "explain").lower()
+    if re.search(r"\b(forgot|forgotten|reset|recover)\b.*\bpassword|\bpassword\b.*\b(forgot|reset|recover)", goal, re.I):
+        # Opening the recovery form is safe to show; sending the reset mail stays
+        # blocked at submit (BLOCKED 'send'/'reset' on the button).
+        opened = _open_forgot_password(page, push_frame)
+        if opened is not None:
+            return opened
     if BLOCKED.search(goal):
         from navigator.meeting.ui_jobs import highlight_text
 
@@ -566,10 +602,54 @@ def confirm_submit(page, push_frame=None) -> dict:
     return res
 
 
+def match_field(fields: list[dict], label: str, value: str = "") -> dict | None:
+    """Best field for a spoken label: label/placeholder/name/aria text, then
+    input type (an email value -> type=email), fuzzy words; a lone field wins."""
+    import difflib
+
+    fields = [f for f in fields or [] if f.get("type") != "select" or label]
+    if not fields:
+        return None
+    want = " ".join(re.findall(r"[a-z0-9]+", (label or "").lower()))
+    wwords = set(want.split()) - {"the", "your", "field", "box", "address", "enter"}
+    email_like = "@" in (value or "") or "mail" in want
+    best, best_s = None, 0.0
+    for f in fields:
+        hay = " ".join(str(f.get(k) or "") for k in ("label", "placeholder", "name", "aria", "autocomplete")).lower()
+        hay_n = " ".join(re.findall(r"[a-z0-9]+", hay))
+        s = 0.0
+        if want and want in hay_n:
+            s += 10
+        hw = set(hay_n.split())
+        s += 3 * len(wwords & hw)
+        s += 4 * max([difflib.SequenceMatcher(None, w, h).ratio() for w in wwords for h in hw] or [0]) \
+            if wwords and hw else 0
+        t = (f.get("type") or "").lower()
+        if email_like and (t == "email" or "mail" in hay_n):
+            s += 8
+        if "password" in want and t == "password":
+            s += 8
+        if ("phone" in want or "mobile" in want) and t == "tel":
+            s += 6
+        if s > best_s:
+            best, best_s = f, s
+    if best_s >= 4:
+        return best
+    return fields[0] if len(fields) == 1 else None
+
+
 def fill_field(page, label: str, value: str, push_frame=None) -> dict:
     form = discover(page)
-    want = (label or "").lower()
-    f = next((x for x in form["fields"] if want and want in (x["label"] + " " + x["placeholder"]).lower()), None)
+    f = match_field(form["fields"], label, value)
+    if f is None:
+        try:  # SPA still rendering the form: look once more
+            page.wait_for_timeout(600)
+        except Exception:  # noqa: BLE001
+            pass
+        form = discover(page)
+        f = match_field(form["fields"], label, value)
+    print(f"[task] fill_field label={label!r} -> {f and (f.get('label') or f.get('placeholder') or f.get('name'))!r} "
+          f"among {[x.get('label') or x.get('placeholder') for x in form['fields']]}", flush=True)
     if f is None:
         return {"ok": False, "error": f"no field '{label}'", "fields": [x["label"] for x in form["fields"]]}
     ok = _type_human(page, f["id"], value, push_frame)
@@ -663,6 +743,20 @@ def open_item(page, which: str, push_frame=None) -> dict:
             "say_hint": "Describe what opened on screen. Never ask the prospect to click."}
 
 
+def closest_control(label: str, controls: list[str]) -> str:
+    """Visible control sharing a meaningful word with the spoken label."""
+    stop = {"the", "a", "an", "to", "of", "on", "in", "for", "and", "button", "tab", "option", "code",
+            "link", "open", "click", "scan", "with", "via", "using", "login", "log", "sign"}
+    want = {w for w in re.findall(r"[a-z0-9]+", (label or "").lower()) if w not in stop}
+    best, best_n = "", 0
+    for c in controls or []:
+        words = set(re.findall(r"[a-z0-9]+", c.lower()))
+        n = len(want & words)
+        if n > best_n or (n == best_n and n and len(c) < len(best)):
+            best, best_n = c, n
+    return best if best_n else ""
+
+
 def click_control(page, label: str, push_frame=None) -> dict:
     if BLOCKED.search(label or "") or (ALLOWED_SUBMIT.search(label or "") and not OPEN_VERBS.search(label or "")):
         from navigator.meeting.ui_jobs import highlight_text
@@ -672,6 +766,16 @@ def click_control(page, label: str, push_frame=None) -> dict:
                 "say": "I'll only highlight that one; use confirm_submit for saving, and I never delete/send/pay."}
     el = None if re.match(r"^\s*(open\s+)?(the\s+)?(first|second|third|last|top|latest)\b", label or "", re.I) \
         else _click_text(page, label, in_dialog=discover(page)["in_dialog"])
+    if el is None:
+        # 'Scan QR code' -> the visible 'QR' tab: closest visible control by words
+        from navigator.meeting.ui_jobs import visible_controls
+
+        alt = closest_control(label, visible_controls(page))
+        if alt and not BLOCKED.search(alt):
+            print(f"[task] click_control {label!r} -> visible control {alt!r}", flush=True)
+            el = _click_text(page, alt)
+            if el is not None:
+                label = alt
     if el is None:
         # Not a button/tab label: maybe a list entry ("first chat", a contact's name).
         res = open_item(page, label, push_frame)

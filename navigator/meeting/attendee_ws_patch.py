@@ -145,6 +145,7 @@ def patch_drawloop(attendee_dir: Path) -> str:
 _OVR = Path(__file__).with_name("attendee_overrides")
 _PUSH_MARKER = "navigator: push scheduler v2"
 _PACE_MARKER = "navigator: deadline pacing"
+_PACE3_MARKER = "navigator: pacing v3"  # 1.0s lead, 200ms chunks (round 12)
 
 
 def patch_audio_v2(attendee_dir: Path) -> str:
@@ -172,7 +173,7 @@ def patch_audio_v2(attendee_dir: Path) -> str:
         text = text[:a] + (_OVR / "push_player.js").read_text(encoding="utf-8") + text[b:]
         js.write_text(text, encoding="utf-8")
         done.append("player")
-    if _PACE_MARKER not in py.read_text(encoding="utf-8"):
+    if _PACE3_MARKER not in py.read_text(encoding="utf-8"):
         py.write_text((_OVR / "realtime_audio_output_manager.py").read_text(encoding="utf-8"), encoding="utf-8")
         done.append("pacing")
     return f"patched {', '.join(done)}" if done else "already patched"

@@ -1650,11 +1650,26 @@ def run_live_meet_demo(
             # CDP connection: frames keep flowing while the demo thread blocks.
             screencast = None
             _screen = None
+            try:  # per-demo reset: stale globals from the previous demo made Live
+                # describe the dashboard during intake and '[sync] restore /inbox/' (round 10)
+                from navigator.agent.nodes import executing as _ex_mod
+                from navigator.meeting import task_runner as _tr_mod, task_state as _ts_mod
+                _ex_mod.STEP_URL = ""
+                _uj_mod.DETOUR_FROM.clear(); _uj_mod.DEFERRED_TOURS.clear(); _uj_mod.TASK_TOUCHED.clear()
+                _uj_mod.SCREEN_SUMMARY.clear(); _uj_mod.SCREEN_SUMMARY.update({"text": "", "hash": "", "at": 0.0})
+                _tr_mod.HEARD.clear(); _ts_mod.reset()
+            except Exception as _exc:  # noqa: BLE001
+                print(f"[demo] per-demo reset failed: {_exc}", flush=True)
             try:
                 _uj_mod.NAV_INVENTORY = list(((getattr(graph_cfg, "meta", None) or {}).get("nav_inventory")) or [])
                 _uj_mod.SCREEN_MAP = _uj_mod.build_screen_map(graph_cfg)
             except Exception:  # noqa: BLE001
                 _uj_mod.NAV_INVENTORY = []
+            try:
+                from navigator.meeting import cpu_priority as _cpu
+                _cpu.start()
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 _screen = _uj_mod.ScreenThread(_cdp_port, relay)
                 if _screen.start(timeout=15.0):

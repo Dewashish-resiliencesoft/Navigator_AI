@@ -91,7 +91,10 @@ LIVE_TOOL_INSTRUCTION = (
     "click_control with e.g. 'first chat' or the name: never ask the prospect to click anything and never "
     "say you cannot see the screen. Tools are only for the prospect's requests, never on your own "
     "while reading the script."
-    "\nACK FIRST: before any screen tool call, say a 2-5 word acknowledgement "
+    "\nSCREEN TRUTH: the context 'What is on the screen right now' and list_screen_controls are the live "
+    "page. Never say something is not on screen without checking list_screen_controls first. To explain a "
+    "tab or option (e.g. a login method), open it with click_control, then explain what appears. Never ask "
+    "the prospect to click, type, log in or 'let me know when done' — you operate the screen or explain."    "\nPLAIN SPEECH: never speak square brackets, tags or labels such as [ack] or [context]; never read director notes aloud. Never describe the screen before the demo has started sharing it.""\nACK FIRST: before any screen tool call, say a 2-5 word acknowledgement "
     "('Sure, opening it now.') so the prospect never waits in silence. If a tool "
     "fails or times out, say so honestly in one sentence and offer to explain instead."
     "\nACT, DON'T INSTRUCT: when the prospect says 'show me', 'how do I', 'how to', 'can you', "
@@ -122,7 +125,10 @@ def dispatch(page, name: str, args: dict, push_frame=None) -> dict:
     if name == "show_feature":
         res = show_feature(page, str(args.get("target", "")), push_frame)
     elif name == "list_screen_controls":
-        res = {"ok": True, "visible_controls": visible_controls(page)}
+        d = screen_summary(page)
+        res = {"ok": True, "screen": d.get("text", ""), "visible_controls": visible_controls(page),
+               "note": "This is the live page right now. Tabs/options include unselected ones; "
+                       "to explain one, open it with click_control first."}
     elif name == "do_task":
         res = tr.do_task(page, str(args.get("goal", "")), args.get("details", ""),
                          str(args.get("mode", "explain")), bool(args.get("confirmed", False)), push_frame)
@@ -184,6 +190,91 @@ _CONTROLS_JS = """
   return out;
 }
 """
+
+
+_SUMMARY_JS = r"""
+() => {
+  const vis = e => { const r = e.getBoundingClientRect(); const s = getComputedStyle(e);
+    return r.width > 3 && r.height > 3 && r.bottom > 0 && r.top < innerHeight && s.visibility !== 'hidden' && s.display !== 'none'; };
+  const txt = e => (e.innerText || e.value || e.getAttribute('aria-label') || e.title || '').trim().replace(/\s+/g, ' ');
+  const inMenu = e => !!e.closest('nav, aside, [role=navigation], [class*=sidebar i], [class*=sidenav i]');
+  const uniq = (arr, n) => { const seen = new Set(); const out = [];
+    for (const t of arr) { const k = t.toLowerCase(); if (t && t.length <= 60 && !seen.has(k)) { seen.add(k); out.push(t); } if (out.length >= n) break; }
+    return out; };
+  const dlg = Array.from(document.querySelectorAll('[role=dialog],[aria-modal=true],dialog[open]')).filter(vis).pop();
+  const root = dlg || document.body;
+  const q = sel => Array.from(root.querySelectorAll(sel)).filter(vis);
+  const headings = uniq(q('h1,h2,h3,[role=heading]').map(txt), 8);
+  // tabs / segmented options: role=tab, aria-pressed/selected, or 2-6 sibling buttons in one row
+  const tabEls = q('[role=tab],[aria-selected],[aria-pressed]');
+  for (const b of q('button,[role=button]')) {
+    const p = b.parentElement; if (!p) continue;
+    const sib = Array.from(p.children).filter(c => /^(BUTTON|A)$/.test(c.tagName) || c.getAttribute('role') === 'button');
+    if (sib.length >= 2 && sib.length <= 6 && sib.every(c => (txt(c) || '').length <= 24)) tabEls.push(b);
+  }
+  const isOn = e => e.getAttribute('aria-selected') === 'true' || e.getAttribute('aria-pressed') === 'true'
+    || /\b(active|selected|current)\b/i.test(typeof e.className === 'string' ? e.className : '');
+  const tabs = uniq(tabEls.map(e => txt(e) + (isOn(e) ? ' (selected)' : '')), 12);
+  const buttons = uniq(q('button,[role=button],input[type=submit]').filter(e => !inMenu(e)).map(txt), 20);
+  const links = uniq(q('a[href]').filter(e => !inMenu(e)).map(txt), 15);
+  const menu = uniq(q('nav a, aside a, [role=navigation] a, [class*=sidebar i] a').map(txt), 25);
+  const inputs = uniq(q('input,textarea,select').filter(e => !['hidden','submit','button'].includes((e.type||'').toLowerCase()))
+    .map(e => { const l = (e.labels && e.labels[0] && txt(e.labels[0])) || e.getAttribute('aria-label') || e.placeholder || e.name || '';
+      const t = (e.type || e.tagName).toLowerCase(); return `${l || '(unlabelled)'} [${t}${(t==='checkbox'||t==='radio') ? (e.checked ? ' on' : ' off') : ''}]`; }), 15);
+  const toggles = uniq(q('[role=switch]').map(e => txt(e) + (e.getAttribute('aria-checked') === 'true' ? ' (on)' : ' (off)')), 10);
+  return {path: location.pathname, title: document.title, dialog: !!dlg, headings, tabs, buttons, links, inputs, toggles, menu};
+}
+"""
+
+#: latest screen description (refreshed by the screen thread; read by Live on user turns)
+SCREEN_SUMMARY: dict = {"text": "", "hash": "", "at": 0.0}
+
+
+def screen_summary(page) -> dict:
+    try:
+        d = page.evaluate(_SUMMARY_JS) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    if not isinstance(d, dict):
+        return {}
+    d["text"] = format_summary(d)
+    return d
+
+
+def format_summary(d: dict) -> str:
+    if not d:
+        return ""
+    parts = [f"Screen {d.get('path', '')} — {d.get('title', '')}" + (" (a dialog is open)" if d.get("dialog") else "")]
+    for key, name in (("headings", "Headings"), ("tabs", "Tabs/options"), ("buttons", "Buttons"),
+                      ("inputs", "Fields"), ("toggles", "Toggles"), ("links", "Links"), ("menu", "Side menu")):
+        vals = d.get(key) or []
+        if vals:
+            parts.append(f"{name}: " + ", ".join(vals))
+    return "\n".join(parts)[:1800]
+
+
+def refresh_screen_summary(page, min_gap_s: float = 1.5) -> bool:
+    """Cheap: at most every min_gap_s, and only marks a change when the
+    description (URL + visible controls) actually differs."""
+    import hashlib
+
+    now = time.monotonic()
+    if now - SCREEN_SUMMARY.get("at", 0.0) < min_gap_s:
+        return False
+    SCREEN_SUMMARY["at"] = now
+    try:
+        d = screen_summary(page)
+        text = d.get("text", "") if isinstance(d, dict) else ""
+    except Exception:  # noqa: BLE001
+        return False
+    if not isinstance(text, str) or not text:
+        return False
+    h = hashlib.sha1(text.encode()).hexdigest()[:12]
+    if h == SCREEN_SUMMARY.get("hash"):
+        return False
+    SCREEN_SUMMARY.update(text=text, hash=h, tabs=[t.replace(" (selected)", "") for t in d.get("tabs") or []
+                                                   if not t.endswith("(selected)")])
+    return True
 
 
 def visible_controls(page) -> list[str]:
@@ -287,6 +378,11 @@ def _next_seq(name: str) -> int:
 def superseded(name: str, box: dict) -> dict | None:
     """A newer show_feature arrived while this one waited behind a slow job:
     running both just flips the screen twice. Skip the stale one."""
+    from navigator.meeting import task_state as _ts
+
+    if _ts.is_stale(box.get("task_id", "")):
+        print(f"[nav] owner=task reason='{name}' task={box.get('task_id')} blocked (stale: task changed)", flush=True)
+        return {"ok": False, "error": "cancelled: the prospect gave a newer instruction", "skipped": True}
     if name in _LATEST_WINS and int(box.get("seq", 0)) < _SEQ.get(name, 0):
         return {"ok": False, "error": "superseded by a newer request", "skipped": True}
     return None
@@ -516,8 +612,19 @@ class UiJobs:
             # Gemini re-issued the same call while the first was still queued.
             prev[1].wait(timeout=25.0)
             return prev[2].get("result") or {"ok": False, "error": "screen busy"}
+        if name in TASK_TOOLS:
+            from navigator.meeting import task_state as _ts
+            from navigator.meeting import task_runner as _tr
+
+            if _tr.HEARD and _ts.ended_by(_tr.HEARD[-1]):
+                print(f"[nav] owner=live reason='{name} after task ended' task=- blocked", flush=True)
+                return {"ok": False, "error": "The prospect asked to continue: the scripted demo resumes now "
+                        "on its own. Do not call tools; say one short sentence at most."}
+        tid = _task_for_tool(name, args)
+        if tid:
+            TASK_TOUCHED.append(name)
         done = threading.Event()
-        box: dict = {"seq": _next_seq(name)}
+        box: dict = {"seq": _next_seq(name), "task_id": tid}
         self.__dict__.setdefault("_recent", {})[key] = (time.monotonic(), done, box)
         print(f"[ui-tool] queued {name} {args}", flush=True)
         st = getattr(self, "screen", None)
@@ -529,7 +636,15 @@ class UiJobs:
             return {"ok": False, "error": "that took too long on screen; say so honestly and offer to try "
                     "again or explain it instead", "timed_out": True}
         self.hold_until = time.monotonic() + 8.0
-        return box.get("result") or {"ok": False}
+        res = box.get("result") or {"ok": False}
+        if tid:
+            from navigator.meeting import task_state as _ts
+
+            # The prospect replies next (give details, confirm, say 'continue'):
+            # the task stays open and the flow stays paused.
+            _ts.transition(tid, "awaiting_user", f"{name} ok={res.get('ok')}",
+                           screen=str(res.get("url_path") or ""))
+        return res
 
     def jobs_pending(self) -> bool:
         if not self._q.empty():
@@ -545,6 +660,8 @@ class UiJobs:
                 name, args, box, done = self._q.get_nowait()
             except queue.Empty:
                 self._spin()
+                if getattr(self, "screen", None) is None:  # no screen thread: refresh here
+                    refresh_screen_summary(self.page)
                 return n
             t0 = time.monotonic()
             try:
@@ -594,6 +711,66 @@ def new_current() -> UiJobs:
 QUIET_S = 3.0
 
 
+#: a prospect task acted on the page (tab switched, field typed): the flow
+#: resets the page before its next action even when the URL did not change
+TASK_TOUCHED: list[str] = []
+#: tools that act for the prospect (open a task); list_screen_controls only looks
+TASK_TOOLS = {"show_feature", "do_task", "fill_field", "click_control", "confirm_submit"}
+#: tools that begin a new instruction (a new heard request supersedes the old task)
+STARTS_TASK = {"show_feature", "do_task"}
+TASK_IDLE_ASK_S = 120.0
+TASK_IDLE_GIVEUP_S = 60.0
+
+
+def _task_for_tool(name: str, args: dict) -> str:
+    if name not in TASK_TOOLS:
+        return ""
+    from navigator.meeting import task_state as _ts
+    from navigator.meeting import task_runner as _tr
+
+    heard = (_tr.HEARD[-1] if _tr.HEARD else "")
+    t = _ts.active()
+    if t is None or (name in STARTS_TASK and heard and heard != t.heard):
+        t = _ts.start(f"{name} {args.get('target') or args.get('goal') or args.get('label') or ''}".strip(), heard)
+    _ts.transition(t.id, "executing", name)
+    _ts.nav_allowed("task", name, t.id)
+    return t.id
+
+
+def _hold_for_task(live: Any) -> None:
+    """Flow is paused while the prospect's task is open. Ask before resuming
+    after a long silence; never resume silently mid-task."""
+    from navigator.meeting import task_state as _ts
+
+    t = _ts.active()
+    if t is None:
+        return
+    t0 = time.monotonic()
+    _ts.nav_allowed("flow", "next scripted step", "")
+    print(f"[flow] holding for active task {t.id} ({t.state}: {t.goal!r})", flush=True)
+    asked_at = 0.0
+    ui = CURRENT
+    while _ts.active() is not None:
+        if ui is not None:
+            ui.pump()
+        if ui is not None and (ui.jobs_pending() or ui.hold_active(live)):
+            time.sleep(0.1)
+            continue
+        idle = _ts.idle_s()
+        if not asked_at and idle >= TASK_IDLE_ASK_S and _ts.active().state == "awaiting_user":
+            asked_at = time.monotonic()
+            print(f"[task] id={t.id} idle {idle:.0f}s — asking whether to continue the demo", flush=True)
+            try:
+                live.nudge("Shall I continue with the demo, or keep going with this?")
+            except Exception:  # noqa: BLE001
+                pass
+        if asked_at and time.monotonic() - asked_at >= TASK_IDLE_GIVEUP_S and _ts.idle_s() >= TASK_IDLE_GIVEUP_S:
+            _ts.finish_active("completed", "no reply after asking to continue")
+            break
+        time.sleep(0.2)
+    print(f"[flow] task {t.id} ended ({t.state}) after {time.monotonic() - t0:.1f}s — flow may resume", flush=True)
+
+
 def service_before_step(deps: Any, max_hold_s: float = 30.0) -> None:
     """Demo thread: run queued screen jobs and pause the script during Q&A."""
     ui = CURRENT
@@ -603,6 +780,7 @@ def service_before_step(deps: Any, max_hold_s: float = 30.0) -> None:
         ui.bind(deps.page, getattr(deps, "push_frame", None))
     ui.pump()
     live = getattr(deps, "live_agent", None)
+    _hold_for_task(live)
     if not ui.hold_active(live):
         return
     t0 = time.monotonic()
@@ -623,6 +801,7 @@ def service_before_step(deps: Any, max_hold_s: float = 30.0) -> None:
         elif now - quiet_since >= QUIET_S:
             break
         time.sleep(0.1)
+    _hold_for_task(live)  # a task opened during the Q&A keeps the flow paused
     print(f"[flow] resumed after {time.monotonic() - t0:.1f}s Q&A "
           f"({'question handled' if quiet_since else 'safety cap'})", flush=True)
 
@@ -711,6 +890,8 @@ class ScreenThread:
                         done.set()
                     if DEFERRED_TOURS and self.page is not None:
                         run_deferred_tours(self.page)
+                    if self.page is not None:
+                        refresh_screen_summary(self.page)
                     try:
                         # Keeps CDP screencast events flowing continuously.
                         (self.page or pg).wait_for_timeout(20)

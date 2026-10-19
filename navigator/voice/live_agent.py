@@ -138,10 +138,36 @@ def claims_screen_action(text: str) -> bool:
     return bool(_ACTION_CLAIM.search((text or "").replace("\u2019", "'")))
 
 
+_FOREIGN_WORDS = {"que", "é", "não", "nao", "qué", "como", "está", "esta", "por", "isso", "eso", "el", "la",
+                  "los", "las", "um", "uma", "una", "o", "os", "y", "e", "de", "do", "da", "es", "son", "ser", "muy"}
+
+
+def looks_foreign_noise(text: str, language: str = "en") -> bool:
+    """Short Latin-script transcript in a language we are not speaking
+    ('O que é o que é login?' on an en/hi call) — likely misheard noise."""
+    import re
+
+    if (language or "en")[:2] not in {"en", "hi"}:
+        return False
+    words = re.findall(r"[^\W\d_]+", (text or "").lower())
+    if not words or len(words) > 10:
+        return False
+    if any("\u0900" <= ch <= "\u097f" for ch in text):
+        return False  # Hindi
+    accents = sum(ch in "ãõçáéíóúâêôñ¿¡" for ch in text.lower())
+    foreign = sum(w in _FOREIGN_WORDS for w in words)
+    english = sum(w in {"the", "is", "what", "how", "a", "to", "and", "you", "this", "it", "can", "i"} for w in words)
+    return english == 0 and (accents >= 1 or foreign >= max(2, len(words) // 2))
+
+
 def _is_real_speech(text: str) -> bool:
     """Real words, not STT noise like 'e' / 'uh' / '.'."""
     alnum = "".join(ch for ch in (text or "") if ch.isalnum())
     if len(alnum) < 3:
+        return False
+    # 10:34 run: 'か と か' (kana noise from an en/hi call) counted as a question
+    if any("\u3040" <= ch <= "\u30ff" or "\u4e00" <= ch <= "\u9fff" or "\uac00" <= ch <= "\ud7af"
+           for ch in alnum) and len((text or "").split()) <= 4:
         return False
     return alnum.lower() not in {"uhh", "umm", "hmm", "mmm", "ahh", "ehh"}
 
@@ -367,6 +393,67 @@ class LiveAgent:
         return getattr(self, "_last_heard_at", 0.0) < cut - 0.5
 
     _OPEN_RE = None
+
+    def _backstop_explain_tab(self, text: str, wait_s: float = 3.0) -> None:
+        """'Explain QR login' while an unselected 'QR' tab is on screen: if Live
+        makes no tool call within wait_s, open that tab so the explanation
+        matches what the prospect sees."""
+        import re
+        import threading
+
+        if not re.search(r"\b(explain|what is|what's|how does|how do|tell me about|show me|walk me through)\b",
+                         text or "", re.I):
+            return
+        try:
+            from navigator.meeting.ui_jobs import SCREEN_SUMMARY
+            from navigator.meeting.task_runner import closest_control
+        except Exception:  # noqa: BLE001
+            return
+        tab = closest_control(text, list(SCREEN_SUMMARY.get("tabs") or []))
+        handler = getattr(self.cfg, "tool_handler", None)
+        if not tab or handler is None:
+            return
+        t0 = time.monotonic()
+
+        def run() -> None:
+            while time.monotonic() - t0 < wait_s and not self._stop.is_set():
+                if getattr(self, "_last_tool_at", 0.0) >= t0:
+                    return
+                time.sleep(0.1)
+            if getattr(self, "_last_tool_at", 0.0) >= t0 or self._stop.is_set():
+                return
+            print(f"[live] no tool call for {text!r} — opening on-screen tab {tab!r} directly", flush=True)
+            self._last_tool_at = time.monotonic()
+            res = handler("click_control", {"label": tab})
+            if isinstance(res, dict) and res.get("ok"):
+                self._cmds.put(_Cmd(kind="context", text=f"I opened the '{tab}' tab; the screen now shows it."))
+
+        threading.Thread(target=run, daemon=True, name="explain-tab").start()
+
+    def _inject_screen(self) -> None:
+        """Each prospect turn: hand Live the live page description (tabs incl.
+        unselected ones, buttons, fields...) so it never answers from the script
+        alone (11:3x run: 'I only see email and password' while Email/WhatsApp/QR
+        tabs were on screen). Deduped by the description hash; never mid-line."""
+        if getattr(self, "_in_say", False):
+            return
+        try:
+            from navigator.meeting.ui_jobs import SCREEN_SUMMARY
+        except Exception:  # noqa: BLE001
+            return
+        try:  # only after the flow has opened its first step (not during intake)
+            from navigator.agent.nodes import executing as _ex
+            if not getattr(_ex, "STEP_URL", ""):
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        text, h = SCREEN_SUMMARY.get("text", ""), SCREEN_SUMMARY.get("hash", "")
+        if not text or h == self.__dict__.get("_screen_sent_hash") or \
+                time.monotonic() - float(SCREEN_SUMMARY.get("at", 0.0) or 0.0) > 15.0:
+            return
+        self._screen_sent_hash = h
+        print(f"[live] screen context sent ({h}, {len(text)} chars)", flush=True)
+        self._cmds.put(_Cmd(kind="context", text="What is on the screen right now (live page):\n" + text))
 
     def _unsolicited_audio(self, now: float | None = None) -> bool:
         """Model talking on its own between scripted lines, with no question
@@ -813,6 +900,15 @@ class LiveAgent:
                 # The question's own tool call, late because Live answered aloud
                 # first (12s at 11:49 audit: "show me how to add a contact" was refused).
                 user_turn = True
+            if not user_turn and name == "list_screen_controls" and not getattr(self, "_in_say", False):
+                user_turn = True  # read-only: checking the screen is always fine between lines
+            if user_turn and name != "list_screen_controls" and \
+                    float(self.__dict__.get("_unsure_heard_at", 0.0) or 0.0) >= heard - 0.01 and heard:
+                print(f"[live] tool_call {name} refused: last transcript looked like noise / other language", flush=True)
+                responses.append(types.FunctionResponse(id=getattr(fc, "id", None), name=name, response={
+                    "ok": False, "error": "The transcript was unclear (possibly noise or another language). "
+                    "Do not act; briefly ask the prospect to repeat that."}))
+                continue
             if user_turn:
                 self._tool_for_heard = heard
             if not user_turn:
@@ -1437,6 +1533,18 @@ class LiveAgent:
                     self._last_heard_at = time.monotonic()
                     self.__dict__.setdefault("_heard_texts", []).append(text)
                     try:
+                        from navigator.meeting import task_state as _ts
+
+                        _ts.on_heard(text)  # 'continue' / 'never mind' end the active task
+                    except Exception:  # noqa: BLE001
+                        pass
+                    if looks_foreign_noise(text, getattr(self.cfg, "language", "en")):
+                        self._unsure_heard_at = self._last_heard_at
+                        print(f"[live] transcript looks like noise/other language — will ask to repeat: {text!r}",
+                              flush=True)
+                    self._inject_screen()
+                    self._backstop_explain_tab(text)
+                    try:
                         from navigator.meeting import task_runner as _tr
 
                         _tr.HEARD.append(text)
@@ -1535,37 +1643,37 @@ def _prompt_for(cmd: _Cmd, *, language: SpokenLanguage = "en") -> str:
     lang_hint = " in Hindi" if language == "hi" else " in English"
     if cmd.kind == "context":
         return (
-            "[Context, do not say this out loud and do not acknowledge it] "
+            "(Director note, never spoken: Context, do not say this out loud and do not acknowledge it) "
             f"{cmd.text}"
         )
     if cmd.kind == "nudge":
         return (
-            f"[Say this brief working ack aloud once{lang_hint}, then stop. Do not "
-            f"elaborate or narrate what you are doing] {cmd.text}"
+            f"(Director note, never spoken: Say this brief working ack aloud once{lang_hint}, then stop. Do not "
+            f"elaborate or narrate what you are doing) {cmd.text}"
         )
     if cmd.mode == "acknowledge":
         return (
-            f"[Say a short natural acknowledgement{lang_hint} that you understood "
+            f"(Director note, never spoken: Say a short natural acknowledgement{lang_hint} that you understood "
             f"and are working on it. Use the following as the intent, not word-for-word: "
-            f"{cmd.text}. One sentence only, then stop.]"
+            f"{cmd.text}. One sentence only, then stop.)"
         )
     if cmd.mode == "result":
         return (
-            f"[Deliver the following result to the person{lang_hint}, conversationally, "
-            f"then stop. Do not add follow-up questions. Do not call any tools.] {cmd.text}"
+            f"(Director note, never spoken: Deliver the following result to the person{lang_hint}, conversationally, "
+            f"then stop. Do not add follow-up questions. Do not call any tools.) {cmd.text}"
         )
     if cmd.mode == "error":
         return (
-            f"[Say the following recovery message{lang_hint}, naturally, then stop. "
-            f"Do not reveal technical details.] {cmd.text}"
+            f"(Director note, never spoken: Say the following recovery message{lang_hint}, naturally, then stop. "
+            f"Do not reveal technical details.) {cmd.text}"
         )
     if cmd.mode == "natural":
         return (
-            f"[Say the following to the person{lang_hint}, naturally and conversationally, "
-            f"then stop. Do not add extra commentary or questions after. Do not call any tools.] {cmd.text}"
+            f"(Director note, never spoken: Say the following to the person{lang_hint}, naturally and conversationally, "
+            f"then stop. Do not add extra commentary or questions after. Do not call any tools.) {cmd.text}"
         )
     # verbatim — used only for intake questions where rephrasing would change meaning
     return (
-        f"[Say the following to the person now{lang_hint}, exactly as written, then stop. Do not call any tools.] "
+        f"(Director note, never spoken: Say the following to the person now{lang_hint}, exactly as written, then stop. Do not call any tools.) "
         f"{cmd.text}"
     )

@@ -110,6 +110,31 @@ def _attendee_48k_ok() -> bool:
     return _PATCH_OK
 
 
+class Upsampler2x:  # round 11: replaces per-chunk linear interp (10 Hz edge clicks, -28 dB imaging)
+    """Streaming polyphase 2x upsampler (Kaiser windowed-sinc, cutoff 11 kHz @48k).
+    Keeps filter history across chunks, so chunk edges are seamless."""
+    TAPS = 64  # per phase
+    def __init__(self):
+        import numpy as np
+        n = 2 * self.TAPS - 1; m = np.arange(n) - (n - 1) / 2.0
+        fc = 11000 / 48000.0
+        h = 2 * fc * np.sinc(2 * fc * m) * np.kaiser(n, 8.0)
+        h *= 2.0 / h.sum()  # unity passband gain after zero-stuffing
+        h = np.append(h, 0.0)
+        self.h0, self.h1 = h[0::2][::-1].copy(), h[1::2][::-1].copy()
+        self.hist = np.zeros(self.TAPS - 1, dtype=np.float64)
+    def reset(self):
+        self.hist[:] = 0
+    def process(self, x):
+        import numpy as np
+        x = np.concatenate([self.hist, np.asarray(x, dtype=np.float64)])
+        from numpy.lib.stride_tricks import sliding_window_view as sw
+        win = sw(x, self.TAPS)
+        y = np.empty(2 * win.shape[0]); y[0::2] = win @ self.h0; y[1::2] = win @ self.h1
+        self.hist = x[-(self.TAPS - 1):].copy()
+        return y
+
+
 def resample_pcm16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
     """Band-limited-ish resample (linear interp, vectorised). No sample doubling."""
     import numpy as np
@@ -246,6 +271,11 @@ class AudioBridge:
             self._line_rx_s = 0.0
             self._line_holding = True
             self._line_sent_any = False
+        prev = getattr(self, "_line_last_rx", now)
+        if self._line_rx_s > 0:  # Gemini arrival gap within the line (instrumentation)
+            self._line_max_gap = max(getattr(self, "_line_max_gap", 0.0), now - prev)
+        else:
+            self._line_max_gap = 0.0
         self._line_rx_s += len(pcm) / (2.0 * rate) if rate else 0.0
         self._line_last_rx = now
 
@@ -269,10 +299,19 @@ class AudioBridge:
         is a pause between utterances (incl. LLM/TTS latency), not an underrun.
         Before this, ~1-1.9s gaps at every line start were counted as underruns."""
         self._tap_play_end = 0.0
+        if getattr(self, "_line_open", False) and getattr(self, "_line_rx_s", 0.0) > 0:
+            wall = max(1e-3, getattr(self, "_line_last_rx", 0.0) - getattr(self, "_line_t0", 0.0))
+            print(f"[gen] line audio={self._line_rx_s:.1f}s wall={wall:.1f}s rtf={self._line_rx_s / wall:.2f} "
+                  f"max_gap_ms={getattr(self, '_line_max_gap', 0.0) * 1000:.0f} "
+                  f"sender_stall_max_ms={getattr(self, '_sender_stall_max', 0.0) * 1000:.0f}", flush=True)
+            self._sender_stall_max = 0.0
         self._line_open = False
         self._line_ended = True
+        recent = time.monotonic() - getattr(self, "_last_underrun_at", -1e9) < 120.0
         if not getattr(self, "_line_underran", False):  # clean line: shrink back slowly
-            self.jitter_extra_s = max(0.0, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) - 0.05)
+            # Steady floor: keep >=300ms extra for 2 min after any underrun so a
+            # slow-generation stretch doesn't re-learn it line by line.
+            self.jitter_extra_s = max(0.3 if recent else 0.0, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) - 0.05)
         self._line_underran = False
 
     def _tap_pcm(self, pcm: bytes, rate: int) -> None:
@@ -356,7 +395,16 @@ class AudioBridge:
         # (it then passes bytes through untouched); else native rate and let
         # Attendee duplicate samples (crashes avoided, but slightly harsher).
         if _attendee_48k_ok() and rate != _ATTENDEE_PLAYBACK_RATE:
-            out, out_rate = resample_pcm16(pcm, rate, _ATTENDEE_PLAYBACK_RATE), _ATTENDEE_PLAYBACK_RATE
+            if rate * 2 == _ATTENDEE_PLAYBACK_RATE:
+                import numpy as np
+                up = getattr(self, "_ups", None)
+                if up is None or getattr(self, "_ups_epoch", None) != self._out_epoch:
+                    up = self._ups = Upsampler2x(); self._ups_epoch = self._out_epoch
+                x = np.frombuffer(pcm[: len(pcm) - (len(pcm) % 2)], dtype=np.int16)
+                out = np.clip(np.round(up.process(x)), -32768, 32767).astype(np.int16).tobytes()
+            else:
+                out = resample_pcm16(pcm, rate, _ATTENDEE_PLAYBACK_RATE)
+            out_rate = _ATTENDEE_PLAYBACK_RATE
         else:
             out, out_rate = pcm, rate
         payload = {
@@ -412,6 +460,11 @@ class AudioBridge:
                 buf_rate = 0
                 epoch = self._out_epoch
                 play_end = 0.0  # flushed audio never plays
+            _t_loop = time.monotonic()
+            _st = _t_loop - getattr(self, "_sender_last_loop", _t_loop)
+            if _st > getattr(self, "_sender_stall_max", 0.0):
+                self._sender_stall_max = _st  # >~60ms here = GIL/CPU starvation of the sender
+            self._sender_last_loop = _t_loop
             try:
                 pcm, rate = self._outbound.get(timeout=0.02)
                 if buf_rate and rate != buf_rate:
@@ -431,6 +484,13 @@ class AudioBridge:
             # while 'this is the landing page' was still to be heard (17:38 run).
             self.out_play_end = max(getattr(self, "out_play_end", 0.0), max(play_end, now) + buffered)
             holding = getattr(self, "_line_holding", False)
+            if (not holding and getattr(self, "_line_open", False)
+                    and getattr(self, "_line_sent_any", False) and play_end - now < 0.05):
+                # Starved mid-line (gap arrived after the buffer had already
+                # drained past the old re-arm check): rebuild the jitter buffer
+                # instead of trickling chunks out one by one (round 10).
+                self._line_holding = holding = True
+                self._hold_since = 0.0
             if holding:
                 ended = getattr(self, "_line_ended", False) or not getattr(self, "_line_open", False)
                 ahead = max(0.0, play_end - now)
@@ -439,10 +499,11 @@ class AudioBridge:
                     self._hold_since = now
                 idle_rx = now - getattr(self, "_line_last_rx", now)
                 held = now - self._hold_since
-                if ended or buffered + ahead >= need or idle_rx > 0.4 or held > min(6.0, need + 1.0):
-                    if need > 0.6:  # 0.45 is the normal line-start prebuffer, not "slow"
-                        print(f"[voice-out] prebuffer {buffered * 1000:.0f}ms (need {need * 1000:.0f}ms, "
-                              f"slow generation) — starting", flush=True)
+                if (ended or buffered + ahead >= need or (idle_rx > 0.4 and buffered >= 0.15)
+                        or idle_rx > 1.0 or held > min(6.0, need + 1.0)):
+                    if need > 0.6 and buffered + ahead < need:  # started short of the target
+                        print(f"[voice-out] prebuffer {buffered * 1000:.0f}ms+{ahead * 1000:.0f}ms queued "
+                              f"(need {need * 1000:.0f}ms, slow generation) — starting", flush=True)
                     self._line_holding = False
                     self._hold_since = 0.0
                 else:
@@ -471,7 +532,8 @@ class AudioBridge:
             self.underruns = getattr(self, "underruns", 0) + 1
             self.underrun_ms = getattr(self, "underrun_ms", 0.0) + (now - play_end) * 1000
             # Adaptive jitter buffer: grows only after real mid-line underruns.
-            self.jitter_extra_s = min(0.6, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) + 0.15)
+            self.jitter_extra_s = min(0.75, max(0.3, float(getattr(self, "jitter_extra_s", 0.0) or 0.0) + 0.15))
+            self._last_underrun_at = now
             self._line_underran = True
             print(f"[voice-out] underrun gap_ms={(now - play_end) * 1000:.0f} n={self.underruns} "
                   f"jitter+={self.jitter_extra_s * 1000:.0f}ms", flush=True)

@@ -47,15 +47,13 @@ async def _lifespan(_app: FastAPI):
     else:
         print("[storage] Cloudinary not configured", flush=True)
 
-    ensure_playwright_browsers()
-    ensure_attendee_stack()
-    # Keep infra warm (attendee, Cloudflare base URL, parked product browser) so
-    # "Show me the demo" skips cold starts. Best-effort; never blocks startup.
     # Bring the ZAK quick tunnel up now, not inside the first demo: at 18:27 the
     # demo spent 160s on "public base missing/dead — tunneling" + edge wait.
     def _warm_tunnel() -> None:
         try:
             from navigator.meeting.zoom_host import ensure_public_base_url
+
+            print("[warm] public base: checking/starting tunnel…", flush=True)
 
             print(f"[warm] public base ready: {ensure_public_base_url()}", flush=True)
         except Exception as exc:  # noqa: BLE001
@@ -64,6 +62,10 @@ async def _lifespan(_app: FastAPI):
     import threading as _th
 
     _th.Thread(target=_warm_tunnel, daemon=True, name="warm-tunnel").start()
+    ensure_playwright_browsers()
+    ensure_attendee_stack()
+    # Keep infra warm (attendee, Cloudflare base URL, parked product browser) so
+    # "Show me the demo" skips cold starts. Best-effort; never blocks startup.
     try:
         from navigator.meeting.warm_pool import start_warm_pool
 

@@ -13,6 +13,8 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--product", required=True); ap.add_argument("--rev", type=int, required=True)
 ap.add_argument("--flow", required=True); ap.add_argument("--page", required=True)
 ap.add_argument("--steps", default=""); ap.add_argument("--questions", action="store_true")
+ap.add_argument("--task", action="store_true", help="multi-turn Forgot Password task during step 1")
+ap.add_argument("--qr", action="store_true", help="ask 'explain QR login' on the login step")
 ap.add_argument("--email", default=""); ap.add_argument("--password", default="")
 ap.add_argument("--out", default="/tmp/navsync")
 A = ap.parse_args()
@@ -87,13 +89,21 @@ if A.questions:
           9: synth("You create one."),
           11: synth("First open the phone book and create a contact step by step. Show me the screen.")}
 
+QX = {}  # step -> [(delay_s, pcm)] extra multi-turn utterances
+if A.task:
+    QX = {1: [(5.0, synth("I forgot my password. Can you show me how to reset it?")),
+              (22.0, synth("My email is user@gmail.com.")),
+              (45.0, synth("Thanks, that's all. Please continue the demo."))]}
+if A.qr:
+    QX = {1: [(5.0, synth("Can you explain QR login?")),
+              (40.0, synth("Okay, thanks. Please continue."))]}
 ROWS = []
 def sentences(t): return [x for x in re.split(r"(?<=[.!?\u0964])\s+", (t or "").strip()) if x.strip()]
 def path(u): return (urlparse(u or "").path or "/").rstrip("/") or "/"
 
 with sync_playwright() as p:
     b = p.chromium.launch(); ctx = b.new_context(viewport={"width": 1280, "height": 720}); page = ctx.new_page()
-    jobs = ui_jobs.UiJobs(); jobs.bind(page)
+    jobs = ui_jobs.UiJobs(); ui_jobs.CURRENT = jobs; jobs.bind(page)
     live = LiveAgent(LiveAgentConfig(
         api_key=keys[0], language="en", fallback_keys=list(keys[1:]),
         system_instruction="You are Navigator, presenting a live product demo over Zoom. Read scripted lines when asked. Answer the prospect briefly." + ui_jobs.LIVE_TOOL_INSTRUCTION,
@@ -174,6 +184,8 @@ with sync_playwright() as p:
     for i in idx:
         call = steps[i]
         CUR.update(pre=[], post=[])
+        for d, pcm in QX.get(i, []):
+            threading.Timer(d, lambda pcm=pcm: SPEECH.put(pcm)).start()
         if i in QS:
             threading.Timer(5.0, lambda pcm=QS[i]: SPEECH.put(pcm)).start()
         st = {"pending_calls": [call], "page_id": A.page, "walkthrough_flow_id": A.flow, "executing_step": i,

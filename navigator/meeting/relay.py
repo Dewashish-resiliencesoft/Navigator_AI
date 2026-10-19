@@ -328,9 +328,15 @@ def start_screencast(handle: RelayHandle, page: Page):
         print(f"[live] screencast unavailable, using screenshots: {exc}", flush=True)
         return None
 
+    _last_set = [0.0]
+
     def _on_frame(event: dict) -> None:
         data = event.get("data")
-        if data:
+        now = time.monotonic()
+        if data and not (_speaking_now(now) and now - _last_set[0] < 0.125):
+            # While the bot is speaking cap accepted frames at ~8fps so frame
+            # decode/encode doesn't steal CPU from audio delivery (round 10).
+            _last_set[0] = now
             handle.set_frame(base64.b64decode(data))
         # Chromium stops sending until the frame is acked.
         try:
@@ -360,6 +366,15 @@ def start_screencast(handle: RelayHandle, page: Page):
     )
     handle.screencast = True
     return cdp
+
+
+def _speaking_now(now: float) -> bool:
+    try:
+        from navigator.meeting import audio_bridge as _ab
+        br = getattr(_ab, "ACTIVE", None)
+        return bool(br is not None and getattr(br, "out_play_end", 0.0) > now)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def stop_screencast(cdp) -> None:

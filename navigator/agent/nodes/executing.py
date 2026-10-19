@@ -203,12 +203,24 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
         _step_log(state, deps, "completed(prev)")
     _step_log(state, deps, "pending", tool=getattr(call, "tool", ""),
               intended=expected_path(getattr(deps, "graph", None), call) or getattr(call, "selector", ""))
-    _return_from_detour(deps, call)
-    _restore_step_screen(deps, call)
+    held = _task_gate(state, deps, call)  # never return from a detour while the task is open
+    from navigator.meeting import ui_jobs as _uj
+
+    already_done = bool(held or _uj.DETOUR_FROM) and step_target_reached(deps, call)
+    if already_done:
+        # The prospect's detour already took us where this step leads (11:34 run:
+        # on /login after the task, step 0 went back to the landing page and
+        # restarted "Hello, this is the landing page"). Continue from here.
+        print(f"[nav] owner=flow reason='step {state.get('executing_step')} already reached "
+              f"({getattr(deps.page, 'url', '')})' task=- skip (no return to detour origin)", flush=True)
+        _uj.DETOUR_FROM.clear()
+    else:
+        _back_to_step_screen(deps, call)
+    _uj.TASK_TOUCHED.clear()
     ran_on = state["page_id"]
     # Speak-then-act: the part of the line about the page we are LEAVING
     # ("this is the landing page, let's click Login") is spoken before the click.
-    pre_text, post_items = _split_speak_then_act(state, deps, call)
+    pre_text, post_items = ("", []) if already_done else _split_speak_then_act(state, deps, call)
     if pre_text:
         _speak_blocking(deps, pre_text)
         state = dict(state)
@@ -231,8 +243,20 @@ def executing(state: CallState, deps: CallDeps) -> CallState:
             action_started_ns=action_started_ns,
         )
     skip_narration = False
+    if _task_gate(state, deps, call):
+        # a task opened during this step's narration moved the screen: go back
+        _back_to_step_screen(deps, call)
     _step_log(state, deps, "executing")
-    if _is_login_call(call) and LOGIN_CREDS and not isinstance(call, FillField) \
+    if already_done:
+        from navigator.core.schemas import ToolResult
+
+        skip_narration = True
+        result, next_page_id = (
+            ToolResult(ok=True, tool=getattr(call, "tool", "click_element"),
+                       detail="skipped: the screen already shows this step's result", duration_ms=0),
+            ran_on,
+        )
+    elif _is_login_call(call) and LOGIN_CREDS and not isinstance(call, FillField) \
             and _visible_password(deps.page):
         # The flow walks the real login: sign in visibly (password masked).
         result, next_page_id = _visible_login(deps, call, ran_on)
@@ -628,6 +652,23 @@ _CHARS_PER_S = 15.0  # Gemini Live narration pace (~150 wpm)
 _FIRST_AUDIO_S = 1.3
 
 
+def _task_gate(state, deps, call) -> bool:
+    """The prospect's active task owns the screen: the flow waits (never acts
+    or narrates over it). True if it had to wait."""
+    try:
+        from navigator.meeting import task_state as _ts
+
+        if _ts.nav_allowed("flow", f"step {state.get('executing_step')} {getattr(call, 'tool', '')}"):
+            return False
+        from navigator.meeting.ui_jobs import _hold_for_task
+
+        _hold_for_task(deps.live_agent)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[nav] task gate failed: {exc}", flush=True)
+        return False
+
+
 def _return_from_detour(deps: CallDeps, call) -> None:
     """A prospect's request (show_feature/do_task) moved the screen: go back to
     where the scripted flow was before running its next step. A navigate step
@@ -856,6 +897,52 @@ def _restore_step_screen(deps, call) -> None:
             page.wait_for_timeout(400)
     except Exception as exc:  # noqa: BLE001
         print(f"[sync] restore skipped: {exc}", flush=True)
+
+
+def _back_to_step_screen(deps, call) -> None:
+    from navigator.meeting import ui_jobs as _uj
+
+    had_detour = bool(_uj.DETOUR_FROM)
+    _return_from_detour(deps, call)
+    _restore_step_screen(deps, call)
+    if _uj.TASK_TOUCHED and not had_detour and _ts_idle():
+        # Same URL but the task changed the page (QR tab selected -> the
+        # email/password form hidden -> sign_in failed, 11:56 audit).
+        print(f"[nav] owner=flow reason='reset page after task ({', '.join(_uj.TASK_TOUCHED[-3:])})' "
+              f"task=- allowed", flush=True)
+        try:
+            deps.page.reload(wait_until="domcontentloaded", timeout=10000)
+            deps.page.wait_for_timeout(600)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[nav] reset reload failed: {exc}", flush=True)
+    _uj.TASK_TOUCHED.clear()
+
+
+def _ts_idle() -> bool:
+    from navigator.meeting import task_state as _ts
+
+    return _ts.active() is None
+
+
+def step_target_reached(deps, call) -> bool:
+    """True when the current screen is where this step would take us: a
+    navigate step's URL, or a click whose target names the current path
+    (click 'login' while on /login)."""
+    import re
+    from urllib.parse import urlparse
+
+    try:
+        cur = (urlparse(deps.page.url or "").path or "/").rstrip("/") or "/"
+    except Exception:  # noqa: BLE001
+        return False
+    want = expected_path(getattr(deps, "graph", None), call)
+    if want:
+        return want == cur
+    if getattr(call, "tool", "") != "click_element" or cur == "/":
+        return False
+    words = [w for w in re.split(r"[^a-z0-9]+", str(getattr(call, "selector", "")).lower()) if len(w) > 2]
+    segs = set(re.split(r"[^a-z0-9]+", cur.lower())) - {""}
+    return bool(words) and all(w in segs for w in words)
 
 
 def expected_path(graph, call) -> str:

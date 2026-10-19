@@ -204,6 +204,10 @@ class AgentOrchestrator:
 
         In both cases at most ONE worker thread exists at any time.
         """
+        from navigator.meeting import task_state as _ts
+
+        if not _ts.nav_allowed("orchestrator", f"goal {goal[:40]}"):
+            return
         if live_screen_tools_active():
             # 13:24 run: this worker drove the page from its own thread while Live's
             # do_task ran on the screen thread -> greenlet "cannot switch thread",

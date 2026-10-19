@@ -86,14 +86,19 @@ def ensure_public_base_url(*, local_port: int | None = None) -> str:
     base = (settings.public_base_url or "").rstrip("/")
     if base and "trycloudflare.com" not in base:
         return base
-    if base and _zak_origin_reachable(base):
-        return base
+    # A stale quick-tunnel URL (e.g. left in .env) used to be probed 5x with 5s
+    # timeouts, twice: ~60s+ before a new tunnel even started (10:20 boot).
+    probed_dead = ""
+    if base:
+        if _zak_origin_reachable(base, attempts=2):
+            return base
+        probed_dead = base
 
     with _api_tunnel_lock:
         base = (settings.public_base_url or "").rstrip("/")
         if base and "trycloudflare.com" not in base:
             return base
-        if base and _zak_origin_reachable(base):
+        if base and base != probed_dead and _zak_origin_reachable(base, attempts=2):
             return base
         if _api_tunnel is not None and _api_tunnel._proc.poll() is None:
             live = _api_tunnel.public_url

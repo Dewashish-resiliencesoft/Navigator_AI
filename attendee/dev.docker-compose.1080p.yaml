@@ -1,0 +1,25 @@
+# Local webpage streamer at 1920x1080, with enough CPU and memory.
+# Frame rate is intentionally unset so the per-platform rule decides it:
+# Google Meet 30fps, Zoom / Teams / local 60fps.
+#
+# Google Meet still limits screen share to about 30 fps for viewers.
+#
+#   docker compose -f dev.docker-compose.yaml -f dev.docker-compose.1080p.yaml --profile webpage-streamer up
+services:
+  attendee-webpage-streamer-local:
+    cpus: "4"
+    mem_limit: 8g
+    environment:
+      WEBPAGE_STREAMER_VIDEO_FRAME_SIZE: "1920x1080"
+
+  attendee-worker-local:
+    environment:
+      WEBPAGE_STREAMER_VIDEO_FRAME_SIZE: "1920x1080"
+
+  attendee-app-local:
+    environment:
+      WEBPAGE_STREAMER_VIDEO_FRAME_SIZE: "1920x1080"
+
+  attendee-scheduler-local:
+    environment:
+      WEBPAGE_STREAMER_VIDEO_FRAME_SIZE: "1920x1080"

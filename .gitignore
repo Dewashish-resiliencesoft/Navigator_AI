@@ -48,9 +48,11 @@ fern/openapi/ai_examples_override.yml
 
 
 
-# Self-hosted Attendee checkout (separate repo / Elastic License). Clone into
-# ./attendee — see scripts/sync-attendee-compose.sh. Do not vendor into git.
-/attendee/
+# Vendored Attendee tree under ./attendee (Elastic License). Keep secrets out;
+# parent .env rules still apply. Allow Attendee docs + streamer env example.
+!attendee/**/*.md
+!attendee/**/*.mdx
+!attendee/.env.webpage-streamer.example
 
 # graphify local knowledge graph (never commit)
 graphify-out/

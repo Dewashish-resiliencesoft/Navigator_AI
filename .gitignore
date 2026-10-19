@@ -49,9 +49,7 @@ fern/openapi/ai_examples_override.yml
 
 
 # Vendored Attendee tree under ./attendee (Elastic License). Keep secrets out;
-# parent .env rules still apply. Allow Attendee docs + streamer env example.
-!attendee/**/*.md
-!attendee/**/*.mdx
+# parent .env rules still apply. Streamer env example + docs un-ignored below.
 !attendee/.env.webpage-streamer.example
 
 # graphify local knowledge graph (never commit)
@@ -82,3 +80,7 @@ docs/**/*.html
 # Sample-tenant knowledge brief. The global *.md ignore otherwise drops it,
 # and load_product_brief reads this file. Generated *.user.md stays ignored.
 !navigator/knowledge/products/resiliohub.md
+
+# Vendored Attendee markdown (must follow the global *.md ignore above)
+!attendee/**/*.md
+!attendee/**/*.mdx
